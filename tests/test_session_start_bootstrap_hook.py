@@ -149,6 +149,12 @@ class TestHandleSessionStartBootstrap:
         assert "owner" in ctx.lower()
         assert "owner-1" in ctx  # names the live owner session
         assert "do not arm" in ctx.lower() or "stay idle" in ctx.lower()
+        # #1073 doc-alignment: the directive must state the gate is now
+        # HARD (a non-owner tick SKIPs, not "runs and finds nothing").
+        assert "skip" in ctx.lower()
+        assert "find nothing to claim" not in ctx.lower()
+        assert "take" in ctx.lower()
+        assert "over" in ctx.lower()
         # Non-owner must NOT get the rename reminder.
         assert "/rename TEATREE LOOP" not in ctx
         # Ownership is unchanged.

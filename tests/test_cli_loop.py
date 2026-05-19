@@ -145,3 +145,141 @@ class TestStopCommand:
 
         assert result.exit_code == 0
         assert "/loop unregister t3-loop" in result.stdout
+
+
+@pytest.mark.django_db
+class TestLoopOwnerCli:
+    """``t3 loop claim/owner/release`` end-to-end through the mgmt command (#1073)."""
+
+    def test_claim_happy_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "cli-session")
+        result = runner.invoke(loop_app, ["claim"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "claimed loop slot" in result.stdout
+        assert LoopLease.objects.get(name="loop-owner").session_id == "cli-session"
+
+    def test_claim_without_session_id_exits_2(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        result = runner.invoke(loop_app, ["claim"])
+
+        assert result.exit_code == 2
+        assert "refusing to claim loop ownership without a Claude session id" in result.stdout
+
+    def test_owner_reports_live_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="held-by")
+        result = runner.invoke(loop_app, ["owner"])
+
+        assert result.exit_code == 0
+        assert "held-by" in result.stdout
+
+    def test_owner_reports_unclaimed(self) -> None:
+        result = runner.invoke(loop_app, ["owner"])
+
+        assert result.exit_code == 0
+        assert "unclaimed" in result.stdout
+
+    def test_release_only_clears_own_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="other-session")
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
+        result = runner.invoke(loop_app, ["release"])
+
+        assert result.exit_code == 0
+        assert "nothing released" in result.stdout
+        assert LoopLease.objects.get(name="loop-owner").session_id == "other-session"
+
+    def test_release_clears_when_holder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "me")
+        LoopLease.objects.claim_ownership("loop-owner", session_id="me")
+        result = runner.invoke(loop_app, ["release"])
+
+        assert result.exit_code == 0
+        assert "released loop slot" in result.stdout
+        assert LoopLease.objects.get(name="loop-owner").session_id == ""
+
+    def test_take_over_seizes_live_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
+        result = runner.invoke(loop_app, ["claim", "--take-over"])
+
+        assert result.exit_code == 0
+        assert "claimed loop slot" in result.stdout
+        assert LoopLease.objects.get(name="loop-owner").session_id == "main"
+
+    def test_claim_without_take_over_is_blocked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "main")
+        result = runner.invoke(loop_app, ["claim"])
+
+        assert result.exit_code == 0
+        assert "held by session hijacker" in result.stdout
+        assert LoopLease.objects.get(name="loop-owner").session_id == "hijacker"
+
+    def test_owner_json_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="json-sess")
+        result = runner.invoke(loop_app, ["owner", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["owner_session"] == "json-sess"
+        assert payload["is_live"] is True
+
+    def test_custom_slot_is_independent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "answer-sess")
+        result = runner.invoke(loop_app, ["claim", "--slot", "loop-slack-answer-owner"])
+
+        assert result.exit_code == 0
+        assert LoopLease.objects.get(name="loop-slack-answer-owner").session_id == "answer-sess"
+
+    def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json  # noqa: PLC0415
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "json-claimer")
+        result = runner.invoke(loop_app, ["claim", "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload == {"ok": True, "slot": "loop-owner", "owner_session": "json-claimer"}
+
+    def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json  # noqa: PLC0415
+
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        monkeypatch.delenv("T3_LOOP_SESSION_ID", raising=False)
+        result = runner.invoke(loop_app, ["claim", "--json"])
+
+        assert result.exit_code == 2
+        payload = json.loads(result.stdout)
+        assert payload["ok"] is False
+        assert "without a Claude session id" in payload["error"]
+
+    def test_release_json_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import json  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "rel-sess")
+        LoopLease.objects.claim_ownership("loop-owner", session_id="rel-sess")
+        result = runner.invoke(loop_app, ["release", "--json"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.stdout) == {"ok": True, "slot": "loop-owner"}
