@@ -3012,9 +3012,11 @@ Usage: t3 teatree followup [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ refresh  Return counts of tickets and tasks.                                 │
-│ sync     Synchronize followup data from MRs.                                 │
-│ remind   Return list of pending user input tasks.                            │
+│ refresh       Return counts of tickets and tasks.                            │
+│ sync          Synchronize followup data from MRs.                            │
+│ discover-mrs  List the user's open non-draft PRs/MRs awaiting a review       │
+│               request.                                                       │
+│ remind        Return list of pending user input tasks.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3032,6 +3034,24 @@ Usage: t3 teatree followup refresh [OPTIONS]
 
 ```
 Usage: t3 teatree followup sync [OPTIONS]
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree followup discover-mrs`
+
+```
+Usage: t3 teatree followup discover-mrs [OPTIONS]
+
+ List the user's open, non-draft PRs/MRs awaiting a review request.
+
+ Backs ``t3 review-request discover`` (BLUEPRINT.md §10.1). Mirrors
+ ``glab api /merge_requests?scope=created_by_me&state=opened``
+ filtered to non-draft MRs; each entry carries ``repo``, ``iid``,
+ ``title`` and ``url`` so the result is suitable for the
+ review-request batch ping or a human paste into Slack.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
