@@ -89,3 +89,62 @@ class TestResolveMainClone:
         (worktree / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
         with patch.object(DoctorService, "find_teatree_repo", return_value=worktree):
             assert teatree_cli_doctor._resolve_main_clone() == worktree
+
+
+class TestCheckLegacyOverlayAlias:
+    """``t3 doctor`` warns (never rewrites) on a stale legacy alias table.
+
+    souliane/teatree#1108: a bare ``[overlays.teatree]`` table written by
+    older ``slack-bot`` runs maps to the canonical ``t3-teatree`` overlay.
+    The doctor surfaces it as a WARN with the rename; it must not mutate
+    the user's ``~/.teatree.toml``.
+    """
+
+    def _run(self, tmp_path, monkeypatch, toml_body: str) -> str:
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        config_path = tmp_path / ".teatree.toml"
+        config_path.write_text(toml_body, encoding="utf-8")
+
+        real_ep = MagicMock()
+        real_ep.name = "t3-teatree"
+        real_ep.value = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
+
+        out = io.StringIO()
+        with (
+            patch("teatree.config.CONFIG_PATH", config_path),
+            patch("importlib.metadata.entry_points", return_value=[real_ep]),
+            redirect_stdout(out),
+        ):
+            teatree_cli_doctor._check_legacy_overlay_alias()
+        return out.getvalue()
+
+    def test_warns_on_stale_bare_alias_table(self, tmp_path, monkeypatch):
+        message = self._run(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\nmode = "auto"\n',
+        )
+        assert "WARN" in message
+        assert "[overlays.teatree]" in message
+        assert "t3-teatree" in message
+
+    def test_silent_when_canonical_table_used(self, tmp_path, monkeypatch):
+        message = self._run(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.t3-teatree]\nmode = "auto"\n',
+        )
+        assert message == ""
+
+    def test_silent_when_alias_table_has_path(self, tmp_path, monkeypatch):
+        # A real path-backed overlay that merely happens to share a short
+        # name is a deliberate distinct overlay, not a stale alias.
+        message = self._run(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\npath = "/tmp/x"\n',
+        )
+        assert message == ""
