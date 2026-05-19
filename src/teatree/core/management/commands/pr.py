@@ -15,6 +15,7 @@ from teatree import visual_qa
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.branch_currency import require_current_branch
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
 from teatree.core.management.commands._pr_preview import (
     PrValidationError,
@@ -318,6 +319,9 @@ def _run_ship_gates(
     gate_error = _check_shipping_gate(ticket)
     if gate_error is not None:
         return gate_error
+    # Overlay-scoped (#1012): no-op unless the overlay forbids auto-close
+    # trailers; raises SystemExit with the offending line otherwise.
+    run_close_keyword_gate(ticket, worktree)
     visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
     if visual_qa_error is not None:
         return visual_qa_error

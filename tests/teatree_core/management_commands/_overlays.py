@@ -129,6 +129,21 @@ class ServicesOverlay(FullOverlay):
         }
 
 
+class ForbidCloseKeywordsOverlay(FullOverlay):
+    """Overlay that manages issue closure via forge linked-items, not trailers.
+
+    Sets ``config.forbid_close_keywords`` so the pre-push close-keyword
+    gate (#1012) enforces. ``FullOverlay`` (teatree-style) leaves it at
+    the ``False`` default, so a teatree push with ``Closes #N`` is allowed.
+    """
+
+    config = OverlayConfig()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config.forbid_close_keywords = True
+
+
 class _MinimalMetadata(OverlayMetadata):
     def get_tool_commands(self) -> list[ToolCommand]:
         return []
@@ -286,6 +301,9 @@ class PreRunOverlay(FullOverlay):
 
 
 FULL_OVERLAY = "tests.teatree_core.management_commands._overlays.FullOverlay"
+
+
+FORBID_CLOSE_KEYWORDS_OVERLAY = "tests.teatree_core.management_commands._overlays.ForbidCloseKeywordsOverlay"
 
 
 NESTED_OVERLAY = "tests.teatree_core.management_commands._overlays.NestedRepoOverlay"
