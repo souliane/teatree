@@ -15,11 +15,17 @@ Slack-Connect channel the bot token cannot read is read with the user's
 containing the canonical MR URL suppresses the post, regardless of
 author — a user's manual post must suppress the agent.
 
-Atomic DB claim. A clean "nothing found" read is not sufficient on its
-own (two callers could both read empty concurrently). Before returning
-POST the guard takes the existing ``ReviewRequestPost`` ``get_or_create``
-claim on ``mr_url``; ``created=False`` means a concurrent caller already
-claimed it, so SUPPRESS.
+Atomic DB claim (post path only). A clean "nothing found" read is not
+sufficient on its own (two callers could both read empty concurrently).
+Before returning POST :func:`should_post_review_request` takes the
+``ReviewRequestPost`` ``get_or_create`` claim on ``mr_url``;
+``created=False`` SUPPRESSES — but ONLY for a genuine *recent*
+concurrent claim. A stale unposted orphan (older than
+:data:`_CLAIM_RACE_WINDOW`) is reclaimed → POST, because the live scan
+is the authority that nothing was posted (#1103). The decision-only
+:func:`peek_should_post_review_request` (used by
+``review_request_check``) takes NO claim at all, so it can never leave
+an orphan that wedges a later real post.
 
 Fail safe. The httpx read is bounded (hard timeout + bounded pages). On
 timeout / HTTP error / API not-ok the guard SUPPRESSES with
@@ -53,6 +59,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT_RECENCY_WINDOW = dt.timedelta(hours=24)
 _DEFAULT_READ_TIMEOUT = 8.0
 _MAX_PAGES = 5
+
+# A durable claim is the concurrent check→post race backstop only. An
+# unposted claim older than this window is a stale orphan (e.g. the
+# decision-only ``review_request_check`` command never posts), not a
+# concurrent dup — it must not override an authoritative live-scan
+# "not posted" (#1103). Only a *recent* unposted claim is a genuine race.
+_CLAIM_RACE_WINDOW = dt.timedelta(seconds=120)
 
 
 def _canonical(url: str) -> str:
@@ -153,22 +166,21 @@ def _live_matches(
     return True, in_window
 
 
-def should_post_review_request(
-    *,
-    mr_url: str,
+def _live_decision(
+    canonical: str,
     target: GuardTarget,
-    options: GuardOptions | None = None,
-) -> GuardDecision:
-    """Decide whether a review-request message for *mr_url* may be posted.
+    opts: GuardOptions,
+) -> GuardDecision | None:
+    """The live-scan terminal decision shared by check and post (#1103).
 
-    ``target.token`` MUST be the token the post will use (resolved via
-    :func:`resolve_guard_target` so a Connect channel uses the user
-    ``xoxp``). Read-token == post-token is a load-bearing correctness
-    invariant.
+    Returns the terminal ``GuardDecision`` when the live read fails
+    (``read_failed_failsafe``) or finds an in-window message
+    (``already_posted``, after reconciling). Returns ``None`` when the
+    live scan succeeded and found NO in-window message — the caller then
+    decides whether to take/peek a durable claim. This is the single
+    authoritative dedup head; ``check`` (peek, no claim) and ``post``
+    (claim) share it without duplicating ``_live_matches``/``_reconcile``.
     """
-    opts = options or GuardOptions()
-    canonical = _canonical(mr_url)
-
     ok, in_window = _live_matches(canonical, target, opts)
     if not ok:
         return GuardDecision(action="suppress", reason="read_failed_failsafe")
@@ -181,15 +193,87 @@ def should_post_review_request(
             author=match.author,
             reason="already_posted",
         )
+    return None
 
-    with transaction.atomic():
-        _, created = ReviewRequestPost.objects.get_or_create(
+
+def _claim_or_reclaim(canonical: str, target: GuardTarget, *, using: str | None = None) -> GuardDecision:
+    """Take the durable race-backstop claim, reclaiming a stale orphan.
+
+    A fresh ``get_or_create`` is POST. An existing row is SUPPRESS
+    (``already_claimed``) ONLY when it is a genuine *recent* concurrent
+    claim. An unposted orphan (``done_at`` unset, no ``slack_thread_ts``)
+    older than :data:`_CLAIM_RACE_WINDOW` is stale — the live scan above
+    is authoritative that nothing was posted, so it is reclaimed → POST
+    (#1103). ``select_for_update`` is a documented SQLite no-op / real
+    Postgres lock — kept, matching ``OnBehalfApproval.consume`` (#1098).
+
+    ``using`` selects an alternate Django database alias for the whole
+    claim transaction — used by the concurrent regression test to point
+    the claim at a file-backed SQLite registered with prod's
+    ``transaction_mode=IMMEDIATE`` ``OPTIONS``. Production callers pass no
+    ``using`` and run against the default connection.
+    """
+    manager = ReviewRequestPost.objects.using(using) if using else ReviewRequestPost.objects
+    with transaction.atomic(using=using):
+        post, created = manager.select_for_update().get_or_create(
             mr_url=canonical,
             defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": ""},
         )
-    if not created:
+        if created:
+            return GuardDecision(action="post")
+        is_unposted_orphan = post.done_at is None and not post.slack_thread_ts
+        is_stale = timezone.now() - post.created_at > _CLAIM_RACE_WINDOW
+        if is_unposted_orphan and is_stale:
+            post.created_at = timezone.now()
+            post.slack_channel_id = target.channel_id
+            post.save(update_fields=["created_at", "slack_channel_id"])
+            return GuardDecision(action="post")
         return GuardDecision(action="suppress", reason="already_claimed")
-    return GuardDecision(action="post")
+
+
+def should_post_review_request(
+    *,
+    mr_url: str,
+    target: GuardTarget,
+    options: GuardOptions | None = None,
+) -> GuardDecision:
+    """Decide whether a review-request message for *mr_url* may be posted.
+
+    ``target.token`` MUST be the token the post will use (resolved via
+    :func:`resolve_guard_target` so a Connect channel uses the user
+    ``xoxp``). Read-token == post-token is a load-bearing correctness
+    invariant. Takes the durable race-backstop claim — callers that do
+    NOT post (the decision-only ``review_request_check``) must use
+    :func:`peek_should_post_review_request` instead (#1103).
+    """
+    opts = options or GuardOptions()
+    canonical = _canonical(mr_url)
+    terminal = _live_decision(canonical, target, opts)
+    if terminal is not None:
+        return terminal
+    return _claim_or_reclaim(canonical, target)
+
+
+def peek_should_post_review_request(
+    *,
+    mr_url: str,
+    target: GuardTarget,
+    options: GuardOptions | None = None,
+) -> GuardDecision:
+    """Decision-only variant: same live-scan dedup, NO durable claim (#1103).
+
+    ``review_request_check`` is a pre-post gate that never posts, so it
+    must not persist a ``ReviewRequestPost`` claim — a left-behind orphan
+    would wedge every subsequent post on ``already_claimed`` even though
+    the authoritative live scan confirmed nothing is posted. Returns the
+    same :class:`GuardDecision` shape as
+    :func:`should_post_review_request` (terminal live-scan decision, or
+    ``post`` when the channel is clean) without touching the DB.
+    """
+    opts = options or GuardOptions()
+    canonical = _canonical(mr_url)
+    terminal = _live_decision(canonical, target, opts)
+    return terminal if terminal is not None else GuardDecision(action="post")
 
 
 def reconcile_out_of_band(
