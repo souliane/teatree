@@ -28,6 +28,7 @@ from teatree.loop.scanners import (
     PendingTasksScanner,
     ReviewerPrsScanner,
     Scanner,
+    SlackDmInboundScanner,
     SlackMentionsScanner,
     StaleTicketsScanner,
     TicketCompletionScanner,
@@ -236,7 +237,15 @@ def build_default_jobs(
             # ``backend.hosts`` (which is empty when no token resolved).
             jobs.extend(_jobs_for_backend_hosts(backend, tag))
             if backend.messaging is not None:
-                jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag))
+                jobs.extend(
+                    [
+                        _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
+                        _ScannerJob(
+                            scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
+                    ]
+                )
     else:
         if host is not None:
             jobs.extend(
@@ -247,7 +256,12 @@ def build_default_jobs(
                 ],
             )
         if messaging is not None:
-            jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""))
+            jobs.extend(
+                [
+                    _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
+                    _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
+                ]
+            )
 
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
