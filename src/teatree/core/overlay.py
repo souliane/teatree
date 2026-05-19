@@ -341,6 +341,27 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         state = issue_data.get("state")
         return isinstance(state, str) and state in {"closed", "completed"}
 
+    def resolve_mr_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``!<iid>`` on this overlay's code host.
+
+        Overridden by overlays that own merge/pull requests across multiple
+        repositories and can resolve a bare ``!N`` to its repo's web URL.
+        The default returns ``None`` —
+        :func:`teatree.slack_mrkdwn.slack_linkify` leaves the bare token
+        unrewritten when no resolver can claim it, so the Slack reader sees
+        inert text rather than a guessed-wrong URL.
+        """
+        _ = iid
+        return None
+
+    def resolve_issue_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``#<iid>`` on this overlay's code host.
+
+        Default ``None``, for the same reason as :meth:`resolve_mr_token`.
+        """
+        _ = iid
+        return None
+
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.
 
