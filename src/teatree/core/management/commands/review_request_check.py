@@ -2,9 +2,11 @@
 
 Backs the SKILL.md / slack.md mandate: the agent runs this in the SAME
 turn as a review-request post and aborts on SUPPRESS. It reads the live
-review channel with the same token the post would use and takes the
-atomic DB claim — so a duplicate (agent re-post, or a user's manual
-out-of-band post) is impossible.
+review channel with the same token the post would use — so a duplicate
+(agent re-post, or a user's manual out-of-band post) is detected. It is
+strictly decision-only: it takes NO durable ``ReviewRequestPost`` claim
+(``peek_should_post_review_request``), so it can never leave an orphan
+that wedges a later real post on ``already_claimed`` (#1103).
 """
 
 from typing import Annotated
@@ -12,7 +14,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.review_request_guard import resolve_guard_target, should_post_review_request
+from teatree.core.review_request_guard import peek_should_post_review_request, resolve_guard_target
 from teatree.types import RawAPIDict
 
 
@@ -37,7 +39,7 @@ class Command(TyperCommand):
                 "mr_url": mr_url,
             }
 
-        decision = should_post_review_request(mr_url=mr_url, target=target)
+        decision = peek_should_post_review_request(mr_url=mr_url, target=target)
         return {
             "action": decision.action,
             "reason": decision.reason,
