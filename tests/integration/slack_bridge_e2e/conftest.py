@@ -1,0 +1,184 @@
+"""Shared infra for the Slack messaging-bridge integration fortress (#1057).
+
+This package exercises the inbound bridge (Slack DM →
+``PendingChatInjection`` → ``UserPromptSubmit`` drain → agent
+``additionalContext``) AND the outbound bridge (``notify_user`` →
+backend ``post_message`` → Slack ``chat.postMessage``) end-to-end with a
+fake Slack transport bolted onto the ``httpx`` boundary so the only
+thing mocked is the network. Every other layer — the real
+``SlackBotBackend``, the real ``SlackDmInboundScanner``, real
+``PendingChatInjection`` rows in the Django DB, the real hook router,
+the real ``notify_user``, the real ``loop_tick`` management command —
+runs unmodified. The split into ``test_inbound`` / ``test_outbound`` /
+``test_routing`` / ``test_backend_error_paths`` (#1066) mirrors the
+``tests/teatree_core/management_commands/`` package convention.
+
+The marker ``@pytest.mark.integration`` puts each test class on the
+integration-tests selector so CI runs the fortress on every PR.
+
+Anti-vacuous evidence: each test names the production line whose
+removal would turn it RED. The PR body records that line-to-test
+mapping plus the actual RED runs that confirm the guard.
+
+Justified scaffolding (#1066 nit 2): the per-overlay routing tests
+deliberately patch ``backend_factory._messaging_from_toml`` /
+``teatree.config.load_config`` / ``backend_factory.get_overlay``
+rather than only ``httpx``. Exercising per-overlay token isolation
+needs multiple synthetic overlay configs that are not expressible via
+a single real ``~/.teatree.toml``, so the config-resolution seam is
+patched to inject them. ``httpx`` (the network) and
+``teatree.utils.secrets.read_pass`` (the password store) remain the
+only true externals and stay real. This deviation from the epic's
+literal "mock only httpx" guidance is intentional — do not "fix" it
+back to a single real TOML; that would risk coverage drift on the
+per-overlay routing branches.
+"""
+
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from teatree.backends import slack_bot
+
+# ── Fake Slack transport ──────────────────────────────────────────────
+
+
+@dataclass
+class _Call:
+    method: str
+    url: str
+    token: str
+    payload: dict[str, Any]
+
+
+@dataclass
+class FakeSlackTransport:
+    """Recording fake Slack transport at the ``httpx`` boundary.
+
+    Routes every ``slack.com/api/<method>`` request to a scripted
+    response keyed by the URL's last segment. POST bodies arrive as
+    ``json=``; GET bodies arrive as ``params=``. Each call is appended
+    to :attr:`calls` so tests can assert who-called-what-with.
+    Per-method handlers can be overridden by setting ``handlers[name]``.
+    """
+
+    calls: list[_Call] = field(default_factory=list)
+    handlers: dict[str, Callable[[dict[str, Any], dict[str, str]], dict[str, Any]]] = field(default_factory=dict)
+    default_responses: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            "auth.test": {"ok": True, "user_id": "B_BOT"},
+            "conversations.open": {"ok": True, "channel": {"id": "D-USER"}},
+            "conversations.history": {"ok": True, "messages": []},
+            "conversations.replies": {"ok": True, "messages": []},
+            "chat.postMessage": {"ok": True, "ts": "1700000000.000100", "channel": "D-USER"},
+            "chat.getPermalink": {
+                "ok": True,
+                "permalink": "https://example.slack.com/archives/D-USER/p1700000000000100",
+            },
+            "reactions.add": {"ok": True},
+            "reactions.get": {"ok": True, "message": {"reactions": []}},
+            "conversations.info": {"ok": True, "channel": {"is_ext_shared": False}},
+            "users.lookupByEmail": {"ok": False, "error": "users_not_found"},
+            "users.list": {"ok": True, "members": []},
+        }
+    )
+
+    def _method_name(self, url: str) -> str:
+        return url.rsplit("/", maxsplit=1)[-1]
+
+    def _respond(
+        self,
+        *,
+        http_method: str,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        method = self._method_name(url)
+        token = headers.get("Authorization", "").removeprefix("Bearer ")
+        self.calls.append(_Call(method=method, url=url, token=token, payload=dict(payload)))
+        handler = self.handlers.get(method)
+        if handler:
+            body: dict[str, Any] = handler(payload, headers)
+        else:
+            body = self.default_responses.get(method, {"ok": True})
+        request = httpx.Request(http_method, url)
+        return httpx.Response(200, json=body, request=request)
+
+    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._respond(
+            http_method="POST",
+            url=url,
+            headers=dict(kwargs.get("headers", {})),
+            payload=dict(kwargs.get("json", {})),
+        )
+
+    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._respond(
+            http_method="GET",
+            url=url,
+            headers=dict(kwargs.get("headers", {})),
+            payload=dict(kwargs.get("params", {})),
+        )
+
+    def calls_to(self, method: str) -> list[_Call]:
+        return [c for c in self.calls if c.method == method]
+
+
+@pytest.fixture
+def transport(monkeypatch: pytest.MonkeyPatch) -> FakeSlackTransport:
+    """Install :class:`FakeSlackTransport` as the ``httpx`` boundary for slack_bot."""
+    fake = FakeSlackTransport()
+    monkeypatch.setattr(slack_bot.httpx, "post", fake.post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake.get)
+    return fake
+
+
+# ── Test-side fake config ─────────────────────────────────────────────
+
+
+@dataclass
+class _FakeUserSettings:
+    """Mirror of ``UserSettings`` for ``_resolved_identities()``."""
+
+    user_identity_aliases: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _FakeConfig:
+    """Mirror of ``TeaTreeConfig`` for the backend-factory TOML fallback."""
+
+    raw: dict[str, Any] = field(default_factory=dict)
+    user: _FakeUserSettings = field(default_factory=_FakeUserSettings)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────
+
+
+def _own_loop(session_id: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Register ``session_id`` as the loop owner via the hook router's registry."""
+    import os  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    import hooks.scripts.hook_router as router  # noqa: PLC0415
+
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(router, "STATE_DIR", state)
+    registry_dir = tmp_path / "loop_registry"
+    registry_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(registry_dir))
+    router._write_loop_registry(
+        {
+            router._OWNER_LOOP: {
+                "session_id": session_id,
+                "agent_id": "test",
+                "pid": os.getpid(),
+                "heartbeat_ts": int(time.time()),
+            }
+        }
+    )
