@@ -68,9 +68,12 @@ _BOT_SCOPES = [
 # Scopes for the human user's OAuth token (``xoxp-…``). ``SlackBotBackend``
 # routes every outbound call (``chat.postMessage``, ``reactions.add`` /
 # ``reactions.get``) through this token for Slack-Connect externally-shared
-# channels (see ``SlackBotBackend._channel_token``) because those channels
-# reject the bot token with ``mcp_externally_shared_channel_restricted`` —
-# hence ``chat:write`` (posting) plus ``reactions:read`` / ``reactions:write``.
+# channels — and for any channel whose Connect membership cannot be
+# confirmed, where writes/reactions fail toward the user xoxp while reads
+# fail safe to the bot (see ``SlackBotBackend._channel_token``, #1110) —
+# because those channels reject the bot token with
+# ``mcp_externally_shared_channel_restricted`` — hence ``chat:write``
+# (posting) plus ``reactions:read`` / ``reactions:write``.
 # ``build_manifest`` must declare a ``user`` scopes section or a reinstall
 # never re-prompts for these grants and the xoxp token keeps whatever Slack
 # defaulted (empirically: no reaction scopes).
