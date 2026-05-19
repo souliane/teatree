@@ -66,13 +66,14 @@ _BOT_SCOPES = [
     "users:read.email",
 ]
 # Scopes for the human user's OAuth token (``xoxp-…``). ``SlackBotBackend``
-# routes ``reactions.add`` / ``reactions.get`` through this token (see
-# ``SlackBotBackend._reaction_token``) because Slack-Connect externally-shared
-# channels reject the bot token with
-# ``mcp_externally_shared_channel_restricted`` — hence ``reactions:read`` /
-# ``reactions:write``. ``build_manifest`` must declare a ``user`` scopes
-# section or a reinstall never re-prompts for the reaction grants and the
-# xoxp token keeps whatever Slack defaulted (empirically: no reaction scopes).
+# routes every outbound call (``chat.postMessage``, ``reactions.add`` /
+# ``reactions.get``) through this token for Slack-Connect externally-shared
+# channels (see ``SlackBotBackend._channel_token``) because those channels
+# reject the bot token with ``mcp_externally_shared_channel_restricted`` —
+# hence ``chat:write`` (posting) plus ``reactions:read`` / ``reactions:write``.
+# ``build_manifest`` must declare a ``user`` scopes section or a reinstall
+# never re-prompts for these grants and the xoxp token keeps whatever Slack
+# defaulted (empirically: no reaction scopes).
 # A manifest reinstall re-prompts OAuth consent for *exactly* this set and
 # drops any user scope not listed, so the set must be a SUPERSET that keeps
 # the capability the xoxp token is already relied on for: ``chat:write``
