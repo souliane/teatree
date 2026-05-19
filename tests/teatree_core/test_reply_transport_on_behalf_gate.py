@@ -14,12 +14,13 @@ draft-form actions: they BLOCK identically under ASK and DRAFT_OR_ASK.
 """
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode
-from teatree.core.models import IncomingEvent, OnBehalfApproval, ReplyDispatch
+from teatree.core.models import BotPing, IncomingEvent, OnBehalfApproval, ReplyDispatch
 from teatree.core.reply_transport import NoopReplier
 
 
@@ -109,6 +110,98 @@ class TestReplyTransportOnBehalfGate:
             idempotency_key="slack:gate-5:dm",
         )
         assert dispatch.status == ReplyDispatch.Status.SENT
+
+
+def _notify_backend() -> MagicMock:
+    backend = MagicMock()
+    backend.open_dm.return_value = "D-OPERATOR"
+    backend.post_message.return_value = {"ok": True, "ts": "1700000000.0001"}
+    backend.get_permalink.return_value = "https://slack.example/archives/D-OPERATOR/p1"
+    return backend
+
+
+@pytest.mark.django_db
+class TestReplyTransportAfterReceiptDm:
+    """#949: a SENT on-behalf reply fires one after-receipt DM; post_dm does not."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(
+            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "immediate"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        self.monkeypatch = monkeypatch
+
+    def _event(self, key: str) -> IncomingEvent:
+        return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
+
+    def test_on_behalf_reply_emits_after_receipt_dm_on_sent(self) -> None:
+        backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
+        event = self._event("slack:ar-1")
+        dispatch = NoopReplier().post_in_thread(
+            event=event,
+            target_ref="C-eng",
+            thread_ref="t1",
+            body="hello team",
+            idempotency_key="slack:ar-1:reply",
+        )
+        assert dispatch.status == ReplyDispatch.Status.SENT
+        ping = BotPing.objects.get(idempotency_key="on_behalf_post:C-eng/t1:post_in_thread")
+        assert ping.status == BotPing.Status.SENT
+        assert "hello team" in ping.text
+
+    def test_post_dm_action_does_not_emit_after_receipt_dm(self) -> None:
+        """Scope guard: bot→user DM is internal — never an after-receipt post."""
+        backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
+        event = self._event("slack:ar-2")
+        dispatch = NoopReplier().post_dm(
+            event=event,
+            actor="souliane",
+            body="your loop needs attention",
+            idempotency_key="slack:ar-2:dm",
+        )
+        assert dispatch.status == ReplyDispatch.Status.SENT
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
+
+    def test_redeliver_emits_after_receipt_dm_for_on_behalf_action(self) -> None:
+        """The retry-sweep path (`redeliver`) also fires the after-receipt DM."""
+        backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
+        event = self._event("slack:ar-3")
+        dispatch = ReplyDispatch.objects.create(
+            event=event,
+            target_ref="C-eng/t9",
+            action_name="post_comment",
+            status=ReplyDispatch.Status.FAILED,
+            body="retry body",
+            idempotency_key="slack:ar-3:reply",
+        )
+        NoopReplier().redeliver(dispatch)
+
+        ping = BotPing.objects.get(idempotency_key="on_behalf_post:C-eng/t9:post_comment")
+        assert ping.status == BotPing.Status.SENT
+        assert "retry body" in ping.text
+
+    def test_redeliver_post_dm_does_not_emit_after_receipt_dm(self) -> None:
+        """Scope guard on the retry path: a redelivered post_dm stays internal."""
+        backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
+        event = self._event("slack:ar-4")
+        dispatch = ReplyDispatch.objects.create(
+            event=event,
+            target_ref="souliane",
+            action_name="post_dm",
+            status=ReplyDispatch.Status.FAILED,
+            body="bot to user",
+            idempotency_key="slack:ar-4:dm",
+        )
+        NoopReplier().redeliver(dispatch)
+
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
 
 
 # Standalone django_db functions must be grouped in a TestCase (#98); this

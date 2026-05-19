@@ -26,12 +26,14 @@ from django.db import IntegrityError, transaction
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.slack_mrkdwn import normalize_slack_message
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
     from teatree.backends.gitlab_api import GitLabAPI
     from teatree.backends.slack_bot import SlackBotBackend
+    from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
@@ -191,10 +193,22 @@ class _BaseReplier:
             # `_deliver` (e.g. a create-vs-create race) does not poison
             # the outer transaction and the FAILED finalize can still run.
             with transaction.atomic():
-                self._deliver(spec)
+                posted_ref = self._deliver(spec)
         except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
             logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
             return self._finalize(dispatch, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
+        if spec.action_name in self._ON_BEHALF_ACTIONS:
+            # #949: after-receipt visibility DM. Fires only for the same
+            # colleague-visible actions the pre-gate scopes (post_dm /
+            # internal writes excluded). Never raises, never rolls back —
+            # the SENT finalize below is unreachable until it returns.
+            notify_user_on_behalf_post(
+                target=spec.target_ref,
+                action=spec.action_name,
+                destination=spec.target_ref,
+                artifact_url=posted_ref or spec.target_ref,
+                summary=spec.body,
+            )
         return self._finalize(dispatch, status=ReplyDispatch.Status.SENT)
 
     @staticmethod
@@ -224,7 +238,7 @@ class _BaseReplier:
         """
         if dispatch.action_name in self._ON_BEHALF_ACTIONS:
             require_on_behalf_approval(target=dispatch.target_ref, action=dispatch.action_name)
-        self._deliver(
+        posted_ref = self._deliver(
             ReplySpec(
                 event=dispatch.event,
                 target_ref=dispatch.target_ref,
@@ -233,8 +247,23 @@ class _BaseReplier:
                 action_name=dispatch.action_name,
             ),
         )
+        if dispatch.action_name in self._ON_BEHALF_ACTIONS:
+            notify_user_on_behalf_post(
+                target=dispatch.target_ref,
+                action=dispatch.action_name,
+                destination=dispatch.target_ref,
+                artifact_url=posted_ref or dispatch.target_ref,
+                summary=dispatch.body,
+            )
 
-    def _deliver(self, spec: ReplySpec) -> None:
+    def _deliver(self, spec: ReplySpec) -> str:
+        """Perform the platform post; return the posted artifact URL/ref.
+
+        Returns ``""`` when the subclass cannot cheaply derive a URL —
+        the caller falls back to ``spec.target_ref`` for the #949
+        after-receipt DM. Raises on delivery failure (the base records
+        a FAILED dispatch).
+        """
         raise NotImplementedError
 
 
@@ -245,8 +274,9 @@ class NoopReplier(_BaseReplier):
     backend for the event's source.
     """
 
-    def _deliver(self, spec: ReplySpec) -> None:
+    def _deliver(self, spec: ReplySpec) -> str:
         logger.debug("%s swallowing %d-char body for %s", type(self).__name__, len(spec.body), spec.target_ref)
+        return ""
 
 
 class SlackReplier(_BaseReplier):
@@ -255,7 +285,7 @@ class SlackReplier(_BaseReplier):
     def __init__(self, *, bot: "SlackBotBackend") -> None:
         self._bot = bot
 
-    def _deliver(self, spec: ReplySpec) -> None:
+    def _deliver(self, spec: ReplySpec) -> str:
         # post_dm carries the recipient in spec.target_ref (the explicit
         # `actor` arg), which may differ from event.actor — e.g. escalating
         # to a lead. Thread/comment replies always go back to the
@@ -268,12 +298,29 @@ class SlackReplier(_BaseReplier):
                 msg = f"could not open DM with {spec.target_ref}"
                 raise RuntimeError(msg)
             self._bot.post_message(channel=channel, text=normalized, thread_ts="")
-            return
-        self._bot.post_message(
+            return ""
+        response = self._bot.post_message(
             channel=spec.event.channel_ref,
             text=normalized,
             thread_ts=spec.event.thread_ref,
         )
+        return self._posted_permalink(channel=spec.event.channel_ref, response=response)
+
+    def _posted_permalink(self, *, channel: str, response: "RawAPIDict") -> str:
+        """Best-effort Slack permalink for the just-posted message.
+
+        ``get_permalink`` is known to raise; on any failure (or a missing
+        ``ts``) fall back to a channel deep-link. Never raises — the
+        after-receipt DM tolerates an empty ref and falls back to the
+        audit target.
+        """
+        ts = str(response.get("ts", ""))
+        if not ts:
+            return f"slack://channel?id={channel}"
+        try:
+            return self._bot.get_permalink(channel=channel, ts=ts)
+        except Exception:  # noqa: BLE001 — permalink lookup is best-effort
+            return f"slack://channel?id={channel}"
 
 
 class GitLabReplier(_BaseReplier):
@@ -282,7 +329,7 @@ class GitLabReplier(_BaseReplier):
     def __init__(self, *, client: "GitLabAPI") -> None:
         self._client = client
 
-    def _deliver(self, spec: ReplySpec) -> None:
+    def _deliver(self, spec: ReplySpec) -> str:
         project = self._client.resolve_project(spec.event.channel_ref)
         if project is None:
             msg = f"could not resolve GitLab project {spec.event.channel_ref}"
@@ -291,10 +338,17 @@ class GitLabReplier(_BaseReplier):
         if not raw_iid.isdigit():
             msg = f"GitLab MR iid is not numeric: {spec.event.thread_ref!r}"
             raise RuntimeError(msg)
-        self._client.post_json(
+        result = self._client.post_json(
             f"projects/{project.project_id}/merge_requests/{int(raw_iid)}/notes",
             {"body": spec.body},
         )
+        if isinstance(result, dict):
+            web_url = result.get("web_url") or result.get("html_url")
+            if web_url:
+                return str(web_url)
+        # No note URL in the response → the canonical MR ref still names
+        # where the note landed.
+        return f"{spec.event.channel_ref}!{int(raw_iid)}"
 
 
 class GitHubReplier(_BaseReplier):
@@ -303,16 +357,20 @@ class GitHubReplier(_BaseReplier):
     def __init__(self, *, host: "GitHubCodeHost") -> None:
         self._host = host
 
-    def _deliver(self, spec: ReplySpec) -> None:
+    def _deliver(self, spec: ReplySpec) -> str:
         raw_iid = spec.event.thread_ref.strip()
         if not raw_iid.isdigit():
             msg = f"GitHub PR number is not numeric: {spec.event.thread_ref!r}"
             raise RuntimeError(msg)
-        self._host.post_pr_comment(
+        result = self._host.post_pr_comment(
             repo=spec.event.channel_ref,
             pr_iid=int(raw_iid),
             body=spec.body,
         )
+        web_url = result.get("html_url") or result.get("web_url")
+        if web_url:
+            return str(web_url)
+        return f"{spec.event.channel_ref}#{int(raw_iid)}"
 
 
 def replier_for(
