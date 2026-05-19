@@ -60,6 +60,20 @@ class TicketExtra(TypedDict, total=False):
     tracker_404: bool
     more_prs_coming: bool
     e2e_recipe: "E2ERecipeSerialized"
+    # #940 branch-currency gate state: post-merge SHA the cold reviewer
+    # must attest, and a durable refusal entry when the ship-time
+    # defense-in-depth re-check rejects the push.
+    target_branch: str
+    branch_currency_post_merge_sha: str
+    ship_branch_currency_blocker: "BranchCurrencyBlocker"
+
+
+class BranchCurrencyBlocker(TypedDict, total=False):
+    """Durable record of a `ship` defense-in-depth currency refusal (#940)."""
+
+    branch: str
+    target: str
+    behind: int
 
 
 class E2ERepoEntrySerialized(TypedDict, total=False):
