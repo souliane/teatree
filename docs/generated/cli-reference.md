@@ -1703,6 +1703,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ ticket        Ticket state management.                                       │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
+│ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3652,5 +3653,57 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree pending_chat`
+
+```
+Usage: t3 teatree pending_chat [OPTIONS] COMMAND [ARGS]...
+
+ Manage the inbound Slack-DM queue (#1063).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list           List inbound rows from the last hour (or --all).              │
+│ mark-answered  Stamp ``answered_at`` on rows matching a Slack ts.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat list`
+
+```
+Usage: t3 teatree pending_chat list [OPTIONS]
+
+ List inbound Slack-DM rows; the last hour by default.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all     --recent      Include rows older than 1h; default is last hour     │
+│                         only.                                                │
+│                         [default: recent]                                    │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat mark-answered`
+
+```
+Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
+
+ Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+
+ Idempotent: zero rows is a successful no-op (the second call
+ sees the row already stamped). Empty ``slack_ts`` is rejected.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    slack_ts      TEXT  The Slack ts of the question being answered.        │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Scope the stamp to one overlay (default: empty / v1   │
+│                        single-overlay).                                      │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

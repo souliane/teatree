@@ -3267,6 +3267,81 @@ def handle_inject_pending_chat(data: dict) -> None:
     print("\n".join([header, *drained]))  # noqa: T201
 
 
+# ── Stop: enforce-answered-questions gate (#1063) ───────────────────
+#
+# ``consumed_at`` proves the agent *read* the row into ``additionalContext``;
+# it does NOT prove the agent *replied*. Empirically (2026-05-19) the
+# drain mechanism worked perfectly for 6 hours while ~22 of 25 user
+# questions sat silently ignored — the agent treated the drained content
+# as background and continued executing its loop directive. This Stop
+# hook is the structural fix: it queries the model's
+# ``unanswered_questions_since(1h)`` and emits a prominent
+# ``additionalContext`` BLOCKING REMINDER listing each unanswered
+# question. The user might genuinely be done, so we deliberately soft-
+# block via ``additionalContext`` rather than hard-blocking via
+# ``decision: block``.
+#
+# Hook contract: must be crash-proof (#810 — a Stop hook must NEVER raise
+# to the session). A broad boundary guard contains any unexpected error
+# to a stderr line and a clean ``None``.
+
+_ANSWERED_GATE_WINDOW_HOURS = 1
+
+
+def handle_enforce_answered_questions(data: dict) -> bool | None:
+    """Emit a BLOCKING REMINDER for user questions still unanswered (#1063).
+
+    Returns ``None`` always — never hard-blocks (the user may have
+    genuinely typed "ok thanks" and meant for the turn to end). The
+    nag is in ``additionalContext`` so it lands in the NEXT turn's
+    system context, deterministically visible.
+    """
+    try:
+        return _enforce_answered_questions(data)
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] enforce-answered-questions skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _enforce_answered_questions(data: dict) -> bool | None:
+    if data.get("stop_hook_active"):
+        return None
+    if not _bootstrap_teatree_django():
+        return None
+    try:
+        from datetime import timedelta  # noqa: PLC0415
+
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — fail open: nag re-tries next turn
+        return None
+    try:
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=_ANSWERED_GATE_WINDOW_HOURS))
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    bullets = [f"  - ts={row.slack_ts}: {row.text.strip()}" for row in rows]
+    body = (
+        f"BLOCKING REMINDER — {len(rows)} user question(s) from the last hour are unanswered. "
+        "The Slack-DM drain stamped consumed_at but you have not replied. "
+        "The turn cannot end cleanly until each question is answered (post via "
+        "`notify_user(..., kind=NotifyKind.ANSWER, idempotency_key='answer-<short>-<ts>')` "
+        "or `t3 teatree pending_chat mark-answered <ts>`).\n"
+        "Unanswered:\n" + "\n".join(bullets)
+    )
+    json.dump({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}}, sys.stdout)
+    # Return True to break the Stop chain — we want the additionalContext
+    # nag delivered intact, and we want to preempt any subsequent handler
+    # (notably loop_self_pump) that would also write to stdout and either
+    # corrupt the JSON or override our soft-block with a hard-block
+    # continuation directive. Soft-block intent is preserved by emitting
+    # only ``additionalContext``, never ``decision: block``.
+    return True
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -3304,7 +3379,7 @@ _HANDLERS: dict[str, list] = {
     # hookSpecificOutput entry for it and discards its output. Recovery
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
-    "Stop": [handle_enforce_structured_question, handle_loop_self_pump],
+    "Stop": [handle_enforce_structured_question, handle_enforce_answered_questions, handle_loop_self_pump],
 }
 
 
