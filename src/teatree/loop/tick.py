@@ -22,6 +22,7 @@ from teatree.loop.rendering import zones_for
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AssignedIssuesScanner,
+    GitLabApprovalsScanner,
     IncomingEventsScanner,
     MyPrsScanner,
     NotionViewScanner,
@@ -94,6 +95,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     """
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
+    gitlab_approvals_enabled = _gitlab_approvals_enabled()
     for code_host in backend.hosts:
         jobs.extend(
             [
@@ -144,7 +146,29 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                 ),
             )
             ticket_completion_emitted = True
+        if gitlab_approvals_enabled:
+            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
+            # (#936). Off by default — opt-in via the env flag so deployments
+            # that already wire the GitLab webhook do not double-emit.
+            jobs.append(
+                _ScannerJob(
+                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
+                    overlay=tag,
+                ),
+            )
     return jobs
+
+
+def _gitlab_approvals_enabled() -> bool:
+    """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
+
+    Default off — the scanner is poll-driven and overlaps with the webhook
+    path; deployments that already wire ``/hooks/gitlab/`` do not need it.
+    Returns True for any truthy value (``1``, ``true``, ``yes``,
+    case-insensitive); anything else (unset, ``0``, ``false``) is off.
+    """
+    raw = os.environ.get("TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
