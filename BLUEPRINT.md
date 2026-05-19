@@ -161,7 +161,9 @@ src/teatree/
   loop/                 # /loop topology (see §5.6)
     tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
-    rendering.py        # Classify dispatched actions per overlay; render anchor / action / in-flight rows. Ready zone inlines `(!iid)` after each ticket whose parent MR is known.
+    rendering.py        # Thin orchestrator: zones_for() + availability anchor. Delegates to rendering_classification / rendering_zones; re-exports the public names (#1058).
+    rendering_classification.py  # Signal → typed ref, per-overlay bucketing, cross-scanner dedup (_classify_actions, _ClassifiedActions)
+    rendering_zones.py  # Per-zone line builders: anchor / action / in-flight rows (_populate_overlay_zones, _render_action_line, _render_pr_group). Ready zone inlines `(!iid)` after each ticket whose parent MR is known.
     pr_ticket_index.py  # Build mr_url → parent_ticket_number index (PullRequest FK + Closes/Fixes regex)
     statusline.py       # Statusline composition (zones, formatters) and file write
     scanners/           # Pure-Python signal collectors — one file each
