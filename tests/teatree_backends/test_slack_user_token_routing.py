@@ -51,6 +51,24 @@ def _capturing_get(captured: list[dict[str, object]]) -> object:
     return fake_get
 
 
+def _internal_channel_get(url: str, **kwargs: object) -> httpx.Response:
+    """Stub ``conversations.info`` as a non-Connect (internal) channel.
+
+    Keeps the post/reply token-routing tests hermetic: without this the
+    ``_channel_token`` → ``_is_ext_shared`` → ``_get`` path escapes to a
+    real ``slack.com`` GET. ``is_ext_shared: False`` keeps routing on the
+    bot token so the ``Bearer xoxb-bot`` assertions hold (the file's
+    ``_capturing_get`` forces ``True`` for the Connect-channel reaction
+    tests and would flip the asserted token here).
+    """
+    assert url.endswith("/conversations.info")
+    return httpx.Response(
+        200,
+        json={"ok": True, "channel": {"is_ext_shared": False}},
+        request=httpx.Request("GET", url),
+    )
+
+
 class TestReactRoutesThroughUserToken:
     """``react`` uses the user token on Slack-Connect channels (#1072)."""
 
@@ -120,6 +138,8 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
         captured: list[dict[str, object]] = []
         monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
 
+        monkeypatch.setattr(slack_bot.httpx, "get", _internal_channel_get)
+
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel="C", text="hi")
 
@@ -130,6 +150,8 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
     def test_post_reply_uses_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
         monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+
+        monkeypatch.setattr(slack_bot.httpx, "get", _internal_channel_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_reply(channel="C", ts="1.0", text="hi")
