@@ -7,7 +7,9 @@ acknowledges with a ``:white_check_mark:`` reaction.
 
 The walkthrough never writes a token to disk in plaintext; tokens always go
 through ``pass``. Re-running with ``--reset`` rotates both tokens without
-re-prompting for the manifest URL.
+re-prompting for the manifest URL — it does **not** apply a manifest scope
+change. A scope change (e.g. granting the xoxp user token ``reactions:write``)
+requires the full non-``--reset`` reinstall so Slack re-prompts OAuth consent.
 """
 
 import json
@@ -43,6 +45,19 @@ _BOT_SCOPES = [
     "users:read",
     "users:read.email",
 ]
+# Scopes for the human user's OAuth token (``xoxp-…``). The xoxp token is the
+# only credential ``SlackBotBackend`` routes ``reactions.add`` / ``reactions.get``
+# through (see ``SlackBotBackend._reaction_token``) because Slack-Connect
+# externally-shared channels reject the bot token with
+# ``mcp_externally_shared_channel_restricted``. ``build_manifest`` must declare a
+# ``user`` scopes section or a reinstall never re-prompts for these grants and
+# the xoxp token keeps whatever Slack defaulted (no reaction scopes). Reactions
+# are the only Web API surface the user token authorises, so this list is exactly
+# the two scopes the code calls with it — no broader than the proven usage.
+_USER_SCOPES = [
+    "reactions:read",
+    "reactions:write",
+]
 _BOT_EVENTS = ["app_mention", "message.im"]
 
 _SMOKE_TEST_TIMEOUT_SECONDS = 120
@@ -74,7 +89,7 @@ def build_manifest(*, overlay_name: str, display_name: str = "") -> SlackManifes
             },
             "bot_user": {"display_name": name, "always_online": True},
         },
-        "oauth_config": {"scopes": {"bot": _BOT_SCOPES}},
+        "oauth_config": {"scopes": {"bot": _BOT_SCOPES, "user": _USER_SCOPES}},
         "settings": {
             "event_subscriptions": {"bot_events": _BOT_EVENTS},
             "interactivity": {"is_enabled": False},
@@ -229,8 +244,14 @@ def slack_bot_setup(
         typer.echo("      → Copy the Bot User OAuth Token (xoxb-…) from OAuth & Permissions")
         typer.echo("      → Generate an App-Level Token (xapp-…) from Basic Information")
         typer.echo('        (scope: connections:write, name: "teatree")')
+        typer.echo("      → On install, approve the User Token Scopes too (reactions:read,")
+        typer.echo("        reactions:write) — required for reactions in Slack-Connect channels")
     else:
-        typer.echo("Step 1/4 — Reset mode: skipping manifest.")
+        typer.echo("Step 1/4 — Reset mode: rotating tokens only (manifest skipped).")
+        typer.echo("      NOTE: --reset only rotates the existing tokens. A scope change")
+        typer.echo("      (e.g. adding reactions:write to the xoxp user token) does NOT take")
+        typer.echo("      effect via --reset — re-run without --reset and re-approve the")
+        typer.echo("      manifest in the browser so Slack re-prompts OAuth consent.")
 
     typer.echo("Step 2/4 — Paste the bot token (`xoxb-…`) and app-level token (`xapp-…`).")
     bot_token = _prompt_token("bot token", _BOT_TOKEN_RE)
