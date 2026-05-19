@@ -45,18 +45,25 @@ _BOT_SCOPES = [
     "users:read",
     "users:read.email",
 ]
-# Scopes for the human user's OAuth token (``xoxp-…``). The xoxp token is the
-# only credential ``SlackBotBackend`` routes ``reactions.add`` / ``reactions.get``
-# through (see ``SlackBotBackend._reaction_token``) because Slack-Connect
-# externally-shared channels reject the bot token with
-# ``mcp_externally_shared_channel_restricted``. ``build_manifest`` must declare a
-# ``user`` scopes section or a reinstall never re-prompts for these grants and
-# the xoxp token keeps whatever Slack defaulted (no reaction scopes). Reactions
-# are the only Web API surface the user token authorises, so this list is exactly
-# the two scopes the code calls with it — no broader than the proven usage.
+# Scopes for the human user's OAuth token (``xoxp-…``). ``SlackBotBackend``
+# routes ``reactions.add`` / ``reactions.get`` through this token (see
+# ``SlackBotBackend._reaction_token``) because Slack-Connect externally-shared
+# channels reject the bot token with
+# ``mcp_externally_shared_channel_restricted`` — hence ``reactions:read`` /
+# ``reactions:write``. ``build_manifest`` must declare a ``user`` scopes
+# section or a reinstall never re-prompts for the reaction grants and the
+# xoxp token keeps whatever Slack defaulted (empirically: no reaction scopes).
+# A manifest reinstall re-prompts OAuth consent for *exactly* this set and
+# drops any user scope not listed, so the set must be a SUPERSET that keeps
+# the capability the xoxp token is already relied on for: ``chat:write``
+# (posting into Slack-Connect channels under the user's identity) and
+# ``users:read`` (handle/id resolution). Listing only the two reaction
+# scopes would silently revoke those on reinstall.
 _USER_SCOPES = [
+    "chat:write",
     "reactions:read",
     "reactions:write",
+    "users:read",
 ]
 _BOT_EVENTS = ["app_mention", "message.im"]
 
@@ -245,7 +252,8 @@ def slack_bot_setup(
         typer.echo("      → Generate an App-Level Token (xapp-…) from Basic Information")
         typer.echo('        (scope: connections:write, name: "teatree")')
         typer.echo("      → On install, approve the User Token Scopes too (reactions:read,")
-        typer.echo("        reactions:write) — required for reactions in Slack-Connect channels")
+        typer.echo("        reactions:write, chat:write, users:read) — required for reactions")
+        typer.echo("        and posting in Slack-Connect channels under your identity")
     else:
         typer.echo("Step 1/4 — Reset mode: rotating tokens only (manifest skipped).")
         typer.echo("      NOTE: --reset only rotates the existing tokens. A scope change")

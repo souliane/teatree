@@ -113,6 +113,20 @@ class TestBuildManifest:
         assert "reactions:write" in user_scopes
         assert "reactions:read" in user_scopes
 
+    def test_user_scopes_keep_existing_capability_on_reinstall(self) -> None:
+        """A reinstall re-consents to exactly the manifest ``user`` set.
+
+        Slack drops any user scope not listed, so the set must be a superset
+        that preserves the capability the xoxp token is already relied on:
+        ``chat:write`` (posting in Slack-Connect channels under the user's
+        identity) and ``users:read`` (handle/id resolution). Listing only the
+        two reaction scopes would silently revoke those on reinstall.
+        """
+        manifest = build_manifest(overlay_name="acme")
+        user_scopes = manifest["oauth_config"]["scopes"]["user"]
+        for required in ("reactions:read", "reactions:write", "chat:write", "users:read"):
+            assert required in user_scopes
+
     def test_bot_scopes_still_present_alongside_user_scopes(self) -> None:
         manifest = build_manifest(overlay_name="acme")
         scopes = manifest["oauth_config"]["scopes"]
