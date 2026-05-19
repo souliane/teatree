@@ -267,6 +267,16 @@ class SlackBotBackend:
             self._cached_bot_id = str(data.get("user_id", "")) if data.get("ok") else ""
         return self._cached_bot_id
 
+    def auth_test(self) -> RawAPIDict:
+        """Return the raw ``auth.test`` response (``{}`` when no bot token).
+
+        A connector preflight calls this to assert the bot token is live
+        and correctly scoped before the loop proceeds — a hard-fail gate
+        rather than discovering ``missing_scope`` mid-tick via a phantom
+        ``post_message`` success.
+        """
+        return self._post("auth.test", {})
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:

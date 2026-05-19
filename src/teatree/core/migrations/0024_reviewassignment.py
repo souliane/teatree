@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0021_outbound_claim"),
+        ("core", "0023_looplease_session_owner"),
     ]
 
     operations = [
@@ -25,8 +25,6 @@ class Migration(migrations.Migration):
                         choices=[
                             ("pending", "Pending"),
                             ("eyes_added", "Eyes Added"),
-                            ("assigned", "Assigned"),
-                            ("reviewed", "Reviewed"),
                             ("approved", "Approved"),
                         ],
                         default="pending",
@@ -35,7 +33,6 @@ class Migration(migrations.Migration):
                 ),
                 ("trigger", models.CharField(default="", max_length=16)),
                 ("observed_at", models.DateTimeField(default=django.utils.timezone.now)),
-                ("assigned_at", models.DateTimeField(blank=True, null=True)),
                 ("approved_at", models.DateTimeField(blank=True, null=True)),
             ],
             options={

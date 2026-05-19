@@ -43,18 +43,17 @@ class ReviewAssignment(models.Model):
     """One user-intent-to-review record for a specific MR seen in Slack.
 
     The lifecycle is monotonic ``pending`` → ``eyes_added`` (optional, only
-    when the scanner is the one adding the ack reaction) → ``assigned``
-    (after the reviewer pipeline has been dispatched) → ``reviewed`` →
-    ``approved``. Each transition stamps the matching timestamp so audit
-    questions ("when did t3 first see this MR?", "was it the user who
-    reacted or t3 acking a mention?") have an answer.
+    when the scanner is the one adding the ack reaction) → ``approved``
+    (when the MR lands an approve transition). ``approved`` is reachable
+    from any non-approved state — the user may approve without the scanner
+    ever having posted ``:eyes:``. Each transition stamps the matching
+    timestamp so audit questions ("when did t3 first see this MR?", "was
+    it the user who reacted or t3 acking a mention?") have an answer.
     """
 
     class State(models.TextChoices):
         PENDING = "pending"
         EYES_ADDED = "eyes_added"
-        ASSIGNED = "assigned"
-        REVIEWED = "reviewed"
         APPROVED = "approved"
 
     class Trigger(models.TextChoices):
@@ -69,7 +68,6 @@ class ReviewAssignment(models.Model):
     state = models.CharField(max_length=16, choices=State.choices, default=State.PENDING)
     trigger = models.CharField(max_length=16, default="")
     observed_at = models.DateTimeField(default=timezone.now)
-    assigned_at = models.DateTimeField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -117,18 +115,6 @@ class ReviewAssignment(models.Model):
         updated = type(self).objects.filter(pk=self.pk, state=self.State.PENDING).update(state=self.State.EYES_ADDED)
         if updated:
             self.refresh_from_db(fields=["state"])
-        return bool(updated)
-
-    def mark_assigned(self) -> bool:
-        """Mark this row as ``assigned`` after the reviewer pipeline was dispatched."""
-        prior_states = (self.State.PENDING, self.State.EYES_ADDED)
-        updated = (
-            type(self)
-            .objects.filter(pk=self.pk, state__in=prior_states)
-            .update(state=self.State.ASSIGNED, assigned_at=timezone.now())
-        )
-        if updated:
-            self.refresh_from_db(fields=["state", "assigned_at"])
         return bool(updated)
 
     def mark_approved(self) -> bool:

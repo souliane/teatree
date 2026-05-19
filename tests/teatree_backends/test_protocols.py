@@ -133,6 +133,9 @@ class _FakeMessaging:
         _ = handle
         return ""
 
+    def auth_test(self) -> dict[str, object]:
+        return {}
+
 
 def test_ci_service_protocol_is_structural() -> None:
     assert isinstance(_FakeCIService(), CIService)

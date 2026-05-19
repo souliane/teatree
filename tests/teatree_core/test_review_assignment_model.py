@@ -76,26 +76,9 @@ class TestStateTransitions:
         row.mark_eyes_added()
         assert row.mark_eyes_added() is False
 
-    def test_mark_assigned_from_pending(self) -> None:
-        row = self._row()
-        assert row.mark_assigned() is True
-        assert row.state == ReviewAssignment.State.ASSIGNED
-        assert row.assigned_at is not None
-
-    def test_mark_assigned_from_eyes_added(self) -> None:
-        row = self._row()
-        row.mark_eyes_added()
-        assert row.mark_assigned() is True
-        assert row.state == ReviewAssignment.State.ASSIGNED
-
-    def test_mark_assigned_is_no_op_when_already_assigned(self) -> None:
-        row = self._row()
-        row.mark_assigned()
-        assert row.mark_assigned() is False
-
     def test_mark_approved_stamps_timestamp(self) -> None:
         row = self._row()
-        row.mark_assigned()
+        row.mark_eyes_added()
         assert row.mark_approved() is True
         assert row.state == ReviewAssignment.State.APPROVED
         assert row.approved_at is not None

@@ -172,3 +172,5 @@ class MessagingBackend(Protocol):
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def auth_test(self) -> RawAPIDict: ...  # pragma: no branch
