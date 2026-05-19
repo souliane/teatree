@@ -13,7 +13,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0023_looplease_session_owner"),
+        ("core", "0025_rename_outboundclaim_indexes"),
     ]
 
     operations = [

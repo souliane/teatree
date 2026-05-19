@@ -91,10 +91,18 @@ class MyPrsScanner:
     scanner falls back to ``host.current_user()`` so legacy single-identity
     setups behave unchanged. PRs surfaced under multiple aliases are
     deduped by ``url`` (#976).
+
+    ``allowed_url_prefixes`` gates emission to PRs whose URL starts with
+    one of the listed prefixes. A scanner registered for an overlay should
+    pass its workspace-repo URL prefixes here so PRs from sibling overlays
+    sharing the same code-host token don't bleed into this overlay's
+    statusline zone (#1015). Empty tuple keeps the legacy "emit all"
+    behaviour for callers that scan a single global account.
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
+    allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -105,6 +113,8 @@ class MyPrsScanner:
         signals: list[ScanSignal] = []
         for pr in prs:
             url = _str_field(pr, "web_url", "html_url")
+            if not self._url_allowed(url):
+                continue
             title = _str_field(pr, "title")
             iid = _int_field(pr, "iid", "number")
             status = _pipeline_status(pr)
@@ -142,6 +152,21 @@ class MyPrsScanner:
                 )
             )
         return signals
+
+    def _url_allowed(self, url: str) -> bool:
+        """Drop a PR whose URL is outside the overlay's repo prefixes (#1015).
+
+        When ``allowed_url_prefixes`` is empty the scanner is single-overlay
+        (or legacy multi-overlay) and emits every PR it sees. When non-empty,
+        only URLs that start with one of the prefixes survive — sibling MRs
+        from another overlay's repos are dropped at the scanner boundary so
+        they never reach the per-overlay statusline zone.
+        """
+        if not self.allowed_url_prefixes:
+            return True
+        if not url:
+            return False
+        return any(url.startswith(prefix) for prefix in self.allowed_url_prefixes)
 
     def _resolve_identities(self) -> tuple[str, ...]:
         # Multi-identity wins: caller supplied an explicit alias set, use it

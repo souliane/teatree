@@ -37,6 +37,11 @@ _AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
     "reviewer_pr.approval_dismissed": "t3:reviewer",
+    # #1047: a Slack reaction/mention on an MR-bearing message routes to the
+    # reviewer pipeline. The maker/checker boundary (BLUEPRINT §17.8) is
+    # preserved because the reviewer agent runs as a separate dispatch from
+    # whatever produced the Slack message.
+    "slack.review_intent": "t3:reviewer",
     "pending_task": "t3:orchestrator",
 }
 
@@ -46,6 +51,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "my_pr.open": "in_flight",
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
+    "slack.review_intent": "action_needed",
     "assigned_issue.ready": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
@@ -107,7 +113,14 @@ def _task_pr_url(signal: ScanSignal) -> str:
 # Reviewer signals dispatch to the agent AND mirror into the statusline so
 # the user sees the pending review before the agent acts.
 _DUAL_DISPATCH: frozenset[str] = frozenset(
-    {"reviewer_pr.new_sha", "reviewer_pr.unreviewed", "reviewer_pr.approval_dismissed"},
+    {
+        "reviewer_pr.new_sha",
+        "reviewer_pr.unreviewed",
+        "reviewer_pr.approval_dismissed",
+        # #1047: the reviewer agent runs AND we mirror into the statusline so
+        # the user sees the pending review-intent on a colleague's MR.
+        "slack.review_intent",
+    },
 )
 
 # Signal kind → (DispatchAction kind, zone) when the side-effect is a

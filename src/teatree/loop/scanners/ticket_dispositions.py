@@ -127,6 +127,14 @@ class TicketDispositionScanner:
     plumbing, not an actionable handoff. Reassigns crossing the alias
     boundary (alias → colleague, colleague → alias, or alias → mixed) still
     render normally.
+
+    ``identity_alias_groups`` is the multi-human shape (#1015): each inner
+    tuple is one human's aliases. Suppression fires when SOME group
+    contains ``old_owner`` AND every ``new_owner`` — i.e. one human swapped
+    between their own handles. Reassigns that cross group boundaries
+    (human A → human B) still surface. Groups take precedence over
+    ``user_identity_aliases``; when no groups are set, the flat list is
+    treated as one implicit group, preserving the pre-#1015 contract.
     """
 
     host: CodeHostBackend
@@ -134,6 +142,7 @@ class TicketDispositionScanner:
     ready_labels: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
     user_identity_aliases: tuple[str, ...] = field(default_factory=tuple)
+    identity_alias_groups: tuple[tuple[str, ...], ...] = field(default_factory=tuple)
     name: str = "ticket_dispositions"
 
     def scan(self) -> list[ScanSignal]:
@@ -209,10 +218,21 @@ class TicketDispositionScanner:
     def _is_self_handoff(self, old_owner: str, new_owners: tuple[str, ...]) -> bool:
         """True when *old_owner* and every *new_owners* entry are aliases of one human.
 
-        The set must be non-empty for the suppression to fire; an empty
-        alias list (the default) keeps the legacy behaviour unchanged.
+        Two configuration shapes feed this check. ``identity_alias_groups``
+        (#1015) is the multi-human shape: each inner tuple is one human's
+        aliases, and the reassignment is a self-handoff iff SOME group
+        contains both ``old_owner`` and every ``new_owners`` entry —
+        cross-group transitions (human A → human B) are kept.
+        ``user_identity_aliases`` (legacy flat list) is treated as one
+        implicit group when no explicit groups are configured.
+
+        Empty defaults preserve the pre-#975 behaviour: every reassign renders.
         """
-        aliases = frozenset(self.user_identity_aliases)
-        if not aliases:
+        groups: tuple[frozenset[str], ...]
+        if self.identity_alias_groups:
+            groups = tuple(frozenset(g) for g in self.identity_alias_groups if g)
+        elif self.user_identity_aliases:
+            groups = (frozenset(self.user_identity_aliases),)
+        else:
             return False
-        return old_owner in aliases and all(owner in aliases for owner in new_owners)
+        return any(old_owner in group and all(owner in group for owner in new_owners) for group in groups)

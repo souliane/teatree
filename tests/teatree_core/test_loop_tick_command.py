@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import os
+from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from teatree.core.management.commands.loop_tick import _report_to_dict
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickReport
+from teatree.types import RawAPIDict
 
 
 def _build_report(*, statusline_path: Path | None = None, errors: dict[str, str] | None = None) -> TickReport:
@@ -371,3 +373,135 @@ class TestLoopOwnerGate(TestCase):
             assert _loop_owner_ttl_seconds() == 60
         with patch.dict("os.environ", {}, clear=True):
             assert _loop_owner_ttl_seconds() == 1800
+
+
+_HIJACK_MR_URL = "https://gitlab.com/owner/repo/-/merge_requests/77"
+_HIJACK_USER = "U0OWNER"
+_HIJACK_CHANNEL = "C0HIJACK"
+_HIJACK_TS = "1779180558.111111"
+
+
+@dataclass
+class _ReactionSpyBackend:
+    """Real-shaped messaging backend whose message references an MR.
+
+    Module-level (not nested in the test) so the regression test stays
+    under the ``C901`` complexity ceiling — the backend is plain test
+    plumbing, the assertion logic is what the test is about.
+    """
+
+    user_id: str = _HIJACK_USER
+    react_calls: list[tuple[str, str, str]] = field(default_factory=list)
+
+    def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
+        _ = since
+        return []
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        return {"text": f"please review {_HIJACK_MR_URL}", "ts": ts, "channel": channel}
+
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        _ = channel, text, thread_ts
+        return {}
+
+    def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        _ = channel, ts, text
+        return {}
+
+    def open_dm(self, user_id: str) -> str:
+        _ = user_id
+        return ""
+
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        _ = channel, ts
+        return ""
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.react_calls.append((channel, ts, emoji))
+        return {"ok": True}
+
+    def resolve_user_id(self, handle: str) -> str:
+        _ = handle
+        return ""
+
+
+class TestNonOwnerDoesNotDrainReactionsOrDispatchReviewer(TestCase):
+    """#1047 + #1078 — the reaction-driven attack surface is owner-gated.
+
+    #1059 registers ``SlackReviewIntentScanner`` inside ``run_tick`` →
+    ``build_default_jobs``. That scanner drains ``slack-reactions.jsonl``
+    (atomic rename + unlink, destroying the file) and creates a
+    ``ReviewAssignment`` row that dispatches ``t3:reviewer``. #1078's
+    session-scoped ``loop-owner`` gate SKIPs a NON-OWNER session BEFORE
+    ``run_tick`` runs, so the scanner never executes for a foreign
+    session.
+
+    Anti-vacuity: this exercises the REAL path (no ``run_tick`` /
+    ``build_default_jobs`` mock). With ``loop_tick.py`` resolved to
+    main's gated ``handle()`` the JSONL survives untouched and no
+    ``ReviewAssignment`` row exists. If the merge had taken #1059's
+    ungated ``handle()``, ``run_tick`` would run the scanner, the JSONL
+    would be drained (file gone) and a row would be created — the two
+    asserts below would FAIL. Verified RED→GREEN by temporarily
+    reverting ``loop_tick.py`` to the PR's ungated ``handle()``.
+    """
+
+    def test_non_owner_does_not_drain_reactions_jsonl_nor_dispatch_reviewer(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.core.models.review_assignment import ReviewAssignment  # noqa: PLC0415
+
+        backend = _ReactionSpyBackend()
+        overlay_backends = [OverlayBackends(name="hijacked", messaging=backend)]
+
+        # A different session legitimately owns the loop.
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+
+        with tempfile.TemporaryDirectory() as d:
+            data_dir = Path(d) / "teatree"
+            data_dir.mkdir(parents=True)
+            reactions_jsonl = data_dir / "slack-reactions.jsonl"
+            reaction_event = {
+                "type": "reaction_added",
+                "user": _HIJACK_USER,
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": _HIJACK_CHANNEL, "ts": _HIJACK_TS},
+                "event_ts": _HIJACK_TS,
+            }
+            payload = json.dumps({"overlay": "hijacked", "event": reaction_event})
+            reactions_jsonl.write_text(payload + "\n", encoding="utf-8")
+
+            with (
+                patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session", "XDG_DATA_HOME": str(d)}),
+                patch(
+                    "teatree.core.backend_factory.iter_overlay_backends",
+                    return_value=overlay_backends,
+                ),
+            ):
+                call_command("loop_tick", stdout=StringIO())
+
+            # The non-owner SKIP fired before run_tick: the reactions
+            # queue was never drained (drain_reactions_queue renames +
+            # unlinks the file, so its survival proves the scanner never
+            # ran), and no ReviewAssignment row was created (no reviewer
+            # dispatched).
+            assert reactions_jsonl.is_file(), (
+                "non-owner session drained slack-reactions.jsonl — #1078 owner gate reverted "
+                "(the reaction-driven loop-hijack regressed)"
+            )
+            assert reactions_jsonl.read_text(encoding="utf-8") == payload + "\n"
+
+        assert ReviewAssignment.objects.count() == 0, (
+            "non-owner session created a ReviewAssignment (dispatched a reviewer) — #1078 owner gate reverted"
+        )
+        assert backend.react_calls == []
