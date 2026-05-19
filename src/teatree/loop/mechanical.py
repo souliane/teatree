@@ -7,6 +7,8 @@ Called by ``tick._execute_mechanical`` after dispatch, before statusline render.
 import logging
 from collections.abc import Callable
 
+from django_fsm import can_proceed
+
 from teatree.loop.dispatch import ActionPayload
 
 logger = logging.getLogger(__name__)
@@ -20,6 +22,13 @@ def ignore_disposed_ticket(payload: ActionPayload) -> None:
     if ticket_id is None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
+    # #1087: the disposition signal re-emits every tick while the ticket
+    # stays IGNORED (its PR keystone-merged, issue auto-closed). Driving
+    # ``ignore`` from ``ignored`` is not a valid FSM transition — guard so
+    # the already-satisfied desired state is a silent no-op, not every-tick
+    # ``TransitionNotAllowed`` noise.
+    if not can_proceed(ticket.ignore):
+        return
     ticket.ignore()
     ticket.save()
     logger.info("Auto-ignored ticket %s (reason: %s)", ticket_id, payload.get("reason", "?"))
@@ -57,6 +66,11 @@ def reopen_ticket(payload: ActionPayload) -> None:
     if ticket_id is None:
         return
     ticket = ticket_model.objects.get(pk=ticket_id)
+    # #1087: same re-emit hazard as ``ignore_disposed_ticket`` — a reopen
+    # signal that persists across ticks would drive ``reopen`` from the
+    # already-STARTED target state, raising every-tick ``TransitionNotAllowed``.
+    if not can_proceed(ticket.reopen):
+        return
     ticket.reopen()
     ticket.save()
     logger.info("Auto-reopened ticket %s (was %s, draft MRs detected)", ticket_id, payload.get("ticket_state", "?"))
