@@ -244,3 +244,169 @@ class TestStaleTicketsConciseAndLinked:
         line = zones.action_needed[0]
         text = line if isinstance(line, str) else line.text
         assert "\033]8;;https://example.com/issues/58" in text, repr(text)
+
+
+def _dm_action(
+    *,
+    ts: str,
+    text: str,
+    overlay: str = "teatree",
+    channel: str = "D123",
+    permalink: str = "",
+) -> DispatchAction:
+    """Mirror dispatch output for a ``slack.dm`` signal (#1050).
+
+    The ``slack_mentions`` scanner emits ``summary=f"DM {ts}: {text[:80]}"``
+    and ``payload={"ts": ts, "event": event}``; ``_run_job`` stamps
+    ``overlay`` onto the payload; the dispatcher mirrors the summary into
+    ``detail`` and routes ``zone="action_needed"``.
+    """
+    return DispatchAction(
+        kind="statusline",
+        zone="action_needed",
+        detail=f"DM {ts}: {text[:80]}",
+        payload={
+            "ts": ts,
+            "event": {"text": text, "ts": ts, "channel": channel},
+            "overlay": overlay,
+            "permalink": permalink,
+        },
+    )
+
+
+class TestInboundDmsCollapseToOneNeutralLine:
+    """Inbound DMs render as one dim line per overlay with permalinks only (#1050).
+
+    Before: each DM was a separate red line with the body pasted in
+    (``[ov] DM <ts>: <body>…``) — three sources of noise per overlay
+    (red color, repeated lines, repeated body text the user reads in
+    Slack natively). After: one ``[ov] DMs (N): <permalink1> · …`` line
+    in the dim/anchors palette per overlay; permalinks only, no body.
+    """
+
+    def test_multiple_dms_collapse_to_one_line_per_overlay(self) -> None:
+        actions = [
+            _dm_action(
+                ts="1779180869.828769",
+                text=":white_check_mark: Bridge fix shipped — full status",
+                permalink="https://slk.example/archives/D123/p1779180869828769",
+            ),
+            _dm_action(
+                ts="1779180852.373219",
+                text="you will use my reactions to the threads on the bot",
+                permalink="https://slk.example/archives/D123/p1779180852373219",
+            ),
+            _dm_action(
+                ts="1779180760.090199",
+                text="I see that you don't create the snapshots before compacting",
+                permalink="https://slk.example/archives/D123/p1779180760090199",
+            ),
+        ]
+        zones = zones_for(actions, colorize=False)
+        # Three DMs collapse to one line.
+        action_lines = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+        anchor_lines = [item if isinstance(item, str) else item.text for item in zones.anchors]
+        dm_lines = [t for t in anchor_lines + action_lines if "DM" in t]
+        assert len(dm_lines) == 1, repr({"anchors": anchor_lines, "action_needed": action_lines})
+        line = dm_lines[0]
+        assert "[teatree] DMs (3):" in line, repr(line)
+
+    def test_dm_line_contains_permalinks_not_body_text(self) -> None:
+        body = ":white_check_mark: Bridge fix shipped — full status_  (idempotency key `slack-d"
+        actions = [
+            _dm_action(
+                ts="1779180869.828769",
+                text=body,
+                permalink="https://slk.example/archives/D123/p1779180869828769",
+            ),
+        ]
+        zones = zones_for(actions, colorize=False)
+        blob = "".join(
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        )
+        # The Slack-message body must NOT appear in the statusline.
+        assert "Bridge fix shipped" not in blob, repr(blob)
+        assert "idempotency key" not in blob
+        assert "white_check_mark" not in blob
+        # The permalink must appear.
+        assert "https://slk.example/archives/D123/p1779180869828769" in blob
+
+    def test_dm_line_is_dim_not_red(self, tmp_path: Path) -> None:
+        r"""DMs land in the anchors zone (dim) — never in action_needed (red).
+
+        The anchors zone uses ``\033[38;5;244m`` (the same palette as
+        ``started:``/``tested:`` rows); ``action_needed`` uses
+        ``\033[1;31m`` (red). Routing DMs to anchors picks up the dim
+        color automatically through ``_ZONE_COLORS``.
+        """
+        actions = [
+            _dm_action(
+                ts="1779180869.828769",
+                text="any body",
+                permalink="https://slk.example/archives/D123/p1779180869828769",
+            ),
+        ]
+        zones = zones_for(actions, colorize=True)
+        # Render to file so we see the actual color escapes applied.
+        target = tmp_path / "statusline.txt"
+        render(zones, target=target, colorize=True)
+        content = target.read_text(encoding="utf-8")
+        dm_lines = [line for line in content.splitlines() if "DMs (" in line]
+        assert dm_lines, repr(content)
+        for line in dm_lines:
+            assert "\033[38;5;244m" in line, f"DM line missing dim color: {line!r}"
+            assert "\033[1;31m" not in line, f"DM line uses red color: {line!r}"
+
+    def test_dm_lines_split_per_overlay(self) -> None:
+        actions = [
+            _dm_action(ts="100.0", text="x", overlay="teatree", permalink="https://slk.example/x"),
+            _dm_action(ts="200.0", text="y", overlay="acme", permalink="https://slk.example/y"),
+            _dm_action(ts="201.0", text="z", overlay="acme", permalink="https://slk.example/z"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        all_items = [
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        ]
+        dm_lines = sorted(t for t in all_items if "DMs (" in t)
+        assert len(dm_lines) == 2, repr(dm_lines)
+        assert any(t.startswith("[acme] DMs (2):") for t in dm_lines), repr(dm_lines)
+        assert any(t.startswith("[teatree] DMs (1):") for t in dm_lines), repr(dm_lines)
+
+    def test_dm_permalinks_separated_by_middot(self) -> None:
+        actions = [
+            _dm_action(ts="100.0", text="a", permalink="https://slk.example/a"),
+            _dm_action(ts="200.0", text="b", permalink="https://slk.example/b"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        blob = "".join(
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        )
+        dm_line = next(line for line in blob.splitlines() if "DMs (" in line)
+        # Permalinks joined by " · " (same join character used elsewhere).
+        assert " · " in dm_line, repr(dm_line)
+
+    def test_dm_without_permalink_uses_ts_as_label(self) -> None:
+        """Fall back to the bare timestamp when ``get_permalink`` returned empty.
+
+        A Slack outage at scan time must not resurrect the old
+        red-multi-line rendering — the renderer still produces a
+        single dim DMs row using ``ts`` as label.
+        """
+        actions = [_dm_action(ts="1779180869.828769", text="x", permalink="")]
+        zones = zones_for(actions, colorize=False)
+        all_items = [
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        ]
+        dm_lines = [t for t in all_items if "DMs (" in t]
+        assert dm_lines, repr(all_items)
+        assert "[teatree] DMs (1):" in dm_lines[0], repr(dm_lines)
+        # Body text must still be absent even in the fallback form.
+        assert "x" not in dm_lines[0].split("DMs (1):")[1].split(" · ")[0].split()

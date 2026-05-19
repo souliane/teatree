@@ -13,6 +13,9 @@ from typing import Any
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.pr_ticket_index import build_ticket_index
+from teatree.loop.rendering_dms import DmRef as _DmRef
+from teatree.loop.rendering_dms import is_dm_action as _is_dm_action
+from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
 from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink, colorize_enabled, plain_link
 
 # DispatchAction payloads are `dict[str, Any]` by contract (see dispatch.py).
@@ -163,6 +166,7 @@ class _ClassifiedActions:
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     active_tickets: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
+    dms: dict[str, list[_DmRef]] = field(default_factory=dict)
     other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
 
 
@@ -255,6 +259,11 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
                 ),
             )
             continue
+        if _is_dm_action(action, payload):
+            ts = _str_field(payload, "ts")
+            permalink = _str_field(payload, "permalink")
+            c.dms.setdefault(overlay, []).append(_DmRef(ts=ts, permalink=permalink))
+            continue
         ref = _pr_ref(action)
         if ref is not None:
             bucket = c.action_prs if action.zone == "action_needed" else c.inflight_prs
@@ -304,6 +313,8 @@ def _dedup_classified(c: _ClassifiedActions) -> None:
         c.inflight_prs[overlay] = _dedup_in_order(refs)
     for overlay, reass in list(c.reassign_refs.items()):
         c.reassign_refs[overlay] = _dedup_in_order(reass)
+    for overlay, dms in list(c.dms.items()):
+        c.dms[overlay] = _dedup_in_order(dms)
     for reason_map in c.disposition_refs.values():
         for reason, refs in list(reason_map.items()):
             reason_map[reason] = _dedup_in_order(refs)
@@ -489,6 +500,7 @@ def _populate_overlay_zones(
             *c.stale_refs,
             *c.ready_refs,
             *c.inflight_prs,
+            *c.dms,
         },
     )
 
@@ -515,6 +527,10 @@ def _populate_overlay_zones(
         )
         if ticket_line:
             zones.anchors.append(ticket_line)
+
+        dm_line = _render_dm_line(overlay_key, c.dms.get(overlay_key, []), link=_link, colorize=colorize)
+        if dm_line:
+            zones.anchors.append(dm_line)
 
         action_line = _render_action_line(
             overlay_key,

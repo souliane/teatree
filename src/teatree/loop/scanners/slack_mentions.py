@@ -39,6 +39,26 @@ def _text(event: RawAPIDict) -> str:
     return text if isinstance(text, str) else ""
 
 
+def _channel(event: RawAPIDict) -> str:
+    channel = event.get("channel")
+    return channel if isinstance(channel, str) else ""
+
+
+def _resolve_permalink(backend: MessagingBackend, channel: str, ts: str) -> str:
+    """Return ``backend.get_permalink`` result, or empty on any failure.
+
+    The statusline renderer needs a clickable Slack URL but a transient
+    Slack outage must not break statusline rendering — fall back to the
+    bare ``ts`` label when the lookup fails (see #1050).
+    """
+    if not channel or not ts:
+        return ""
+    try:
+        return backend.get_permalink(channel=channel, ts=ts)
+    except Exception:  # noqa: BLE001 — permalink is decoration, never a hard failure
+        return ""
+
+
 @dataclass(slots=True)
 class SlackMentionsScanner:
     """Surface ``app_mention`` and ``message.im`` events queued by Socket Mode."""
@@ -78,11 +98,13 @@ class SlackMentionsScanner:
                 cursors["mentions"] = max(cursors.get("mentions", ""), ts)
         for event in dms:
             ts = _ts(event)
+            channel = _channel(event)
+            permalink = _resolve_permalink(self.backend, channel, ts)
             signals.append(
                 ScanSignal(
                     kind="slack.dm",
                     summary=f"DM {ts}: {_text(event)[:80]}",
-                    payload={"ts": ts, "event": event},
+                    payload={"ts": ts, "event": event, "permalink": permalink},
                 )
             )
             if ts:

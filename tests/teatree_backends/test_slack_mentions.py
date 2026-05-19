@@ -86,3 +86,51 @@ class TestSlackMentionsScanner:
 
         backend.fetch_mentions.assert_called_once_with(since="5.0")
         backend.fetch_dms.assert_called_once_with(since="3.0")
+
+    def test_dm_signal_carries_permalink(self, tmp_path: Path) -> None:
+        """Each ``slack.dm`` signal carries the message permalink (#1050).
+
+        Renderer-side the line is `[ov] DMs (N): <permalink1> · …` —
+        resolving the permalink lazily at render time would hit Slack
+        once per tick per DM. The scanner enriches once at scan time
+        and caches the URL in the signal payload.
+        """
+        backend = self._make_backend(dms=[{"ts": "2.0", "text": "dm text", "channel": "D123"}])
+        backend.get_permalink.return_value = "https://slk.example/archives/D123/p2000000"
+        scanner = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cursor.json")
+
+        signals = scanner.scan()
+
+        assert len(signals) == 1
+        assert signals[0].kind == "slack.dm"
+        assert signals[0].payload.get("permalink") == "https://slk.example/archives/D123/p2000000"
+        backend.get_permalink.assert_called_once_with(channel="D123", ts="2.0")
+
+    def test_dm_signal_permalink_empty_on_lookup_failure(self, tmp_path: Path) -> None:
+        """When ``get_permalink`` raises or returns empty, the signal still emits.
+
+        Renderer falls back to the bare ``ts`` as label — Slack outages
+        must not break statusline rendering.
+        """
+        backend = self._make_backend(dms=[{"ts": "2.0", "text": "dm text", "channel": "D123"}])
+        backend.get_permalink.side_effect = RuntimeError("api down")
+        scanner = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cursor.json")
+
+        signals = scanner.scan()
+
+        assert len(signals) == 1
+        assert signals[0].payload.get("permalink") == ""
+
+    def test_dm_signal_permalink_skipped_when_channel_missing(self, tmp_path: Path) -> None:
+        """Signals without ``event.channel`` get an empty permalink.
+
+        When ``channel`` is missing the backend is not called — there's
+        nothing to resolve.
+        """
+        backend = self._make_backend(dms=[{"ts": "2.0", "text": "dm text"}])  # no channel
+        scanner = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cursor.json")
+
+        signals = scanner.scan()
+
+        assert signals[0].payload.get("permalink") == ""
+        backend.get_permalink.assert_not_called()
