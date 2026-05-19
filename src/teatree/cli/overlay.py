@@ -180,6 +180,12 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("mark-answered", "Stamp ``answered_at`` on rows matching a Slack ts."),
         ],
     ),
+    "notify": (
+        "Bot→user Slack DM from the shell (#1030).",
+        [
+            ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
+        ],
+    ),
 }
 
 
