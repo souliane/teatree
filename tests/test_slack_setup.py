@@ -98,6 +98,42 @@ class TestBuildManifest:
         assert "app_mention" in events
         assert "message.im" in events
 
+    def test_user_token_scopes_grant_reactions(self) -> None:
+        """The manifest must request ``user`` (xoxp) scopes, not only ``bot``.
+
+        The xoxp user token is the only credential that can post reactions in
+        Slack-Connect externally-shared channels (the bot token is rejected
+        with ``mcp_externally_shared_channel_restricted``). When the manifest
+        declares no ``user`` scopes section, a reinstall never re-prompts for
+        ``reactions:write`` consent and ``SlackBotBackend.react`` /
+        ``get_reactions`` (which route through the user token) silently fail.
+        """
+        manifest = build_manifest(overlay_name="acme")
+        user_scopes = manifest["oauth_config"]["scopes"]["user"]
+        assert "reactions:write" in user_scopes
+        assert "reactions:read" in user_scopes
+
+    def test_user_scopes_keep_existing_capability_on_reinstall(self) -> None:
+        """A reinstall re-consents to exactly the manifest ``user`` set.
+
+        Slack drops any user scope not listed, so the set must be a superset
+        that preserves the capability the xoxp token is already relied on:
+        ``chat:write`` (posting in Slack-Connect channels under the user's
+        identity) and ``users:read`` (handle/id resolution). Listing only the
+        two reaction scopes would silently revoke those on reinstall.
+        """
+        manifest = build_manifest(overlay_name="acme")
+        user_scopes = manifest["oauth_config"]["scopes"]["user"]
+        for required in ("reactions:read", "reactions:write", "chat:write", "users:read"):
+            assert required in user_scopes
+
+    def test_bot_scopes_still_present_alongside_user_scopes(self) -> None:
+        manifest = build_manifest(overlay_name="acme")
+        scopes = manifest["oauth_config"]["scopes"]
+        assert "bot" in scopes
+        assert "user" in scopes
+        assert "chat:write" in scopes["bot"]
+
 
 class TestManifestInstallUrl:
     def test_url_targets_create_app_endpoint(self) -> None:
@@ -256,6 +292,49 @@ class TestSlackBotCommand:
         assert result.exit_code == 0, result.stdout
         assert opened == []
         assert "Reset mode" in result.stdout
+
+    def test_reset_warns_scope_change_needs_full_reinstall(self, tmp_path: Path) -> None:
+        """``--reset`` must tell the user a scope change is NOT applied by reset.
+
+        Adding ``reactions:write`` to the xoxp user token only takes effect
+        through a full (non-``--reset``) manifest reinstall with browser OAuth
+        re-consent; ``--reset`` merely rotates the existing tokens. The command
+        must say so or the user keeps reinstalling via ``--reset`` and never
+        gets the new scope (the root cause this fix addresses).
+        """
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--reset", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "scope change" in result.stdout
+        assert "without --reset" in result.stdout
+
+    def test_full_install_prints_user_token_scope_guidance(self, tmp_path: Path) -> None:
+        """A non-``--reset`` run instructs the user to approve User Token Scopes."""
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "User Token Scopes" in result.stdout
+        assert "reactions:write" in result.stdout
 
     def test_pass_failure_exits_with_error(self, tmp_path: Path) -> None:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
