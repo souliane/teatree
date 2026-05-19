@@ -156,8 +156,13 @@ class SlackBotBackend:
         can always *read* channel metadata even on channels it cannot
         *post* to.  The answer is cached per channel id for the lifetime
         of the backend so repeat posts to the same channel probe once.
-        On any lookup failure we treat the channel as internal so the
-        policy fails safe to the bot token (the legacy behaviour).
+        On any API-level lookup failure (``ok:false`` — bad token, missing
+        scope, channel not found) we treat the channel as internal so the
+        policy fails safe to the bot token (the legacy behaviour). A
+        transport-level failure (5xx / connection error) instead propagates
+        out of ``_get``'s ``raise_for_status()`` through ``_channel_token``
+        and aborts the post — still conservative (no wrong-token send), but
+        the call does not complete.
         """
         cached = self._ext_shared_cache.get(channel)
         if cached is not None:
