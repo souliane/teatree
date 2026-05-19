@@ -10,6 +10,7 @@ from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, Me
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
+from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
@@ -44,6 +45,7 @@ __all__ = [
     "PullRequest",
     "QualityGateError",
     "ReplyDispatch",
+    "ReviewRequestPost",
     "SelfImproveFiring",
     "Session",
     "Task",
