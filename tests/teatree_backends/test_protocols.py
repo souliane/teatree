@@ -1,6 +1,7 @@
 """Tests for backend protocol structural typing."""
 
 from teatree.backends.protocols import (
+    ApprovalState,
     CIService,
     CodeHostBackend,
     MessageSpec,
@@ -85,6 +86,10 @@ class _FakeCodeHost:
     def list_assigned_issues(self, *, assignee: str) -> list[dict[str, object]]:
         _ = assignee
         return []
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+        _ = (repo, pr_iid)
+        return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)
 
 
 class _FakeMessaging:
