@@ -76,31 +76,28 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
 
     payload_text = _maybe_linkify(text) if linkify else text
 
-    try:
-        channel = resolved_backend.open_dm(resolved_user_id)
-        response = resolved_backend.post_message(
-            channel=channel,
-            text=_format(payload_text, kind_value),
-            thread_ts="",
-        )
-    except Exception as exc:  # noqa: BLE001 — notify must never bubble up
-        logger.warning("notify_user transport failed for key=%s: %s", idempotency_key, exc)
-        _record_failed(
-            idempotency_key=idempotency_key,
-            kind=kind_value,
-            text=text,
-            error=str(exc),
-        )
+    channel, posted_ts, failure = _deliver_dm(
+        resolved_backend,
+        user_id=resolved_user_id,
+        text=_format(payload_text, kind_value),
+    )
+    if failure:
+        # Any non-delivery — empty channel from ``open_dm`` (Slack
+        # ``conversations.open ok:false``), a transport exception, a
+        # ``post_message`` ``ok:false``, or an ``ok:true`` with no
+        # ``ts`` — is a HARD FAILURE. The pre-fix code keyed solely off
+        # ``ts`` and recorded SENT + returned ``True`` for every one of
+        # these, the exact phantom-success this guards against.
+        logger.warning("notify_user delivery failed for key=%s: %s", idempotency_key, failure)
+        _record_failed(idempotency_key=idempotency_key, kind=kind_value, text=text, error=failure)
         return False
-
-    posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
-    permalink = ""
-    if channel and posted_ts:
-        try:
-            permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
-        except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
-            logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
-            permalink = ""
+    # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
+    # only returns no failure when both are set, so no defensive re-check.
+    try:
+        permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
+    except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
+        logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
+        permalink = ""
     try:
         with transaction.atomic():
             BotPing.objects.create(
@@ -121,6 +118,44 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         posted_ts=posted_ts,
     )
     return True
+
+
+def _deliver_dm(
+    backend: MessagingBackend,
+    *,
+    user_id: str,
+    text: str,
+) -> tuple[str, str, str]:
+    """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
+
+    ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
+    ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
+    human-readable reason and ``(channel, ts)`` must NOT be trusted —
+    every non-empty ``failure`` is a HARD FAILURE for the caller.
+
+    The three non-delivery shapes Slack produces, all previously treated
+    as benign successes, are:
+    (a) ``open_dm`` returns ``""`` — ``conversations.open ok:false``
+    (missing scope, user not found); posting to ``""`` silently no-ops.
+    (b) ``post_message`` raises — transport/network error.
+    (c) ``post_message`` returns ``ok:false`` (missing_scope,
+    channel_not_found) or ``ok:true`` with no ``ts`` — nothing landed.
+    """
+    try:
+        channel = backend.open_dm(user_id)
+        if not channel:
+            return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
+        response = backend.post_message(channel=channel, text=text, thread_ts="")
+    except Exception as exc:  # noqa: BLE001 — notify must never bubble up
+        return "", "", str(exc)
+
+    posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
+    response_ok = bool(response.get("ok")) if isinstance(response, dict) else False
+    if not response_ok or not posted_ts:
+        slack_error = str(response.get("error", "")) if isinstance(response, dict) else ""
+        detail = f"Slack post failed: {slack_error}" if slack_error else "Slack post returned no message ts"
+        return channel, posted_ts, detail
+    return channel, posted_ts, ""
 
 
 def _record_outbound_claim(

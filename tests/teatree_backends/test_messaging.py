@@ -85,6 +85,44 @@ def test_slack_react_calls_reactions_add(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["json"] == {"channel": "C", "timestamp": "1.2", "name": "white_check_mark"}
 
 
+def test_slack_auth_test_returns_raw_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        captured["url"] = url
+        return httpx.Response(
+            200,
+            json={"ok": True, "user_id": "UBOT", "team": "T1"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    result = backend.auth_test()
+
+    assert result == {"ok": True, "user_id": "UBOT", "team": "T1"}
+    assert captured["url"] == "https://slack.com/api/auth.test"
+
+
+def test_slack_auth_test_surfaces_ok_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": False, "error": "missing_scope"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.auth_test() == {"ok": False, "error": "missing_scope"}
+
+
+def test_slack_auth_test_returns_empty_when_no_token() -> None:
+    assert SlackBotBackend(bot_token="").auth_test() == {}
+
+
 def test_slack_post_returns_empty_when_no_token() -> None:
     backend = SlackBotBackend(bot_token="")
     assert backend.post_message(channel="C", text="hi") == {}

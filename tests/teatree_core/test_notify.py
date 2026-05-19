@@ -126,6 +126,80 @@ class TestNotifyUser(TestCase):
         assert row.status == BotPing.Status.FAILED
         assert "slack timeout" in row.error_message
 
+    def test_empty_channel_from_open_dm_is_hard_failure(self) -> None:
+        """``open_dm`` returns ``""`` on Slack ``ok:false`` (e.g. missing_scope).
+
+        The bug this guards: the empty channel was treated as benign, the
+        DM never landed, yet ``BotPing`` was marked ``SENT`` and the
+        function returned ``True`` — a silent success. The contract is a
+        HARD FAILURE: ``FAILED`` row, ``False`` return, no claim recorded.
+        """
+        backend = _backend()
+        backend.open_dm.return_value = ""
+
+        sent = notify_user(
+            "this never lands",
+            kind=NotifyKind.INFO,
+            idempotency_key="empty-channel",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert sent is False
+        backend.post_message.assert_not_called()
+        row = BotPing.objects.get(idempotency_key="empty-channel")
+        assert row.status == BotPing.Status.FAILED
+        assert "open_dm" in row.error_message or "channel" in row.error_message
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+
+        assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:empty-channel").exists()
+
+    def test_post_message_ok_false_is_hard_failure(self) -> None:
+        """``post_message`` returning ``{"ok": false}`` must be a HARD FAILURE.
+
+        Slack returns ``ok:false`` (missing_scope, channel_not_found, …)
+        with no ``ts``. The pre-fix code recorded ``SENT`` + returned
+        ``True`` because it only looked at ``response.get("ts")``.
+        """
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False, "error": "missing_scope"}
+
+        sent = notify_user(
+            "not actually posted",
+            kind=NotifyKind.INFO,
+            idempotency_key="ok-false",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert sent is False
+        row = BotPing.objects.get(idempotency_key="ok-false")
+        assert row.status == BotPing.Status.FAILED
+        assert "missing_scope" in row.error_message
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+
+        assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:ok-false").exists()
+
+    def test_post_message_empty_ts_is_hard_failure(self) -> None:
+        """An ``ok:true`` response with no ``ts`` still means nothing landed."""
+        backend = _backend()
+        backend.post_message.return_value = {"ok": True}
+
+        sent = notify_user(
+            "phantom success",
+            kind=NotifyKind.INFO,
+            idempotency_key="empty-ts",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert sent is False
+        row = BotPing.objects.get(idempotency_key="empty-ts")
+        assert row.status == BotPing.Status.FAILED
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+
+        assert not OutboundClaim.objects.filter(idempotency_key="slack_dm:empty-ts").exists()
+
     def test_permalink_lookup_failure_does_not_break_send(self) -> None:
         backend = _backend()
         backend.get_permalink.side_effect = RuntimeError("permalink api down")
