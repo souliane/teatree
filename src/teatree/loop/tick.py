@@ -28,6 +28,7 @@ from teatree.loop.scanners import (
     NotionViewScanner,
     PendingTasksScanner,
     ReviewerPrsScanner,
+    ReviewNagScanner,
     Scanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -191,6 +192,29 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
     return label, signals, ""
 
 
+def _user_slack_id_for_overlay(overlay_name: str) -> str:
+    """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
+
+    Used by :class:`ReviewNagScanner` to know where to DM long-stale MR
+    warnings. Reads ``~/.teatree.toml`` directly so a fresh tick picks up
+    a runtime config change without requiring an overlay reload.
+    """
+    try:
+        toml_path = Path.home() / ".teatree.toml"
+        if not toml_path.is_file():
+            return ""
+        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    overlays = data.get("overlays") or {}
+    if overlay_name and isinstance(overlays.get(overlay_name), dict):
+        user_id = overlays[overlay_name].get("slack_user_id", "")
+        if user_id:
+            return str(user_id)
+    teatree_cfg = data.get("teatree") or {}
+    return str(teatree_cfg.get("slack_user_id", ""))
+
+
 def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
     """Resolve ``user_identity_aliases`` honouring any per-overlay override.
 
@@ -268,7 +292,14 @@ def build_default_jobs(
                             scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
                             overlay=tag,
                         ),
-                    ]
+                        _ScannerJob(
+                            scanner=ReviewNagScanner(
+                                messaging=backend.messaging,
+                                user_slack_id=_user_slack_id_for_overlay(tag),
+                            ),
+                            overlay=tag,
+                        ),
+                    ],
                 )
     else:
         if host is not None:
