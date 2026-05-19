@@ -166,6 +166,32 @@ class TestStopCommand:
         assert "/loop unregister t3-loop" in result.stdout
 
 
+class TestClaimNextCommand:
+    """#1107 Prong C — ``t3 loop claim-next`` must exist and delegate.
+
+    The ``loop_dispatch`` mgmt command DOES expose a ``claim-next``
+    subcommand (the #786 WS1 atomic claim), and the BLUEPRINT, the
+    Stop-hook self-pump, ``cli/loop.py`` help, and ``slack_answer/cycle``
+    all standardise on ``t3 loop claim-next`` — but ``cli/loop.py`` only
+    wired ``pending-spawn``/``spawn-claim``, so the canonical command
+    errored "No such command".
+    """
+
+    def test_loop_claim_next_command_exists_and_delegates(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["claim-next", "--json"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_dispatch", "claim-next", json_output=True)
+
+    def test_loop_claim_next_passes_claimed_by(self) -> None:
+        with patch("django.setup"), patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["claim-next", "--claimed-by", "worker-7"])
+
+        assert result.exit_code == 0, result.stdout
+        call.assert_called_once_with("loop_dispatch", "claim-next", claimed_by="worker-7")
+
+
 class TestSlackAnswerCadenceParser:
     @pytest.mark.parametrize(
         ("env_value", "expected"),

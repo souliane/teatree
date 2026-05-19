@@ -76,7 +76,12 @@ def _render_pr_group(
         text = f"!{ref.iid}"
         if ref.annotation:
             text += f" ({ref.annotation})"
-        return _link(text, ref.url, colorize=colorize)
+        rendered = _link(text, ref.url, colorize=colorize)
+        # #1113 enhancement: surface the review-channel post permalink so the
+        # operator can jump from the statusline straight to the thread.
+        if ref.review_permalink:
+            rendered += " " + _link("(review)", ref.review_permalink, colorize=colorize)
+        return rendered
 
     chunks: list[str] = []
     for tnum in sorted(by_ticket):
