@@ -922,3 +922,50 @@ def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
     assert "!371" in rendered
     assert "review" in rendered
     assert "[acme]" in rendered
+
+
+class TestLoopOwnerAnchorWiring(django.test.TestCase):
+    """``run_tick`` writes the #1073 loop-owner segment on BOTH paths."""
+
+    def test_empty_jobs_path_renders_loop_owner_anchor(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-sess")
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
+                run_tick(TickRequest(scanners=[]), statusline_path=sl)
+            assert "loop-owner=THIS session ✓" in sl.read_text(encoding="utf-8")
+
+    def test_normal_path_flags_foreign_owner_in_red_zone(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="other-sess")
+        scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder"}):
+                run_tick(TickRequest(scanners=[scanner]), statusline_path=sl, colorize=False)
+            assert "loop-owner=session other-se (NOT this session)" in sl.read_text(encoding="utf-8")
+
+    def test_anchor_failure_is_fail_open_no_crash(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch(
+                "teatree.core.models.LoopLease.objects.ownership_status",
+                side_effect=RuntimeError("db down"),
+            ),
+        ):
+            sl = Path(d) / "sl.txt"
+            # Must not raise — fail-open like _populate_availability_anchor.
+            run_tick(TickRequest(scanners=[]), statusline_path=sl)
+            assert sl.exists()
