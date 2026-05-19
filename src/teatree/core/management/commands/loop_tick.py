@@ -79,8 +79,15 @@ class Command(TyperCommand):
             iter_overlay_backends,
             messaging_from_overlay,
         )
+        from teatree.core.connector_preflight import run_connector_preflight  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.tick import TickRequest, run_tick  # noqa: PLC0415
+
+        # Refuse to tick into silent no-ops when a hard-dependency
+        # connector is unreachable. Raises SystemExit naming the down
+        # connector, before the lease is taken, so the loop fails fast
+        # instead of degrading.
+        run_connector_preflight(overlay)
 
         # #786 WS2: DB lease/heartbeat replaces the flock/pidfile singleton.
         # The lease row is queryable and reapable by expiry, so loop

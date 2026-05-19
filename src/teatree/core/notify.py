@@ -17,6 +17,7 @@ the dependency direction one-way.
 
 import enum
 import logging
+import re
 
 from django.db import IntegrityError, transaction
 
@@ -27,6 +28,14 @@ from teatree.core.models import BotPing, OutboundClaim
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 logger = logging.getLogger(__name__)
+
+# Idempotency-key convention for replies to a Slack-DM question (#1063):
+# ``answer-<anything>-<slack_ts>``. ``slack_ts`` is the Slack message
+# timestamp (e.g. ``1700000000.0001``) of the question the agent is
+# answering. When notify_user sees a key with this shape it auto-stamps
+# ``answered_at`` on the matching :class:`PendingChatInjection` row, so
+# the Stop hook stops nagging once the reply has been posted.
+_ANSWER_KEY_PATTERN = re.compile(r"^answer-.+-(\d+\.\d+)$")
 
 
 class NotifyKind(enum.StrEnum):
@@ -45,11 +54,21 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     backend: MessagingBackend | None = None,
     user_id: str | None = None,
     linkify: bool = True,
+    answering_slack_ts: str = "",
 ) -> bool:
     """Send a bot→user Slack DM and record an audit row.
 
     See :mod:`teatree.notify` for the full docstring — this is the
     canonical implementation; the public module is a re-export.
+
+    ``answering_slack_ts`` (#1063): when this DM is the agent's reply to
+    a queued user-question (the user DM'd, the question was injected via
+    :class:`PendingChatInjection`, the agent is now replying), pass the
+    Slack ``ts`` of that question. The matching row(s) get their
+    ``answered_at`` stamped so the Stop hook stops nagging. Alternatively
+    use an idempotency-key of the form ``answer-<anything>-<slack_ts>``
+    and the same auto-stamp triggers — useful for callers that don't
+    plumb the explicit kwarg through.
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
@@ -76,31 +95,28 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
 
     payload_text = _maybe_linkify(text) if linkify else text
 
-    try:
-        channel = resolved_backend.open_dm(resolved_user_id)
-        response = resolved_backend.post_message(
-            channel=channel,
-            text=_format(payload_text, kind_value),
-            thread_ts="",
-        )
-    except Exception as exc:  # noqa: BLE001 — notify must never bubble up
-        logger.warning("notify_user transport failed for key=%s: %s", idempotency_key, exc)
-        _record_failed(
-            idempotency_key=idempotency_key,
-            kind=kind_value,
-            text=text,
-            error=str(exc),
-        )
+    channel, posted_ts, failure = _deliver_dm(
+        resolved_backend,
+        user_id=resolved_user_id,
+        text=_format(payload_text, kind_value),
+    )
+    if failure:
+        # Any non-delivery — empty channel from ``open_dm`` (Slack
+        # ``conversations.open ok:false``), a transport exception, a
+        # ``post_message`` ``ok:false``, or an ``ok:true`` with no
+        # ``ts`` — is a HARD FAILURE. The pre-fix code keyed solely off
+        # ``ts`` and recorded SENT + returned ``True`` for every one of
+        # these, the exact phantom-success this guards against.
+        logger.warning("notify_user delivery failed for key=%s: %s", idempotency_key, failure)
+        _record_failed(idempotency_key=idempotency_key, kind=kind_value, text=text, error=failure)
         return False
-
-    posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
-    permalink = ""
-    if channel and posted_ts:
-        try:
-            permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
-        except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
-            logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
-            permalink = ""
+    # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
+    # only returns no failure when both are set, so no defensive re-check.
+    try:
+        permalink = resolved_backend.get_permalink(channel=channel, ts=posted_ts)
+    except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
+        logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
+        permalink = ""
     try:
         with transaction.atomic():
             BotPing.objects.create(
@@ -114,6 +130,11 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+
+    _maybe_stamp_answered(
+        idempotency_key=idempotency_key,
+        answering_slack_ts=answering_slack_ts,
+    )
     _record_outbound_claim(
         idempotency_key=f"slack_dm:{idempotency_key}",
         target_url=permalink,
@@ -121,6 +142,80 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         posted_ts=posted_ts,
     )
     return True
+
+
+def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> None:
+    """Auto-stamp ``PendingChatInjection.answered_at`` when this DM is a reply (#1063).
+
+    Two trigger forms, both consulted (an explicit kwarg wins over the
+    pattern-match — the kwarg is the canonical, programmatic form). One:
+    ``answering_slack_ts="1700000000.0001"`` — the caller explicitly
+    passes the Slack ts of the question being answered. Two:
+    ``idempotency_key="answer-<anything>-<slack_ts>"`` — the agent used
+    the answer-key convention; the ts is extracted from the suffix.
+
+    The active overlay (``T3_OVERLAY_NAME``) scopes the stamp to its own
+    queue; the empty overlay (the default in the single-overlay v1 path)
+    matches the empty-overlay rows the scanner records under.
+    """
+    ts = answering_slack_ts
+    if not ts:
+        match = _ANSWER_KEY_PATTERN.match(idempotency_key)
+        if match is None:
+            return
+        ts = match.group(1)
+    # Deferred import (mirrors ``_resolve_user_id`` / ``_maybe_linkify``
+    # in this module): the answer-stamp is an opt-in side path; keeping
+    # the model + os imports out of ``teatree.core.notify`` import time
+    # avoids perturbing the module-import graph that the on-behalf gate
+    # and notify suites rely on.
+    import os  # noqa: PLC0415
+
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+
+    overlay = os.environ.get("T3_OVERLAY_NAME", "")
+    try:
+        PendingChatInjection.agent_answered_question(ts, overlay=overlay)
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break notify_user
+        logger.debug("notify_user answered_at stamp failed for ts=%s: %s", ts, exc)
+
+
+def _deliver_dm(
+    backend: MessagingBackend,
+    *,
+    user_id: str,
+    text: str,
+) -> tuple[str, str, str]:
+    """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
+
+    ``failure`` is ``""`` on a confirmed delivery (non-empty channel,
+    ``ok:true`` response with a non-empty ``ts``). Otherwise it holds a
+    human-readable reason and ``(channel, ts)`` must NOT be trusted —
+    every non-empty ``failure`` is a HARD FAILURE for the caller.
+
+    The three non-delivery shapes Slack produces, all previously treated
+    as benign successes, are:
+    (a) ``open_dm`` returns ``""`` — ``conversations.open ok:false``
+    (missing scope, user not found); posting to ``""`` silently no-ops.
+    (b) ``post_message`` raises — transport/network error.
+    (c) ``post_message`` returns ``ok:false`` (missing_scope,
+    channel_not_found) or ``ok:true`` with no ``ts`` — nothing landed.
+    """
+    try:
+        channel = backend.open_dm(user_id)
+        if not channel:
+            return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
+        response = backend.post_message(channel=channel, text=text, thread_ts="")
+    except Exception as exc:  # noqa: BLE001 — notify must never bubble up
+        return "", "", str(exc)
+
+    posted_ts = str(response.get("ts", "")) if isinstance(response, dict) else ""
+    response_ok = bool(response.get("ok")) if isinstance(response, dict) else False
+    if not response_ok or not posted_ts:
+        slack_error = str(response.get("error", "")) if isinstance(response, dict) else ""
+        detail = f"Slack post failed: {slack_error}" if slack_error else "Slack post returned no message ts"
+        return channel, posted_ts, detail
+    return channel, posted_ts, ""
 
 
 def _record_outbound_claim(
