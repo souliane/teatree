@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config import _resolve_ep_project_path, discover_active_overlay, discover_overlays
+from teatree.config import _canonical_ep_name, _resolve_ep_project_path, discover_active_overlay, discover_overlays
 
 from ._shared import _write_manage_py, _write_toml
 
@@ -302,3 +302,55 @@ def test_discover_overlays_entry_point_with_project_path(tmp_path: Path) -> None
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
         assert result[0].project_path == project_root
+
+
+def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(tmp_path: Path) -> None:
+    """A legacy ``[overlays.teatree]`` table must not become a stray overlay.
+
+    The bundled overlay is registered under the entry-point name
+    ``t3-teatree`` (souliane/teatree#1108). Before the fix, a user's
+    ``~/.teatree.toml`` carrying the legacy ``[overlays.teatree]`` table —
+    written by older ``slack-bot`` setup runs — made ``discover_overlays``
+    emit BOTH ``teatree`` (from the TOML table) and ``t3-teatree`` (from
+    the entry point) as if they were distinct overlays, which is exactly
+    the ``Known overlays: ..., t3-teatree, teatree`` symptom. The legacy
+    alias table must fold into its canonical entry-point name instead.
+    """
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(
+        config_path,
+        '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\nmode = "auto"\n',
+    )
+
+    # A second, non-matching entry point is registered too: the alias
+    # resolver must skip it (loop-continue) before matching ``t3-teatree``.
+    other_ep = MagicMock()
+    other_ep.name = "t3-acme"
+    other_ep.value = "acme_pkg.overlay:AcmeOverlay"
+    real_ep = MagicMock()
+    real_ep.name = "t3-teatree"
+    real_ep.value = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
+
+    with (
+        patch("importlib.metadata.entry_points", return_value=[other_ep, real_ep]),
+        patch("teatree.config._resolve_ep_project_path", return_value=None),
+    ):
+        result = discover_overlays(config_path=config_path)
+
+    names = {entry.name for entry in result}
+    assert "t3-teatree" in names
+    assert "teatree" not in names
+
+
+def test_canonical_ep_name_exact_match() -> None:
+    assert _canonical_ep_name("t3-acme", {"t3-acme", "t3-teatree"}) == "t3-acme"
+
+
+def test_canonical_ep_name_suffix_match_skipping_nonmatch() -> None:
+    # Only the suffix-matching ep qualifies; the other is skipped
+    # (covers the loop-continue branch and the suffix rule).
+    assert _canonical_ep_name("teatree", {"unrelated-ep", "t3-teatree"}) == "t3-teatree"
+
+
+def test_canonical_ep_name_no_match_returns_none() -> None:
+    assert _canonical_ep_name("ghost", {"t3-acme", "t3-teatree"}) is None

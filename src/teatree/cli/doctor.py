@@ -476,6 +476,38 @@ def _check_skills() -> bool:
     return ok
 
 
+def _check_legacy_overlay_alias() -> None:
+    """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
+
+    souliane/teatree#1108: older ``slack-bot`` runs wrote a short
+    ``[overlays.<alias>]`` table (e.g. ``[overlays.teatree]``) for an
+    overlay whose canonical entry-point name is ``t3-<alias>``. Discovery
+    now folds such a bare config-only alias table into its canonical
+    overlay so it is no longer listed twice — but the stale table is
+    confusing to read. Surface it as a WARN with the corrective rename;
+    the agent/user does the edit (no auto-rewrite of the user's config).
+    """
+    try:
+        from importlib.metadata import entry_points  # noqa: PLC0415
+
+        from teatree.config import CONFIG_PATH, _canonical_ep_name, load_config  # noqa: PLC0415
+
+        config = load_config(CONFIG_PATH)
+        ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
+        for name, overlay_cfg in config.raw.get("overlays", {}).items():
+            if name in ep_names or overlay_cfg.get("class") or overlay_cfg.get("path"):
+                continue
+            canonical = _canonical_ep_name(name, ep_names)
+            if canonical is not None:
+                typer.echo(
+                    f"WARN  Stale '[overlays.{name}]' table in ~/.teatree.toml — "
+                    f"the canonical overlay is '{canonical}'. Rename it to "
+                    f"'[overlays.{canonical}]' (discovery folds it for now)."
+                )
+    except Exception:  # noqa: BLE001 — doctor warnings must never crash the run
+        return
+
+
 def _read_json_safe(path: Path) -> dict:
     if not path.is_file():
         return {}
@@ -626,6 +658,7 @@ def check() -> bool:
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
     _check_singletons()
+    _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)
     _ensure_plugin_registered()
 
