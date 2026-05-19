@@ -84,6 +84,12 @@ class OverlayConfig:
     frontend_repos: list[str]
     workspace_repos: list[str]
     protected_branches: list[str]
+    # ``identity_aliases`` groups one human's handles across forges so the
+    # disposition scanner can suppress self-handoff churn without conflating
+    # genuinely-distinct humans (#1015). Shape: each inner list is one human's
+    # aliases (e.g. ``[["a-github", "a-gitlab", "a.work"], ["b-github"]]``);
+    # cross-group reassigns stay visible because they cross human boundaries.
+    identity_aliases: list[list[str]]
     dev_env_url: str = ""
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
@@ -95,6 +101,7 @@ class OverlayConfig:
         self.protected_branches = []
         self.ready_labels = []
         self.exclude_labels = []
+        self.identity_aliases = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:

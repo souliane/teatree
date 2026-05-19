@@ -13,6 +13,14 @@ from typing import Any
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.pr_ticket_index import build_ticket_index
+from teatree.loop.rendering_items import (
+    _IssueRef,
+    _LinkCtx,
+    _OverlayActionRefs,
+    _PRRef,
+    _ReassignRef,
+    _render_canonical_item,
+)
 from teatree.loop.statusline import StatuslineEntry, StatuslineZones, _hyperlink, colorize_enabled, plain_link
 
 # DispatchAction payloads are `dict[str, Any]` by contract (see dispatch.py).
@@ -45,47 +53,6 @@ def _link(text: str, url: object, *, colorize: bool) -> str:
     if isinstance(url, str) and url.startswith(("http://", "https://")):
         return _hyperlink(text, url) if colorize else plain_link(text, url)
     return text
-
-
-@dataclass(frozen=True, slots=True)
-class _PRRef:
-    iid: int
-    url: str
-    annotation: str
-
-
-@dataclass(frozen=True, slots=True)
-class _IssueRef:
-    label: str
-    url: str
-
-
-@dataclass(frozen=True, slots=True)
-class _ReassignRef:
-    """An ``unassigned`` disposition that carries who it moved from/to.
-
-    Lets the statusline render ``reassigned (from <old> → to <new>): #N``
-    instead of a bare ``reassigned`` the user can't interpret.
-    """
-
-    ref: _IssueRef
-    old_owner: str
-    new_owners: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _OverlayActionRefs:
-    """One overlay's slice of classified refs for the action-needed row.
-
-    Bundling the three ref collections keeps ``_render_action_line``'s
-    signature small (composition over a long positional list).
-    """
-
-    pr_refs: list[_PRRef]
-    disposition_refs: dict[str, list[_IssueRef]]
-    ready_refs: list[_IssueRef]
-    reassign_refs: list[_ReassignRef] = field(default_factory=list)
-    stale_refs: list[_IssueRef] = field(default_factory=list)
 
 
 def _pr_ref(action: DispatchAction) -> _PRRef | None:
@@ -162,7 +129,11 @@ class _ClassifiedActions:
     ready_refs: dict[str, list[_IssueRef]] = field(default_factory=dict)
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
-    active_tickets: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
+    # ``(ticket_number, state, issue_url, title)`` — ``title`` is the cached
+    # tracker title (``ticket.extra["issue_title"]``); empty when the
+    # scanner has no title yet. Renderer uses it for the canonical
+    # ``#N (short desc) (!M)`` item shape (#1015).
+    active_tickets: dict[str, list[tuple[str, str, str, str]]] = field(default_factory=dict)
     other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
 
 
@@ -183,13 +154,17 @@ def _issue_ref_from(
     url_str = url or issue_url
     number = _ticket_number_from_url(url_str)
     if number:
-        return _IssueRef(label=f"#{number}", url=url_str)
+        return _IssueRef(label=f"#{number}", url=url_str, title=title)
     if ticket_number:
-        return _IssueRef(label=f"#{ticket_number}", url=url_str if _is_url(url_str) else "")
+        return _IssueRef(
+            label=f"#{ticket_number}",
+            url=url_str if _is_url(url_str) else "",
+            title=title,
+        )
     if title:
         snippet = title if len(title) <= _TITLE_FALLBACK_LEN else title[: _TITLE_FALLBACK_LEN - 3] + "…"
-        return _IssueRef(label=snippet, url=url_str)
-    return _IssueRef(label="?", url=url_str)
+        return _IssueRef(label=snippet, url=url_str, title=title)
+    return _IssueRef(label="?", url=url_str, title=title)
 
 
 def _str_field(payload: Payload, key: str) -> str:
@@ -218,7 +193,8 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
         ticket_number = payload.get("ticket_number")
         if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
             issue_url = _str_field(payload, "issue_url")
-            c.active_tickets.setdefault(overlay, []).append((ticket_number, state, issue_url))
+            title = _str_field(payload, "title")
+            c.active_tickets.setdefault(overlay, []).append((ticket_number, state, issue_url, title))
             continue
         if payload.get("stale") is True:
             c.stale_refs.setdefault(overlay, []).append(
@@ -337,26 +313,44 @@ def _is_pr_url(url: str) -> bool:
 
 def _render_ticket_line(
     overlay: str,
-    tickets: list[tuple[str, str, str]],
+    tickets: list[tuple[str, str, str, str]],
     pr_map: dict[str, list[_PRRef]],
     *,
     live_pr_urls: set[str] | None = None,
     colorize: bool,
 ) -> str:
+    """Render the per-overlay anchor line — one row per state group.
+
+    Every state line (``ready:``, ``started:``, ``tested:``, …) uses the
+    same canonical item shape: ``#N (short desc) (!M1, !M2)`` where the
+    description is the cached tracker title truncated to
+    ``_ITEM_DESC_LEN`` and the MR refs are comma-separated and clickable
+    (#1015). The PR group falls back to a space-separated form when no
+    description is present, but in the canonical path every number is a
+    hyperlink.
+
+    ``pr_map`` is the overlay's MR-iid → child-refs map; entries appear
+    here either because the MR's iid equals the ticket number (legacy
+    shape), or because the caller pre-bucketed by parent ticket number
+    via ``ticket_index`` (canonical shape).
+    """
     prefix = f"[{overlay}] " if overlay else ""
     live = live_pr_urls or set()
     by_state: dict[str, list[str]] = {}
-    for num, state, url in tickets:
+    for num, state, url, title in tickets:
         if state in _NOISE_STATES:
             continue
         if _is_pr_url(url) and url not in live:
             continue
-        ticket_text = _link(f"#{num}", url, colorize=colorize)
-        prs = pr_map.get(num, [])
-        if prs:
-            pr_parts = [_link(f"!{r.iid}", r.url, colorize=colorize) for r in prs]
-            ticket_text += f" ({' '.join(pr_parts)})"
-        by_state.setdefault(state, []).append(ticket_text)
+        by_state.setdefault(state, []).append(
+            _render_canonical_item(
+                label=f"#{num}",
+                url=url,
+                title=title,
+                child_refs=pr_map.get(num, []),
+                ctx=_LinkCtx(colorize=colorize, link=_link),
+            ),
+        )
     if not by_state:
         return ""
     groups: list[str] = []
@@ -413,14 +407,18 @@ def _render_action_line(
     if action_refs.ready_refs:
         items: list[str] = []
         for ref in action_refs.ready_refs:
-            text = _link(ref.label, ref.url, colorize=colorize)
             number = ref.label.lstrip("#")
             prs = prs_by_ticket.get(number, [])
-            if prs:
-                pr_parts = [_link(f"!{p.iid}", p.url, colorize=colorize) for p in prs]
-                text += f" ({' '.join(pr_parts)})"
-                consumed_pr_urls.update(p.url for p in prs)
-            items.append(text)
+            items.append(
+                _render_canonical_item(
+                    label=ref.label,
+                    url=ref.url,
+                    title=ref.title,
+                    child_refs=prs,
+                    ctx=_LinkCtx(colorize=colorize, link=_link),
+                ),
+            )
+            consumed_pr_urls.update(p.url for p in prs)
         parts.append(f"ready: {' '.join(items)}")
     if action_refs.pr_refs:
         remaining = [r for r in action_refs.pr_refs if r.url not in consumed_pr_urls]
@@ -492,11 +490,18 @@ def _populate_overlay_zones(
         },
     )
 
+    # ``pr_map`` keys are ticket numbers: each MR is bucketed under its
+    # parent ticket (resolved via ``ticket_index`` — ``Closes #N`` footer
+    # parsing in ``pr_ticket_index``). Legacy fall-through: when no parent
+    # is known, the MR is still keyed by its own iid so a ticket-number ==
+    # iid coincidence keeps rendering.
     all_pr_refs: dict[str, dict[str, list[_PRRef]]] = {}
     for overlay_key in all_overlays:
         for refs in (c.action_prs.get(overlay_key, []), c.inflight_prs.get(overlay_key, [])):
             for ref in refs:
-                all_pr_refs.setdefault(overlay_key, {}).setdefault(str(ref.iid), []).append(ref)
+                parent = ticket_index.get(ref.url, "")
+                key = parent if parent and parent != str(ref.iid) else str(ref.iid)
+                all_pr_refs.setdefault(overlay_key, {}).setdefault(key, []).append(ref)
 
     live_pr_urls_by_overlay: dict[str, set[str]] = {}
     for overlay_key in all_overlays:
