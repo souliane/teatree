@@ -97,6 +97,16 @@ def _add_approval_reaction_on_transition(
         add_approval_reaction(instance)
     except Exception:
         logger.exception("Failed to add approval reaction for PR %s", instance.pk)
+    # #1047: close the reaction-driven loop — mark every ReviewAssignment row
+    # for this MR as ``approved`` so the audit trail captures the full
+    # reaction → review → approve cycle. Best-effort: a missing row or DB
+    # outage must never block the FSM transition.
+    try:
+        from teatree.core.models import ReviewAssignment  # noqa: PLC0415
+
+        ReviewAssignment.approve_for_mr(mr_url=instance.url, overlay=instance.overlay)
+    except Exception:
+        logger.exception("Failed to mark ReviewAssignment approved for PR %s", instance.pk)
 
 
 def _auto_enqueue_headless_task(

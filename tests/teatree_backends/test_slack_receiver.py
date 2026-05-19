@@ -6,12 +6,19 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.slack_receiver import (
+    QueuePaths,
     _enqueue,
     _run_single_overlay,
     default_queue_path,
+    default_reactions_queue_path,
     drain_event_queue,
+    drain_reactions_queue,
     run_listener,
 )
+
+
+def _queues(tmp_path: Path) -> QueuePaths:
+    return QueuePaths(events=tmp_path / "events.jsonl", reactions=tmp_path / "reactions.jsonl")
 
 
 class TestDefaultQueuePath:
@@ -23,6 +30,16 @@ class TestDefaultQueuePath:
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         result = default_queue_path()
         assert result.name == "slack-events.jsonl"
+        assert "teatree" in str(result)
+
+    def test_reactions_queue_path_uses_xdg_data_home(self, monkeypatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", "/custom/data")
+        assert default_reactions_queue_path() == Path("/custom/data/teatree/slack-reactions.jsonl")
+
+    def test_reactions_queue_path_falls_back_to_home(self, monkeypatch) -> None:
+        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+        result = default_reactions_queue_path()
+        assert result.name == "slack-reactions.jsonl"
         assert "teatree" in str(result)
 
 
@@ -94,7 +111,7 @@ class TestRunSingleOverlay:
                 overlay_name="test",
                 app_token="xapp-test",
                 bot_token="xoxb-test",
-                queue_path=tmp_path / "events.jsonl",
+                queues=_queues(tmp_path),
                 stop_event=stop,
             )
 
@@ -119,7 +136,7 @@ class TestRunSingleOverlay:
                 overlay_name="ov",
                 app_token="xapp",
                 bot_token="xoxb",
-                queue_path=tmp_path / "events.jsonl",
+                queues=_queues(tmp_path),
                 stop_event=stop,
             )
 
@@ -157,7 +174,7 @@ class TestRunSingleOverlay:
                 overlay_name="ov",
                 app_token="xapp",
                 bot_token="xoxb",
-                queue_path=queue,
+                queues=_queues(tmp_path),
                 stop_event=stop,
             )
 
@@ -197,12 +214,62 @@ class TestRunSingleOverlay:
                 overlay_name="ov",
                 app_token="xapp",
                 bot_token="xoxb",
-                queue_path=queue,
+                queues=_queues(tmp_path),
                 stop_event=stop,
             )
 
         events = drain_event_queue(queue)
         assert events == []
+
+    def test_handler_routes_reaction_added_to_reactions_queue(self, tmp_path: Path) -> None:
+        import slack_sdk.socket_mode  # noqa: PLC0415
+        import slack_sdk.web  # noqa: PLC0415
+        from slack_sdk.socket_mode.request import SocketModeRequest  # noqa: PLC0415
+
+        mock_client = MagicMock()
+        mock_client.socket_mode_request_listeners = []
+        stop = threading.Event()
+        events_queue = tmp_path / "events.jsonl"
+        reactions_queue = tmp_path / "reactions.jsonl"
+        handler_ref: list = []
+
+        def fake_connect() -> None:
+            handler_ref.extend(mock_client.socket_mode_request_listeners)
+            req = SocketModeRequest(
+                type="events_api",
+                envelope_id="r1",
+                payload={
+                    "event": {
+                        "type": "reaction_added",
+                        "user": "U0",
+                        "reaction": "thumbsup",
+                        "item": {"type": "message", "channel": "C1", "ts": "1.0"},
+                        "event_ts": "1.0",
+                    }
+                },
+            )
+            handler_ref[0](mock_client, req)
+            stop.set()
+
+        mock_client.connect = fake_connect
+
+        with (
+            patch.object(slack_sdk.socket_mode, "SocketModeClient", return_value=mock_client),
+            patch.object(slack_sdk.web, "WebClient"),
+        ):
+            _run_single_overlay(
+                overlay_name="ov",
+                app_token="xapp",
+                bot_token="xoxb",
+                queues=QueuePaths(events=events_queue, reactions=reactions_queue),
+                stop_event=stop,
+            )
+
+        # Reaction landed in the reactions queue, not the events queue.
+        assert not events_queue.is_file()
+        reaction_events = drain_reactions_queue(reactions_queue)
+        assert len(reaction_events) == 1
+        assert reaction_events[0]["event"]["type"] == "reaction_added"
 
     def test_handler_ignores_non_events_api(self, tmp_path: Path) -> None:
         import slack_sdk.socket_mode  # noqa: PLC0415
@@ -230,7 +297,7 @@ class TestRunSingleOverlay:
                 overlay_name="ov",
                 app_token="xapp",
                 bot_token="xoxb",
-                queue_path=queue,
+                queues=_queues(tmp_path),
                 stop_event=stop,
             )
 

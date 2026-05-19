@@ -349,6 +349,36 @@ class TestApprovalReactionOnTransition(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
 
+    def test_approve_marks_review_assignment_rows_approved(self) -> None:
+        """#1047: an approve transition closes every linked ``ReviewAssignment`` row.
+
+        Closes the loop: reaction → review_intent dispatch → review →
+        approve. The ledger row reaches its terminal state so the audit
+        trail captures the full cycle.
+        """
+        from teatree.core.models import ReviewAssignment, ReviewIntent  # noqa: PLC0415
+
+        pr = self._pr()
+        row = ReviewAssignment.record(
+            ReviewIntent(
+                mr_url=pr.url,
+                user_id="U0DEMOUSER1",
+                channel="C9",
+                slack_ts="1700000000.000100",
+                trigger="reaction",
+                overlay=pr.overlay,
+            )
+        )
+        assert row is not None
+
+        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", lambda _pr: 1):
+            pr.approve()
+            pr.save()
+
+        row.refresh_from_db()
+        assert row.state == ReviewAssignment.State.APPROVED
+        assert row.approved_at is not None
+
 
 class TestTransitionReactionGated(TestCase):
     """Ticket-transition Slack reactions are recorded-approval gated (#960).
