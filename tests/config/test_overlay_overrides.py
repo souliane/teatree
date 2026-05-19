@@ -256,3 +256,35 @@ notify_user_via_bot = false
         )
 
         assert get_effective_settings().notify_user_via_bot is False
+
+    def test_overlay_can_override_notify_on_post_on_behalf(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """After-receipt DM toggle is per-overlay overridable (#949).
+
+        SKILL.md:277 requires an independent per-overlay notify lifetime —
+        an overlay can flip the after-receipt DM off while the global
+        default stays on. Runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "foo")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+notify_on_post_on_behalf = true
+
+[overlays.foo]
+class = "x.y:Z"
+notify_on_post_on_behalf = false
+""",
+        )
+
+        assert get_effective_settings().notify_on_post_on_behalf is False

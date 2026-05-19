@@ -39,6 +39,7 @@ from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import MergeResult
@@ -656,6 +657,15 @@ class Command(TyperCommand):
         if existing_note:
             comment_id = int(str(existing_note["id"]))
             self.stdout.write(f"  Updating existing note {comment_id}")
-            return host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
+            result = host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
+        else:
+            result = host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
 
-        return host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
+        notify_user_on_behalf_post(
+            target=f"{repo_path}!{mr_iid}",
+            action="post_evidence",
+            destination=f"{repo_path}!{mr_iid}",
+            artifact_url=str(result.get("web_url") or result.get("html_url") or f"{repo_path}!{mr_iid}"),
+            summary=f"{title} on {repo_path}!{mr_iid}",
+        )
+        return result

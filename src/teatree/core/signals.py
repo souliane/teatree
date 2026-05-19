@@ -8,6 +8,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,18 @@ def _add_slack_reactions_on_transition(
         logger.info("Transition reaction for ticket %s (%s) gated: %s", instance.pk, name, blocked)
         return
     try:
-        add_reactions_for_transition(instance, name)
+        reacted = add_reactions_for_transition(instance, name)
     except Exception:
         logger.exception("Failed to add Slack reactions for ticket %s transition %s", instance.pk, name)
+        return
+    if reacted:
+        notify_user_on_behalf_post(
+            target=target,
+            action=f"transition_reaction:{name}",
+            destination=f"ticket:{instance.pk} review message",
+            artifact_url=instance.issue_url or target,
+            summary=f"{name} transition reaction on ticket {instance.pk}",
+        )
 
 
 def _approval_reaction_target(pull_request: PullRequest) -> str:
@@ -94,9 +104,18 @@ def _add_approval_reaction_on_transition(
         logger.info("Approval reaction for PR %s gated: %s", instance.pk, blocked)
         return
     try:
-        add_approval_reaction(instance)
+        reacted = add_approval_reaction(instance)
     except Exception:
         logger.exception("Failed to add approval reaction for PR %s", instance.pk)
+        reacted = 0
+    if reacted:
+        notify_user_on_behalf_post(
+            target=target,
+            action="approval_reaction",
+            destination=f"PR {instance.url} review message",
+            artifact_url=instance.url or target,
+            summary=f"✅ approval reaction on PR {instance.url}",
+        )
     # #1047: close the reaction-driven loop — mark every ReviewAssignment row
     # for this MR as ``approved`` so the audit trail captures the full
     # reaction → review → approve cycle. Best-effort: a missing row or DB

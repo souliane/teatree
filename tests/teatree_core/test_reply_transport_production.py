@@ -167,6 +167,92 @@ class TestGitLabReplier(TestCase):
         client.post_json.assert_not_called()
 
 
+class TestDeliverPostedRefForAfterReceipt(TestCase):
+    """``_deliver`` returns the posted artifact ref (#949) — the after-receipt link.
+
+    These exercise the narrow return value each subclass derives so the
+    ``_send`` after-receipt DM has a clickable URL. The Slack helper is
+    known to raise; the GitLab/GitHub helpers fall back to the canonical
+    MR/PR ref when the API response carries no URL.
+    """
+
+    def _slack_spec(self, *, channel: str = "C-eng") -> ReplySpec:
+        event = _event(IncomingEvent.Source.SLACK, key=f"d:slack:{channel}", channel_ref=channel)
+        return ReplySpec(
+            event=event,
+            target_ref=channel,
+            body="hi",
+            idempotency_key=f"d:slack:{channel}:k",
+            action_name="post_comment",
+        )
+
+    def test_slack_deliver_returns_permalink_on_success(self) -> None:
+        bot = MagicMock()
+        bot.post_message.return_value = {"ok": True, "ts": "1700000000.0001"}
+        bot.get_permalink.return_value = "https://team.slack.com/archives/C-eng/p1"
+        ref = SlackReplier(bot=bot)._deliver(self._slack_spec())
+        assert ref == "https://team.slack.com/archives/C-eng/p1"
+
+    def test_slack_deliver_falls_back_to_channel_link_when_no_ts(self) -> None:
+        bot = MagicMock()
+        bot.post_message.return_value = {"ok": True}  # no ts
+        ref = SlackReplier(bot=bot)._deliver(self._slack_spec(channel="C-x"))
+        assert ref == "slack://channel?id=C-x"
+
+    def test_slack_deliver_falls_back_when_get_permalink_raises(self) -> None:
+        bot = MagicMock()
+        bot.post_message.return_value = {"ok": True, "ts": "1.2"}
+        bot.get_permalink.side_effect = RuntimeError("slack permalink boom")
+        ref = SlackReplier(bot=bot)._deliver(self._slack_spec(channel="C-z"))
+        assert ref == "slack://channel?id=C-z"
+
+    def test_slack_deliver_post_dm_returns_empty(self) -> None:
+        bot = MagicMock()
+        bot.open_dm.return_value = "D1"
+        event = _event(IncomingEvent.Source.SLACK, key="d:slack:dm")
+        spec = ReplySpec(event=event, target_ref="U1", body="hi", idempotency_key="d:slack:dm:k", action_name="post_dm")
+        assert SlackReplier(bot=bot)._deliver(spec) == ""
+
+    def _gitlab_replier(self, post_json_return: object) -> tuple[GitLabReplier, ReplySpec]:
+        client = MagicMock()
+        client.resolve_project.return_value = MagicMock(project_id=777)
+        client.post_json.return_value = post_json_return
+        event = _event(IncomingEvent.Source.GITLAB, key="d:gl", channel_ref="org/repo", thread_ref="42")
+        spec = ReplySpec(
+            event=event, target_ref="org/repo", body="x", idempotency_key="d:gl:k", action_name="post_comment"
+        )
+        return GitLabReplier(client=client), spec
+
+    def test_gitlab_deliver_returns_note_web_url(self) -> None:
+        replier, spec = self._gitlab_replier({"id": 1, "web_url": "https://gl/x/-/mr/42#note_1"})
+        assert replier._deliver(spec) == "https://gl/x/-/mr/42#note_1"
+
+    def test_gitlab_deliver_falls_back_to_canonical_mr_ref(self) -> None:
+        replier, spec = self._gitlab_replier({"id": 1})  # no web_url/html_url
+        assert replier._deliver(spec) == "org/repo!42"
+
+    def test_gitlab_deliver_falls_back_when_response_not_dict(self) -> None:
+        replier, spec = self._gitlab_replier(None)
+        assert replier._deliver(spec) == "org/repo!42"
+
+    def _github_replier(self, comment_return: object) -> tuple[GitHubReplier, ReplySpec]:
+        host = MagicMock()
+        host.post_pr_comment.return_value = comment_return
+        event = _event(IncomingEvent.Source.GITHUB, key="d:gh", channel_ref="owner/repo", thread_ref="17")
+        spec = ReplySpec(
+            event=event, target_ref="owner/repo", body="x", idempotency_key="d:gh:k", action_name="post_comment"
+        )
+        return GitHubReplier(host=host), spec
+
+    def test_github_deliver_returns_comment_html_url(self) -> None:
+        replier, spec = self._github_replier({"html_url": "https://github.com/owner/repo/pull/17#issuecomment-9"})
+        assert replier._deliver(spec) == "https://github.com/owner/repo/pull/17#issuecomment-9"
+
+    def test_github_deliver_falls_back_to_canonical_pr_ref(self) -> None:
+        replier, spec = self._github_replier({})  # no html_url/web_url
+        assert replier._deliver(spec) == "owner/repo#17"
+
+
 class TestGitHubReplier(TestCase):
     def test_post_comment_calls_backend(self) -> None:
         event = _event(
@@ -211,7 +297,7 @@ class TestRecordRaceRecovery(TestCase):
         event = _event(IncomingEvent.Source.SLACK, key="slack:race")
 
         class RacingReplier(NoopReplier):
-            def _deliver(self, spec: ReplySpec) -> None:
+            def _deliver(self, spec: ReplySpec) -> str:
                 ReplyDispatch.objects.create(
                     event=spec.event,
                     target_ref=spec.target_ref,
@@ -219,6 +305,7 @@ class TestRecordRaceRecovery(TestCase):
                     idempotency_key=spec.idempotency_key,
                     status=ReplyDispatch.Status.SENT,
                 )
+                return ""
 
         dispatch = RacingReplier().post_dm(event=event, actor="U", body="x", idempotency_key="slack:race:d")
 
@@ -238,8 +325,9 @@ class TestIntrinsicIdempotency(TestCase):
         deliveries: list[str] = []
 
         class CountingReplier(NoopReplier):
-            def _deliver(self, spec: ReplySpec) -> None:
+            def _deliver(self, spec: ReplySpec) -> str:
                 deliveries.append(spec.idempotency_key)
+                return ""
 
         replier = CountingReplier()
         first = replier.post_dm(event=event, actor="U", body="x", idempotency_key="slack:intr:d")
