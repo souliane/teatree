@@ -3,51 +3,88 @@
 The ``run_tick`` entry point is what ``t3 loop tick`` invokes. The loop
 slot itself just calls this function on a cadence; everything that needs
 testing lives here as plain Python.
+
+Per-concern helpers live in sibling modules to keep this orchestrator
+under the module-health LOC gate. ``tick_jobs`` builds scanner jobs,
+``tick_recovery`` runs boot/tick recovery and post-dispatch
+side-effects (mechanical handlers, agent dispatch persistence,
+dashboard recording), and ``tick_freshness`` captures the repo-
+freshness snapshot for the ``tick-meta.json`` sidecar.
+
+The names re-exported below are the public surface other modules and
+tests rely on — keep the re-export list in sync with downstream
+imports.
 """
 
 import datetime as dt
 import logging
-import os
-import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Re-exported for downstream importers. Tests monkeypatch
+# ``teatree.loop.tick.load_config``/``discover_overlays``; keep the
+# binding here so the legacy patch path stays live (the tick_jobs
+# module has its own binding patched by the test setup that exercises
+# the moved functions).
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import discover_overlays, load_config
+from teatree.config import discover_overlays, load_config  # noqa: F401
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.rendering import zones_for
-from teatree.loop.scanners import (
-    ActiveTicketsScanner,
-    AssignedIssuesScanner,
-    GitLabApprovalsScanner,
-    IncomingEventsScanner,
-    MyPrsScanner,
-    NotionViewScanner,
-    OutboundAuditScanner,
-    PendingTasksScanner,
-    ReviewerPrsScanner,
-    ReviewNagScanner,
-    Scanner,
-    SlackDmInboundScanner,
-    SlackMentionsScanner,
-    StaleTicketsScanner,
-    TicketCompletionScanner,
-    TicketDispositionScanner,
-)
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.statusline import StatuslineZones, render
-from teatree.loop.tick_meta import (
-    _canonical_overlay_names,  # noqa: F401 — re-exported for backward compat
-    _collect_repo_freshness,  # noqa: F401 — re-exported for backward compat
-    _repo_freshness,  # noqa: F401 — re-exported for backward compat
-    _repos_from_toml,  # noqa: F401 — re-exported for backward compat
+from teatree.loop.tick_freshness import (
+    _canonical_overlay_names,
+    _collect_repo_freshness,
+    _repo_freshness,
+    _repos_from_toml,
+    _write_tick_meta,
 )
-from teatree.loop.tick_meta import write_tick_meta as _write_tick_meta
+from teatree.loop.tick_jobs import (
+    _gitlab_approvals_enabled,
+    _jobs_for_backend_hosts,
+    _run_job,
+    _ScannerJob,
+    _user_identity_aliases_for_overlay,
+    _user_slack_id_for_overlay,
+    build_default_jobs,
+    build_default_scanners,
+)
+from teatree.loop.tick_recovery import (
+    _execute_mechanical,
+    _persist_agent_dispatches,
+    _reap_stale_task_claims,
+    _record_dashboard_actions,
+)
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "DispatchAction",
+    "ScanSignal",
+    "TickReport",
+    "TickRequest",
+    "_ScannerJob",
+    "_canonical_overlay_names",
+    "_collect_repo_freshness",
+    "_execute_mechanical",
+    "_gitlab_approvals_enabled",
+    "_jobs_for_backend_hosts",
+    "_persist_agent_dispatches",
+    "_reap_stale_task_claims",
+    "_record_dashboard_actions",
+    "_repo_freshness",
+    "_repos_from_toml",
+    "_run_job",
+    "_user_identity_aliases_for_overlay",
+    "_user_slack_id_for_overlay",
+    "_write_tick_meta",
+    "build_default_jobs",
+    "build_default_scanners",
+    "run_tick",
+]
 
 
 @dataclass(slots=True)
@@ -70,14 +107,6 @@ class TickReport:
 
 
 @dataclass(frozen=True, slots=True)
-class _ScannerJob:
-    """Internal record pairing a scanner with its overlay tag."""
-
-    scanner: Scanner
-    overlay: str
-
-
-@dataclass(frozen=True, slots=True)
 class TickRequest:
     """What to scan in one tick — overlays, backends, or an explicit scanner list.
 
@@ -92,262 +121,6 @@ class TickRequest:
     backends: list[OverlayBackends] | None = None
     notion_client: NotionLike | None = None
     ready_labels: tuple[str, ...] = ()
-
-
-def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
-    """Build one scanner-job fan-out per host on *backend* (#976).
-
-    Pre-fix the caller assumed one ``backend.host``; with multi-host the
-    same fan-out must run for each platform that resolved a credential.
-    ``TicketCompletionScanner`` is overlay-scoped (reads local Ticket
-    rows), so it's emitted exactly once even when two hosts are present.
-    """
-    jobs: list[_ScannerJob] = []
-    ticket_completion_emitted = False
-    gitlab_approvals_enabled = _gitlab_approvals_enabled()
-    for code_host in backend.hosts:
-        jobs.extend(
-            [
-                _ScannerJob(
-                    scanner=MyPrsScanner(host=code_host, identities=backend.identities),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=ReviewerPrsScanner(
-                        host=code_host,
-                        identities=backend.identities,
-                        overlay_name=tag,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=AssignedIssuesScanner(
-                        host=code_host,
-                        ready_labels=backend.ready_labels,
-                        exclude_labels=backend.exclude_labels,
-                        auto_start=backend.auto_start_assigned_issues,
-                        max_concurrent=backend.max_concurrent_auto_starts,
-                        overlay_name=tag,
-                        identities=backend.identities,
-                    ),
-                    overlay=tag,
-                ),
-                _ScannerJob(
-                    scanner=TicketDispositionScanner(
-                        host=code_host,
-                        overlay=backend.overlay,
-                        ready_labels=backend.ready_labels,
-                        overlay_name=tag,
-                        user_identity_aliases=_user_identity_aliases_for_overlay(tag),
-                    ),
-                    overlay=tag,
-                ),
-            ],
-        )
-        if backend.overlay is not None and not ticket_completion_emitted:
-            jobs.append(
-                _ScannerJob(
-                    scanner=TicketCompletionScanner(
-                        overlay=backend.overlay,
-                        overlay_name=tag,
-                    ),
-                    overlay=tag,
-                ),
-            )
-            ticket_completion_emitted = True
-        if gitlab_approvals_enabled:
-            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
-            # (#936). Off by default — opt-in via the env flag so deployments
-            # that already wire the GitLab webhook do not double-emit.
-            jobs.append(
-                _ScannerJob(
-                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
-                    overlay=tag,
-                ),
-            )
-    return jobs
-
-
-def _gitlab_approvals_enabled() -> bool:
-    """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
-
-    Default off — the scanner is poll-driven and overlaps with the webhook
-    path; deployments that already wire ``/hooks/gitlab/`` do not need it.
-    Returns True for any truthy value (``1``, ``true``, ``yes``,
-    case-insensitive); anything else (unset, ``0``, ``false``) is off.
-    """
-    raw = os.environ.get("TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED", "")
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
-    label = f"{job.scanner.name}[{job.overlay}]" if job.overlay else job.scanner.name
-    try:
-        signals = job.scanner.scan()
-        if job.overlay:
-            signals = [
-                ScanSignal(
-                    kind=s.kind,
-                    summary=s.summary,
-                    payload={**s.payload, "overlay": job.overlay},
-                )
-                for s in signals
-            ]
-    except Exception as exc:
-        logger.exception("Scanner %s raised", label)
-        return label, [], f"{type(exc).__name__}: {exc}"
-    return label, signals, ""
-
-
-def _user_slack_id_for_overlay(overlay_name: str) -> str:
-    """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
-
-    Used by :class:`ReviewNagScanner` to know where to DM long-stale MR
-    warnings. Reads ``~/.teatree.toml`` directly so a fresh tick picks up
-    a runtime config change without requiring an overlay reload.
-    """
-    try:
-        toml_path = Path.home() / ".teatree.toml"
-        if not toml_path.is_file():
-            return ""
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    overlays = data.get("overlays") or {}
-    if overlay_name and isinstance(overlays.get(overlay_name), dict):
-        user_id = overlays[overlay_name].get("slack_user_id", "")
-        if user_id:
-            return str(user_id)
-    teatree_cfg = data.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_id", ""))
-
-
-def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
-    """Resolve ``user_identity_aliases`` honouring any per-overlay override.
-
-    The active overlay's ``[overlays.<name>]`` table wins over the global
-    ``[teatree]`` value; with no setting anywhere we return the empty
-    tuple so the disposition scanner keeps its legacy behaviour.
-    """
-    try:
-        global_value = tuple(load_config().user.user_identity_aliases)
-        if overlay_name:
-            for entry in discover_overlays():
-                if entry.name == overlay_name:
-                    override = entry.overrides.get("user_identity_aliases")
-                    if override is not None:
-                        return tuple(str(s) for s in override)
-                    break
-    except Exception:  # noqa: BLE001 — never break a tick on a config read.
-        logger.warning("Failed to resolve user_identity_aliases for %r; defaulting to empty", overlay_name)
-        return ()
-    return global_value
-
-
-def build_default_jobs(
-    *,
-    backends: list[OverlayBackends] | None = None,
-    host: CodeHostBackend | None = None,
-    messaging: MessagingBackend | None = None,
-    notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
-) -> list[_ScannerJob]:
-    """Build the default scanner jobs from one or more overlays.
-
-    Pass *backends* to scan multiple overlays in one tick (each gets its
-    own host/messaging credentials). The *host*/*messaging* shape
-    is preserved for callers that resolve a single overlay themselves.
-    """
-    jobs: list[_ScannerJob] = [
-        _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
-        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
-        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
-    ]
-
-    if backends:
-        for backend in backends:
-            tag = backend.name
-            if backend.external_db is not None:
-                from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
-
-                jobs.append(
-                    _ScannerJob(
-                        scanner=ExternalTicketsScanner(overlay_name=tag, db_path=backend.external_db),
-                        overlay=tag,
-                    ),
-                )
-            else:
-                jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
-            jobs.append(
-                _ScannerJob(
-                    scanner=StaleTicketsScanner(
-                        overlay_name=tag,
-                        threshold_days=backend.stale_threshold_days,
-                    ),
-                    overlay=tag,
-                ),
-            )
-            # Multi-host: an overlay with both GitHub and GitLab PATs scans
-            # both forges, so PRs on one platform don't drown out PRs on the
-            # other (#976). The single-host path is preserved by iterating
-            # ``backend.hosts`` (which is empty when no token resolved).
-            jobs.extend(_jobs_for_backend_hosts(backend, tag))
-            if backend.messaging is not None:
-                jobs.extend(
-                    [
-                        _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
-                        _ScannerJob(
-                            scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
-                            overlay=tag,
-                        ),
-                        _ScannerJob(
-                            scanner=ReviewNagScanner(
-                                messaging=backend.messaging,
-                                user_slack_id=_user_slack_id_for_overlay(tag),
-                            ),
-                            overlay=tag,
-                        ),
-                    ],
-                )
-    else:
-        if host is not None:
-            jobs.extend(
-                [
-                    _ScannerJob(scanner=MyPrsScanner(host=host), overlay=""),
-                    _ScannerJob(scanner=ReviewerPrsScanner(host=host), overlay=""),
-                    _ScannerJob(scanner=AssignedIssuesScanner(host=host, ready_labels=ready_labels), overlay=""),
-                ],
-            )
-        if messaging is not None:
-            jobs.extend(
-                [
-                    _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
-                    _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
-                ]
-            )
-
-    if notion_client is not None:
-        jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
-    return jobs
-
-
-def build_default_scanners(
-    *,
-    host: CodeHostBackend | None,
-    messaging: MessagingBackend | None,
-    notion_client: NotionLike | None = None,
-    ready_labels: tuple[str, ...] = (),
-) -> list[Scanner]:
-    """Single-overlay scanner builder kept for tests and ad-hoc CLI use."""
-    return [
-        job.scanner
-        for job in build_default_jobs(
-            host=host,
-            messaging=messaging,
-            notion_client=notion_client,
-            ready_labels=ready_labels,
-        )
-    ]
 
 
 def run_tick(
@@ -407,98 +180,3 @@ def run_tick(
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
-
-
-def _reap_stale_task_claims() -> None:
-    """Recover orphaned ticket state, take over orphaned claims, reap stale ones.
-
-    Three boot/tick recovery sweeps, ordered so a recoverable row is
-    rescued before a harsher sweep can fail it. First,
-    ``replay_orphaned_transitions`` (#883): a task that COMPLETED but
-    whose FSM transition was lost to a mid-transition crash leaves the
-    ticket half-advanced; the task is COMPLETED (not CLAIMED) so the
-    claim sweeps can't see it and the loop stalls forever — this replays
-    the dropped transition via the shared idempotent path. Then
-    ``reclaim_orphaned_claims`` (#652): a CLAIMED task whose lease
-    expired because its owning session exited mid-task is recoverable —
-    returned to PENDING so another still-open session resumes it
-    ("fastest open session takes over") rather than being failed.
-    Finally ``reap_stale_claims``: any residual stale CLAIMED row is
-    failed.
-
-    Best-effort: if the test harness blocks DB access (pytest-django
-    without a ``db`` marker), the loop tick should still render scanners
-    and signals.
-    """
-    import contextlib  # noqa: PLC0415
-
-    from teatree.core.models import Task  # noqa: PLC0415
-
-    with contextlib.suppress(RuntimeError):
-        Task.objects.replay_orphaned_transitions()
-        Task.objects.reclaim_orphaned_claims()
-        Task.objects.reap_stale_claims()
-
-
-def _record_dashboard_actions(report: TickReport, started_at: dt.datetime) -> None:
-    """Append one ``tick-actions.jsonl`` line per dispatched action.
-
-    The sidecar is the input the ``t3 loop dashboard`` command reads to
-    render the tabular DM. Recording happens here (not in the dashboard
-    CLI) so each tick produces ground truth even when the dashboard is
-    never displayed — observability is decoupled from rendering.
-    """
-    from teatree.loop.dashboard import record_actions  # noqa: PLC0415
-
-    try:
-        identities = tuple(load_config().user.user_identity_aliases)
-    except Exception:  # noqa: BLE001 — config read must never break a tick
-        identities = ()
-    try:
-        record_actions(report.actions, now=started_at, identities=identities)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Recording dashboard actions failed: %s", exc)
-
-
-def _persist_agent_dispatches(report: TickReport) -> None:
-    """Convert ``kind="agent"`` actions into Ticket + Task DB rows.
-
-    The DB is the dispatch queue; the ``/loop`` slot's session reads
-    pending Tasks via ``t3 loop pending-spawn`` and spawns sub-agents
-    in-session via its ``Agent`` tool. The statusline is purely visual
-    and never an orchestration channel.
-
-    Idempotent: if a Ticket already exists for ``(role, issue_url)`` with
-    a non-completed reviewing/coding Task, no new rows are created. The
-    bidirectional ``ReviewerPrsScanner`` cache (updated when the review
-    Task completes) prevents re-spawning at the same SHA.
-    """
-    from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415
-
-    try:
-        persist_agent_actions(report.actions)
-    except Exception as exc:
-        logger.exception("Persisting agent dispatches failed")
-        report.errors["dispatch_persist"] = f"{type(exc).__name__}: {exc}"
-
-
-def _execute_mechanical(report: TickReport) -> None:
-    """Execute inline mechanical actions (ticket completions, etc.).
-
-    Runs after dispatch but before statusline render so the statusline
-    reflects the post-transition state. Errors are captured in
-    ``report.errors`` — they never abort the tick.
-    """
-    from teatree.loop.mechanical import HANDLERS  # noqa: PLC0415
-
-    for action in report.actions:
-        if action.kind != "mechanical":
-            continue
-        handler = HANDLERS.get(action.zone)
-        if handler is not None:
-            try:
-                handler(action.payload)
-            except Exception as exc:
-                label = f"{action.zone}[{action.payload.get('ticket_id', '?')}]"
-                logger.exception("Mechanical action %s failed", label)
-                report.errors[label] = f"{type(exc).__name__}: {exc}"
