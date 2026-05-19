@@ -238,13 +238,14 @@ def test_build_default_jobs_propagates_user_identity_aliases(
 
     config_path = tmp_path / ".teatree.toml"
     config_path.write_text(
-        '[teatree]\nuser_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]\n',
+        '[teatree]\nuser_identity_aliases = ["adrien.work", "souliane", "acme.work"]\n',
         encoding="utf-8",
     )
     import teatree.config as _config  # noqa: PLC0415
 
     monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr("teatree.loop.tick_jobs.discover_overlays", list)
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
     backends = [
         OverlayBackends(
@@ -256,7 +257,7 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     ]
     jobs = build_default_jobs(backends=backends)
     disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
-    assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane", "adrien.cossa")
+    assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane", "acme.work")
 
 
 def test_user_identity_aliases_falls_back_to_empty_on_config_error(
@@ -328,6 +329,7 @@ def test_build_default_jobs_per_overlay_alias_override(
             ),
         ],
     )
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
     backends = [
         OverlayBackends(
@@ -340,6 +342,118 @@ def test_build_default_jobs_per_overlay_alias_override(
     jobs = build_default_jobs(backends=backends)
     disp = next(j for j in jobs if j.scanner.name == "ticket_dispositions")
     assert disp.scanner.user_identity_aliases == ("adrien.work", "souliane")
+
+
+def test_identity_alias_groups_reads_overlay_config_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_identity_alias_groups_for_overlay`` prefers the live ``OverlayConfig``.
+
+    A user who configures groups via an overlay's settings module (or
+    overlay-class default) sees them honoured without going through the
+    TOML override path — the source of truth is the live config object.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+    from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
+
+    overlay = MagicMock(spec=OverlayBase)
+    overlay.config = MagicMock()
+    overlay.config.identity_aliases = [
+        ["acme-gh", "souliane", "acme.work"],
+        ["alice", "alice.work"],
+    ]
+    backend = OverlayBackends(
+        name="acme",
+        hosts=(MagicMock(spec=CodeHostBackend),),
+        messaging=None,
+        ready_labels=(),
+        overlay=overlay,
+    )
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
+    groups = _identity_alias_groups_for_overlay("acme", backend)
+    assert groups == (
+        ("acme-gh", "souliane", "acme.work"),
+        ("alice", "alice.work"),
+    )
+
+
+def test_identity_alias_groups_falls_through_to_toml_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No live config → reads ``[overlays.<name>] identity_aliases`` from TOML.
+
+    TOML-only overlays (registered via ``[overlays.<name>]`` without a
+    Python class) never populate ``OverlayConfig``; the helper falls back
+    to ``discover_overlays`` overrides so the grouping still resolves.
+    """
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    config_path.write_text("[teatree]\n", encoding="utf-8")
+    import teatree.config as _config  # noqa: PLC0415
+
+    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr(
+        "teatree.loop.tick_resolvers.discover_overlays",
+        lambda: [
+            OverlayEntry(
+                name="acme",
+                overlay_class="x.y:Z",
+                overrides={"identity_aliases": [["acme-gh", "souliane"]]},
+            ),
+        ],
+    )
+    assert _identity_alias_groups_for_overlay("acme") == (("acme-gh", "souliane"),)
+
+
+def test_identity_alias_groups_drops_malformed_inner_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Malformed TOML (non-list group, non-string handles, empty group) → empty.
+
+    A broken config must never crash a tick; the malformed entries are
+    silently dropped and the scanner sees the empty-default behaviour.
+    """
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+    from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        "teatree.loop.tick_resolvers.discover_overlays",
+        lambda: [
+            OverlayEntry(
+                name="acme",
+                overlay_class="x.y:Z",
+                overrides={
+                    "identity_aliases": [
+                        "not-a-list",  # dropped
+                        [],  # empty group dropped
+                        [123, "ok"],  # 123 dropped
+                    ],
+                },
+            ),
+        ],
+    )
+    assert _identity_alias_groups_for_overlay("acme") == (("ok",),)
+
+
+def test_identity_alias_groups_returns_empty_on_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``discover_overlays`` raising → the helper degrades silently to ``()``."""
+    from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
+
+    def _boom() -> object:
+        msg = "registry blew up"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", _boom)
+    assert _identity_alias_groups_for_overlay("acme") == ()
 
 
 def test_zones_groups_disposition_candidates_by_reason(tmp_path: Path) -> None:

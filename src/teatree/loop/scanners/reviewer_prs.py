@@ -237,11 +237,16 @@ class ReviewerPrsScanner:
     belonging to this overlay. Required when running side-by-side scanners
     for multiple overlays/hosts in one tick — a GitHub scanner must not
     sweep GitLab reviewer tickets (#998).
+
+    ``allowed_url_prefixes`` gates emission to PRs whose URL starts with one
+    of the listed prefixes — the per-overlay analogue of ``overlay_name``
+    for PR-event signals (#1015). Empty tuple preserves legacy behaviour.
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
+    allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -260,7 +265,7 @@ class ReviewerPrsScanner:
         scanned_urls: set[str] = set()
         for pr in prs:
             url = _pr_url(pr)
-            if not url:
+            if not url or not self._url_allowed(url):
                 continue
             scanned_urls.add(url)
             head = _head_sha(pr)
@@ -313,6 +318,14 @@ class ReviewerPrsScanner:
             return tuple(dict.fromkeys(self.identities))
         user = self.host.current_user()
         return (user,) if user else ()
+
+    def _url_allowed(self, url: str) -> bool:
+        """Same per-overlay URL-prefix gate as ``MyPrsScanner._url_allowed`` (#1015)."""
+        if not self.allowed_url_prefixes:
+            return True
+        if not url:
+            return False
+        return any(url.startswith(prefix) for prefix in self.allowed_url_prefixes)
 
     def _collect_unique_prs(self, reviewers: tuple[str, ...]) -> list[RawAPIDict]:
         """Union review-requested PRs across *reviewers*, deduped by URL."""
