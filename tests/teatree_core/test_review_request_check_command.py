@@ -7,11 +7,14 @@ the SAME turn as a review-request post and aborts on SUPPRESS.
 from typing import cast
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.backends import slack
 from teatree.core.models import ReviewRequestPost
 from teatree.core.review_request_guard import GuardDecision, GuardTarget
+from tests.teatree_core.test_review_request_guard import FakeClient, _bind
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 
@@ -37,7 +40,7 @@ class TestReviewRequestCheckCommand(TestCase):
                 return_value=target,
             ),
             patch(
-                "teatree.core.management.commands.review_request_check.should_post_review_request",
+                "teatree.core.management.commands.review_request_check.peek_should_post_review_request",
                 return_value=GuardDecision(action="post"),
             ),
         ):
@@ -62,7 +65,7 @@ class TestReviewRequestCheckCommand(TestCase):
                 return_value=target,
             ),
             patch(
-                "teatree.core.management.commands.review_request_check.should_post_review_request",
+                "teatree.core.management.commands.review_request_check.peek_should_post_review_request",
                 return_value=decision,
             ),
         ):
@@ -74,4 +77,30 @@ class TestReviewRequestCheckCommand(TestCase):
         assert result["permalink"] == "https://team.slack.com/archives/C1/p1"
         assert result["author"] == "U_HUMAN"
         assert result["reason"] == "already_posted"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_check_leaves_no_durable_row(self) -> None:
+        """Decision-only: a clean live scan must NOT persist a claim (#1103).
+
+        Pre-#1103 the command called ``should_post_review_request`` which
+        takes the durable ``ReviewRequestPost`` ``get_or_create`` claim;
+        running ``check`` (which never posts) left an orphan row that then
+        wedged every later real post on ``already_claimed``. RED on main
+        (count == 1); GREEN once ``check`` peeks instead of claiming.
+        """
+        target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with (
+            patch(
+                "teatree.core.management.commands.review_request_check.resolve_guard_target",
+                return_value=target,
+            ),
+            pytest.MonkeyPatch.context() as mp,
+        ):
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            result = cast(
+                "dict[str, object]",
+                call_command("review_request_check", "--mr-url", _MR_URL),
+            )
+        assert result["action"] == "post"
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
