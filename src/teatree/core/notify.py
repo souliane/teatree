@@ -24,7 +24,7 @@ from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.models import BotPing, OutboundClaim
-from teatree.slack_mrkdwn import slack_linkify
+from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +211,7 @@ def _format(text: str, kind: NotifyKind) -> str:
         NotifyKind.QUESTION: ":question: *question*",
         NotifyKind.INFO: ":information_source: *info*",
     }[kind]
-    return f"{prefix}\n{text}"
+    return f"{prefix}\n{normalize_slack_message(text)}"
 
 
 def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: str) -> None:

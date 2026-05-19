@@ -26,6 +26,7 @@ from django.db import IntegrityError, transaction
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.slack_mrkdwn import normalize_slack_message
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
@@ -260,16 +261,17 @@ class SlackReplier(_BaseReplier):
         # to a lead. Thread/comment replies always go back to the
         # originating event's channel/thread; the spec's target_ref there
         # is the composite recorded for audit, not a routing override.
+        normalized = normalize_slack_message(spec.body)
         if spec.action_name == "post_dm":
             channel = self._bot.open_dm(spec.target_ref)
             if not channel:
                 msg = f"could not open DM with {spec.target_ref}"
                 raise RuntimeError(msg)
-            self._bot.post_message(channel=channel, text=spec.body, thread_ts="")
+            self._bot.post_message(channel=channel, text=normalized, thread_ts="")
             return
         self._bot.post_message(
             channel=spec.event.channel_ref,
-            text=spec.body,
+            text=normalized,
             thread_ts=spec.event.thread_ref,
         )
 
