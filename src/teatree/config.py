@@ -479,6 +479,31 @@ def get_effective_settings() -> UserSettings:
     return replace(base, **overrides)
 
 
+def cadence_seconds() -> int:
+    """Resolve the loop slot cadence in seconds (minimum 60s).
+
+    This setting is not registered in ``ENV_SETTING_OVERRIDES`` — its env
+    layer is a bespoke direct read, so its resolution does NOT go through
+    the generic effective-settings env layer. Layers, first match wins:
+    first the ``T3_LOOP_CADENCE`` env var (the bespoke direct read), then
+    ``get_effective_settings().loop_cadence_seconds`` which covers the
+    per-overlay ``[overlays.<name>]`` override, then the global
+    ``[teatree]`` value in ``~/.teatree.toml``, then the ``UserSettings``
+    default of 720.
+
+    Any ``T3_LOOP_CADENCE`` parse failure falls back to 720. The result is
+    clamped to a 60s minimum so a misconfigured tiny value cannot busy-loop
+    the tick.
+    """
+    raw = os.environ.get("T3_LOOP_CADENCE")
+    if raw is not None and raw.strip():
+        try:
+            return max(60, int(raw.strip()))
+        except ValueError:
+            return 720
+    return max(60, get_effective_settings().loop_cadence_seconds)
+
+
 def _active_overlay_entry() -> OverlayEntry | None:
     """Find the active overlay's toml entry (carrying any overrides).
 

@@ -110,6 +110,7 @@ def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
 
 
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
+    from teatree.config import cadence_seconds  # noqa: PLC0415
     from teatree.loop.statusline import default_path  # noqa: PLC0415
 
     meta_path = (target or default_path()).with_name("tick-meta.json")
@@ -118,7 +119,9 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     # ensure the parent exists so an observability write never crashes
     # the tick (or the skipped-tick freshness touch).
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    cadence = int(os.environ.get("T3_LOOP_CADENCE", "720") or "720")
+    # #1036: share the slot's cadence resolver so the displayed next-tick
+    # countdown can never diverge from the real loop cadence.
+    cadence = cadence_seconds()
     next_epoch = int(started_at.timestamp()) + cadence
     freshness = _collect_repo_freshness()
     meta_path.write_text(
