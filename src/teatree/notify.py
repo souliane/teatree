@@ -78,6 +78,29 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     the active ``[overlays.<name>]`` table (falling back to the global
     ``[teatree] slack_user_id``).
 
+    Wrapper scripts that need to route a DM to a specific overlay's bot
+    (e.g. a post-session helper that wants overlay X's bot rather than
+    the one inferred from the current ``T3_OVERLAY_NAME``) should pass
+    *backend* explicitly using :func:`messaging_from_overlay(overlay_name=...)`:
+
+    .. code-block:: python
+
+        from teatree.core.backend_factory import messaging_from_overlay
+        from teatree.notify import notify_user, NotifyKind
+
+        backend = messaging_from_overlay(overlay_name="my-overlay")
+        notify_user(
+            "ready for review",
+            kind=NotifyKind.INFO,
+            idempotency_key="session=...;turn=...",
+            backend=backend,
+            user_id="UXXXX",
+        )
+
+    The factory falls back to ``[overlays.<name>]`` in ``~/.teatree.toml``
+    when an overlay has no registered Python class, so path-only overlays
+    route to their own bot instead of silently returning ``None``.
+
     On success, fetches the message permalink via ``get_permalink`` and
     stores it on the ``BotPing`` row so subsequent CLI surfaces can echo
     a clickable link back to the user (the audited DM is the canonical
