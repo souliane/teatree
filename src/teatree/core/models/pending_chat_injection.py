@@ -80,6 +80,12 @@ class PendingChatInjection(models.Model):
     :mod:`teatree.core.notify`).
     """
 
+    class AnswerKind(models.TextChoices):
+        UNANSWERED = "", "Unanswered"
+        ACK = "ack", "Ack"
+        SIMPLE = "simple", "Simple"
+        DELEGATED = "delegated", "Delegated"
+
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
     slack_ts = models.CharField(max_length=64)
@@ -87,7 +93,32 @@ class PendingChatInjection(models.Model):
     text = models.TextField()
     received_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
+    # #1069's strict turn-end gate column: set ONLY when the agent
+    # personally replied to the user (via ``agent_answered_question`` or
+    # the ``notify_user`` integration in :mod:`teatree.core.notify`).
+    # ``db_index=True`` because ``unanswered_questions_since`` filters on
+    # it on the Stop-hook hot path. The reactive Slack-answer loop must
+    # NOT write this column — see ``loop_replied_at`` below (#1075).
     answered_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    # The reactive Slack-answer loop (#1014) stamps these; they are
+    # orthogonal to BOTH ``consumed_at`` (the prompt-drain column) and
+    # ``answered_at`` (#1069's agent-personally-replied gate). Option B
+    # (#1075): the loop owns ``loop_replied_at``, a column distinct from
+    # ``answered_at``, so the loop posting a token-cheap reply does NOT
+    # satisfy the #1063 turn-end gate — that gate stays a strict "the
+    # agent personally answered" guarantee, fully decoupled from the loop
+    # work-queue. A row may be consumed-but-loop-unreplied (drained into a
+    # prompt, no loop reply yet) or loop-replied-but-unconsumed (the loop
+    # replied before any interactive session drained it). Each is a
+    # single-use compare-and-swap, never written for the same column twice.
+    loop_replied_at = models.DateTimeField(null=True, blank=True)
+    answer_kind = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        choices=AnswerKind.choices,
+    )
+    eyes_reacted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "teatree_pending_chat_injection"
@@ -105,6 +136,17 @@ class PendingChatInjection(models.Model):
     @property
     def is_pending(self) -> bool:
         return self.consumed_at is None
+
+    @property
+    def is_loop_replied(self) -> bool:
+        """True once the reactive Slack-answer loop has replied (#1075).
+
+        Distinct from ``answered_at`` (#1069's "the agent personally
+        replied" gate): the loop stamps ``loop_replied_at``, never
+        ``answered_at``, so this property never reflects the turn-end
+        gate's state.
+        """
+        return self.loop_replied_at is not None
 
     @property
     def is_question(self) -> bool:
@@ -163,6 +205,30 @@ class PendingChatInjection(models.Model):
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
 
+    @classmethod
+    def loop_unreplied(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
+        """Return the reactive Slack-answer loop's work-queue, oldest first.
+
+        Orthogonal to BOTH :meth:`pending` (the ``consumed_at`` prompt-
+        drain queue) and the #1069 turn-end gate: this gates on
+        ``loop_replied_at`` (the loop's own column, #1075 / Option B),
+        NOT ``answered_at``. Decoupling the loop work-queue from
+        ``answered_at`` is the whole point — the loop posting a reply
+        stamps only ``loop_replied_at``, so it never silently satisfies
+        the #1063 Stop-hook turn-end gate (which still requires the agent
+        to *personally* answer via ``agent_answered_question``). A row
+        drained into a prompt is still loop-unreplied until the loop posts,
+        so the answer loop and the prompt-drain never double-process the
+        same column.
+
+        Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
+        overlay path uses ``overlay=""`` consistently).
+        """
+        qs = cls.objects.filter(loop_replied_at__isnull=True)
+        if overlay:
+            qs = qs.filter(overlay=overlay)
+        return qs.order_by("received_at")
+
     def consume(self) -> bool:
         """Mark this row consumed; return ``True`` on the transition, else ``False``.
 
@@ -173,6 +239,42 @@ class PendingChatInjection(models.Model):
         updated = type(self).objects.filter(pk=self.pk, consumed_at__isnull=True).update(consumed_at=timezone.now())
         if updated:
             self.refresh_from_db(fields=["consumed_at"])
+        return bool(updated)
+
+    def mark_loop_replied(self, kind: str) -> bool:
+        """Stamp ``loop_replied_at`` + ``answer_kind``; ``True`` on the transition.
+
+        Single-use compare-and-swap (``UPDATE … WHERE loop_replied_at IS
+        NULL``) mirroring :meth:`consume`: a concurrent second caller sees
+        0 rows updated and returns ``False`` without overwriting the first
+        ``answer_kind``. Writes ONLY the reactive Slack-answer loop's
+        column (#1075 / Option B) — never ``consumed_at`` (the prompt-
+        drain column) and never ``answered_at`` (#1069's strict "the
+        agent personally replied" turn-end gate). The loop replying must
+        not satisfy that gate.
+        """
+        updated = (
+            type(self)
+            .objects.filter(pk=self.pk, loop_replied_at__isnull=True)
+            .update(loop_replied_at=timezone.now(), answer_kind=kind)
+        )
+        if updated:
+            self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
+        return bool(updated)
+
+    def mark_eyes_reacted(self) -> bool:
+        """Stamp ``eyes_reacted_at``; ``True`` on the transition, else ``False``.
+
+        Single-use CAS so the no-LLM :eyes: receipt-acknowledgement
+        reaction fires at most once even when the answer cycle re-runs the
+        same row across ticks (post/readback failures leave the row
+        loop-unreplied for retry, but the :eyes: must not re-post).
+        """
+        updated = (
+            type(self).objects.filter(pk=self.pk, eyes_reacted_at__isnull=True).update(eyes_reacted_at=timezone.now())
+        )
+        if updated:
+            self.refresh_from_db(fields=["eyes_reacted_at"])
         return bool(updated)
 
     @classmethod

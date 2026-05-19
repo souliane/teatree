@@ -115,6 +115,136 @@ class TestConsumeIdempotency:
         assert row.consumed_at == first_stamp
 
 
+class TestLoopUnrepliedQuery:
+    """The reactive Slack-answer loop reads its work via ``loop_unreplied`` (#1014/#1075).
+
+    ``loop_unreplied`` is orthogonal to ``pending`` AND to #1069's
+    ``answered_at`` turn-end gate: it gates on ``loop_replied_at`` (a
+    column distinct from both ``consumed_at`` and ``answered_at``), so a
+    row drained into the prompt (``consumed``) is still *loop-unreplied*
+    until the answer loop posts a reply — and a loop reply never touches
+    ``answered_at`` (#1075 / Option B).
+    """
+
+    def test_loop_unreplied_excludes_loop_replied_rows(self) -> None:
+        replied = PendingChatInjection.record(channel="C", slack_ts="1.0", text="old")
+        assert replied is not None
+        replied.mark_loop_replied("ack")
+        PendingChatInjection.record(channel="C", slack_ts="2.0", text="new")
+
+        loop_unreplied = list(PendingChatInjection.loop_unreplied())
+        assert [row.slack_ts for row in loop_unreplied] == ["2.0"]
+
+    def test_loop_unreplied_returns_oldest_first(self) -> None:
+        later = PendingChatInjection.record(channel="C", slack_ts="2.0", text="later")
+        earlier = PendingChatInjection.record(channel="C", slack_ts="1.0", text="earlier")
+        assert later is not None
+        assert earlier is not None
+        earlier.received_at = timezone.now().replace(microsecond=0)
+        later.received_at = earlier.received_at.replace(microsecond=1)
+        earlier.save(update_fields=["received_at"])
+        later.save(update_fields=["received_at"])
+
+        loop_unreplied = list(PendingChatInjection.loop_unreplied())
+        assert [row.slack_ts for row in loop_unreplied] == ["1.0", "2.0"]
+
+    def test_loop_unreplied_filters_by_overlay_when_given(self) -> None:
+        PendingChatInjection.record(channel="C", slack_ts="1.0", text="a", overlay="ovA")
+        PendingChatInjection.record(channel="C", slack_ts="2.0", text="b", overlay="other")
+
+        loop_unreplied = list(PendingChatInjection.loop_unreplied(overlay="ovA"))
+        assert [row.overlay for row in loop_unreplied] == ["ovA"]
+
+    def test_consumed_row_is_still_loop_unreplied(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.consume()
+
+        assert list(PendingChatInjection.loop_unreplied()) == [row]
+        assert row.loop_replied_at is None
+        assert row.consumed_at is not None
+
+
+class TestMarkLoopReplied:
+    """``mark_loop_replied`` is a single-use compare-and-swap, like ``consume``."""
+
+    def test_first_mark_returns_true_and_stamps_kind(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.mark_loop_replied("simple") is True
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == "simple"
+        assert row.is_loop_replied is True
+
+    def test_second_mark_returns_false_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_loop_replied("ack")
+        first_stamp = row.loop_replied_at
+
+        assert row.mark_loop_replied("delegated") is False
+        row.refresh_from_db()
+        assert row.loop_replied_at == first_stamp
+        assert row.answer_kind == "ack"
+
+    def test_loop_replied_is_orthogonal_to_consumed(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.consume() is True
+        assert row.mark_loop_replied("simple") is True
+
+        row.refresh_from_db()
+        assert row.consumed_at is not None
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == "simple"
+
+    def test_loop_replied_does_not_touch_answered_at(self) -> None:
+        """Option B (#1075) keystone: a loop reply must NOT satisfy the #1069 gate.
+
+        ``mark_loop_replied`` stamps only ``loop_replied_at``; it must
+        leave ``answered_at`` NULL so the #1063 turn-end Stop-hook gate
+        still fires for a question the loop "handled" but the agent never
+        personally answered. Regression guard for the shared-column
+        blocker resolved by Option B.
+        """
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="why does X fail?")
+        assert row is not None
+
+        assert row.mark_loop_replied("simple") is True
+        row.refresh_from_db()
+
+        assert row.loop_replied_at is not None
+        assert row.answered_at is None  # the gate column is untouched
+
+        # The #1069 turn-end gate still sees this question as unanswered:
+        # a token-cheap loop reply did NOT satisfy "agent personally replied".
+        still_unanswered = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+        assert [r.slack_ts for r in still_unanswered] == ["1.0"]
+
+
+class TestMarkEyesReacted:
+    """The :eyes: ack-reaction must fire at most once across re-runs."""
+
+    def test_first_mark_returns_true_and_stamps(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.mark_eyes_reacted() is True
+        assert row.eyes_reacted_at is not None
+
+    def test_second_mark_returns_false_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_eyes_reacted()
+        first_stamp = row.eyes_reacted_at
+
+        assert row.mark_eyes_reacted() is False
+        row.refresh_from_db()
+        assert row.eyes_reacted_at == first_stamp
+
+
 class TestStrRepr:
     def test_repr_for_pending_row(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x", overlay="ovA")

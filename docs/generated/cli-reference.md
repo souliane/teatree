@@ -1331,6 +1331,12 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                tiered action ladder. Runs in the same loop-owner session as  │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
 │                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
+│ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
+│                slot. Runs on a tight cadence (default 20s) in the same       │
+│                loop-owner session as `t3 loop tick`, on a separate LoopLease │
+│                so a long answer cycle never blocks a fast regular tick.      │
+│                Complementary to the inbound prompt-drain, never a            │
+│                double-answer (#1014).                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1600,6 +1606,70 @@ Usage: t3 loop self-improve start [OPTIONS]
  the user pastes inside the loop-owner Claude Code session to register
  the second ``/loop`` slot.  The cheap tier runs by default; override
  via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop slack-answer`
+
+```
+Usage: t3 loop slack-answer [OPTIONS] COMMAND [ARGS]...
+
+ Reactive, token-cheap Slack-answer loop — the third `/loop` slot. Runs on a
+ tight cadence (default 20s) in the same loop-owner session as `t3 loop tick`,
+ on a separate LoopLease so a long answer cycle never blocks a fast regular
+ tick. Complementary to the inbound prompt-drain, never a double-answer
+ (#1014).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run     Run one reactive Slack-answer cycle.                                 │
+│ status  Show the reactive Slack-answer loop's unreplied queue depth.         │
+│ start   Print the ``/loop <cadence>`` slot definition for the Slack-answer   │
+│         loop.                                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop slack-answer run`
+
+```
+Usage: t3 loop slack-answer run [OPTIONS]
+
+ Run one reactive Slack-answer cycle.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the cycle report as JSON.                               │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop slack-answer status`
+
+```
+Usage: t3 loop slack-answer status [OPTIONS]
+
+ Show the reactive Slack-answer loop's unreplied queue depth.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 loop slack-answer start`
+
+```
+Usage: t3 loop slack-answer start [OPTIONS]
+
+ Print the ``/loop <cadence>`` slot definition for the Slack-answer loop.
+
+ Mirrors ``t3 loop self-improve start``: prints the slash command the
+ user pastes inside the loop-owner Claude Code session to register the
+ third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
+ (seconds; floor 15).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
