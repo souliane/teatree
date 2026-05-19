@@ -20,6 +20,8 @@ from http import HTTPStatus
 
 import typer
 
+from teatree.cli.review_approval import identity_has_reviewed
+from teatree.cli.review_audit import record_note_claim
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_on_behalf import check_on_behalf
 from teatree.cli.review_on_behalf import register as _register_on_behalf
@@ -113,7 +115,9 @@ class ReviewService:
             result = api.post_json(endpoint, {"note": note})
             if not result:
                 return "Failed to post draft note", 1
-            return f"OK draft_note_id={dict(result).get('id')}", 0
+            note_id = dict(result).get("id")
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes")
+            return f"OK draft_note_id={note_id}", 0
 
         position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
@@ -126,6 +130,7 @@ class ReviewService:
         note_id = result_dict.get("id")
         line_code = result_dict.get("line_code")
         if line_code:
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes", file=file, line=line)
             return f"OK draft_note_id={note_id}\nline_code={line_code}", 0
 
         if isinstance(note_id, int):
@@ -173,7 +178,9 @@ class ReviewService:
             result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/notes", {"body": note})
             if not result:
                 return "Failed to post comment", 1
-            return f"OK note_id={dict(result).get('id')}", 0
+            note_id = dict(result).get("id")
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="notes")
+            return f"OK note_id={note_id}", 0
 
         position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
@@ -192,6 +199,7 @@ class ReviewService:
         note_type = first_note.get("type") if isinstance(first_note, dict) else None
         if note_type != "DiffNote":
             return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
+        record_note_claim(self._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
     def post_comment(
@@ -242,6 +250,7 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
         if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            record_note_claim(self._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
             return "OK — all draft notes published", 0
         return f"Failed: HTTP {status}", 1
 
@@ -264,6 +273,9 @@ class ReviewService:
         if not result:
             return "Failed to post reply", 1
         note_id = dict(result).get("id")
+        record_note_claim(
+            self._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
+        )
         return f"OK reply_note_id={note_id}", 0
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
@@ -281,6 +293,14 @@ class ReviewService:
         flag = "true" if resolved else "false"
         status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
         if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            record_note_claim(
+                self._resolve_base_url,
+                repo,
+                mr,
+                f"{discussion_id}#resolved={flag}",
+                endpoint="discussions/resolve",
+                resolved=resolved,
+            )
             return f"OK resolved={resolved}", 0
         return f"Failed: HTTP {status}", 1
 
@@ -305,6 +325,9 @@ class ReviewService:
             {"note": body},
         )
         if draft_status == HTTPStatus.OK:
+            record_note_claim(
+                self._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update"
+            )
             return f"OK updated draft_note_id={note_id}", 0
         if draft_status != HTTPStatus.NOT_FOUND:
             return f"Failed (draft): HTTP {draft_status}", 1
@@ -314,6 +337,7 @@ class ReviewService:
             {"body": body},
         )
         if pub_status == HTTPStatus.OK:
+            record_note_claim(self._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
             return f"OK updated note_id={note_id}", 0
         return f"Failed: HTTP {pub_status}", 1
 
@@ -339,36 +363,6 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
-    def _identity_has_reviewed(self, encoded_repo: str, mr: int) -> tuple[bool, str]:
-        """Whether the approving identity already authored a note on this MR.
-
-        Encodes the review-before-approve doctrine: an approval may only be
-        recorded once the same identity has left a reviewing footprint
-        (any note in any discussion thread). Returns ``(reviewed, error)``;
-        ``error`` is non-empty only when the identity itself cannot be
-        resolved (a hard precondition failure, not "no review yet").
-        """
-        api = self._get_api()
-        username = api.current_username()
-        if not username:
-            return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
-        discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
-        if not isinstance(discussions, list):
-            return False, ""
-        for discussion in discussions:
-            if not isinstance(discussion, dict):
-                continue
-            notes = discussion.get("notes")
-            if not isinstance(notes, list):
-                continue
-            for note in notes:
-                if not isinstance(note, dict):
-                    continue
-                author = note.get("author")
-                if isinstance(author, dict) and author.get("username") == username:
-                    return True, ""
-        return False, ""
-
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
         """Approve an MR — refuses unless the identity has already reviewed it.
 
@@ -377,7 +371,7 @@ class ReviewService:
         without a prior reviewing footprint from the same identity.
         """
         encoded = repo.replace("/", "%2F")
-        reviewed, error = self._identity_has_reviewed(encoded, mr)
+        reviewed, error = identity_has_reviewed(self._get_api(), encoded, mr)
         if error:
             return error, 1
         if not reviewed:
@@ -390,6 +384,7 @@ class ReviewService:
         api = self._get_api()
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
         if status in _HTTP_OK_CODES:
+            record_note_claim(self._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
             return f"OK approved !{mr}", 0
         return f"Failed: HTTP {status}", 1
 
@@ -403,6 +398,9 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
         if status in _HTTP_OK_CODES:
+            record_note_claim(
+                self._resolve_base_url, repo, mr, "unapprove", kind="gitlab_approve", endpoint="unapprove"
+            )
             return f"OK unapproved !{mr}", 0
         return f"Failed: HTTP {status}", 1
 

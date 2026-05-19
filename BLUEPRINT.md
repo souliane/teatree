@@ -2118,6 +2118,7 @@ graph TD
     teatree.cli --> teatree.skill_deps
     teatree.cli --> teatree.memory_audit
     teatree.cli --> teatree.on_behalf_gate
+    teatree.cli --> teatree.outbound_claim
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
@@ -2134,6 +2135,7 @@ graph TD
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
+    teatree.loop --> teatree.notify
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
@@ -2143,6 +2145,8 @@ graph TD
     teatree.notify --> teatree.backends
     teatree.notify --> teatree.config
     teatree.notify --> teatree.core
+    teatree.notify --> teatree.outbound_claim
+    teatree.outbound_claim --> teatree.core
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.cli_reference --> teatree.cli

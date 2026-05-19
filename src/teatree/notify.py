@@ -37,7 +37,8 @@ from django.db import IntegrityError, transaction
 from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, OutboundClaim
+from teatree.outbound_claim import record_claim
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,12 @@ def notify_user(
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+    record_claim(
+        kind=OutboundClaim.Kind.SLACK_DM,
+        idempotency_key=f"slack_dm:{idempotency_key}",
+        target_url=permalink,
+        extra={"channel": str(channel), "ts": posted_ts},
+    )
     return True
 
 

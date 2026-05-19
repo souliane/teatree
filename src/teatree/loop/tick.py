@@ -25,6 +25,7 @@ from teatree.loop.scanners import (
     IncomingEventsScanner,
     MyPrsScanner,
     NotionViewScanner,
+    OutboundAuditScanner,
     PendingTasksScanner,
     ReviewerPrsScanner,
     Scanner,
@@ -205,6 +206,7 @@ def build_default_jobs(
     jobs: list[_ScannerJob] = [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
+        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
     ]
 
     if backends:
