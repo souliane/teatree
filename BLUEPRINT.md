@@ -159,7 +159,10 @@ src/teatree/
     result_schema.py    # JSON schema for structured agent output
 
   loop/                 # /loop topology (see §5.6)
-    tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
+    tick.py             # One tick: orchestrator — fans out scanners, dispatches actions, renders statusline. Delegates concerns to tick_jobs / tick_recovery / tick_freshness.
+    tick_jobs.py        # Scanner-job construction (build_default_jobs / build_default_scanners, per-overlay fan-out)
+    tick_recovery.py    # Boot/tick recovery (orphaned task claims, FSM replay) + post-dispatch side-effects (dashboard, agent persistence, mechanical handlers)
+    tick_freshness.py   # Repo-freshness snapshot for the statusline header and tick-meta.json sidecar
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
     rendering.py        # Classify dispatched actions per overlay; render anchor / action / in-flight rows. Ready zone inlines `(!iid)` after each ticket whose parent MR is known.
     pr_ticket_index.py  # Build mr_url → parent_ticket_number index (PullRequest FK + Closes/Fixes regex)
