@@ -50,3 +50,7 @@ class NoopMessagingBackend:
     def resolve_user_id(handle: str) -> str:
         _ = handle
         return ""
+
+    @staticmethod
+    def auth_test() -> RawAPIDict:
+        return {}

@@ -195,6 +195,90 @@ class TestAnchorCanonicalShape:
         assert ", " in anchor, repr(anchor)
 
 
+class TestCanonicalShapeSurvivesTickSplitMerge:
+    """Post-#1054/#1061 tick-split merge regression for the canonical shape.
+
+    The ``#N (desc) (!M1, !M2)`` shape must still render with clickable
+    numbers, comma-joined MRs, and the description chunk omitted when
+    the title is empty. This pins all three invariants in one row so a
+    future merge that re-homes rendering can't silently regress any of
+    them. Anti-vacuous: reverting any of the three #1015 rendering
+    behaviours turns this RED.
+    """
+
+    def test_full_canonical_shape_with_clickable_numbers_and_comma_mrs(self) -> None:
+        import re  # noqa: PLC0415
+
+        zones = zones_for(
+            [
+                _active("44", "coded", title="Tickety tick"),
+                DispatchAction(
+                    kind="statusline",
+                    zone="in_flight",
+                    detail="PR !1",
+                    payload={
+                        "iid": 1,
+                        "url": "https://gitlab.example.com/g/p/-/merge_requests/1",
+                        "overlay": "teatree",
+                        "raw": {"description": "Closes #44"},
+                    },
+                ),
+                DispatchAction(
+                    kind="statusline",
+                    zone="in_flight",
+                    detail="PR !2",
+                    payload={
+                        "iid": 2,
+                        "url": "https://gitlab.example.com/g/p/-/merge_requests/2",
+                        "overlay": "teatree",
+                        "raw": {"description": "Closes #44"},
+                    },
+                ),
+            ],
+            colorize=True,
+        )
+        anchor = _blob(zones.anchors)
+        # (1) The ticket number is a clickable OSC8 hyperlink to the issue.
+        assert "\033]8;;https://example.com/issues/44\033\\" in anchor, repr(anchor)
+        assert "#44" in anchor, repr(anchor)
+        # (2) Each MR number is its own clickable OSC8 hyperlink.
+        assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/1\033\\" in anchor, repr(anchor)
+        assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/2\033\\" in anchor, repr(anchor)
+        # (3) Strip OSC8 sequences to recover the visible text and pin the
+        #     exact canonical shape: ``#44 (Tickety tick) (!1, !2)`` — the
+        #     description in single parens, MRs comma-joined.
+        visible = re.sub(r"\033]8;;[^\033]*\033\\", "", anchor)
+        assert re.search(r"#44 \(Tickety tick\) \(!1, !2\)", visible), repr(visible)
+
+    def test_description_chunk_omitted_when_title_empty(self) -> None:
+        import re  # noqa: PLC0415
+
+        zones = zones_for(
+            [
+                _active("45", "coded", title=""),
+                DispatchAction(
+                    kind="statusline",
+                    zone="in_flight",
+                    detail="PR !3",
+                    payload={
+                        "iid": 3,
+                        "url": "https://gitlab.example.com/g/p/-/merge_requests/3",
+                        "overlay": "teatree",
+                        "raw": {"description": "Closes #45"},
+                    },
+                ),
+            ],
+            colorize=False,
+        )
+        anchor = _blob(zones.anchors)
+        visible = re.sub(r"\033]8;;[^\033]*\033\\", "", anchor)
+        # No empty description parens: shape collapses to ``#45 (!3 …)``,
+        # never ``#45 () (…)``.
+        assert "#45 ()" not in visible, repr(visible)
+        assert "#45" in visible, repr(visible)
+        assert "!3" in visible, repr(visible)
+
+
 class TestReadyRowCanonicalShape:
     def test_ready_row_renders_short_desc(self) -> None:
         zones = zones_for(

@@ -26,6 +26,7 @@ from django.db import IntegrityError, transaction
 
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.slack_mrkdwn import normalize_slack_message
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
@@ -84,8 +85,9 @@ class _BaseReplier:
     """
 
     #: Actions that post under the user's identity to a colleague/customer
-    #: surface — gated by ``ask_before_post_on_behalf`` (#960). ``post_dm``
-    #: is a bot→user message and is intentionally absent (never gated).
+    #: surface — gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask``
+    #: / ``draft_or_ask``). ``post_dm`` is a bot→user message and is
+    #: intentionally absent (never gated).
     _ON_BEHALF_ACTIONS: ClassVar[frozenset[str]] = frozenset({"post_in_thread", "post_comment"})
 
     def post_in_thread(
@@ -178,7 +180,7 @@ class _BaseReplier:
                 # FAILED row + actionable message is the user-notify path —
                 # the retry sweep re-attempts once a user records the
                 # OnBehalfApproval (no TTY) and the gate then passes.
-                logger.warning("Reply %s gated by ask_before_post_on_behalf", spec.idempotency_key)
+                logger.warning("Reply %s gated by on_behalf_post_mode", spec.idempotency_key)
                 return self._finalize(
                     dispatch,
                     status=ReplyDispatch.Status.FAILED,
@@ -259,16 +261,17 @@ class SlackReplier(_BaseReplier):
         # to a lead. Thread/comment replies always go back to the
         # originating event's channel/thread; the spec's target_ref there
         # is the composite recorded for audit, not a routing override.
+        normalized = normalize_slack_message(spec.body)
         if spec.action_name == "post_dm":
             channel = self._bot.open_dm(spec.target_ref)
             if not channel:
                 msg = f"could not open DM with {spec.target_ref}"
                 raise RuntimeError(msg)
-            self._bot.post_message(channel=channel, text=spec.body, thread_ts="")
+            self._bot.post_message(channel=channel, text=normalized, thread_ts="")
             return
         self._bot.post_message(
             channel=spec.event.channel_ref,
-            text=spec.body,
+            text=normalized,
             thread_ts=spec.event.thread_ref,
         )
 

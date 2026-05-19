@@ -1,5 +1,6 @@
 """Tests for ``t3 setup slack-bot`` — interactive Slack-bot walkthrough."""
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -12,10 +13,18 @@ from typer.testing import CliRunner
 
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_setup import (
+    _APP_ID_RE,
     _BOT_TOKEN_RE,
     _USER_ID_RE,
+    SlackManifestError,
+    app_install_url,
+    app_manifest_editor_url,
     build_manifest,
+    export_manifest,
     manifest_install_url,
+    manifests_equivalent,
+    rotate_config_token,
+    update_manifest,
     write_overlay_settings,
 )
 from teatree.config import OverlayEntry
@@ -97,6 +106,42 @@ class TestBuildManifest:
         events = manifest["settings"]["event_subscriptions"]["bot_events"]
         assert "app_mention" in events
         assert "message.im" in events
+
+    def test_user_token_scopes_grant_reactions(self) -> None:
+        """The manifest must request ``user`` (xoxp) scopes, not only ``bot``.
+
+        The xoxp user token is the only credential that can post reactions in
+        Slack-Connect externally-shared channels (the bot token is rejected
+        with ``mcp_externally_shared_channel_restricted``). When the manifest
+        declares no ``user`` scopes section, a reinstall never re-prompts for
+        ``reactions:write`` consent and ``SlackBotBackend.react`` /
+        ``get_reactions`` (which route through the user token) silently fail.
+        """
+        manifest = build_manifest(overlay_name="acme")
+        user_scopes = manifest["oauth_config"]["scopes"]["user"]
+        assert "reactions:write" in user_scopes
+        assert "reactions:read" in user_scopes
+
+    def test_user_scopes_keep_existing_capability_on_reinstall(self) -> None:
+        """A reinstall re-consents to exactly the manifest ``user`` set.
+
+        Slack drops any user scope not listed, so the set must be a superset
+        that preserves the capability the xoxp token is already relied on:
+        ``chat:write`` (posting in Slack-Connect channels under the user's
+        identity) and ``users:read`` (handle/id resolution). Listing only the
+        two reaction scopes would silently revoke those on reinstall.
+        """
+        manifest = build_manifest(overlay_name="acme")
+        user_scopes = manifest["oauth_config"]["scopes"]["user"]
+        for required in ("reactions:read", "reactions:write", "chat:write", "users:read"):
+            assert required in user_scopes
+
+    def test_bot_scopes_still_present_alongside_user_scopes(self) -> None:
+        manifest = build_manifest(overlay_name="acme")
+        scopes = manifest["oauth_config"]["scopes"]
+        assert "bot" in scopes
+        assert "user" in scopes
+        assert "chat:write" in scopes["bot"]
 
 
 class TestManifestInstallUrl:
@@ -220,7 +265,7 @@ class TestSlackBotCommand:
             captured[key] = value
             return True
 
-        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write_pass),
@@ -256,6 +301,49 @@ class TestSlackBotCommand:
         assert result.exit_code == 0, result.stdout
         assert opened == []
         assert "Reset mode" in result.stdout
+
+    def test_reset_warns_scope_change_needs_full_reinstall(self, tmp_path: Path) -> None:
+        """``--reset`` must tell the user a scope change is NOT applied by reset.
+
+        Adding ``reactions:write`` to the xoxp user token only takes effect
+        through a full (non-``--reset``) manifest reinstall with browser OAuth
+        re-consent; ``--reset`` merely rotates the existing tokens. The command
+        must say so or the user keeps reinstalling via ``--reset`` and never
+        gets the new scope (the root cause this fix addresses).
+        """
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--reset", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "scope change" in result.stdout
+        assert "without --reset" in result.stdout
+
+    def test_full_install_prints_user_token_scope_guidance(self, tmp_path: Path) -> None:
+        """A non-``--reset`` run instructs the user to approve User Token Scopes."""
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = self._invoke(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "User Token Scopes" in result.stdout
+        assert "reactions:write" in result.stdout
 
     def test_pass_failure_exits_with_error(self, tmp_path: Path) -> None:
         inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
@@ -294,7 +382,7 @@ class TestSlackBotCommand:
         assert "Failed to store app token" in result.stdout
 
     def test_invalid_token_format_reprompts(self, tmp_path: Path) -> None:
-        inputs = "garbage\nxoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        inputs = "garbage\nxoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack_setup.write_pass", return_value=True),
@@ -310,7 +398,7 @@ class TestSlackBotCommand:
         assert "Invalid bot token format" in result.stdout
 
     def test_invalid_user_id_format_reprompts(self, tmp_path: Path) -> None:
-        inputs = "xoxb-1-test\nxapp-1-test\nbad-id\nU01ABCD1234\n"
+        inputs = "xoxb-1-test\nxapp-1-test\nbad-id\nU01ABCD1234\nA123456\n"
         with (
             patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack_setup.write_pass", return_value=True),
@@ -382,7 +470,7 @@ class TestSmokeTest:
 
 class TestSmokeTestInvocation:
     def test_smoke_test_failure_exits_with_error(self, tmp_path: Path) -> None:
-        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
         config = tmp_path / "teatree.toml"
         runner = CliRunner()
         with (
@@ -399,3 +487,500 @@ class TestSmokeTestInvocation:
             )
 
         assert result.exit_code == 1
+
+
+class TestManifestsEquivalent:
+    """Normalised compare of only the teatree-owned manifest fields."""
+
+    def test_identical_manifests_are_equivalent(self) -> None:
+        a = build_manifest(overlay_name="acme")
+        b = build_manifest(overlay_name="acme")
+        assert manifests_equivalent(a, b) is True
+
+    def test_scope_reordering_same_set_is_equivalent(self) -> None:
+        a = build_manifest(overlay_name="acme")
+        b = build_manifest(overlay_name="acme")
+        b["oauth_config"]["scopes"]["bot"] = list(reversed(b["oauth_config"]["scopes"]["bot"]))
+        b["oauth_config"]["scopes"]["user"] = list(reversed(b["oauth_config"]["scopes"]["user"]))
+        b["settings"]["event_subscriptions"]["bot_events"] = list(
+            reversed(b["settings"]["event_subscriptions"]["bot_events"])
+        )
+        assert manifests_equivalent(a, b) is True
+
+    def test_added_user_scope_is_not_equivalent(self) -> None:
+        a = build_manifest(overlay_name="acme")
+        b = build_manifest(overlay_name="acme")
+        b["oauth_config"]["scopes"]["user"] = [*b["oauth_config"]["scopes"]["user"], "channels:read"]
+        assert manifests_equivalent(a, b) is False
+
+    def test_changed_display_name_is_not_equivalent(self) -> None:
+        a = build_manifest(overlay_name="acme")
+        b = build_manifest(overlay_name="acme", display_name="teatree-renamed")
+        assert manifests_equivalent(a, b) is False
+
+
+class TestExportUpdateRotate:
+    def test_export_returns_manifest(self) -> None:
+        with patch(
+            "teatree.cli.slack_setup._slack_app_api",
+            return_value={"ok": True, "manifest": {"display_information": {"name": "x"}}},
+        ):
+            manifest = export_manifest(app_id="A123456", config_token="xoxe.xoxp-1")
+        assert manifest == {"display_information": {"name": "x"}}
+
+    def test_export_not_ok_raises_manifest_error(self) -> None:
+        with (
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": False, "error": "invalid_auth"},
+            ),
+            pytest.raises(SlackManifestError, match="invalid_auth"),
+        ):
+            export_manifest(app_id="A123456", config_token="xoxe.xoxp-1")
+
+    def test_update_posts_app_id_and_json(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+            captured["method"] = method
+            captured["payload"] = payload
+            captured["token"] = token
+            return {"ok": True, "permissions_updated": True}
+
+        with patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api):
+            result = update_manifest(
+                app_id="A123456",
+                manifest={"display_information": {"name": "x"}},
+                config_token="xoxe.xoxp-1",
+            )
+        assert captured["method"] == "apps.manifest.update"
+        assert captured["payload"]["app_id"] == "A123456"
+        assert json.loads(captured["payload"]["manifest"]) == {"display_information": {"name": "x"}}
+        assert result["permissions_updated"] is True
+
+    def test_update_not_ok_raises_manifest_error(self) -> None:
+        with (
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": False, "error": "failed_constraint"},
+            ),
+            pytest.raises(SlackManifestError, match="failed_constraint"),
+        ):
+            update_manifest(app_id="A1", manifest={}, config_token="xoxe.xoxp-1")
+
+    def test_rotate_returns_access_and_refresh(self) -> None:
+        with patch(
+            "teatree.cli.slack_setup._slack_app_api",
+            return_value={"ok": True, "token": "xoxe.xoxp-NEW", "refresh_token": "xoxe-NEWREFRESH"},
+        ):
+            access, refresh = rotate_config_token(refresh_token="xoxe-OLD")
+        assert access == "xoxe.xoxp-NEW"
+        assert refresh == "xoxe-NEWREFRESH"
+
+    def test_rotate_not_ok_raises_manifest_error(self) -> None:
+        with (
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": False, "error": "token_expired"},
+            ),
+            pytest.raises(SlackManifestError, match="token_expired"),
+        ):
+            rotate_config_token(refresh_token="xoxe-OLD")
+
+
+class TestDeepLinks:
+    def test_app_manifest_editor_url(self) -> None:
+        assert app_manifest_editor_url("A123456") == "https://api.slack.com/apps/A123456/app-manifest"
+
+    def test_app_install_url(self) -> None:
+        assert app_install_url("A123456") == "https://api.slack.com/apps/A123456/install-on-team"
+
+
+class TestWriteOverlaySettingsAppId:
+    def test_app_id_written_when_provided(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        write_overlay_settings(
+            config,
+            "acme",
+            slack_user_id="U01ABCD1234",
+            slack_token_ref="teatree/acme/slack",
+            slack_app_id="A123456",
+        )
+        document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
+        assert document["overlays"]["acme"]["slack_app_id"] == "A123456"
+
+    def test_app_id_absent_when_empty(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        write_overlay_settings(
+            config,
+            "acme",
+            slack_user_id="U01ABCD1234",
+            slack_token_ref="teatree/acme/slack",
+        )
+        document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
+        assert "slack_app_id" not in document["overlays"]["acme"]
+
+    def test_unrelated_keys_preserved(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text(
+            '[overlays.acme]\npath = "/p/acme"\n',
+            encoding="utf-8",
+        )
+        write_overlay_settings(
+            config,
+            "acme",
+            slack_user_id="U01ABCD1234",
+            slack_token_ref="teatree/acme/slack",
+            slack_app_id="A123456",
+        )
+        document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
+        assert document["overlays"]["acme"]["path"] == "/p/acme"
+        assert document["overlays"]["acme"]["slack_app_id"] == "A123456"
+
+
+class TestAppIdPattern:
+    @pytest.mark.parametrize("value", ["A123456", "A0ABCD1234XYZ"])
+    def test_accepts_valid(self, value: str) -> None:
+        assert _APP_ID_RE.match(value)
+
+    @pytest.mark.parametrize("value", ["B123456", "A12345", "a123456", "A-123456"])
+    def test_rejects_invalid(self, value: str) -> None:
+        assert _APP_ID_RE.match(value) is None
+
+
+def _invoke_setup(tmp_path: Path, *, inputs: str, args: list[str], config: Path | None = None) -> "object":
+    runner = CliRunner()
+    cfg = config or (tmp_path / "teatree.toml")
+    return runner.invoke(
+        setup_app,
+        ["slack-bot", *args, "--config", str(cfg)],
+        input=inputs,
+        catch_exceptions=False,
+    )
+
+
+class TestUpdatePathModeResolution:
+    def test_recorded_app_id_takes_update_path(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text(
+            '[overlays.acme]\nslack_app_id = "A123456"\n',
+            encoding="utf-8",
+        )
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
+            ),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        assert "Create New App" not in result.stdout
+
+    def test_update_flag_no_id_prompts_and_validates_app_id(self, tmp_path: Path) -> None:
+        # bad app id first, then a valid one (reprompt path).
+        inputs = "bad-id\nA123456\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
+            ),
+        ):
+            result = _invoke_setup(tmp_path, inputs=inputs, args=["--overlay", "acme", "--update"])
+
+        assert result.exit_code == 0, result.stdout
+        assert "Slack app id" in result.stdout
+
+    def test_no_id_no_flags_takes_create_path_and_records_id(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+        ):
+            result = _invoke_setup(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--skip-smoke-test"],
+                config=config,
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert "Create New App" in result.stdout
+        document = cast("dict[str, Any]", tomlkit.parse(config.read_text(encoding="utf-8")))
+        assert document["overlays"]["acme"]["slack_app_id"] == "A123456"
+
+    def test_reset_still_rotate_only(self, tmp_path: Path) -> None:
+        opened: list[str] = []
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open", side_effect=opened.append),
+        ):
+            result = _invoke_setup(
+                tmp_path,
+                inputs=inputs,
+                args=["--overlay", "acme", "--reset", "--skip-smoke-test"],
+            )
+
+        assert result.exit_code == 0, result.stdout
+        assert opened == []
+        assert "Reset mode" in result.stdout
+
+
+class TestUpdatePathBehavior:
+    def _config_with_app(self, tmp_path: Path) -> Path:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A123456"\n', encoding="utf-8")
+        return config
+
+    def test_manifest_unchanged_is_noop(self, tmp_path: Path) -> None:
+        config = self._config_with_app(tmp_path)
+        current = build_manifest(overlay_name="acme")
+        calls: list[str] = []
+
+        def fake_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+            calls.append(method)
+            return {"ok": True, "manifest": current}
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True) as smoke,
+            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        assert "apps.manifest.update" not in calls
+        assert "already current" in result.stdout
+        smoke.assert_called_once()
+
+    def test_manifest_changed_updates_and_prints_install_link(self, tmp_path: Path) -> None:
+        config = self._config_with_app(tmp_path)
+        stale = build_manifest(overlay_name="acme")
+        stale["oauth_config"]["scopes"]["user"] = ["users:read"]
+        opened: list[str] = []
+
+        def fake_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+            if method == "apps.manifest.export":
+                return {"ok": True, "manifest": stale}
+            return {"ok": True, "permissions_updated": True}
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open", side_effect=opened.append),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        assert "Manifest updated" in result.stdout
+        assert "ACTION" in result.stdout
+        assert "https://api.slack.com/apps/A123456/install-on-team" in opened
+
+    def test_config_token_expired_with_refresh_rotates_and_retries(self, tmp_path: Path) -> None:
+        config = self._config_with_app(tmp_path)
+        current = build_manifest(overlay_name="acme")
+        seq = iter(
+            [
+                {"ok": False, "error": "token_expired"},  # first export
+                {"ok": True, "token": "xoxe.xoxp-NEW", "refresh_token": "xoxe-NEWR"},  # rotate
+                {"ok": True, "manifest": current},  # retry export
+            ]
+        )
+        written: dict[str, str] = {}
+
+        def fake_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+            return next(seq)
+
+        def fake_read(key: str) -> str:
+            if key == "teatree/slack-app-config-token":
+                return "xoxe.xoxp-OLD"
+            if key == "teatree/slack-app-config-refresh":
+                return "xoxe-OLDR"
+            return "xoxb-bot"
+
+        def fake_write(key: str, value: str) -> bool:
+            written[key] = value
+            return True
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", side_effect=fake_write),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch("teatree.cli.slack_setup._slack_app_api", side_effect=fake_api),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        assert written["teatree/slack-app-config-token"] == "xoxe.xoxp-NEW"
+        assert written["teatree/slack-app-config-refresh"] == "xoxe-NEWR"
+
+    def test_config_token_expired_no_refresh_is_degraded_nonzero(self, tmp_path: Path) -> None:
+        config = self._config_with_app(tmp_path)
+
+        def fake_read(key: str) -> str:
+            if key == "teatree/slack-app-config-token":
+                return "xoxe.xoxp-OLD"
+            return ""  # no refresh, no bot
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": False, "error": "token_expired"},
+            ),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 1
+        assert "config token expired" in result.stdout
+
+
+class TestDegradedPath:
+    def test_no_config_token_prints_editor_url_and_smoke_tests(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A123456"\n', encoding="utf-8")
+        opened: list[str] = []
+
+        def fake_read(key: str) -> str:
+            if key == "teatree/slack-app-config-token":
+                return ""  # no config token -> degraded
+            return "xoxb-bot"
+
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open", side_effect=opened.append),
+            patch("teatree.cli.slack_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True) as smoke,
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        assert "https://api.slack.com/apps/A123456/app-manifest" in opened
+        assert "new_app=1" not in result.stdout
+        assert '"display_information"' in result.stdout
+        smoke.assert_called_once()
+
+
+class TestSlackAppApi:
+    """``_slack_app_api`` is the single Slack HTTP boundary."""
+
+    def test_posts_with_bearer_token_and_returns_json(self) -> None:
+        from teatree.cli.slack_setup import _slack_app_api  # noqa: PLC0415
+
+        captured: dict[str, Any] = {}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                captured["raised"] = True
+
+            def json(self) -> dict[str, Any]:
+                return {"ok": True, "manifest": {}}
+
+        def fake_post(url: str, *, headers: dict[str, str], data: dict[str, Any], timeout: int) -> FakeResponse:
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["data"] = data
+            return FakeResponse()
+
+        with patch("teatree.cli.slack_setup.httpx.post", side_effect=fake_post):
+            result = _slack_app_api("apps.manifest.export", {"app_id": "A1"}, token="xoxe.xoxp-1")
+
+        assert captured["url"] == "https://slack.com/api/apps.manifest.export"
+        assert captured["headers"]["Authorization"] == "Bearer xoxe.xoxp-1"
+        assert captured["data"] == {"app_id": "A1"}
+        assert captured["raised"] is True
+        assert result == {"ok": True, "manifest": {}}
+
+
+class TestUpdatePathSmokeFailure:
+    def test_update_path_smoke_failure_exits_nonzero(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A123456"\n', encoding="utf-8")
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=False),
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": True, "manifest": build_manifest(overlay_name="acme")},
+            ),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 1
+
+    def test_degraded_path_skip_smoke_test_returns_zero(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A123456"\n', encoding="utf-8")
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value=""),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test") as smoke,
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme", "--skip-smoke-test"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+        smoke.assert_not_called()
+
+    def test_create_path_smoke_success_returns_zero(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        inputs = "xoxb-1-test\nxapp-1-test\nU01ABCD1234\nA123456\n"
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+        ):
+            result = _invoke_setup(tmp_path, inputs=inputs, args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 0, result.stdout
+
+    def test_unexpected_manifest_error_exits_nonzero(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A123456"\n', encoding="utf-8")
+        with (
+            patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
+            patch("teatree.cli.slack_setup.webbrowser.open"),
+            patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_setup._smoke_test", return_value=True),
+            patch(
+                "teatree.cli.slack_setup._slack_app_api",
+                return_value={"ok": False, "error": "ratelimited"},
+            ),
+        ):
+            result = _invoke_setup(tmp_path, inputs="", args=["--overlay", "acme"], config=config)
+
+        assert result.exit_code == 1
+        assert "Slack manifest API failed" in result.stdout

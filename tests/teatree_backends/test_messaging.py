@@ -85,6 +85,44 @@ def test_slack_react_calls_reactions_add(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["json"] == {"channel": "C", "timestamp": "1.2", "name": "white_check_mark"}
 
 
+def test_slack_auth_test_returns_raw_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        captured["url"] = url
+        return httpx.Response(
+            200,
+            json={"ok": True, "user_id": "UBOT", "team": "T1"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    result = backend.auth_test()
+
+    assert result == {"ok": True, "user_id": "UBOT", "team": "T1"}
+    assert captured["url"] == "https://slack.com/api/auth.test"
+
+
+def test_slack_auth_test_surfaces_ok_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": False, "error": "missing_scope"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.auth_test() == {"ok": False, "error": "missing_scope"}
+
+
+def test_slack_auth_test_returns_empty_when_no_token() -> None:
+    assert SlackBotBackend(bot_token="").auth_test() == {}
+
+
 def test_slack_post_returns_empty_when_no_token() -> None:
     backend = SlackBotBackend(bot_token="")
     assert backend.post_message(channel="C", text="hi") == {}
@@ -466,6 +504,117 @@ def test_slack_resolve_user_id_returns_empty_when_members_not_list(monkeypatch: 
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("alice") == ""
+
+
+def test_slack_fetch_dms_stamps_channel_on_each_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stamp ``channel`` so ``PendingChatInjection.record`` accepts the row (#1043).
+
+    Without this the ``conversations.history`` payload returns each message
+    with no ``channel`` field, the record guard ``if not channel`` discards
+    every user DM, and the inbound bridge is a silent no-op.
+    """
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.open" in url:
+            return httpx.Response(200, json={"ok": True, "channel": {"id": "DXYZ"}}, request=httpx.Request("POST", url))
+        if "auth.test" in url:
+            return httpx.Response(200, json={"ok": True, "user_id": "UBOT"}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.history" in url:
+            return httpx.Response(
+                200,
+                json={"ok": True, "messages": [{"user": "UHUMAN", "text": "hi", "ts": "1.0"}]},
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(200, json={"ok": True, "messages": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
+
+    dms = backend.fetch_dms()
+
+    assert len(dms) == 1
+    assert dms[0]["channel"] == "DXYZ"
+
+
+def test_slack_fetch_dms_preserves_existing_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Socket Mode events already carry ``channel``; stamping must not overwrite it."""
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.open" in url:
+            return httpx.Response(200, json={"ok": True, "channel": {"id": "DXYZ"}}, request=httpx.Request("POST", url))
+        if "auth.test" in url:
+            return httpx.Response(200, json={"ok": True, "user_id": "UBOT"}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "messages": [{"user": "UHUMAN", "text": "hi", "ts": "1.0", "channel": "DSOCKET"}],
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
+
+    dms = backend.fetch_dms()
+    assert dms[0]["channel"] == "DSOCKET"
+
+
+def test_slack_fetch_dms_includes_thread_replies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """For #1044: a user reply on a bot-DM thread must be returned alongside top-level DMs."""
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.open" in url:
+            return httpx.Response(200, json={"ok": True, "channel": {"id": "DXYZ"}}, request=httpx.Request("POST", url))
+        if "auth.test" in url:
+            return httpx.Response(200, json={"ok": True, "user_id": "UBOT"}, request=httpx.Request("POST", url))
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        if "conversations.history" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "messages": [
+                        # Bot-authored thread root with at least one reply (Slack returns
+                        # ``thread_ts == ts`` on the root of a thread).
+                        {"user": "UBOT", "text": "bot post", "ts": "5.0", "thread_ts": "5.0", "reply_count": 1},
+                    ],
+                },
+                request=httpx.Request("GET", url),
+            )
+        if "conversations.replies" in url:
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "messages": [
+                        {"user": "UBOT", "text": "bot post", "ts": "5.0"},
+                        {"user": "UHUMAN", "text": "thread reply", "ts": "5.1"},
+                    ],
+                },
+                request=httpx.Request("GET", url),
+            )
+        return httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
+
+    dms = backend.fetch_dms()
+
+    # Bot's top-level post is filtered out; the user's thread reply is included.
+    assert [e["ts"] for e in dms] == ["5.1"]
+    assert dms[0]["channel"] == "DXYZ"
 
 
 def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.MonkeyPatch) -> None:

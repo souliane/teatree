@@ -10,9 +10,25 @@ multiple concerns (e.g. GitLab provides code hosting and CI in one client).
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
+from typing import Protocol, TypedDict, runtime_checkable
 
 from teatree.types import RawAPIDict
+
+
+class ApprovalState(TypedDict):
+    """Backend-resolved approval snapshot for a single PR/MR (#936).
+
+    ``approvals_left`` is the remaining count of required approvals — 0 when the
+    forge-side approval threshold is satisfied. ``approved_by`` is the list of
+    approver usernames in approval order. ``unresolved_resolvable`` counts open
+    discussion threads whose ``resolvable`` flag is true (i.e. would block a
+    merge under the upstream's "must resolve" policy) — distinct from system
+    note threads or non-resolvable comments.
+    """
+
+    approvals_left: int
+    approved_by: list[str]
+    unresolved_resolvable: int
 
 
 class ReviewState(StrEnum):
@@ -104,6 +120,8 @@ class CodeHostBackend(Protocol):
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
+
 
 @runtime_checkable
 class CIService(Protocol):
@@ -150,3 +168,5 @@ class MessagingBackend(Protocol):
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
+
+    def auth_test(self) -> RawAPIDict: ...  # pragma: no branch

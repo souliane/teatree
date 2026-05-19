@@ -92,7 +92,7 @@ class TestReviewPostDraftNoteBootstrapsDjango:
         # An empty teatree.toml gate-off config so we exercise the gate
         # chokepoint without needing a recorded approval row.
         cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+        cfg.write_text('[teatree]\non_behalf_post_mode = "immediate"\n', encoding="utf-8")
 
         probe = (
             "import os\n"
@@ -111,7 +111,7 @@ class TestReviewPostDraftNoteBootstrapsDjango:
             "     patch.object(ReviewService, '_post_draft_note_impl',\n"
             "                  return_value=('OK draft_note_id=99', 0)):\n"
             "    result = runner.invoke(app, ['review', 'post-draft-note',\n"
-            "                                 'org/repo', '1', 'hello'])\n"
+            "                                 'org/repo', '1', 'hello', '--general'])\n"
             "if 'ImproperlyConfigured' in (result.output or '') or result.exception is not None:\n"
             "    import traceback\n"
             "    if result.exception:\n"

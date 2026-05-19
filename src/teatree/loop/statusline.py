@@ -3,6 +3,10 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from teatree.core.managers import OwnershipStatus
 
 # ANSI palette — modern terminals (iTerm2, Kitty, WezTerm, Ghostty,
 # GNOME Terminal, Konsole, Windows Terminal) all render these. Honour
@@ -172,4 +176,35 @@ def availability_anchor(mode: str, queued: int) -> str:
     return "mode=away"
 
 
-__all__ = ["StatuslineEntry", "StatuslineZones", "availability_anchor", "default_path", "render"]
+def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
+    """Return ``(zone, line)`` for the loop-owner statusline segment (#1073).
+
+    ``zone`` is the :class:`StatuslineZones` field to append to.
+
+    This session owns it → ``("anchors", "loop-owner=THIS session ✓")``
+    (dim, like :func:`availability_anchor` — reassuring, low-noise).
+
+    A *different* live session owns it → ``("action_needed",
+    "loop-owner=session <short8> (NOT this session)")`` — RED, because a
+    foreign owner is exactly the #1073 hijack the user must see.
+
+    No live owner → ``("anchors", "loop-owner=unclaimed")`` (dim).
+
+    ``short8`` is the first 8 chars of the owner session id.
+    """
+    if not status.is_live:
+        return "anchors", "loop-owner=unclaimed"
+    if this_session and status.owner_session == this_session:
+        return "anchors", "loop-owner=THIS session ✓"
+    short8 = status.owner_session[:8]
+    return "action_needed", f"loop-owner=session {short8} (NOT this session)"
+
+
+__all__ = [
+    "StatuslineEntry",
+    "StatuslineZones",
+    "availability_anchor",
+    "default_path",
+    "loop_owner_anchor",
+    "render",
+]

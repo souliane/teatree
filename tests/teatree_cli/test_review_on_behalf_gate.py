@@ -1,17 +1,29 @@
-"""The on-behalf pre-gate is enforced on every colleague-posting CLI method (#960).
+"""The tri-state on-behalf pre-gate is enforced on every colleague-posting CLI method (#960).
 
 ``ReviewService`` is the second on-behalf chokepoint (alongside
 ``_BaseReplier``) — its ``post_comment``, ``post_draft_note``,
 ``publish_draft_notes``, ``reply_to_discussion``, ``resolve_discussion``,
-and ``update_note`` methods all publish on the user's identity to a
-GitLab MR. They route through the same satisfiable recorded-approval
-gate as the reply transport: gate ON + no approval → refuse without
-posting (and surface the approve-on-behalf invocation that satisfies
-it); gate ON + recorded :class:`OnBehalfApproval` → publish and consume
-the row; gate OFF → publish.
+``update_note``, and ``delete_discussion`` methods all publish on the
+user's identity to a GitLab MR. They route through the same
+satisfiable ``on_behalf_post_mode`` gate as the reply transport.
 
-Pure-read methods (``list_draft_notes``, ``delete_draft_note``) are NOT
-on-behalf posts and remain ungated.
+Behavior per mode (parametrised across every gated class below):
+
+*   :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` → publish (no
+    approval needed).
+*   :attr:`~teatree.config.OnBehalfPostMode.ASK` → refuse without a
+    recorded :class:`OnBehalfApproval`, publish with one.
+*   :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (new default)
+    → ``post_draft_note`` publishes autonomously and records a
+    ``BotPing`` row for the user DM; every other gated method behaves
+    identically to ASK (colleague-visible mutations always need the
+    recorded approval).
+
+Pure-read / pre-publication methods (``list_draft_notes``,
+``delete_draft_note``) are NOT on-behalf posts and remain ungated —
+``delete_draft_note`` removes the *user's own* unpublished draft, no
+colleague sees it. ``delete_discussion`` is different: it removes a
+*published* (colleague-visible) note and IS gated.
 
 The companion ``t3 review approve-on-behalf`` CLI command is the
 no-TTY satisfier — its end-to-end behaviour is also exercised here so
@@ -27,20 +39,25 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.review import ReviewService
-from teatree.core.models import OnBehalfApproval
+from teatree.config import OnBehalfPostMode
+from teatree.core.models import BotPing, OnBehalfApproval
 
 pytestmark = pytest.mark.django_db
 
 _runner = CliRunner()
 
 
-def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
+def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        f"[teatree]\nask_before_post_on_behalf = {'true' if on else 'false'}\n",
+        f'[teatree]\non_behalf_post_mode = "{mode.value}"\n',
         encoding="utf-8",
     )
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+
+
+# Modes under which a non-draft colleague-visible action is blocked.
+_BLOCKING_MODES = [OnBehalfPostMode.ASK, OnBehalfPostMode.DRAFT_OR_ASK]
 
 
 class _StubAPI:
@@ -84,8 +101,9 @@ class TestReviewServicePostCommentGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_post_comment_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_post_comment_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm")
@@ -95,8 +113,9 @@ class TestReviewServicePostCommentGated:
         # The HTTP call MUST NOT have happened.
         assert stub.calls == []
 
-    def test_post_comment_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_post_comment_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         OnBehalfApproval.record(target="org/repo!7", action="post_comment", approver_id="souliane")
         service, stub = _service_with_stub()
 
@@ -106,8 +125,8 @@ class TestReviewServicePostCommentGated:
         assert "OK" in msg
         assert any(c[0] == "post_json" for c in stub.calls)
 
-    def test_post_comment_proceeds_when_gate_off(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=False)
+    def test_post_comment_proceeds_under_immediate(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
         service, stub = _service_with_stub()
 
         _, code = service.post_comment("org/repo", 7, "lgtm")
@@ -117,13 +136,15 @@ class TestReviewServicePostCommentGated:
 
 
 class TestReviewServicePostDraftNoteGated:
+    """``post_draft_note`` is the draft-form action — special under DRAFT_OR_ASK."""
+
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_post_draft_note_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    def test_post_draft_note_blocked_under_ask_no_approval(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
         service, stub = _service_with_stub()
 
         msg, code = service.post_draft_note("org/repo", 7, "nit")
@@ -132,13 +153,33 @@ class TestReviewServicePostDraftNoteGated:
         assert "approve-on-behalf" in msg
         assert stub.calls == []
 
-    def test_post_draft_note_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    def test_post_draft_note_proceeds_under_ask_with_approval(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
         OnBehalfApproval.record(target="org/repo!7", action="post_draft_note", approver_id="souliane")
         service, _stub = _service_with_stub()
 
         _, code = service.post_draft_note("org/repo", 7, "nit")
         assert code == 0
+
+    def test_post_draft_note_auto_drafts_under_draft_or_ask(self) -> None:
+        """Under DRAFT_OR_ASK, post_draft_note publishes autonomously + records a BotPing."""
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
+        service, stub = _service_with_stub()
+
+        _, code = service.post_draft_note("org/repo", 7, "nit")
+
+        assert code == 0
+        assert any(c[0] == "post_json" for c in stub.calls), "The draft note publish must fire"
+        ping = BotPing.objects.get(idempotency_key="on_behalf_autodraft:org/repo!7:post_draft_note")
+        assert ping.kind == BotPing.Kind.INFO
+
+    def test_post_draft_note_passes_under_immediate(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+        service, stub = _service_with_stub()
+
+        _, code = service.post_draft_note("org/repo", 7, "nit")
+        assert code == 0
+        assert any(c[0] == "post_json" for c in stub.calls)
 
 
 class TestReviewServicePublishDraftsGated:
@@ -147,8 +188,9 @@ class TestReviewServicePublishDraftsGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_publish_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_publish_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.publish_draft_notes("org/repo", 7)
@@ -157,8 +199,9 @@ class TestReviewServicePublishDraftsGated:
         assert "approve-on-behalf" in msg
         assert stub.calls == []
 
-    def test_publish_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_publish_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         OnBehalfApproval.record(target="org/repo!7", action="publish_draft_notes", approver_id="souliane")
         service, _stub = _service_with_stub()
 
@@ -172,8 +215,9 @@ class TestReviewServiceReplyToDiscussionGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_reply_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_reply_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.reply_to_discussion("org/repo", 7, "d1", "thanks")
@@ -182,8 +226,9 @@ class TestReviewServiceReplyToDiscussionGated:
         assert "approve-on-behalf" in msg
         assert stub.calls == []
 
-    def test_reply_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_reply_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         OnBehalfApproval.record(target="org/repo!7", action="reply_to_discussion", approver_id="souliane")
         service, _stub = _service_with_stub()
 
@@ -197,8 +242,9 @@ class TestReviewServiceResolveDiscussionGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_resolve_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_resolve_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.resolve_discussion("org/repo", 7, "d1")
@@ -207,8 +253,9 @@ class TestReviewServiceResolveDiscussionGated:
         assert "approve-on-behalf" in msg
         assert stub.calls == []
 
-    def test_resolve_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_resolve_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         OnBehalfApproval.record(target="org/repo!7", action="resolve_discussion", approver_id="souliane")
         service, _stub = _service_with_stub()
 
@@ -222,8 +269,9 @@ class TestReviewServiceUpdateNoteGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_update_note_blocked_when_gate_on_no_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_update_note_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.update_note("org/repo", 7, 99, "edited")
@@ -232,13 +280,62 @@ class TestReviewServiceUpdateNoteGated:
         assert "approve-on-behalf" in msg
         assert stub.calls == []
 
-    def test_update_note_proceeds_with_recorded_approval(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_update_note_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         OnBehalfApproval.record(target="org/repo!7", action="update_note", approver_id="souliane")
         service, _stub = _service_with_stub()
 
         _, code = service.update_note("org/repo", 7, 99, "edited")
         assert code == 0
+
+
+class TestReviewServiceDeleteDiscussionGated:
+    """Deleting a *published* discussion is a colleague-visible mutation — gated.
+
+    Mirrors :class:`TestReviewServiceUpdateNoteGated` exactly: the action
+    routes through the on-behalf gate just like ``update_note``, because
+    removing a published comment under the user's identity is as visible
+    to colleagues as editing one. Distinct from ``delete_draft_note``
+    (ungated): a draft is pre-publication and not colleague-visible.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_delete_discussion_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_delete_discussion_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        OnBehalfApproval.record(target="org/repo!7", action="delete_discussion", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 0
+        assert "OK" in msg
+        assert any(c[0] == "delete" for c in stub.calls)
+
+    def test_delete_discussion_proceeds_under_immediate(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
 
 
 class TestReviewServiceReadMethodsNotGated:
@@ -249,8 +346,9 @@ class TestReviewServiceReadMethodsNotGated:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    def test_list_draft_notes_runs_even_with_gate_on(self) -> None:
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_list_draft_notes_runs_even_when_blocked(self, mode: OnBehalfPostMode) -> None:
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         _, code = service.list_draft_notes("org/repo", 7)
@@ -258,9 +356,10 @@ class TestReviewServiceReadMethodsNotGated:
         # The list call hit the API — it was not blocked.
         assert any(c[0] == "get_json" for c in stub.calls)
 
-    def test_delete_draft_note_runs_even_with_gate_on(self) -> None:
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_delete_draft_note_runs_even_when_blocked(self, mode: OnBehalfPostMode) -> None:
         """Deleting one's own draft (pre-publication) is not an on-behalf colleague post."""
-        _gate(self.tmp_path, self.monkeypatch, on=True)
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         _, code = service.delete_draft_note("org/repo", 7, 99)
@@ -276,7 +375,7 @@ class TestReviewServiceReadMethodsNotGated:
 class TestReviewServiceGateIntegration:
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, on=False)  # gate off — irrelevant here
+        _gate(tmp_path, monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)  # gate off — irrelevant here
         self.monkeypatch = monkeypatch
 
     def test_post_comment_calls_require_on_behalf_approval(self) -> None:
@@ -299,7 +398,7 @@ class TestApproveOnBehalfCommand:
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _gate(tmp_path, monkeypatch, on=True)
+        _gate(tmp_path, monkeypatch, mode=OnBehalfPostMode.ASK)
 
     def test_records_an_approval_row(self) -> None:
         result = _runner.invoke(
@@ -329,7 +428,7 @@ class TestApproveOnBehalfCommand:
         )
         assert record.exit_code == 0, record.output
 
-        # Gate still ON — but the recorded approval now satisfies the next call.
+        # Gate still in ASK mode — but the recorded approval now satisfies the next call.
         service, stub = _service_with_stub()
         _, code = service.post_comment("org/repo", 7, "lgtm")
 

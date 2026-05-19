@@ -69,6 +69,11 @@ class OverlayConfig:
     code_host: str = ""
     messaging_backend: str = "noop"
     slack_token_ref: str = ""
+    # ``user_token_ref`` points at a ``pass`` entry holding the human user's
+    # Slack OAuth token (``xoxp-…``).  Routed by ``SlackBotBackend`` for
+    # reactions on Slack-Connect externally-shared channels where the bot
+    # token is rejected by the workspace restriction policy.
+    user_token_ref: str = ""
     slack_user_id: str = ""
     require_ticket: bool = False
     ready_labels: list[str]
@@ -317,6 +322,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         _ = customer, base_url
         return []
 
+    def get_connector_preflight(self) -> list[Callable[[], None]]:
+        """Return zero-arg probes run before any connector-dependent loop work.
+
+        Each callable raises ``RuntimeError`` (caught by the loop
+        entrypoint, which then ``raise SystemExit``) when a connector the
+        overlay hard-depends on (Slack, Notion, claude.ai) is unreachable.
+        The default is empty — an overlay opts in only when it cannot
+        function correctly with a degraded connector (silent no-ops are
+        worse than refusing to start). Analogous to
+        :meth:`get_e2e_preflight` but fired at loop/lifecycle start
+        rather than before an E2E run.
+        """
+        return []
+
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         return {}
 
@@ -347,6 +366,27 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
         state = issue_data.get("state")
         return isinstance(state, str) and state in {"closed", "completed"}
+
+    def resolve_mr_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``!<iid>`` on this overlay's code host.
+
+        Overridden by overlays that own merge/pull requests across multiple
+        repositories and can resolve a bare ``!N`` to its repo's web URL.
+        The default returns ``None`` —
+        :func:`teatree.slack_mrkdwn.slack_linkify` leaves the bare token
+        unrewritten when no resolver can claim it, so the Slack reader sees
+        inert text rather than a guessed-wrong URL.
+        """
+        _ = iid
+        return None
+
+    def resolve_issue_token(self, iid: int) -> str | None:
+        """Return the canonical URL for ``#<iid>`` on this overlay's code host.
+
+        Default ``None``, for the same reason as :meth:`resolve_mr_token`.
+        """
+        _ = iid
+        return None
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.

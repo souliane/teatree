@@ -13,6 +13,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree import visual_qa
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.branch_currency import require_current_branch
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
 from teatree.core.management.commands._pr_preview import (
@@ -47,6 +48,23 @@ class VisualQAGateFailure(TypedDict):
     visual_qa: VisualQASummary
     report_markdown: str
     hint: str
+
+
+class BranchCurrencyFailure(TypedDict):
+    """Pre-ship branch-currency gate refusal (#940).
+
+    Returned when ``origin/<target>`` has advanced past the branch
+    point and ``git merge`` produced conflicts. The branch must be
+    manually merged + resolved before the cold reviewer attests the
+    post-merge SHA — otherwise the release pipeline certifies a stale
+    base.
+    """
+
+    allowed: bool
+    error: str
+    hint: str
+    branch: str
+    target: str
 
 
 # ShipDryRun / PrValidationError live in ``_pr_preview`` (re-exported below)
@@ -115,6 +133,64 @@ def _assert_commits_ahead_of_base(worktree: Worktree) -> NoCommitsAheadError | N
         branch=branch,
         base=base,
     )
+
+
+def _resolve_target_branch(ticket: Ticket, repo: str) -> str:
+    """Stacked-PR target resolver (#940).
+
+    Reads ``ticket.extra['target_branch']`` first (stacked PRs base on
+    a different branch than ``origin/main``); falls back to
+    ``origin/<default>`` — the same resolver shape
+    :func:`_assert_commits_ahead_of_base` uses.
+    """
+    extra = ticket.extra or {}
+    explicit = str(extra.get("target_branch") or "").strip()
+    if explicit:
+        return explicit if "/" in explicit else f"origin/{explicit}"
+    try:
+        return f"origin/{git.default_branch(repo=repo)}"
+    except (CommandFailedError, RuntimeError, ValueError):
+        return "origin/main"
+
+
+def _run_branch_currency_gate(
+    ticket: Ticket,
+    worktree: Worktree,
+) -> BranchCurrencyFailure | None:
+    """Auto-merge ``target`` into the feature branch before the rest of the gates (#940).
+
+    Placed FIRST in :func:`_run_ship_gates` so the visual-QA gate, the
+    phase gate, and the eventual cold-review attestation all run
+    against the post-merge tree — not a stale base whose target-branch
+    fixes are missing. On zero-conflict the new HEAD is recorded as
+    ``ship_invoking_branch``'s post-merge sha so the cold reviewer
+    attests the SHA the loop will actually push. On conflict the gate
+    refuses cleanly (``git merge --abort`` already restored the tree).
+    Fetch failures (offline, auth) are inconclusive — same posture as
+    :mod:`teatree.core.clone_guard`.
+    """
+    repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
+    branch = worktree.branch
+    if not repo or not branch:
+        return None
+    target = _resolve_target_branch(ticket, repo)
+
+    result = require_current_branch(repo, branch, target=target)
+    if result["error"]:
+        return BranchCurrencyFailure(
+            allowed=False,
+            error=result["error"],
+            hint=result["hint"] or "",
+            branch=branch,
+            target=target,
+        )
+    post_sha = result["post_merge_sha"]
+    if result["auto_merged"] and post_sha:
+        # #800 N3: canonical locked RMW — record the post-merge HEAD so
+        # the cold reviewer's attestation binds to the tree the loop
+        # will actually push, not the pre-merge stale base.
+        ticket.merge_extra(set_keys={"branch_currency_post_merge_sha": post_sha})
+    return None
 
 
 def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
@@ -227,12 +303,18 @@ def _run_ship_gates(
     worktree: Worktree,
     *,
     skip_visual_qa: str = "",
-) -> ShippingGateFailure | VisualQAGateFailure | PrValidationError | None:
+) -> ShippingGateFailure | VisualQAGateFailure | BranchCurrencyFailure | PrValidationError | None:
     """Run the pre-ship gates in order; return the first failure or ``None``.
 
     Composed out of ``create`` so the command stays within the
     return-count gate and the gate sequence is independently testable.
+    The branch-currency gate (#940) runs FIRST: a stale base would
+    otherwise poison the visual-QA gate (it would render the
+    pre-merge tree) and the cold reviewer's SHA attestation.
     """
+    currency_error = _run_branch_currency_gate(ticket, worktree)
+    if currency_error is not None:
+        return currency_error
     gate_error = _check_shipping_gate(ticket)
     if gate_error is not None:
         return gate_error
@@ -274,6 +356,7 @@ class Command(TyperCommand):
         | ShipDryRun
         | PrValidationError
         | VisualQAGateFailure
+        | BranchCurrencyFailure
         | ShippingGateFailure
         | WorktreeMissingError
         | NoCommitsAheadError
@@ -501,11 +584,12 @@ class Command(TyperCommand):
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
 
-        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
-        upload or host side effect when the gate is on and no recorded
-        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
-        gate is inlined here (not at the ``code_host`` layer) so PR creation —
-        which is not an on-behalf colleague-facing post — remains ungated.
+        Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
+        ``draft_or_ask``): the call is refused with no upload or host side
+        effect when no recorded :class:`OnBehalfApproval` matches
+        ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
+        at the ``code_host`` layer) so PR creation — which is not an
+        on-behalf colleague-facing post — remains ungated.
         """
         host = code_host_from_overlay()
         if host is None:

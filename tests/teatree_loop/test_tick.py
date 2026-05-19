@@ -111,9 +111,9 @@ def test_tick_meta_includes_freshness(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "freshness" in data
 
 
-def test_build_default_scanners_starts_with_pending_tasks_and_incoming_events() -> None:
+def test_build_default_scanners_starts_with_pending_tasks_incoming_events_outbound_audit() -> None:
     scanners: list[Scanner] = build_default_scanners(host=None, messaging=None)
-    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events"]
+    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events", "outbound_audit"]
 
 
 def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,8 +243,8 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
-    monkeypatch.setattr("teatree.loop.tick.discover_overlays", list)
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.discover_overlays", list)
     monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
     backends = [
@@ -270,7 +270,7 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
         msg = "toml parse failure"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", _boom)
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", _boom)
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
@@ -286,9 +286,9 @@ def test_user_identity_aliases_no_override_inherits_global(
     config_path.write_text('[teatree]\nuser_identity_aliases = ["a", "b"]\n', encoding="utf-8")
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick.discover_overlays",
+        "teatree.loop.tick_jobs.discover_overlays",
         lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
     )
     assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
@@ -318,9 +318,9 @@ def test_build_default_jobs_per_overlay_alias_override(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick.discover_overlays",
+        "teatree.loop.tick_jobs.discover_overlays",
         lambda: [
             OverlayEntry(
                 name="scoped",
@@ -1036,3 +1036,50 @@ def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
     assert "!371" in rendered
     assert "review" in rendered
     assert "[acme]" in rendered
+
+
+class TestLoopOwnerAnchorWiring(django.test.TestCase):
+    """``run_tick`` writes the #1073 loop-owner segment on BOTH paths."""
+
+    def test_empty_jobs_path_renders_loop_owner_anchor(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-sess")
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
+                run_tick(TickRequest(scanners=[]), statusline_path=sl)
+            assert "loop-owner=THIS session ✓" in sl.read_text(encoding="utf-8")
+
+    def test_normal_path_flags_foreign_owner_in_red_zone(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="other-sess")
+        scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder"}):
+                run_tick(TickRequest(scanners=[scanner]), statusline_path=sl, colorize=False)
+            assert "loop-owner=session other-se (NOT this session)" in sl.read_text(encoding="utf-8")
+
+    def test_anchor_failure_is_fail_open_no_crash(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch(
+                "teatree.core.models.LoopLease.objects.ownership_status",
+                side_effect=RuntimeError("db down"),
+            ),
+        ):
+            sl = Path(d) / "sl.txt"
+            # Must not raise — fail-open like _populate_availability_anchor.
+            run_tick(TickRequest(scanners=[]), statusline_path=sl)
+            assert sl.exists()

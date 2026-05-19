@@ -1889,9 +1889,12 @@ _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
     "{owner_session}). Do NOT arm a competing `t3 loop tick` cron and do "
-    "NOT spawn loop sub-agents — the owner's tick atomically claims all "
-    "pending work (`t3 loop claim-next`), so a second tick would simply "
-    "find nothing to claim. Stay idle with respect to the loop."
+    "NOT spawn loop sub-agents. The loop-owner gate (#1073) is now a HARD "
+    "gate: a non-owner `t3 loop tick` will SKIP before any scanner / Slack "
+    "DM-drain / dispatch runs at all — it does NOT execute the tick. "
+    "Stay idle with respect to the loop. (If you ARE the user's main "
+    "session and a foreign session has hijacked the loop, run `t3 loop "
+    "claim --take-over` and the hijacker's next tick SKIPs within one tick.)"
 )
 
 
@@ -3209,6 +3212,136 @@ def handle_inject_pending_questions(_data: dict) -> None:
     print("\n".join(lines))  # noqa: T201
 
 
+# ── UserPromptSubmit: inject pending Slack-DM backlog into context ─────────────
+#
+# Inbound half of the Slack ↔ Claude-Code bidirectional bridge (#1014,
+# BLUEPRINT §17.1 invariant 2 / §5.6). The user only reads Slack DMs;
+# their reply to the overlay bot lands here as a ``PendingChatInjection``
+# row. The next ``UserPromptSubmit`` drain reads unconsumed rows for the
+# loop-owner session and emits them into ``additionalContext`` — the
+# agent sees the message as if the user had typed it in chat.
+
+
+def handle_inject_pending_chat(data: dict) -> None:
+    """Append unconsumed Slack-DM messages to the next prompt's ``additionalContext``.
+
+    **Drain eligibility:** ANY interactive Claude Code session that
+    receives a ``UserPromptSubmit`` event may drain the queue. The
+    original implementation gated on ``_session_owns_loop`` (mirroring
+    the §5.6 ``handle_loop_self_pump`` discipline), but the loop-owner
+    record points at the autonomous ``t3 loop start`` session — which
+    never receives ``UserPromptSubmit`` events — so the gate prevented
+    the queue from ever draining (32 unconsumed rows observed in
+    production). The self-pump owner-gate is correct for self-pump
+    (must be singleton); it was the wrong invariant for the inbound
+    bridge, where the *whole point* is that the user's queued replies
+    must reach an interactive session.
+
+    At-most-once delivery is preserved by primitives other than the
+    owner-gate: ``PendingChatInjection.consume()`` is a single-use
+    durable transition (``UPDATE … WHERE consumed_at IS NULL``) so a
+    concurrent second drain sees the row already stamped and emits
+    nothing, and the ``(overlay, slack_ts)`` ``UniqueConstraint``
+    deduplicates the ingest side so over-polling is safe.
+
+    Fails open: if teatree is unavailable, just skip — the queue
+    survives to the next tick.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — fail open: queue survives to the next tick
+        return
+    try:
+        rows = list(PendingChatInjection.pending())
+    except Exception:  # noqa: BLE001
+        return
+    drained: list[str] = [f"User replied on Slack at {row.slack_ts}: {row.text}" for row in rows if row.consume()]
+    if not drained:
+        return
+    header = f"You have {len(drained)} new Slack DM reply(ies) from the user:"
+    print("\n".join([header, *drained]))  # noqa: T201
+
+
+# ── Stop: enforce-answered-questions gate (#1063) ───────────────────
+#
+# ``consumed_at`` proves the agent *read* the row into ``additionalContext``;
+# it does NOT prove the agent *replied*. Empirically (2026-05-19) the
+# drain mechanism worked perfectly for 6 hours while ~22 of 25 user
+# questions sat silently ignored — the agent treated the drained content
+# as background and continued executing its loop directive. This Stop
+# hook is the structural fix: it queries the model's
+# ``unanswered_questions_since(1h)`` and emits a prominent
+# ``additionalContext`` BLOCKING REMINDER listing each unanswered
+# question. The user might genuinely be done, so we deliberately soft-
+# block via ``additionalContext`` rather than hard-blocking via
+# ``decision: block``.
+#
+# Hook contract: must be crash-proof (#810 — a Stop hook must NEVER raise
+# to the session). A broad boundary guard contains any unexpected error
+# to a stderr line and a clean ``None``.
+
+_ANSWERED_GATE_WINDOW_HOURS = 1
+
+
+def handle_enforce_answered_questions(data: dict) -> bool | None:
+    """Emit a BLOCKING REMINDER for user questions still unanswered (#1063).
+
+    Returns ``None`` always — never hard-blocks (the user may have
+    genuinely typed "ok thanks" and meant for the turn to end). The
+    nag is in ``additionalContext`` so it lands in the NEXT turn's
+    system context, deterministically visible.
+    """
+    try:
+        return _enforce_answered_questions(data)
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] enforce-answered-questions skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _enforce_answered_questions(data: dict) -> bool | None:
+    if data.get("stop_hook_active"):
+        return None
+    if not _bootstrap_teatree_django():
+        return None
+    try:
+        from datetime import timedelta  # noqa: PLC0415
+
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — fail open: nag re-tries next turn
+        return None
+    try:
+        rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=_ANSWERED_GATE_WINDOW_HOURS))
+    except Exception:  # noqa: BLE001
+        return None
+    if not rows:
+        return None
+    bullets = [f"  - ts={row.slack_ts}: {row.text.strip()}" for row in rows]
+    body = (
+        f"BLOCKING REMINDER — {len(rows)} user question(s) from the last hour are unanswered. "
+        "The Slack-DM drain stamped consumed_at but you have not replied. "
+        "The turn cannot end cleanly until each question is answered (post via "
+        "`notify_user(..., kind=NotifyKind.ANSWER, idempotency_key='answer-<short>-<ts>')` "
+        "or `t3 teatree pending_chat mark-answered <ts>`).\n"
+        "Unanswered:\n" + "\n".join(bullets)
+    )
+    json.dump({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}}, sys.stdout)
+    # Return True to break the Stop chain — we want the additionalContext
+    # nag delivered intact, and we want to preempt any subsequent handler
+    # (notably loop_self_pump) that would also write to stdout and either
+    # corrupt the JSON or override our soft-block with a hard-block
+    # continuation directive. Soft-block intent is preserved by emitting
+    # only ``additionalContext``, never ``decision: block``.
+    return True
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -3216,6 +3349,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
         handle_inject_pending_questions,
+        handle_inject_pending_chat,
         handle_user_prompt_submit,
     ],
     "PreToolUse": [
@@ -3245,7 +3379,7 @@ _HANDLERS: dict[str, list] = {
     # hookSpecificOutput entry for it and discards its output. Recovery
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
-    "Stop": [handle_enforce_structured_question, handle_loop_self_pump],
+    "Stop": [handle_enforce_structured_question, handle_enforce_answered_questions, handle_loop_self_pump],
 }
 
 

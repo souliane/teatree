@@ -399,19 +399,21 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ post-draft-note      Post a draft note on a GitLab MR (inline or general).   │
 │ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
-│ delete-draft-note    Delete a draft note from a GitLab MR.                   │
-│ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
-│ list-draft-notes     List draft notes on a GitLab MR.                        │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
-│ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
-│                      published.                                              │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
 │ unapprove            Revoke your approval on a GitLab MR.                    │
-│ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
-│                      unresolved.                                             │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
 │                      on-behalf gate.                                         │
+│ delete-draft-note    Delete a draft note from a GitLab MR.                   │
+│ delete-discussion    Delete a *published* note (discussion) from a GitLab    │
+│                      MR.                                                     │
+│ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
+│ list-draft-notes     List draft notes on a GitLab MR.                        │
+│ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
+│                      published.                                              │
+│ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
+│                      unresolved.                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -422,6 +424,15 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 
  Post a draft note on a GitLab MR (inline or general).
 
+ The inline-vs-general decision is explicit: pass ``--general`` for an
+ MR-wide note, or pass both ``--file`` and ``--line`` for an inline
+ draft. Pre-#72 the default silently degraded a missing flag pair into
+ a general note — observed in !6220 where 4 of 5 cold-review drafts
+ intended as inline became general. The validator
+ :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
+ both half-specified-inline and contradictory invocations before any
+ GitLab API call is attempted.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
@@ -429,10 +440,18 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file        TEXT     File path for inline comment (omit for general note)  │
-│ --line        INTEGER  Line number in the new file (must be an added line)   │
-│                        [default: 0]                                          │
-│ --help                 Show this message and exit.                           │
+│ --file           TEXT     File path for inline comment — REQUIRED unless     │
+│                           --general is passed.                               │
+│ --line           INTEGER  Line number in the new file (must be an added      │
+│                           line) — REQUIRED unless --general is passed.       │
+│ --general                 Post a general (MR-wide) note instead of an inline │
+│                           one. Mutually exclusive with --file/--line.        │
+│                           Without this flag, --file AND --line are both      │
+│                           required — omitting either is refused upfront so a │
+│                           missed-flag invocation can no longer silently      │
+│                           degrade an intended-inline draft into a general    │
+│                           note (souliane/teatree#72).                        │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -461,6 +480,115 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 review reply-to-discussion`
+
+```
+Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
+
+ Reply to a GitLab MR discussion thread (immediate, not draft).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo               TEXT     GitLab project path (e.g., my-org/my-repo)  │
+│                                  [required]                                  │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
+│ *    body               TEXT     Reply body (markdown) [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve`
+
+```
+Usage: t3 review approve [OPTIONS] REPO MR
+
+ Approve a GitLab MR — only after you have reviewed it.
+
+ Precondition: a review note/discussion authored by your identity must
+ already exist on the MR (review before approve). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> approve --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review unapprove`
+
+```
+Usage: t3 review unapprove [OPTIONS] REPO MR
+
+ Revoke your approval on a GitLab MR.
+
+ No review precondition (revoking is the safe direction). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve-on-behalf`
+
+```
+Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
+
+ Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
+
+ The recorded-approval channel is the no-TTY satisfier for the
+ ``on_behalf_post_mode`` pre-gate (#960, BLOCK verdict). It mirrors the
+ #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
+ durable, single-use, strictly scoped to one
+ ``(target, action)`` pair, maker!=checker enforced. After this
+ command writes the row, the next on-behalf attempt matching
+ ``(target, action)`` publishes and the row is consumed; an
+ audit row records who/what/when.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    target      TEXT  Scope identifier the recorded approval is bound to —  │
+│                        e.g. the MR ref `org/repo!42`, the PR url, or the     │
+│                        ticket+transition compound the gate emitted in its    │
+│                        `OnBehalfPostBlockedError` message.                   │
+│                        [required]                                            │
+│ *    action      TEXT  Action name the recorded approval authorises —        │
+│                        exactly the string in the gate's blocked-post message │
+│                        (`post_comment`, `reply_to_discussion`,               │
+│                        `approval_reaction`, etc.). Single-use; consumed when │
+│                        the next matching on-behalf attempt publishes.        │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Identifier of the human user recording the        │
+│                            approval. Refused if it names a                   │
+│                            maker/coding-agent/loop role — the executing      │
+│                            agent can never self-authorize the post (#960,    │
+│                            mirrors DbApproval #953 / MergeClear section      │
+│                            17.8).                                            │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 review delete-draft-note`
 
 ```
@@ -472,6 +600,29 @@ Usage: t3 review delete-draft-note [OPTIONS] REPO MR NOTE_ID
 │ *    repo         TEXT     GitLab project path [required]                    │
 │ *    mr           INTEGER  Merge request IID [required]                      │
 │ *    note_id      INTEGER  Draft note ID to delete [required]                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review delete-discussion`
+
+```
+Usage: t3 review delete-discussion [OPTIONS] REPO MR NOTE_ID
+
+ Delete a *published* note (discussion) from a GitLab MR.
+
+ Use to clean up a published general comment that should have
+ been inline, or any other published note that needs removal.
+ Distinct from `delete-draft-note`, which removes a user's own
+ pre-publication draft. Respects the `ask_before_post_on_behalf`
+ pre-gate (souliane/teatree#960).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo         TEXT     GitLab project path [required]                    │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Published note ID to delete [required]            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -511,25 +662,6 @@ Usage: t3 review list-draft-notes [OPTIONS] REPO MR
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 review reply-to-discussion`
-
-```
-Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
-
- Reply to a GitLab MR discussion thread (immediate, not draft).
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo               TEXT     GitLab project path (e.g., my-org/my-repo)  │
-│                                  [required]                                  │
-│ *    mr                 INTEGER  Merge request IID [required]                │
-│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
-│ *    body               TEXT     Reply body (markdown) [required]            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 review update-note`
 
 ```
@@ -543,47 +675,6 @@ Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
 │ *    mr           INTEGER  Merge request IID [required]                      │
 │ *    note_id      INTEGER  Note ID (draft or published) [required]           │
 │ *    body         TEXT     New comment body (markdown) [required]            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review approve`
-
-```
-Usage: t3 review approve [OPTIONS] REPO MR
-
- Approve a GitLab MR — only after you have reviewed it.
-
- Precondition: a review note/discussion authored by your identity must
- already exist on the MR (review before approve). Also respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review unapprove`
-
-```
-Usage: t3 review unapprove [OPTIONS] REPO MR
-
- Revoke your approval on a GitLab MR.
-
- No review precondition (revoking is the safe direction). Respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -606,47 +697,6 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review approve-on-behalf`
-
-```
-Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
-
- Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
-
- The recorded-approval channel is the no-TTY satisfier for the
- ``ask_before_post_on_behalf`` pre-gate (#960). It mirrors the
- #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
- durable, single-use, strictly scoped to one
- ``(target, action)`` pair, maker!=checker enforced. After this
- command writes the row, the next on-behalf attempt matching
- ``(target, action)`` publishes and the row is consumed; an
- audit row records who/what/when.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    target      TEXT  Scope identifier the recorded approval is bound to —  │
-│                        e.g. the MR ref `org/repo!42`, the PR url, or the     │
-│                        ticket+transition compound the gate emitted in its    │
-│                        `OnBehalfPostBlockedError` message.                   │
-│                        [required]                                            │
-│ *    action      TEXT  Action name the recorded approval authorises —        │
-│                        exactly the string in the gate's blocked-post message │
-│                        (`post_comment`, `reply_to_discussion`,               │
-│                        `approval_reaction`, etc.). Single-use; consumed when │
-│                        the next matching on-behalf attempt publishes.        │
-│                        [required]                                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --approver        TEXT  Identifier of the human user recording the        │
-│                            approval. Refused if it names a                   │
-│                            maker/coding-agent/loop role — the executing      │
-│                            agent can never self-authorize the post (#960,    │
-│                            mirrors DbApproval #953 / MergeClear section      │
-│                            17.8).                                            │
-│                            [required]                                        │
-│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1027,8 +1077,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register a per-overlay Slack bot and store its tokens via         │
-│            ``pass``.                                                         │
+│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
+│            via ``pass``.                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1037,7 +1087,7 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 setup slack-bot [OPTIONS]
 
- Register a per-overlay Slack bot and store its tokens via ``pass``.
+ Register or update a per-overlay Slack bot and store its tokens via ``pass``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --overlay                TEXT  Overlay name as registered in              │
@@ -1045,6 +1095,8 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   [required]                                 │
 │    --reset                        Rotate the existing bot + app tokens; skip │
 │                                   the manifest URL.                          │
+│    --update                       Force the in-place manifest update path    │
+│                                   (prompts for the app id if none recorded). │
 │    --skip-smoke-test              Skip the round-trip DM verification.       │
 │    --config                 PATH  Path to teatree config (default:           │
 │                                   ~/.teatree.toml).                          │
@@ -1263,11 +1315,18 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
+│ dashboard      Render the tabular per-tick dashboard, optionally DM it to    │
+│                the user.                                                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
 │ start          Spawn a Claude Code session with the fat loop pre-registered. │
 │ stop           Print the slot id to stop in the Claude Code session.         │
+│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│                session (#1073).                                              │
+│ owner          Show which session currently owns the loop-owner slot         │
+│                (#1073).                                                      │
+│ release        Release this session's loop-owner claim (#1073).              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs in the same loop-owner session as  │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
@@ -1306,6 +1365,32 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop dashboard`
+
+```
+Usage: t3 loop dashboard [OPTIONS]
+
+ Render the tabular per-tick dashboard, optionally DM it to the user.
+
+ Default is print-to-stdout for piping or visual inspection. Pass
+ ``--send-to-slack`` to additionally route the rendered table via
+ :func:`teatree.notify.notify_user` (#963) — the send is idempotent
+ per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --send-to-slack               Send the rendered dashboard to the user's      │
+│                               Slack DM via the bot.                          │
+│ --format                TEXT  Output format: 'markdown' (stdout, default) or │
+│                               'slack' (mrkdwn).                              │
+│                               [default: markdown]                            │
+│ --source                PATH  Override the tick-actions sidecar path (test   │
+│                               hook).                                         │
+│ --self-dm-marker              Tag the slack_dm row with '(this DM)' —        │
+│                               matches manual dashboard form.                 │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1396,6 +1481,61 @@ Usage: t3 loop stop [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop claim`
+
+```
+Usage: t3 loop claim [OPTIONS]
+
+ Claim the session-scoped loop-owner slot for this Claude session (#1073).
+
+ Without ``--take-over`` a live claimant blocks the claim. With it,
+ the claim is unconditional — the hijacking session's next ``t3 loop
+ tick`` SKIPs within one tick, no restart needed. Exits 2 when not
+ running inside a Claude Code session (no session id to claim with).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --take-over              Evict a live claimant — the chat-only user's loop   │
+│                          hand-off (#1073).                                   │
+│ --slot             TEXT  Loop-owner slot name (default: loop-owner).         │
+│                          [default: loop-owner]                               │
+│ --json                   Emit JSON.                                          │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop owner`
+
+```
+Usage: t3 loop owner [OPTIONS]
+
+ Show which session currently owns the loop-owner slot (#1073).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop release`
+
+```
+Usage: t3 loop release [OPTIONS]
+
+ Release this session's loop-owner claim (#1073).
+
+ CAS on session id — a non-owner release is a no-op and never evicts
+ a live owner.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1565,6 +1705,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ ticket        Ticket state management.                                       │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
+│ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2624,11 +2765,12 @@ Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
  If an existing note contains ``## Test Plan``, it is updated instead of
  creating a new one.
 
- Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
- upload or host side effect when the gate is on and no recorded
- :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
- gate is inlined here (not at the ``code_host`` layer) so PR creation —
- which is not an on-behalf colleague-facing post — remains ungated.
+ Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
+ ``draft_or_ask``): the call is refused with no upload or host side
+ effect when no recorded :class:`OnBehalfApproval` matches
+ ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
+ at the ``code_host`` layer) so PR creation — which is not an
+ on-behalf colleague-facing post — remains ungated.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_iid      INTEGER  [required]                                         │
@@ -3513,5 +3655,57 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree pending_chat`
+
+```
+Usage: t3 teatree pending_chat [OPTIONS] COMMAND [ARGS]...
+
+ Manage the inbound Slack-DM queue (#1063).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list           List inbound rows from the last hour (or --all).              │
+│ mark-answered  Stamp ``answered_at`` on rows matching a Slack ts.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat list`
+
+```
+Usage: t3 teatree pending_chat list [OPTIONS]
+
+ List inbound Slack-DM rows; the last hour by default.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all     --recent      Include rows older than 1h; default is last hour     │
+│                         only.                                                │
+│                         [default: recent]                                    │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree pending_chat mark-answered`
+
+```
+Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
+
+ Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+
+ Idempotent: zero rows is a successful no-op (the second call
+ sees the row already stamped). Empty ``slack_ts`` is rejected.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    slack_ts      TEXT  The Slack ts of the question being answered.        │
+│                          [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Scope the stamp to one overlay (default: empty / v1   │
+│                        single-overlay).                                      │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

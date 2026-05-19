@@ -72,16 +72,34 @@ def pg_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_backend_caches() -> Iterator[None]:
-    """Clear caches and block real token resolution so tests never call gpg/pass."""
+    """Clear caches and block real token resolution so tests never call gpg/pass.
+
+    ``backend_factory.reset_backend_caches`` (not the partial
+    ``loader.reset_backend_caches``) is used because only the former
+    also clears ``backend_factory._messaging_cache`` — otherwise a test
+    that builds a real messaging backend leaks it under the empty-overlay
+    key and a later ``notify_user`` (no explicit backend) reuses it,
+    reaching a real ``pass`` subprocess. ``read_pass`` is patched on
+    BOTH ``teatree.utils.secrets`` and the name already bound into
+    ``teatree.backends.loader`` (``from … import read_pass``) — patching
+    only the source module misses loader's bound reference.
+    """
     from unittest.mock import patch  # noqa: PLC0415
 
+    import teatree.backends.loader as _loader_mod  # noqa: PLC0415
     import teatree.utils.secrets as _secrets_mod  # noqa: PLC0415
-    from teatree.backends.loader import reset_backend_caches  # noqa: PLC0415
+    from teatree.core.backend_factory import reset_backend_caches  # noqa: PLC0415
     from teatree.core.overlay_loader import reset_overlay_cache  # noqa: PLC0415
+
+    def _no_pass(_key: str) -> str:
+        return ""
 
     reset_backend_caches()
     reset_overlay_cache()
-    with patch.object(_secrets_mod, "read_pass", lambda _key: ""):
+    with (
+        patch.object(_secrets_mod, "read_pass", _no_pass),
+        patch.object(_loader_mod, "read_pass", _no_pass),
+    ):
         yield
     reset_backend_caches()
     reset_overlay_cache()
