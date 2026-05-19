@@ -80,6 +80,23 @@ def test_tick_with_no_scanners_writes_tick_meta(tmp_path: Path) -> None:
     assert data["cadence"] == 720
 
 
+def test_tick_meta_cadence_falls_back_to_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1036: tick-meta.json `cadence` (drives the statusline next-tick
+    # countdown) must honor ~/.teatree.toml loop_cadence_seconds when
+    # T3_LOOP_CADENCE is unset, never diverging from the slot cadence.
+    monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+    cfg = tmp_path / ".teatree.toml"
+    cfg.write_text("[teatree]\nloop_cadence_seconds = 300\n", encoding="utf-8")
+    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    statusline = tmp_path / "statusline.txt"
+    started = dt.datetime(2026, 5, 6, tzinfo=dt.UTC)
+    run_tick(TickRequest(scanners=[]), statusline_path=statusline, now=started)
+    meta = tmp_path / "tick-meta.json"
+    data = json.loads(meta.read_text(encoding="utf-8"))
+    assert data["cadence"] == 300
+    assert data["next_epoch"] == int(started.timestamp()) + 300
+
+
 def test_repo_freshness_on_real_git_repo(tmp_path: Path) -> None:
     from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
 
