@@ -23,6 +23,11 @@ from teatree.core.management.commands._pr_preview import (
     ship_dry_run,
     validate_pr_metadata,
 )
+from teatree.core.management.commands._pr_ticket_resolve import (
+    TicketNotFoundError,
+    resolve_ticket,
+    ticket_not_found_error,
+)
 from teatree.core.management.commands._ship_exec import (
     ShipEnqueued,
     ShipExecuted,
@@ -71,6 +76,11 @@ class BranchCurrencyFailure(TypedDict):
 # ShipDryRun / PrValidationError live in ``_pr_preview`` (re-exported below)
 # so external importers of ``pr.ShipDryRun`` / ``pr.PrValidationError`` keep
 # working after the ship-preview split.
+
+
+# TicketNotFoundError lives in ``_pr_ticket_resolve`` (re-exported via the
+# import above) so external importers of ``pr.TicketNotFoundError`` keep
+# working after the ticket-resolution split.
 
 
 class WorktreeMissingError(TypedDict):
@@ -328,14 +338,24 @@ def _run_ship_gates(
     return validate_pr_metadata(ticket, worktree)
 
 
-def _resolve_ticket(ref: str) -> Ticket:
-    """Resolve a ticket by pk / issue number / issue URL.
+def _dispatch_ship(
+    ticket: Ticket,
+    worktree: Worktree,
+    *,
+    title: str,
+    dry_run: bool,
+    sync: bool,
+) -> ShipDryRun | ShipExecuted | ShipEnqueued | ShippingGateFailure:
+    """Pick the ship execution mode once the gates have all passed.
 
-    Thin wrapper over ``Ticket.objects.resolve`` — the shared resolver so
-    ``pr create`` and ``lifecycle visit-phase`` accept the same identifier
-    set (#694).
+    ``dry_run`` previews without transitioning; ``sync`` runs the ship
+    inline; the default enqueues it for a worker (#708).
     """
-    return Ticket.objects.resolve(ref)
+    if dry_run:
+        return ship_dry_run(ticket, worktree)
+    if sync:
+        return _ship_sync(ticket, title)
+    return _enqueue_ship(ticket, title)
 
 
 class Command(TyperCommand):
@@ -364,6 +384,7 @@ class Command(TyperCommand):
         | ShippingGateFailure
         | WorktreeMissingError
         | NoCommitsAheadError
+        | TicketNotFoundError
     ):
         """Validate ship gates and trigger the ship transition.
 
@@ -383,7 +404,14 @@ class Command(TyperCommand):
         ``--title`` overrides the PR title (default: last commit subject).
         Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
         """
-        ticket = _resolve_ticket(ticket_id)
+        try:
+            ticket = resolve_ticket(ticket_id)
+        except Ticket.DoesNotExist:
+            # #1051: no canonical Ticket row (out-of-FSM autonomous-loop
+            # PR, or a pruned row). Return an actionable error instead of
+            # letting the bare DoesNotExist crash the command and force a
+            # manual `gh pr create` fallback.
+            return ticket_not_found_error(ticket_id)
         # #779: refuse to read the shipping gate from a worktree-isolated DB.
         # The gate reads phase attestations; if this process resolved to a
         # per-worktree DB (uv run from a worktree) it sees a partial phase
@@ -432,11 +460,7 @@ class Command(TyperCommand):
             # impossible from a non-REVIEWED state (#748).
             reconcile_fsm_for_ship(ticket)
 
-        if dry_run:
-            return ship_dry_run(ticket, worktree)
-        if sync:
-            return _ship_sync(ticket, title)
-        return _enqueue_ship(ticket, title)
+        return _dispatch_ship(ticket, worktree, title=title, dry_run=dry_run, sync=sync)
 
     @command(name="ensure-pr")
     def ensure_pr(
