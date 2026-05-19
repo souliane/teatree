@@ -101,6 +101,14 @@ class _FakeMessaging:
         _ = since
         return []
 
+    def fetch_reactions(self, *, since: str = "") -> list[dict[str, object]]:
+        _ = since
+        return []
+
+    def fetch_message(self, *, channel: str, ts: str) -> dict[str, object]:
+        _ = (channel, ts)
+        return {}
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
         _ = (channel, text, thread_ts)
         return {}

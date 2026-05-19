@@ -67,9 +67,11 @@ class SlackBotBackend:
         self._cached_bot_id: str | None = None
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
         # tick the loop scanner drains them via ``fetch_mentions`` /
-        # ``fetch_dms``; the receiver calls ``enqueue_mention`` / ``enqueue_dm``.
+        # ``fetch_dms`` / ``fetch_reactions``; the receiver calls
+        # ``enqueue_mention`` / ``enqueue_dm`` / ``enqueue_reaction``.
         self._mentions: list[RawAPIDict] = []
         self._dms: list[RawAPIDict] = []
+        self._reactions: list[RawAPIDict] = []
 
     @property
     def app_token(self) -> str:
@@ -90,6 +92,10 @@ class SlackBotBackend:
     def enqueue_dm(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``message.im`` event into the inbound queue."""
         self._dms.append(event)
+
+    def enqueue_reaction(self, event: RawAPIDict) -> None:
+        """Push a Socket Mode ``reaction_added`` event into the inbound queue."""
+        self._reactions.append(event)
 
     def _post(self, method: str, payload: SlackPayload, *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
@@ -220,6 +226,40 @@ class SlackBotBackend:
             reply.setdefault("channel", channel)
             replies.append(reply)
         return replies
+
+    def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
+        """Drain queued Socket Mode ``reaction_added`` events.
+
+        ``since`` is accepted for protocol compatibility but ignored — the
+        Socket Mode receiver delivers events in real time so the queue
+        only holds events that arrived after the previous tick.
+        """
+        _ = since
+        events, self._reactions = self._reactions, []
+        return events
+
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        """Fetch a single message by ``(channel, ts)``.
+
+        Returns the message dict on success, ``{}`` on any failure or
+        when no message matches. Used by the review-intent scanner to
+        resolve the underlying message text behind a ``reaction_added``
+        event (the event itself only carries ``item.channel`` /
+        ``item.ts`` — no text).
+        """
+        if not channel or not ts:
+            return {}
+        data = self._get(
+            "conversations.history",
+            {"channel": channel, "latest": ts, "inclusive": "true", "limit": 1},
+        )
+        if not data.get("ok"):
+            return {}
+        messages = data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return {}
+        first = messages[0]
+        return cast("RawAPIDict", first) if isinstance(first, dict) else {}
 
     def _resolve_bot_id(self) -> str:
         if self._cached_bot_id is None:
