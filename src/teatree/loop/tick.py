@@ -155,8 +155,10 @@ def run_tick(
     report = TickReport(started_at=started_at)
 
     if not jobs:
+        empty_zones = StatuslineZones()
+        _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
-            StatuslineZones(),
+            empty_zones,
             target=statusline_path,
             colorize=colorize,
         )
@@ -178,5 +180,25 @@ def run_tick(
     _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
+    _populate_loop_owner_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
+    """Append the #1073 loop-owner segment to the right zone.
+
+    Fails open: any import/query error degrades to a no-op so a broken
+    loop-owner read can never blank the statusline (same contract as
+    :func:`teatree.loop.rendering._populate_availability_anchor`).
+    """
+    try:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+
+        status = LoopLease.objects.ownership_status("loop-owner")
+        zone, line = loop_owner_anchor(status, current_session_id())
+    except Exception:  # noqa: BLE001
+        return
+    getattr(zones, zone).append(line)

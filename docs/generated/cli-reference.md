@@ -1320,6 +1320,11 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
 │ start          Spawn a Claude Code session with the fat loop pre-registered. │
 │ stop           Print the slot id to stop in the Claude Code session.         │
+│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│                session (#1073).                                              │
+│ owner          Show which session currently owns the loop-owner slot         │
+│                (#1073).                                                      │
+│ release        Release this session's loop-owner claim (#1073).              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs in the same loop-owner session as  │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
@@ -1474,6 +1479,61 @@ Usage: t3 loop stop [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop claim`
+
+```
+Usage: t3 loop claim [OPTIONS]
+
+ Claim the session-scoped loop-owner slot for this Claude session (#1073).
+
+ Without ``--take-over`` a live claimant blocks the claim. With it,
+ the claim is unconditional — the hijacking session's next ``t3 loop
+ tick`` SKIPs within one tick, no restart needed. Exits 2 when not
+ running inside a Claude Code session (no session id to claim with).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --take-over              Evict a live claimant — the chat-only user's loop   │
+│                          hand-off (#1073).                                   │
+│ --slot             TEXT  Loop-owner slot name (default: loop-owner).         │
+│                          [default: loop-owner]                               │
+│ --json                   Emit JSON.                                          │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop owner`
+
+```
+Usage: t3 loop owner [OPTIONS]
+
+ Show which session currently owns the loop-owner slot (#1073).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop release`
+
+```
+Usage: t3 loop release [OPTIONS]
+
+ Release this session's loop-owner claim (#1073).
+
+ CAS on session id — a non-owner release is a no-op and never evicts
+ a live owner.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
+│                     [default: loop-owner]                                    │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

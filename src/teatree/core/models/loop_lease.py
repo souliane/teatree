@@ -15,6 +15,23 @@ conditional ``UPDATE ... WHERE (unowned OR lease expired)`` — NOT
 SQLite, where ``has_select_for_update_skip_locked`` is ``False`` and that
 clause is silently dropped (the #786 B1 lesson). Exactly one of N
 concurrent ticks wins the CAS; the losers see 0 rows updated and skip.
+
+#1073 deliberate exception — the ``loop-owner`` row is PERSISTENT, not
+per-tick. The "each tick performs a fresh acquire … a stale lease simply
+expires" doctrine above is exact for the ``loop-tick`` concurrency mutex,
+but it is precisely why a pid-keyed identity hijacks: between two ticks
+``loop-tick`` rests ``owner=""``, so ANY session running ``t3 loop tick``
+wins the unowned CAS and does loop work (drains the user's DMs, dispatches
+reviewers). The fix is a second well-known row, ``loop-owner``, holding a
+session-scoped claim (``session_id`` column) that the owning session
+*refreshes every tick* via ``claim_ownership`` — that per-tick re-claim IS
+its heartbeat, so it is still expiry-reapable (a dead owner's claim lapses
+after the TTL and the next session reclaims it) with NO renew() method and
+NO background timer (#54 doctrine preserved). ``loop-owner`` is never
+released in the tick ``finally`` (only ``loop-tick`` is); the TTL is the
+sole release. The CAS shape is name-parameterized so the in-flight
+reactive-Slack-answer loop (#1063/#1069) reuses it via
+``loop-slack-answer-owner``.
 """
 
 from django.db import models
@@ -28,6 +45,7 @@ class LoopLease(models.Model):
 
     name = models.CharField(max_length=128, unique=True)
     owner = models.CharField(max_length=255, blank=True)
+    session_id = models.CharField(max_length=255, blank=True, default="")
     acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
 
