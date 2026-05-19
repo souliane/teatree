@@ -10,7 +10,7 @@ If the entire `src/` and `tests/` tree were deleted, this document alone — plu
 
 - Statusline file is the only persistent UI surface (HTML dashboard, ttyd, ASGI/uvicorn, platform autostart helpers removed)
 - Code-host + messaging Protocols unified: `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config
-- `t3 setup slack-bot --overlay <name>` walks through Slack app registration
+- `t3 setup slack-bot --overlay <name>` walks through Slack app registration, or updates an existing app's manifest in place when one is recorded (`--update` to force it)
 - Fat loop + 10 scanners + dispatcher wired through `t3 loop tick` (review-channel scanning folded into dispatcher's PR-URL detection; `ReviewNagScanner` adds fibonacci-cadence thread-reply nags at +1/+2/+3/+5d on unreviewed MRs posted to the review channel — #1038)
 - Headless executor is a deliberately slim `claude -p` swap point for a future Anthropic SDK runtime
 - No-overlay-leak grep gate keeps the platform tenant-agnostic
@@ -1186,7 +1186,9 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 4. Write `messaging_backend`, `slack_user_id`, and `slack_token_ref` to `[overlays.<name>]` in `~/.teatree.toml`.
 5. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅.
 
-The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens but **skips the manifest** — it does **not** apply a scope change. Adding or changing a manifest scope (e.g. granting the xoxp user token `reactions:write`) requires a full reinstall: re-run **without** `--reset` and re-approve the manifest in the browser so Slack re-prompts OAuth consent for the new scope set.
+The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens but **skips the manifest** — it does **not** apply a scope change.
+
+For an **existing** app, the command updates its manifest in place rather than re-running the create flow. When `[overlays.<name>].slack_app_id` is recorded (the create flow now prompts for it and persists it) — or `--update` is passed (prompting for the app id when none is recorded) — the command calls Slack's `apps.manifest.export` / `apps.manifest.update` using org-wide config tokens stored in `pass` (`teatree/slack-app-config-token` and `teatree/slack-app-config-refresh`; rotated automatically via `tooling.tokens.rotate` on `invalid_auth`/`token_expired`). If the desired manifest matches the live one it is an idempotent no-op; otherwise the manifest is applied and the **single** remaining manual step is the browser OAuth-consent reinstall click at the app-specific deep link (`https://api.slack.com/apps/<app_id>/install-on-team`). When no config token is stored the command degrades: it prints the manifest plus the app's manifest-editor deep link for a manual paste, then still smoke-tests with the stored bot token.
 
 **Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses the shared `teatree.utils.singleton` flock primitive (kernel-enforced, crash-safe) — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 

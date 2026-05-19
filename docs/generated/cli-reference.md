@@ -1077,8 +1077,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register a per-overlay Slack bot and store its tokens via         │
-│            ``pass``.                                                         │
+│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
+│            via ``pass``.                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1087,7 +1087,7 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 setup slack-bot [OPTIONS]
 
- Register a per-overlay Slack bot and store its tokens via ``pass``.
+ Register or update a per-overlay Slack bot and store its tokens via ``pass``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --overlay                TEXT  Overlay name as registered in              │
@@ -1095,6 +1095,8 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   [required]                                 │
 │    --reset                        Rotate the existing bot + app tokens; skip │
 │                                   the manifest URL.                          │
+│    --update                       Force the in-place manifest update path    │
+│                                   (prompts for the app id if none recorded). │
 │    --skip-smoke-test              Skip the round-trip DM verification.       │
 │    --config                 PATH  Path to teatree config (default:           │
 │                                   ~/.teatree.toml).                          │
