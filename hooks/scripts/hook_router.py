@@ -3222,17 +3222,30 @@ def handle_inject_pending_questions(_data: dict) -> None:
 def handle_inject_pending_chat(data: dict) -> None:
     """Append unconsumed Slack-DM messages to the next prompt's ``additionalContext``.
 
-    Gated on ``_session_owns_loop`` so a non-owner session never drains
-    the queue — matches the §5.6 ``handle_loop_self_pump`` discipline
-    (fresh side-sessions must not steal user replies intended for the
-    loop owner). Each row is stamped ``consumed_at`` after emission, so
-    a re-fire is a clean no-op. Fails open: if teatree is unavailable,
-    just skip — the user's reply stays queued for the next tick.
+    **Drain eligibility:** ANY interactive Claude Code session that
+    receives a ``UserPromptSubmit`` event may drain the queue. The
+    original implementation gated on ``_session_owns_loop`` (mirroring
+    the §5.6 ``handle_loop_self_pump`` discipline), but the loop-owner
+    record points at the autonomous ``t3 loop start`` session — which
+    never receives ``UserPromptSubmit`` events — so the gate prevented
+    the queue from ever draining (32 unconsumed rows observed in
+    production). The self-pump owner-gate is correct for self-pump
+    (must be singleton); it was the wrong invariant for the inbound
+    bridge, where the *whole point* is that the user's queued replies
+    must reach an interactive session.
+
+    At-most-once delivery is preserved by primitives other than the
+    owner-gate: ``PendingChatInjection.consume()`` is a single-use
+    durable transition (``UPDATE … WHERE consumed_at IS NULL``) so a
+    concurrent second drain sees the row already stamped and emits
+    nothing, and the ``(overlay, slack_ts)`` ``UniqueConstraint``
+    deduplicates the ingest side so over-polling is safe.
+
+    Fails open: if teatree is unavailable, just skip — the queue
+    survives to the next tick.
     """
     session_id = data.get("session_id", "")
     if not session_id:
-        return
-    if not _session_owns_loop(session_id):
         return
     if not _bootstrap_teatree_django():
         return
