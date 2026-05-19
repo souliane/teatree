@@ -172,6 +172,13 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("dismiss", "Dismiss a pending question without answering it."),
         ],
     ),
+    "pending_chat": (
+        "Manage the inbound Slack-DM queue (#1063).",
+        [
+            ("list", "List inbound rows from the last hour (or --all)."),
+            ("mark-answered", "Stamp ``answered_at`` on rows matching a Slack ts."),
+        ],
+    ),
 }
 
 
