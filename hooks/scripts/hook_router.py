@@ -3209,6 +3209,48 @@ def handle_inject_pending_questions(_data: dict) -> None:
     print("\n".join(lines))  # noqa: T201
 
 
+# ── UserPromptSubmit: inject pending Slack-DM backlog into context ─────────────
+#
+# Inbound half of the Slack ↔ Claude-Code bidirectional bridge (#1014,
+# BLUEPRINT §17.1 invariant 2 / §5.6). The user only reads Slack DMs;
+# their reply to the overlay bot lands here as a ``PendingChatInjection``
+# row. The next ``UserPromptSubmit`` drain reads unconsumed rows for the
+# loop-owner session and emits them into ``additionalContext`` — the
+# agent sees the message as if the user had typed it in chat.
+
+
+def handle_inject_pending_chat(data: dict) -> None:
+    """Append unconsumed Slack-DM messages to the next prompt's ``additionalContext``.
+
+    Gated on ``_session_owns_loop`` so a non-owner session never drains
+    the queue — matches the §5.6 ``handle_loop_self_pump`` discipline
+    (fresh side-sessions must not steal user replies intended for the
+    loop owner). Each row is stamped ``consumed_at`` after emission, so
+    a re-fire is a clean no-op. Fails open: if teatree is unavailable,
+    just skip — the user's reply stays queued for the next tick.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    if not _session_owns_loop(session_id):
+        return
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — fail open: queue survives to the next tick
+        return
+    try:
+        rows = list(PendingChatInjection.pending())
+    except Exception:  # noqa: BLE001
+        return
+    drained: list[str] = [f"User replied on Slack at {row.slack_ts}: {row.text}" for row in rows if row.consume()]
+    if not drained:
+        return
+    header = f"You have {len(drained)} new Slack DM reply(ies) from the user:"
+    print("\n".join([header, *drained]))  # noqa: T201
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -3216,6 +3258,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
         handle_inject_pending_questions,
+        handle_inject_pending_chat,
         handle_user_prompt_submit,
     ],
     "PreToolUse": [
