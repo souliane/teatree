@@ -48,11 +48,21 @@ The script outputs a summary table with CI status, validation results, and readi
 - When fixing descriptions, **preserve the full body** — only prepend/fix the first line.
 - If a ticket URL is missing, ask the user.
 
-### 5. Check Team Chat for Existing Requests
+### 5. Live Dedup Check (Mandatory, race-safe — #1084)
 
-Search review channels for each PR URL to avoid duplicate notifications. See your [chat platform reference](../platforms/references/) § "Search for Messages" for the recipe. Use private-inclusive search — review channels may be private.
+**Do not "search then later post".** A manual search separated from the post is racy: between the search and the post the user (or a retry, or a parallel loop) can post the same request — exactly the incident this guard exists to prevent. Instead, for every Ready PR run the dedup gate **in the same turn as the post** (§7) and obey its verdict:
 
-Store the permalink for each PR found — it's displayed in the summary table.
+```bash
+t3 review-request check --mr-url <PR_URL>
+```
+
+`check` reads the **live** review channel with the *same token the post will use* (a Slack-Connect channel is read with the user `xoxp`, not the bot token — read-token == post-token), bounded and fail-safe, and takes an atomic DB claim. It prints:
+
+- `{"action": "post"}` → you may post this PR's review request (this turn).
+- `{"action": "suppress", "permalink": "...", "author": "..."}` → **do not post**. A message for this PR already exists in the channel (a prior agent post, or the user's own out-of-band post — any author suppresses). Record the returned `permalink` in the summary table as the existing request and move on. The guard has already reconciled the DB so the loop will not nag.
+- `{"action": "suppress", "reason": "read_failed_failsafe"}` → the live read could not complete; **do not post** (bias to not double-posting). The obligation stays open — a later tick retries.
+
+The guard is the single source of truth for "already requested?". Do not second-guess a `suppress` with a manual search.
 
 ### 6. Present Summary Tables
 
@@ -78,7 +88,9 @@ Always present **two tables** before posting:
 
 ### 7. Send Review Requests
 
-Only after user approval, post messages to the review channels. Use the project's channel routing rules.
+Only after user approval, and **for each PR, in the same turn**: run `t3 review-request check --mr-url <PR_URL>` (§5) and post **only if** it returned `{"action": "post"}`. If it returned `suppress`, skip that PR — never post over the guard. Re-running `check` immediately before each `slack_send_message` is what closes the check→post race; do not batch all checks up front and then post later.
+
+Use the project's channel routing rules.
 
 **Message format:** `<MR_title_without_ticket_url> <MR_URL>` — one line, nothing else.
 
@@ -87,21 +99,17 @@ Only after user approval, post messages to the review channels. Use the project'
 - Default: one message per PR
 - Some projects batch multiple PRs from the same repo into one message
 
-### 8. Persist Review Messages
+### 8. Persistence Is Automatic
 
-After sending each review request, save the message permalink in `$T3_DATA_DIR/tickets/<ticket_iid>/mr_review_messages.json`. See your [chat platform reference](../platforms/references/) § "Caching Chat Data" for the format.
-
-Create the directory if it doesn't exist. Merge with existing entries (don't overwrite — a ticket may have PRs sent at different times).
-
-Extract the ticket IID from the PR's source branch name or from `TICKET_URL` in `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`).
+The dedup gate (§5/§7) takes the atomic `ReviewRequestPost` claim itself, and the Slack review-sync attaches the permalink to the PR's ticket record. **The live channel + the `ReviewRequestPost` row are the source of truth — not a hand-written JSON file.** Do not maintain `mr_review_messages.json` as a dedup oracle; a stale or missing file must never cause a duplicate post (killing the file does not, by design — the guard reads the live channel). No manual persistence step is required after posting.
 
 ### 9. Check Doing → Technical Review Transition
 
 After all messages are sent (or skipped), check if the ticket is ready to transition:
 
 1. List ALL PRs for the ticket (across all repos).
-2. For each PR, check `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`.
-3. For any PR not in the cache, search the team chat for the PR URL. Cache any results found.
+2. For each PR, run `t3 review-request check --mr-url <PR_URL>` — a `suppress` with a `permalink` (or the PR's `review_permalink` from `t3 review-request discover`) means a request exists. This is a **live** read, so it never falses on a stale cache.
+3. (No step — the live check in 2 already replaces the old JSON-cache lookup.)
 4. If ALL PRs have a review request message → trigger the transition:
     - Update issue tracker label/status. See your [issue tracker platform reference](../platforms/references/) § "Transition Logic".
     - Call `ticket_update_external_tracker` extension point
@@ -121,7 +129,7 @@ After sending, remind the user about PRs that couldn't be sent:
 ## Rules
 
 - **Never post without user approval.** Always present the summary tables first and wait for explicit "send" / "go ahead".
-- **Never post duplicates.** Always check team chat before posting.
+- **Never post duplicates — enforced, not advisory.** Run `t3 review-request check --mr-url <url>` in the **same turn** as every post and abort the post on `suppress` (#1084). The gate reads the live channel with the post-token and takes an atomic DB claim, so two posts (agent+agent, or user+agent) for the same PR within the dedup window are impossible. A user's manual out-of-band post suppresses the agent. Do not rely on a JSON cache or an out-of-turn manual search — both are racy and stale-prone.
 - **Draft PRs are invisible.** Exclude them from all tables and counts.
 - **Validate before posting.** Never send a review request for a PR that fails validation — fix it first.
 - **Preserve description bodies.** When fixing the first line, never lose the rest of the description.

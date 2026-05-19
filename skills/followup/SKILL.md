@@ -152,7 +152,7 @@ Before running transition checks (§9) or status check mode (§10), ensure `$T3_
     - `mkdir -p $T3_DATA_DIR/tickets/<iid>/`
     - Fetch the issue's current label/status from the issue tracker CLI.
     - Write `status.json`: `{"label": "Process::Doing", "last_checked": "<ISO timestamp>", "discovered_from": "open_mrs", "mrs": ["<mr_url>"]}`
-    - Initialize empty `mr_review_messages.json` (`{}`).
+    - No review-message cache file is created: "review requested?" is resolved live via `t3 review-request check`/`discover` against the channel + the `ReviewRequestPost` DB row (#1084), never a JSON oracle.
 
 5. **Merge, don't overwrite.** If the ticket directory already exists, only add newly discovered PR URLs to `status.json.mrs` — never overwrite existing cache data (review messages, transition history).
 
@@ -202,7 +202,7 @@ Also check for colleague comments (exclude system notes and author's own) via th
 
 **Cache PR metadata** in `$T3_DATA_DIR/mr_reminders.json` — see your [chat platform reference](../platforms/references/) § "PR Reminder Cache" for the format.
 
-Populate `original_review_permalink` from `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json`. If not cached there, search the team chat for the PR URL and cache the result.
+Populate `original_review_permalink` from the live channel: `t3 review-request check --mr-url <url>` returns the existing message `permalink` on `suppress` (or use the `review_permalink` field from `t3 review-request discover`). The live read is the source of truth — no JSON cache lookup (#1084).
 
 **Skip PRs that:** have no original review message (never sent for review), were already reminded today (`last_reminded` == today), are already approved, **already have colleague comments** (being actively reviewed), or **have a non-success pipeline** (failed, running, pending — only send review requests for green pipelines).
 
@@ -273,7 +273,7 @@ See [`references/followup-schema.md`](references/followup-schema.md) for the ful
 
 - **Label transitions are best-effort.** If the API call fails, log a warning but continue.
 - **Transition checks are idempotent.** Running them multiple times is safe — they only transition if the gate is satisfied and the ticket isn't already at the target status.
-- **Always cache chat search results.** Write to `$T3_DATA_DIR/tickets/<iid>/mr_review_messages.json` after every review channel search to avoid redundant API calls.
+- **Resolve "review requested?" live, never from a JSON cache.** `t3 review-request check`/`discover` read the channel + the `ReviewRequestPost` DB row; a stale or deleted cache must never cause a duplicate post (#1084).
 - **PR URLs stay hidden in reminders.** Post only the permalink to the original review request — this avoids leaking PR context outside the original thread.
 - **One reminder per interval per PR.** The `last_reminded` cache prevents spamming. Interval is `T3_FOLLOWUP_INTERVAL` (default 24h).
 - **Cache aggressively.** PR metadata, review request permalinks, and approval status are cached in `$T3_DATA_DIR/mr_reminders.json`. Only re-fetch what's stale.
