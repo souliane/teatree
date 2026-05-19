@@ -72,7 +72,7 @@ class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""
 
     django_app: str | None = "teatree.contrib.t3_teatree"
-    config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="teatree")
+    config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="t3-teatree")
     metadata = TeatreeMetadata()
 
     @override

@@ -596,6 +596,13 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
     Sources (merged by name, toml wins on conflict):
     1. ``[overlays.<name>]`` sections in the toml config (``path`` key)
     2. ``teatree.overlays`` entry-point group from installed packages
+
+    A bare config-only ``[overlays.<alias>]`` table (no ``path``/``class``)
+    whose name is a legacy short alias of an installed entry-point overlay
+    is folded into that canonical entry-point overlay rather than emitted
+    as a separate one — older ``slack-bot`` runs wrote ``[overlays.teatree]``
+    for the ``t3-teatree`` overlay, which made discovery list both as if
+    they were distinct overlays (souliane/teatree#1108).
     """
     from importlib.metadata import entry_points  # noqa: PLC0415
 
@@ -603,20 +610,29 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
         config_path = CONFIG_PATH
     seen: dict[str, OverlayEntry] = {}
 
+    ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
+
     # 1. Toml config
     config = load_config(config_path)
     for name, overlay_cfg in config.raw.get("overlays", {}).items():
         overlay_class = overlay_cfg.get("class", "")
         path_str = overlay_cfg.get("path", "")
         project_path = Path(path_str).expanduser() if path_str else None
-        if not overlay_class and project_path:
-            manage_py = project_path / "manage.py"
-            settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
-            overlay_class = settings_module
         overrides: dict[str, Any] = {}
         for key, parser in OVERLAY_OVERRIDABLE_SETTINGS.items():
             if key in overlay_cfg:
                 overrides[key] = parser(overlay_cfg[key])
+        if not overlay_class and project_path is None and name not in ep_names:
+            canonical = _canonical_ep_name(name, ep_names)
+            if canonical is not None:
+                # Legacy short-alias config table — fold its overrides into
+                # the canonical entry-point overlay below; do not emit a
+                # stray overlay under the alias name.
+                continue
+        if not overlay_class and project_path:
+            manage_py = project_path / "manage.py"
+            settings_module = _extract_settings_module(manage_py) if manage_py.is_file() else ""
+            overlay_class = settings_module
         seen[name] = OverlayEntry(
             name=name,
             overlay_class=overlay_class,
@@ -634,6 +650,22 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
             )
 
     return list(seen.values())
+
+
+def _canonical_ep_name(alias: str, ep_names: "set[str]") -> str | None:
+    """Return the entry-point overlay a short config alias maps to.
+
+    Mirrors the generic legacy-alias rule used by the loop freshness
+    segment (``loop.tick_freshness._canonical_overlay_names``): a bare
+    ``[overlays.<alias>]`` table maps to the installed entry-point overlay
+    whose name equals ``alias`` or ends with ``-<alias>`` (e.g. a short
+    ``<alias>`` table folding into the canonical ``t3-<alias>`` entry
+    point). ``None`` when no such canonical entry point is installed.
+    """
+    for ep_name in ep_names:
+        if ep_name == alias or ep_name.endswith(f"-{alias}"):
+            return ep_name
+    return None
 
 
 def discover_active_overlay() -> OverlayEntry | None:

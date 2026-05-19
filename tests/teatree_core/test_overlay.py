@@ -273,6 +273,37 @@ class TestOverlayConfig(TestCase):
         assert config.exclude_labels == ["Process::DEV review", "Process::QA review"]
 
 
+class TestBundledOverlayConfigTable(TestCase):
+    """The bundled overlay reads ``[overlays.t3-teatree]`` (souliane/teatree#1108).
+
+    The entry point registers the bundled overlay as ``t3-teatree``; the
+    overlay's ``OverlayConfig`` must therefore read its TOML overrides from
+    ``[overlays.t3-teatree]``, not from a stray legacy ``[overlays.teatree]``
+    table. Before the fix ``overlay_name="teatree"`` made the config read
+    the wrong table — the split-brain root cause of the duplicate-overlay
+    symptom.
+    """
+
+    def _config_for_bundled_overlay(self) -> OverlayConfig:
+        from teatree.contrib.t3_teatree.overlay import TeatreeOverlay  # noqa: PLC0415
+
+        return TeatreeOverlay().config
+
+    def test_reads_t3_teatree_table_not_bare_teatree(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "t3-teatree": {"exclude_labels": ["from-t3-teatree"]},
+                "teatree": {"exclude_labels": ["from-bare-teatree"]},
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = self._config_for_bundled_overlay()
+
+        assert config.exclude_labels == ["from-t3-teatree"]
+        assert config.exclude_labels != ["from-bare-teatree"]
+
+
 class TestDefaultHealthChecks(TestCase):
     def test_includes_worktree_and_symlink_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
