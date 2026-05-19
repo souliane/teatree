@@ -146,6 +146,70 @@ class TestPersistReviewer(TestCase):
         assert result == []  # Existing author ticket is not converted.
         assert Ticket.objects.get(issue_url=url).role == Ticket.Role.AUTHOR
 
+    def test_no_action_disposition_stops_infinite_requeue_at_same_head(self) -> None:
+        """#1077 liveness: a concluded no-action review is not re-dispatched at head.
+
+        A colleague/bot MR (Aikido) with no postable/approvable action: the
+        reviewer concludes via ``mark_review_no_action``. The scanner keeps
+        emitting the same ``t3:reviewer`` action every tick (the MR has no
+        forge reviewer assignment so the orphan sweep can never fire). With
+        the fix, a subsequent ``_handle_reviewer`` at the SAME head SHA
+        returns None (no re-dispatch), the reviewing Task is terminal, and
+        ``last_review_state`` is the non-approved outcome.
+
+        Anti-vacuity: pre-#1077 there is no ``mark_review_no_action``
+        transition (``_handle_reviewer`` only suppresses on APPROVED), so
+        this disposition cannot be recorded and the second call re-creates
+        a reviewing Task — RED.
+        """
+        url = "https://gitlab/x/-/merge_requests/1077a"
+        first = persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        assert len(first) == 1
+
+        ticket = Ticket.objects.get(issue_url=url)
+        ticket.mark_review_no_action()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.extra["last_review_state"] == "reviewed_no_action"
+        assert ticket.extra["last_review_state"] != "approved"
+        assert not Task.objects.filter(
+            ticket=ticket,
+            phase="reviewing",
+            status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
+        ).exists()
+
+        # Same url + same head SHA on the next tick → NO re-dispatch.
+        second = persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        assert second == []
+        assert (
+            Task.objects.filter(
+                ticket=ticket,
+                phase="reviewing",
+                status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
+            ).count()
+            == 0
+        )
+
+    def test_no_action_disposition_does_not_lose_obligation_on_new_head(self) -> None:
+        """#1077 no-lost-obligation: a head-SHA move re-schedules the review.
+
+        After a no-action disposition at SHA1, the author pushes SHA2. The
+        recorded ``reviewed_no_action`` belonged to SHA1 — the new revision
+        MUST be reviewed again (the #959 SHA-move reset drops the stale
+        state), so ``_handle_reviewer`` re-``schedule_external_review``.
+        """
+        url = "https://gitlab/x/-/merge_requests/1077b"
+        persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        ticket = Ticket.objects.get(issue_url=url)
+        ticket.mark_review_no_action()
+        ticket.save()
+
+        created = persist_agent_actions([self._action(url=url, head_sha="sha2")])
+
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"
+
 
 class TestPersistOrchestrator(TestCase):
     def _action(

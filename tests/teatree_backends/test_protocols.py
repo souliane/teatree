@@ -6,6 +6,7 @@ from teatree.backends.protocols import (
     CodeHostBackend,
     MessageSpec,
     MessagingBackend,
+    PrOpenState,
     PullRequestSpec,
     ReviewState,
 )
@@ -58,6 +59,10 @@ class _FakeCodeHost:
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         _ = (pr_url, reviewer)
         return ReviewState.NONE
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        _ = pr_url
+        return PrOpenState.UNKNOWN
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> dict[str, object]:
         _ = (repo, pr_iid, body)
