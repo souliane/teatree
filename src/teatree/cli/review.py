@@ -26,7 +26,7 @@ from http import HTTPStatus
 
 import typer
 
-from teatree.cli.review_approval import identity_has_reviewed
+from teatree.cli.review_approval import identity_has_reviewed, identity_in_approved_by
 from teatree.cli.review_audit import record_note_claim
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
@@ -411,6 +411,11 @@ class ReviewService:
         if status in _HTTP_OK_CODES:
             record_note_claim(self._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
             return f"OK approved !{mr}", 0
+        # GitLab returns 401 for the idempotent already-approved case as
+        # well as a genuine auth failure (#1029). Probe /approvals to
+        # distinguish: identity already in approved_by → no-op success.
+        if identity_in_approved_by(api, encoded, mr):
+            return f"Already approved by {api.current_username()} (!{mr})", 0
         return f"Failed: HTTP {status}", 1
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
