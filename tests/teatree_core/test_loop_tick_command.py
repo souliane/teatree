@@ -6,6 +6,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
@@ -96,6 +97,27 @@ class TestLoopTickCommand(TestCase):
             call_command("loop_tick", "--overlay", "myoverlay", stdout=stdout)
 
         host_mock.assert_called_once()
+
+    def test_connector_preflight_aborts_tick_before_running(self) -> None:
+        """A down connector ``raise SystemExit`` before any tick work.
+
+        Guards the user directive: the loop must refuse to continue when
+        a hard-dependency connector is unreachable, not degrade into a
+        silent no-op tick.
+        """
+        report = _build_report()
+        with (
+            patch(
+                "teatree.core.connector_preflight.run_connector_preflight",
+                side_effect=SystemExit("Connector preflight failed for overlay 'acme': Slack down"),
+            ),
+            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        assert excinfo.value.code != 0
+        run_tick_mock.assert_not_called()
 
     def test_skips_tick_when_lease_held_by_another_owner(self) -> None:
         """A live DB lease held by another owner makes the command skip (#786 WS2).
