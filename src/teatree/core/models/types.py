@@ -66,6 +66,7 @@ class TicketExtra(TypedDict, total=False):
     target_branch: str
     branch_currency_post_merge_sha: str
     ship_branch_currency_blocker: "BranchCurrencyBlocker"
+    last_approval_sha: str
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):

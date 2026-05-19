@@ -1,10 +1,17 @@
 """Tests for the overlay-aware backend factory bridge."""
 
+import os
+from collections.abc import Iterator
 from unittest.mock import patch
 
+import pytest
+
 import teatree.core.overlay_loader as overlay_loader_mod
+from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_ci import GitLabCIService
+from teatree.backends.slack_bot import SlackBotBackend
+from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
     code_host_from_overlay,
@@ -12,6 +19,13 @@ from teatree.core.backend_factory import (
     reset_backend_caches,
 )
 from teatree.core.overlay import OverlayBase, OverlayConfig
+
+
+@pytest.fixture(autouse=True)
+def _reset_caches() -> Iterator[None]:
+    reset_backend_caches()
+    yield
+    reset_backend_caches()
 
 
 class _TokenConfig(OverlayConfig):
@@ -35,14 +49,6 @@ class _NoTokenOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree):
         return []
-
-
-def setup_function() -> None:
-    reset_backend_caches()
-
-
-def teardown_function() -> None:
-    reset_backend_caches()
 
 
 def _patch_overlay(overlay_cls):
@@ -120,3 +126,191 @@ def test_reset_backend_caches_clears_all_caches() -> None:
     with _patch_overlay(_NoTokenOverlay):
         second = code_host_from_overlay()
     assert first is not second
+
+
+def _toml_only_config(overlays: dict) -> object:
+    return type("Cfg", (), {"raw": {"overlays": overlays}})()
+
+
+class TestMessagingFromOverlayTomlFallback:
+    """A path-only TOML overlay (no ``class:`` key) still resolves a backend.
+
+    Regression: a wrapper script that sets ``T3_OVERLAY_NAME`` and calls
+    ``django.setup()`` would get ``None`` because ``_discover_overlays``
+    skips path-only TOML entries — the messaging factory then never
+    consulted the TOML fallback that ``iter_overlay_backends`` uses,
+    silently routing DMs to the wrong overlay's bot.
+    """
+
+    def test_falls_back_to_toml_when_overlay_class_missing(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                    "slack_user_id": "U1",
+                },
+            },
+        )
+        seen: list[str] = []
+
+        def fake_read(key: str) -> str:
+            seen.append(key)
+            return {
+                "teatree/private-x/slack-bot": "x-bot-tok",
+                "teatree/private-x/slack-app": "x-app-tok",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            backend = messaging_from_overlay(overlay_name="private-x")
+
+        assert isinstance(backend, SlackBotBackend)
+        assert "teatree/private-x/slack-bot" in seen
+        assert "teatree/private-x/slack-app" in seen
+
+    def test_explicit_overlay_name_wins_over_env_var(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                },
+                "teatree": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/teatree/slack",
+                },
+            },
+        )
+        seen: list[str] = []
+
+        def fake_read(key: str) -> str:
+            seen.append(key)
+            return {
+                "teatree/private-x/slack-bot": "x-bot",
+                "teatree/private-x/slack-app": "x-app",
+                "teatree/teatree/slack-bot": "teatree-bot",
+                "teatree/teatree/slack-app": "teatree-app",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "teatree"}, clear=False),
+        ):
+            backend = messaging_from_overlay(overlay_name="private-x")
+
+        assert isinstance(backend, SlackBotBackend)
+        # Read keys must come from private-x, not teatree.
+        assert any(k.startswith("teatree/private-x/") for k in seen)
+        assert not any(k.startswith("teatree/teatree/") for k in seen)
+
+    def test_reads_env_var_when_overlay_name_not_passed(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "messaging_backend": "slack",
+                    "slack_token_ref": "teatree/private-x/slack",
+                },
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return "x-bot" if key == "teatree/private-x/slack-bot" else ""
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "private-x"}, clear=False),
+        ):
+            backend = messaging_from_overlay()
+
+        assert isinstance(backend, SlackBotBackend)
+
+    def test_returns_none_when_named_overlay_absent_from_toml(self) -> None:
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert messaging_from_overlay(overlay_name="ghost") is None
+
+    def test_caches_separately_per_overlay_name(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {"messaging_backend": "slack", "slack_token_ref": "ref-x"},
+                "teatree": {"messaging_backend": "slack", "slack_token_ref": "ref-tt"},
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return {
+                "ref-x-bot": "x-bot",
+                "ref-tt-bot": "tt-bot",
+            }.get(key, "")
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            x = messaging_from_overlay(overlay_name="private-x")
+            tt = messaging_from_overlay(overlay_name="teatree")
+
+        assert isinstance(x, SlackBotBackend)
+        assert isinstance(tt, SlackBotBackend)
+        assert x is not tt
+
+
+class TestCodeHostFromOverlayTomlFallback:
+    def test_falls_back_to_toml_host_when_overlay_class_missing(self) -> None:
+        cfg = _toml_only_config(
+            {
+                "private-x": {
+                    "path": "~/workspace/private-x",
+                    "github_token_ref": "github/private-x/pat",
+                },
+            },
+        )
+
+        def fake_read(key: str) -> str:
+            return "ghp-test" if key == "github/private-x/pat" else ""
+
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=fake_read),
+        ):
+            host = code_host_from_overlay(overlay_name="private-x")
+
+        assert isinstance(host, GitHubCodeHost)
+
+    def test_returns_none_when_named_overlay_absent_from_toml(self) -> None:
+        cfg = _toml_only_config({})
+        with (
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
+            patch("teatree.config.load_config", return_value=cfg),
+        ):
+            assert code_host_from_overlay(overlay_name="ghost") is None
+
+
+class TestActiveOverlayName:
+    def test_explicit_name_overrides_env(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "env-name"}, clear=False):
+            assert backend_factory._active_overlay_name("explicit") == "explicit"
+
+    def test_falls_back_to_env_when_not_provided(self) -> None:
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "env-name"}, clear=False):
+            assert backend_factory._active_overlay_name(None) == "env-name"
+
+    def test_empty_string_when_neither_set(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with patch.dict(os.environ, env, clear=True):
+            assert backend_factory._active_overlay_name(None) == ""

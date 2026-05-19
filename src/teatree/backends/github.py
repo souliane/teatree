@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
-from teatree.backends.protocols import PullRequestSpec, ReviewState
+from teatree.backends.protocols import ApprovalState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
@@ -367,6 +367,18 @@ class GitHubCodeHost:
             token=self._token,
         )
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    @staticmethod
+    def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:
+        """Out of scope for #936 — GitLab-only approval polling for now.
+
+        Raising rather than returning a vacuous zero state forces the caller
+        (``GitLabApprovalsScanner``) to skip GitHub PRs silently rather than
+        silently treating them as "approved with zero approvals_left".
+        """
+        _ = (repo, pr_iid)
+        msg = "GitHub approval state is not yet wired up (#936 is GitLab-scoped)"
+        raise NotImplementedError(msg)
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         """Return *reviewer*'s current review state on the PR at *pr_url*.
