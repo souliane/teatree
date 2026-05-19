@@ -78,6 +78,7 @@ class FakeSlackTransport:
             },
             "reactions.add": {"ok": True},
             "reactions.get": {"ok": True, "message": {"reactions": []}},
+            "conversations.info": {"ok": True, "channel": {"is_ext_shared": False}},
             "users.lookupByEmail": {"ok": False, "error": "users_not_found"},
             "users.list": {"ok": True, "members": []},
         }
@@ -596,16 +597,31 @@ class TestPerOverlayBotRouting:
 
 
 class TestxoxpVsxoxbRouting:
-    """Reactions route through ``xoxp-…``; DMs / posts stay on ``xoxb-…`` (#1041)."""
+    """Slack-Connect channels route through ``xoxp-…``; DMs stay on ``xoxb-…`` (#1072).
 
-    def test_reactions_route_through_xoxp_token(self, transport: FakeSlackTransport) -> None:
-        """RED if ``react()`` stops calling ``_reaction_token()``.
+    The token-selection policy (``SlackBotBackend._channel_token``)
+    resolves Connect membership deterministically via
+    ``conversations.info`` and is the single point every outbound
+    surface consults. The pre-#1072 ``_reaction_token`` routed *all*
+    reactions through ``xoxp`` whenever it was configured; the
+    systematic policy routes only externally-shared channels.
+    """
 
-        Guard: removing the ``token=self._reaction_token()`` kwarg in
-        ``SlackBotBackend.react`` makes the reaction post under the bot
-        token, which Slack-Connect rejects with
+    def test_connect_channel_reactions_route_through_xoxp_token(
+        self,
+        transport: FakeSlackTransport,
+    ) -> None:
+        """RED if ``react()`` stops consulting ``_channel_token()``.
+
+        Guard: removing the ``token=self._channel_token(channel)`` kwarg
+        in ``SlackBotBackend.react`` makes the reaction post under the
+        bot token, which Slack-Connect rejects with
         ``mcp_externally_shared_channel_restricted``.
         """
+        transport.default_responses["conversations.info"] = {
+            "ok": True,
+            "channel": {"is_ext_shared": True},
+        }
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
 
         backend.react(channel="C-CONNECT", ts="1.0", emoji="eyes")
@@ -613,14 +629,57 @@ class TestxoxpVsxoxbRouting:
         react_calls = transport.calls_to("reactions.add")
         assert len(react_calls) == 1
         assert react_calls[0].token == snapshot("xoxp-user")
+        # Connect membership was probed with the bot token.
+        info_calls = transport.calls_to("conversations.info")
+        assert len(info_calls) == 1
+        assert info_calls[0].token == snapshot("xoxb-bot")
 
-    def test_chat_post_message_stays_on_xoxb(self, transport: FakeSlackTransport) -> None:
-        """RED if ``post_message`` is rerouted through ``_reaction_token``.
+    def test_internal_channel_reactions_stay_on_xoxb(
+        self,
+        transport: FakeSlackTransport,
+    ) -> None:
+        """RED if reactions on internal channels stop using the bot token.
 
-        Guard: changing ``self._post("chat.postMessage", payload)`` to
-        ``self._post("chat.postMessage", payload, token=self._reaction_token())``
-        would impersonate the user against the bot's own DM history.
-        This test rejects that change.
+        The pre-#1072 bug: a configured ``xoxp`` hijacked *every*
+        reaction, even on internal channels where the bot token already
+        has ``reactions:write``. The default transport reports the
+        channel as not externally-shared.
+        """
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        backend.react(channel="C-INTERNAL", ts="1.0", emoji="eyes")
+
+        react_calls = transport.calls_to("reactions.add")
+        assert len(react_calls) == 1
+        assert react_calls[0].token == snapshot("xoxb-bot")
+
+    def test_connect_channel_post_routes_through_xoxp_token(
+        self,
+        transport: FakeSlackTransport,
+    ) -> None:
+        """RED if ``post_message`` stops consulting ``_channel_token()``.
+
+        The capability #1072 adds: posting to a Slack-Connect channel
+        the bot cannot reach goes out under the user's ``xoxp`` identity.
+        """
+        transport.default_responses["conversations.info"] = {
+            "ok": True,
+            "channel": {"is_ext_shared": True},
+        }
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        backend.post_message(channel="C-CONNECT", text="review please")
+
+        post_calls = transport.calls_to("chat.postMessage")
+        assert len(post_calls) == 1
+        assert post_calls[0].token == snapshot("xoxp-user")
+
+    def test_dm_post_stays_on_xoxb(self, transport: FakeSlackTransport) -> None:
+        """RED if a DM post is rerouted off the bot token.
+
+        Guard: routing a ``D…`` channel through ``xoxp`` would
+        impersonate the user against the bot's own DM history. DMs never
+        even trigger a Connect-membership probe.
         """
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
 
@@ -629,6 +688,7 @@ class TestxoxpVsxoxbRouting:
         post_calls = transport.calls_to("chat.postMessage")
         assert len(post_calls) == 1
         assert post_calls[0].token == snapshot("xoxb-bot")
+        assert transport.calls_to("conversations.info") == []
 
     def test_missing_xoxp_scope_surfaces_clearly(self, transport: FakeSlackTransport) -> None:
         """RED if ``react`` swallows the Slack error body.

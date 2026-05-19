@@ -1176,7 +1176,7 @@ path = "~/workspace/myproject"
 code_host = "github"                       # "github" | "gitlab"
 messaging_backend = "slack"                # "slack" | "noop" (default)
 slack_token_ref = "teatree/slack/myproject"   # `pass` entry prefix; -bot and -app suffixes resolve the two tokens
-user_token_ref = "slack/user-oauth-token"  # optional; `pass` entry holding the human's xoxp token (routes reactions on Slack-Connect channels where the bot token is rejected)
+user_token_ref = "slack/user-oauth-token"  # optional; `pass` entry holding the human's xoxp token (routes posts AND reactions on Slack-Connect channels where the bot token is rejected; internal channels/DMs stay on the bot token)
 slack_user_id = "U01ABCD1234"              # my Slack user ID (used to filter mentions/DMs)
 
 [overlays.another-project]

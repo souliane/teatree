@@ -9,14 +9,20 @@ The Phase 3 surface is intentionally minimal: enough for outbound routing
 from the loop's scanners, with the Socket Mode receiver delivering inbound
 events into the same backend through a queue managed by Phase 3.6.
 
-Slack-Connect externally-shared channels reject reactions posted with a
-bot token (``mcp_externally_shared_channel_restricted``).  When the human
-user's OAuth token (``xoxp-…``) is configured via ``user_token_ref`` in
-``~/.teatree.toml``, ``react`` and ``get_reactions`` authenticate with
-that token instead.  Everything else (DMs, ``chat.postMessage``,
-``conversations.open``, ``users.lookupByEmail``) keeps using the bot
-token because those endpoints are scoped to the bot's own IM channels
-and cache.
+Slack-Connect externally-shared channels reject the bot token with
+``mcp_externally_shared_channel_restricted`` — both for reactions and
+for ``chat.postMessage``.  When the human user's OAuth token (``xoxp-…``)
+is configured via ``user_token_ref`` in ``~/.teatree.toml``, a single
+deterministic policy (:meth:`SlackBotBackend._channel_token`) routes
+*every* outbound surface — ``post_message``, ``post_reply``, ``react``,
+``get_reactions`` — through the user token when, and only when, the
+target is an externally-shared channel.  Connect membership is resolved
+deterministically via ``conversations.info`` (``is_ext_shared`` /
+``is_shared``), cached per channel id — never a try-bot-then-fallback
+error probe.  DMs and ordinary internal channels keep the bot token
+(those are scoped to the bot's own IM channels and cache; routing them
+through ``xoxp`` would impersonate the user against their own history).
+``conversations.open`` and ``users.lookupByEmail`` are always bot-token.
 """
 
 from typing import cast
@@ -45,9 +51,10 @@ class SlackBotBackend:
     ``app_token`` (``xapp-…``) authorises Socket Mode and is consumed by the
     Phase 3.6 walkthrough — kept on the instance so the bot starter can pick
     it up without a second config read.
-    ``user_token`` (``xoxp-…``) authorises reactions in Slack-Connect
-    externally-shared channels where the bot token is rejected by the workspace
-    restriction policy.  When unset, reactions fall back to the bot token.
+    ``user_token`` (``xoxp-…``) authorises every outbound call (posts and
+    reactions) in Slack-Connect externally-shared channels where the bot
+    token is rejected by the workspace restriction policy.  When unset,
+    every call falls back to the bot token.
     ``user_id`` is the Slack user id of the human the bot speaks for; scanners
     use it to filter @mentions targeted at that user.
     """
@@ -65,6 +72,9 @@ class SlackBotBackend:
         self._user_token = user_token
         self._user_id = user_id
         self._cached_bot_id: str | None = None
+        # Per-channel Slack-Connect membership, resolved once via
+        # ``conversations.info`` then reused by the token-selection policy.
+        self._ext_shared_cache: dict[str, bool] = {}
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
         # tick the loop scanner drains them via ``fetch_mentions`` /
         # ``fetch_dms`` / ``fetch_reactions``; the receiver calls
@@ -126,16 +136,59 @@ class SlackBotBackend:
         response.raise_for_status()
         return cast("RawAPIDict", response.json())
 
-    def _reaction_token(self) -> str:
-        """Token authorising ``reactions.*`` calls.
+    def _is_ext_shared(self, channel: str) -> bool:
+        """Whether *channel* is a Slack-Connect externally-shared channel.
 
-        Slack-Connect externally-shared channels block bot tokens with
-        ``mcp_externally_shared_channel_restricted``.  When the human's
-        ``xoxp`` is configured we route reactions through it so they post
-        from the user's identity; otherwise fall back to the bot token
-        for the legacy single-credential case.
+        Resolved deterministically from ``conversations.info``
+        (``is_ext_shared`` / ``is_shared``) on the bot token — the bot
+        can always *read* channel metadata even on channels it cannot
+        *post* to.  The answer is cached per channel id for the lifetime
+        of the backend so repeat posts to the same channel probe once.
+        On any lookup failure we treat the channel as internal so the
+        policy fails safe to the bot token (the legacy behaviour).
         """
-        return self._user_token or self._bot_token
+        cached = self._ext_shared_cache.get(channel)
+        if cached is not None:
+            return cached
+        data = self._get("conversations.info", {"channel": channel})
+        info = cast("RawAPIDict", data.get("channel") or {})
+        is_ext = bool(data.get("ok")) and (bool(info.get("is_ext_shared")) or bool(info.get("is_shared")))
+        self._ext_shared_cache[channel] = is_ext
+        return is_ext
+
+    def _channel_token(self, channel: str) -> str:
+        """The token authorising an outbound call to *channel*.
+
+        The single, deterministic token-selection policy consulted by
+        every outbound surface (``post_message``, ``post_reply``,
+        ``react``, ``get_reactions``).
+
+        No user (``xoxp``) token configured -> bot token (the legacy
+        single-credential case; nothing to route to).
+
+        No bot token configured -> user token. There is no second
+        credential to probe Connect membership with, and the
+        user-token-only deployment intends every call to go out under
+        the user's identity anyway.
+
+        A DM channel (id starts with ``D``) -> bot token. DMs are scoped
+        to the bot's own IM channels; routing them through the user
+        token would impersonate the user against their own DM history.
+
+        A Slack-Connect externally-shared channel -> user token. The bot
+        token is rejected there with
+        ``mcp_externally_shared_channel_restricted``; the user's
+        ``xoxp`` is a partner-channel member and can post.
+
+        Any ordinary internal channel -> bot token.
+        """
+        if not self._user_token:
+            return self._bot_token
+        if not self._bot_token:
+            return self._user_token
+        if channel.startswith("D"):
+            return self._bot_token
+        return self._user_token if self._is_ext_shared(channel) else self._bot_token
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         """Drain queued Socket Mode mentions and return them in order.
@@ -281,16 +334,20 @@ class SlackBotBackend:
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload)
+        return self._post("chat.postMessage", payload, token=self._channel_token(channel))
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
-        return self._post("chat.postMessage", {"channel": channel, "thread_ts": ts, "text": text})
+        return self._post(
+            "chat.postMessage",
+            {"channel": channel, "thread_ts": ts, "text": text},
+            token=self._channel_token(channel),
+        )
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         return self._post(
             "reactions.add",
             {"channel": channel, "timestamp": ts, "name": emoji},
-            token=self._reaction_token(),
+            token=self._channel_token(channel),
         )
 
     def open_dm(self, user_id: str) -> str:
@@ -317,7 +374,7 @@ class SlackBotBackend:
         data = self._get(
             "reactions.get",
             {"channel": channel, "timestamp": ts},
-            token=self._reaction_token(),
+            token=self._channel_token(channel),
         )
         if not data.get("ok"):
             return []
