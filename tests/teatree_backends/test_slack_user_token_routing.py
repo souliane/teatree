@@ -34,6 +34,14 @@ def _capturing_post(captured: list[dict[str, object]]) -> object:
 def _capturing_get(captured: list[dict[str, object]]) -> object:
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         captured.append({"url": url, **kwargs})
+        if url.endswith("/conversations.info"):
+            # The token-selection policy probes Connect membership here;
+            # C0AM3TENTLK is the real Slack-Connect #the-review-crew.
+            return httpx.Response(
+                200,
+                json={"ok": True, "channel": {"is_ext_shared": True}},
+                request=httpx.Request("GET", url),
+            )
         return httpx.Response(
             200,
             json={"ok": True, "message": {"reactions": [{"name": "eyes"}]}},
@@ -44,19 +52,19 @@ def _capturing_get(captured: list[dict[str, object]]) -> object:
 
 
 class TestReactRoutesThroughUserToken:
-    """``react`` uses the user token whenever one is configured."""
+    """``react`` uses the user token on Slack-Connect channels (#1072)."""
 
     def test_react_uses_user_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
         monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_bot.httpx, "get", _capturing_get(captured))
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.react(channel="C0AM3TENTLK", ts="1779168774.186559", emoji="eyes")
 
-        assert len(captured) == 1
-        headers = cast("dict[str, str]", captured[0]["headers"])
+        react_call = next(c for c in captured if c["url"] == "https://slack.com/api/reactions.add")
+        headers = cast("dict[str, str]", react_call["headers"])
         assert headers["Authorization"] == "Bearer xoxp-user"
-        assert captured[0]["url"] == "https://slack.com/api/reactions.add"
 
     def test_react_falls_back_to_bot_token_when_user_token_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
@@ -74,7 +82,7 @@ class TestReactRoutesThroughUserToken:
 
 
 class TestGetReactionsRoutesThroughUserToken:
-    """``get_reactions`` uses the user token whenever one is configured."""
+    """``get_reactions`` uses the user token on Slack-Connect channels (#1072)."""
 
     def test_get_reactions_uses_user_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
@@ -83,10 +91,9 @@ class TestGetReactionsRoutesThroughUserToken:
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.get_reactions(channel="C0AM3TENTLK", ts="1779168774.186559")
 
-        assert len(captured) == 1
-        headers = cast("dict[str, str]", captured[0]["headers"])
+        get_call = next(c for c in captured if c["url"] == "https://slack.com/api/reactions.get")
+        headers = cast("dict[str, str]", get_call["headers"])
         assert headers["Authorization"] == "Bearer xoxp-user"
-        assert captured[0]["url"] == "https://slack.com/api/reactions.get"
 
     def test_get_reactions_falls_back_to_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
@@ -184,7 +191,23 @@ class TestUserTokenOnly:
         headers = cast("dict[str, str]", captured[0]["headers"])
         assert headers["Authorization"] == "Bearer xoxp-user"
 
-    def test_post_message_returns_empty_when_only_user_token(self) -> None:
-        """post_message has no fallback — bot token is mandatory for DMs/chat."""
+    def test_post_message_uses_user_token_when_only_user_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A user-token-only deployment posts under the user's identity.
+
+        With no bot token there is no second credential to probe Connect
+        membership with, and the deployment intends every outbound call
+        to go out as the user — the systematic policy routes
+        ``chat.postMessage`` through ``xoxp`` (#1072).
+        """
+        captured: list[dict[str, object]] = []
+        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+
         backend = SlackBotBackend(user_token="xoxp-user")
-        assert backend.post_message(channel="C", text="hi") == {}
+        result = backend.post_message(channel="C", text="hi")
+
+        assert result == {"ok": True}
+        headers = cast("dict[str, str]", captured[0]["headers"])
+        assert headers["Authorization"] == "Bearer xoxp-user"
