@@ -209,6 +209,48 @@ class TestPrCreateThinWrapper(TestCase):
         assert result["allowed"] is False
 
 
+class TestPrCreateMissingTicketRow(TestCase):
+    """#1051: ``pr create <issue>`` with no Ticket row must NOT crash.
+
+    The autonomous-loop case: a branch + PR exist for an issue whose
+    canonical Ticket row was never created (work done outside the FSM)
+    or was pruned. ``Ticket.objects.resolve`` raises a bare
+    ``Ticket.DoesNotExist`` — pre-fix that propagated uncaught and
+    forced a manual ``gh pr create`` fallback, bypassing overlay PR
+    invariants. The command must instead return a structured,
+    actionable error naming the missing reference and the command that
+    creates the row.
+    """
+
+    def test_bare_issue_number_with_no_ticket_returns_actionable_error(self) -> None:
+        # No Ticket row exists for issue 4242 anywhere in the DB.
+        assert not Ticket.objects.filter(issue_url__endswith="/4242").exists()
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "create", "4242"))
+
+        # No uncaught Ticket.DoesNotExist; a structured error instead.
+        assert "error" in result, result
+        error = str(result["error"])
+        # Names the missing reference …
+        assert "4242" in error
+        # … and points at the command that creates the Ticket row.
+        assert "workspace ticket" in error
+        assert "hint" in result
+        assert "workspace ticket" in str(result["hint"])
+
+    def test_issue_url_with_no_ticket_returns_actionable_error(self) -> None:
+        url = "https://github.com/souliane/teatree/issues/4243"
+        assert not Ticket.objects.filter(issue_url=url).exists()
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast("dict[str, object]", call_command("pr", "create", url))
+
+        assert "error" in result, result
+        assert url in str(result["error"])
+        assert "workspace ticket" in str(result["error"])
+
+
 class TestPrCreateRecordsInvokingBranch(TestCase):
     """#776 B1: ``create()`` must PRODUCE ``extra['ship_invoking_branch']``.
 
