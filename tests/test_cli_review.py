@@ -11,6 +11,13 @@ from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 runner = CliRunner()
 
+# Every publishing method now fires the #949 after-receipt visibility DM
+# (souliane/teatree#949), which resolves ``get_effective_settings()`` and
+# records a ``BotPing`` row — both touch the ORM. The gate-mechanics
+# tests below therefore need DB access (the after-receipt DM is an
+# intrinsic side effect of the publish path, not test scaffolding).
+pytestmark = pytest.mark.django_db
+
 
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,7 +27,7 @@ from http import HTTPStatus
 import typer
 
 from teatree.cli.review_approval import identity_has_reviewed, identity_in_approved_by
-from teatree.cli.review_audit import record_note_claim
+from teatree.cli.review_audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
@@ -170,8 +170,19 @@ class ReviewService:
             result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/notes", {"body": note})
             if not result:
                 return "Failed to post comment", 1
-            note_id = dict(result).get("id")
+            result_dict = dict(result) if isinstance(result, dict) else {}
+            note_id = result_dict.get("id")
             record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="notes")
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="post_comment",
+                    summary=f"posted comment note_id={note_id} on {repo}!{mr}",
+                    note_web_url=str(result_dict.get("web_url", "")),
+                ),
+            )
             return f"OK note_id={note_id}", 0
 
         position, error = resolve_inline_position(api, encoded, mr, file, line)
@@ -192,6 +203,16 @@ class ReviewService:
         if note_type != "DiffNote":
             return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
         record_note_claim(self._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
+        notify_review_after_receipt(
+            self._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="post_comment",
+                summary=f"posted inline comment discussion_id={discussion_id} on {repo}!{mr}",
+                note_web_url=str(first_note.get("web_url", "")) if isinstance(first_note, dict) else "",
+            ),
+        )
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
     def post_comment(
@@ -243,6 +264,15 @@ class ReviewService:
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
         if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
             record_note_claim(self._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="publish_draft_notes",
+                    summary=f"published all draft notes on {repo}!{mr}",
+                ),
+            )
             return "OK — all draft notes published", 0
         return f"Failed: HTTP {status}", 1
 
@@ -264,9 +294,20 @@ class ReviewService:
         )
         if not result:
             return "Failed to post reply", 1
-        note_id = dict(result).get("id")
+        result_dict = dict(result) if isinstance(result, dict) else {}
+        note_id = result_dict.get("id")
         record_note_claim(
             self._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
+        )
+        notify_review_after_receipt(
+            self._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="reply_to_discussion",
+                summary=f"replied to discussion {discussion_id} (note_id={note_id}) on {repo}!{mr}",
+                note_web_url=str(result_dict.get("web_url", "")),
+            ),
         )
         return f"OK reply_note_id={note_id}", 0
 
@@ -292,6 +333,15 @@ class ReviewService:
                 f"{discussion_id}#resolved={flag}",
                 endpoint="discussions/resolve",
                 resolved=resolved,
+            )
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="resolve_discussion",
+                    summary=f"set discussion {discussion_id} resolved={resolved} on {repo}!{mr}",
+                ),
             )
             return f"OK resolved={resolved}", 0
         return f"Failed: HTTP {status}", 1
@@ -320,6 +370,15 @@ class ReviewService:
             record_note_claim(
                 self._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update"
             )
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="update_note",
+                    summary=f"updated draft_note_id={note_id} on {repo}!{mr}",
+                ),
+            )
             return f"OK updated draft_note_id={note_id}", 0
         if draft_status != HTTPStatus.NOT_FOUND:
             return f"Failed (draft): HTTP {draft_status}", 1
@@ -330,6 +389,15 @@ class ReviewService:
         )
         if pub_status == HTTPStatus.OK:
             record_note_claim(self._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="update_note",
+                    summary=f"updated published note_id={note_id} on {repo}!{mr}",
+                ),
+            )
             return f"OK updated note_id={note_id}", 0
         return f"Failed: HTTP {pub_status}", 1
 
@@ -353,6 +421,15 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         status = api.delete(f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}")
         if status == HTTPStatus.NO_CONTENT:
+            notify_review_after_receipt(
+                self._resolve_base_url,
+                repo,
+                mr,
+                review_action=ReviewAfterReceipt(
+                    action="delete_discussion",
+                    summary=f"deleted published note_id={note_id} on {repo}!{mr}",
+                ),
+            )
             return f"OK deleted note_id={note_id}", 0
         return f"Failed: HTTP {status}", status
 

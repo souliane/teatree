@@ -25,6 +25,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.review_message_cache import persist_review_message
 from teatree.core.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
 from teatree.types import RawAPIDict
@@ -112,6 +113,13 @@ class Command(TyperCommand):
             permalink=permalink,
             channel=target.channel_id,
             when=timezone.now(),
+        )
+        notify_user_on_behalf_post(
+            target=canonical,
+            action=_ACTION,
+            destination=f"review channel {target.channel_id}",
+            artifact_url=permalink or canonical,
+            summary=text,
         )
         self._emit(
             {"action": "post", "permalink": permalink, "mr_url": canonical},
