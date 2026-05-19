@@ -236,3 +236,68 @@ class TestXoxpVsXoxbRouting:
                 "provided": "channels:read,chat:write",
             }
         )
+
+
+class TestAmbiguousConnectChannelWriteFailsTowardUser:
+    """Unconfirmable Connect membership: WRITE/REACT -> xoxp; DM -> xoxb (#1110).
+
+    When ``conversations.info`` cannot confirm membership (``ok:false``
+    — bad token, missing scope, not-found, rate-limit), the pre-#1110
+    policy silently routed the write to the bot token, which a
+    Slack-Connect channel rejects with
+    ``mcp_externally_shared_channel_restricted`` — the partner write or
+    the reactive-answer ack vanished. #1110: a WRITE / reaction in an
+    unconfirmable channel fails *toward* the user ``xoxp`` token. DMs
+    still short-circuit to the bot token before any probe (the 131-row
+    DM drain regression pin).
+    """
+
+    def test_reactive_answer_cycle_on_ambiguous_connect_uses_xoxp(
+        self,
+        transport: FakeSlackTransport,
+    ) -> None:
+        """A react+post cycle on an unconfirmable Connect channel -> xoxp.
+
+        RED on main: ``conversations.info`` ``ok:false`` -> the policy
+        treats the channel as internal and both ``reactions.add`` and
+        ``chat.postMessage`` go out under the bot token (xoxb), which
+        Slack-Connect rejects.
+        """
+        transport.default_responses["conversations.info"] = {
+            "ok": False,
+            "error": "channel_not_found",
+        }
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        backend.react(channel="C-CONNECT", ts="1.0", emoji="eyes")
+        backend.post_message(channel="C-CONNECT", text="answer")
+
+        react_calls = transport.calls_to("reactions.add")
+        assert len(react_calls) == 1
+        assert react_calls[0].token == snapshot("xoxp-user")
+        post_calls = transport.calls_to("chat.postMessage")
+        assert len(post_calls) == 1
+        assert post_calls[0].token == snapshot("xoxp-user")
+
+    def test_dm_react_on_ambiguous_info_stays_on_bot(
+        self,
+        transport: FakeSlackTransport,
+    ) -> None:
+        """A DM react stays on xoxb and never probes (131-row-drain pin).
+
+        Even with a globally-broken ``conversations.info``, a ``D…``
+        channel short-circuits to the bot token *before* any probe — the
+        #1110 ambiguous-WRITE branch must never reroute DMs.
+        """
+        transport.default_responses["conversations.info"] = {
+            "ok": False,
+            "error": "ratelimited",
+        }
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        backend.react(channel="D-USER", ts="1.0", emoji="eyes")
+
+        react_calls = transport.calls_to("reactions.add")
+        assert len(react_calls) == 1
+        assert react_calls[0].token == snapshot("xoxb-bot")
+        assert transport.calls_to("conversations.info") == []
