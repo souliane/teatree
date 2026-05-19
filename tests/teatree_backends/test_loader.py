@@ -141,6 +141,46 @@ def test_get_messaging_raises_on_unknown_choice() -> None:
         get_messaging(overlay)
 
 
+def test_get_messaging_resolves_user_token_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``user_token_ref`` is resolved via ``pass`` and threaded into ``SlackBotBackend``.
+
+    Slack-Connect channels reject ``xoxb`` reactions; routing them through
+    the human's ``xoxp`` token is the workaround.  The loader must read the
+    ref from ``pass`` and hand the resolved secret to the backend.
+    """
+    pass_lookups: dict[str, str] = {
+        "ref/bot-bot": "xoxb-resolved",
+        "ref/bot-app": "xapp-resolved",
+        "slack/user-oauth": "xoxp-resolved",
+    }
+
+    def fake_read_pass(key: str) -> str:
+        return pass_lookups.get(key, "")
+
+    monkeypatch.setattr("teatree.backends.loader.read_pass", fake_read_pass)
+
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_token_ref="ref/bot",
+        user_token_ref="slack/user-oauth",
+    )
+    backend = get_messaging(overlay)
+
+    assert isinstance(backend, SlackBotBackend)
+    assert backend.user_token == "xoxp-resolved"
+
+
+def test_get_messaging_user_token_absent_when_ref_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ``user_token_ref`` the backend keeps an empty user token."""
+    monkeypatch.setattr("teatree.backends.loader.read_pass", lambda _: "xoxb-resolved")
+
+    overlay = _build_overlay(messaging_backend="slack", slack_token_ref="ref/bot")
+    backend = get_messaging(overlay)
+
+    assert isinstance(backend, SlackBotBackend)
+    assert backend.user_token == ""
+
+
 def test_get_ci_service_returns_none_when_no_token() -> None:
     assert get_ci_service() is None
 

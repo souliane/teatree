@@ -173,6 +173,37 @@ class TestMessagingFromToml:
             backend = backend_factory._messaging_from_toml(cfg)
         assert isinstance(backend, SlackBotBackend)
 
+    def test_resolves_user_token_ref_from_pass(self) -> None:
+        """``user_token_ref`` is honoured by the TOML path-only resolver.
+
+        A wrapper script driving an overlay through the TOML fallback
+        (no registered ``teatree.overlays`` entry point) still needs
+        reactions to route through the xoxp token, so the TOML resolver
+        must read ``user_token_ref`` and thread it into ``SlackBotBackend``.
+        """
+        cfg = {
+            "messaging_backend": "slack",
+            "slack_token_ref": "ref",
+            "user_token_ref": "slack/user-oauth",
+            "slack_user_id": "U1",
+        }
+        pass_lookups = {"ref-bot": "bot-tok", "ref-app": "app-tok", "slack/user-oauth": "xoxp-tok"}
+        with patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookups.get(k, "")):
+            backend = backend_factory._messaging_from_toml(cfg)
+        assert isinstance(backend, SlackBotBackend)
+        assert backend.user_token == "xoxp-tok"
+
+    def test_user_token_empty_when_ref_absent(self) -> None:
+        cfg = {"messaging_backend": "slack", "slack_token_ref": "ref"}
+
+        def fake_read(key: str) -> str:
+            return {"ref-bot": "bot-tok", "ref-app": "app-tok"}.get(key, "")
+
+        with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
+            backend = backend_factory._messaging_from_toml(cfg)
+        assert isinstance(backend, SlackBotBackend)
+        assert backend.user_token == ""
+
 
 class TestFindExternalDb:
     def test_returns_none_when_path_missing(self) -> None:
