@@ -29,6 +29,7 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.slack_token_policy import channel_token
 from teatree.types import RawAPIDict
 
 type SlackPayload = dict[str, object]
@@ -94,6 +95,17 @@ class SlackBotBackend:
     @property
     def user_token(self) -> str:
         return self._user_token
+
+    def resolve_channel_token(self, channel: str) -> str:
+        """The token an outbound post to *channel* would use (#1084).
+
+        Public accessor over the single token-selection policy so the
+        review-request dedup guard reads channel history with the exact
+        token the post will use — read-token == post-token. Connect
+        membership is probed once (cached) only when both credentials
+        exist, identical to ``post_message``'s routing.
+        """
+        return self._channel_token(channel)
 
     def enqueue_mention(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``app_mention`` event into the inbound queue."""
@@ -161,34 +173,21 @@ class SlackBotBackend:
 
         The single, deterministic token-selection policy consulted by
         every outbound surface (``post_message``, ``post_reply``,
-        ``react``, ``get_reactions``).
-
-        No user (``xoxp``) token configured -> bot token (the legacy
-        single-credential case; nothing to route to).
-
-        No bot token configured -> user token. There is no second
-        credential to probe Connect membership with, and the
-        user-token-only deployment intends every call to go out under
-        the user's identity anyway.
-
-        A DM channel (id starts with ``D``) -> bot token. DMs are scoped
-        to the bot's own IM channels; routing them through the user
-        token would impersonate the user against their own DM history.
-
-        A Slack-Connect externally-shared channel -> user token. The bot
-        token is rejected there with
-        ``mcp_externally_shared_channel_restricted``; the user's
-        ``xoxp`` is a partner-channel member and can post.
-
-        Any ordinary internal channel -> bot token.
+        ``react``, ``get_reactions``) — and, via the shared
+        :func:`teatree.backends.slack_token_policy.channel_token` helper,
+        by the review-request dedup guard's history read so read-token ==
+        post-token (#1084). Connect membership is only probed when both
+        credentials exist (the helper short-circuits the single-token
+        cases first), preserving the legacy no-probe behaviour.
         """
-        if not self._user_token:
-            return self._bot_token
-        if not self._bot_token:
-            return self._user_token
-        if channel.startswith("D"):
-            return self._bot_token
-        return self._user_token if self._is_ext_shared(channel) else self._bot_token
+        if not self._user_token or not self._bot_token or channel.startswith("D"):
+            return channel_token(channel, bot_token=self._bot_token, user_token=self._user_token, is_ext_shared=False)
+        return channel_token(
+            channel,
+            bot_token=self._bot_token,
+            user_token=self._user_token,
+            is_ext_shared=self._is_ext_shared(channel),
+        )
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         """Drain queued Socket Mode mentions and return them in order.

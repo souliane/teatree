@@ -712,6 +712,7 @@ Usage: t3 review-request [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ discover  Discover open merge requests awaiting review.                      │
+│ check     Race-safe pre-post dedup gate against LIVE Slack messages (#1084). │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -724,6 +725,24 @@ Usage: t3 review-request discover [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review-request check`
+
+```
+Usage: t3 review-request check [OPTIONS]
+
+ Race-safe pre-post dedup gate against LIVE Slack messages (#1084).
+
+ Run this in the SAME turn as a review-request post and abort on
+ ``"action": "suppress"`` — it reads the live review channel with the
+ post-token and takes the atomic DB claim, so a duplicate (agent
+ re-post or a user's manual out-of-band post) is impossible.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --mr-url        TEXT  Canonical MR/PR URL to dedup. [required]            │
+│    --help                Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

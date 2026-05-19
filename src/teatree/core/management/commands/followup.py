@@ -85,16 +85,41 @@ class Command(TyperCommand):
             return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
 
         mrs = [
-            {
-                "repo": _repo_slug(pr),
-                "iid": _int_field(pr, "iid", "number"),
-                "title": _str_field(pr, "title"),
-                "url": _str_field(pr, "web_url", "html_url"),
-            }
+            self._with_review_status(
+                {
+                    "repo": _repo_slug(pr),
+                    "iid": _int_field(pr, "iid", "number"),
+                    "title": _str_field(pr, "title"),
+                    "url": _str_field(pr, "web_url", "html_url"),
+                }
+            )
             for pr in host.list_my_prs(author=author)
             if not _is_draft(pr)
         ]
         return {"author": author, "count": len(mrs), "mrs": mrs}
+
+    @staticmethod
+    def _with_review_status(mr: RawAPIDict) -> RawAPIDict:
+        """Annotate an MR with a LIVE-verified review-request status (#1084).
+
+        ``review_already_requested`` / ``review_permalink`` come from a
+        recency-bounded read of the review channel (read-token ==
+        post-token) so ``review-request discover`` reflects reality, not a
+        stale DB. Fails open: an unconfigured channel or a slow/failed
+        read leaves the MR unannotated rather than wedging discovery.
+        """
+        from teatree.core.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
+
+        url = mr.get("url")
+        if not isinstance(url, str) or not url:
+            return mr
+        target = resolve_guard_target()
+        if target is None:
+            return mr
+        permalink = reconcile_out_of_band(mr_url=url, target=target)
+        mr["review_already_requested"] = bool(permalink)
+        mr["review_permalink"] = permalink
+        return mr
 
     @command()
     def remind(self) -> list[int]:
