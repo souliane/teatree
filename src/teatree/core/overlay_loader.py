@@ -159,4 +159,34 @@ def _discover_toml_overlays(
 
 
 def reset_overlay_cache() -> None:
+    """Fully reset overlay discovery state so the next call rebuilds from scratch.
+
+    Two layers must reset together. First, ``_discover_overlays.cache_clear()``
+    drops the cached ``dict`` of overlay instances so the next ``get_overlay()``
+    rediscovers entry points and re-instantiates overlays. Second, the bundled
+    overlay module ``teatree.contrib.t3_teatree.overlay`` is dropped from
+    ``sys.modules`` so its class body re-evaluates on the next import.
+    ``TeatreeOverlay.config`` is a *class-level* :class:`OverlayConfig`
+    singleton built at class-definition time against the live
+    ``teatree.config.load_config()``. If the module stays cached in
+    ``sys.modules`` the class attribute survives test teardown — and any test
+    that ``patch("teatree.config.load_config")`` then instantiates
+    ``TeatreeOverlay()`` silently sees the stale pre-patch config. Popping the
+    module forces the class body to re-evaluate under the patched ``load_config``.
+
+    Production code never calls this function — it's a test-isolation
+    helper. The ``sys.modules`` pop is therefore safe: at runtime the
+    module imports once and stays; under pytest it gets a clean rebuild
+    between tests, which is exactly what test isolation requires.
+
+    Keeping the full reset behind this single entry point means
+    conftests don't need to know about class-cache vs lru_cache vs
+    module-level evaluation — they just call ``reset_overlay_cache()``
+    and get a clean slate. See souliane/teatree#1108 for the test-
+    pollution incident this design closes (originally surfaced by
+    ``slack_bridge_e2e``, then independently by ``tests/teatree_core``).
+    """
+    import sys  # noqa: PLC0415
+
     _discover_overlays.cache_clear()
+    sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
