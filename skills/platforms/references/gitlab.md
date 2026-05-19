@@ -212,14 +212,19 @@ Pair with `ScheduleWakeup` to poll at sensible intervals (5-10 min for multi-min
 # Inline comment on a specific file and line
 t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 
-# General (non-inline) comment
-t3 review post-draft-note <REPO> <MR_IID> "Comment text"
+# General (non-inline) comment — --general is REQUIRED (souliane/teatree#72)
+# Without --general, the CLI refuses the call rather than silently degrading an
+# intended-inline draft into a general note (foot-gun observed on !6220).
+t3 review post-draft-note <REPO> <MR_IID> "Comment text" --general
 
 # List existing draft notes
 t3 review list-draft-notes <REPO> <MR_IID>
 
-# Delete a draft note
+# Delete a draft note (pre-publication, your own draft — ungated)
 t3 review delete-draft-note <REPO> <MR_IID> <NOTE_ID>
+
+# Delete a *published* discussion (colleague-visible — gated by the on-behalf pre-gate)
+t3 review delete-discussion <REPO> <MR_IID> <NOTE_ID>
 
 # Edit a note in place — works for drafts AND published notes; auto-detects which.
 # The draft endpoint is tried first; on 404 it falls back to the published-notes endpoint.
