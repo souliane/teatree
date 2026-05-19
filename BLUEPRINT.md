@@ -159,7 +159,10 @@ src/teatree/
     result_schema.py    # JSON schema for structured agent output
 
   loop/                 # /loop topology (see §5.6)
-    tick.py             # One tick: scan in parallel, dispatch to phase agents when needed, render statusline
+    tick.py             # One tick: orchestrator — fans out scanners, dispatches actions, renders statusline. Delegates concerns to tick_jobs / tick_recovery / tick_freshness.
+    tick_jobs.py        # Scanner-job construction (build_default_jobs / build_default_scanners, per-overlay fan-out)
+    tick_recovery.py    # Boot/tick recovery (orphaned task claims, FSM replay) + post-dispatch side-effects (dashboard, agent persistence, mechanical handlers)
+    tick_freshness.py   # Repo-freshness snapshot for the statusline header and tick-meta.json sidecar
     dispatch.py         # Signal → action mapping (statusline / agent / webhook)
     rendering.py        # Classify dispatched actions per overlay; render anchor / action / in-flight rows. Ready zone inlines `(!iid)` after each ticket whose parent MR is known.
     pr_ticket_index.py  # Build mr_url → parent_ticket_number index (PullRequest FK + Closes/Fixes regex)
@@ -1179,13 +1182,13 @@ e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:
 
-1. Print the manifest JSON (with `messages_tab_enabled`, `app_mentions:read` scope, Socket Mode, bot events `app_mention` + `message.im`) and open the Slack app creation page. The user pastes the manifest, creates the app, installs it to the workspace, and generates an app-level token with `connections:write` scope.
+1. Print the manifest JSON (with `messages_tab_enabled`, `app_mentions:read` scope, Socket Mode, bot events `app_mention` + `message.im`, and a `user` scopes section requesting `reactions:read` + `reactions:write` + `chat:write` + `users:read` for the xoxp user token — `reactions:*` so reactions post in Slack-Connect externally-shared channels where the bot token is rejected with `mcp_externally_shared_channel_restricted`; `chat:write` + `users:read` are a superset that keeps the xoxp token's existing posting/lookup capability since a reinstall re-consents to exactly the listed set and drops the rest) and open the Slack app creation page. The user pastes the manifest, creates the app, installs it to the workspace (approving both the bot and user token scopes), and generates an app-level token with `connections:write` scope.
 2. Capture the bot token (`xoxb-…`) and app-level token (`xapp-…`) into `pass` entries `<slack_token_ref>-bot` and `<slack_token_ref>-app`.
 3. Auto-detect the user's Slack ID from `git config user.email` via the Slack API. Falls back to a manual prompt when detection fails.
 4. Write `messaging_backend`, `slack_user_id`, and `slack_token_ref` to `[overlays.<name>]` in `~/.teatree.toml`.
 5. Smoke-test by sending a DM via the bot and waiting for the user to react with ✅.
 
-The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens.
+The walkthrough never writes a bot token to disk in plaintext; tokens always go via `pass`. Re-running `t3 setup slack-bot --overlay <name> --reset` rotates both tokens but **skips the manifest** — it does **not** apply a scope change. Adding or changing a manifest scope (e.g. granting the xoxp user token `reactions:write`) requires a full reinstall: re-run **without** `--reset` and re-approve the manifest in the browser so Slack re-prompts OAuth consent for the new scope set.
 
 **Socket Mode listener** (`t3 slack listen`): a global singleton process that opens one WebSocket per slack-enabled overlay. Events are written to `$XDG_DATA_HOME/teatree/slack-events.jsonl` in real time. `t3 slack status` checks if the listener is running. `t3 slack check` drains the queue and prints user messages as JSON (exit 0 = messages found, 1 = empty) — designed for a fast cron (30s–1min). The listener uses the shared `teatree.utils.singleton` flock primitive (kernel-enforced, crash-safe) — only one instance runs at a time. Start it as a background process or let the SessionStart hook manage its lifecycle.
 
@@ -2132,6 +2135,7 @@ graph TD
     teatree.cli --> teatree.skill_deps
     teatree.cli --> teatree.memory_audit
     teatree.cli --> teatree.on_behalf_gate
+    teatree.cli --> teatree.outbound_claim
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends
@@ -2148,16 +2152,15 @@ graph TD
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
+    teatree.loop --> teatree.notify
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
     teatree.visual_qa --> teatree.utils
     teatree.identity --> teatree.config
     teatree.on_behalf_gate --> teatree.config
-    teatree.notify --> teatree.backends
-    teatree.notify --> teatree.config
     teatree.notify --> teatree.core
-    teatree.notify --> teatree.slack_mrkdwn
+    teatree.outbound_claim --> teatree.core
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
     teatree.cli_reference --> teatree.cli

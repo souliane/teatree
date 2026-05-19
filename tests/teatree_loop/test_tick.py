@@ -111,9 +111,9 @@ def test_tick_meta_includes_freshness(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "freshness" in data
 
 
-def test_build_default_scanners_starts_with_pending_tasks_and_incoming_events() -> None:
+def test_build_default_scanners_starts_with_pending_tasks_incoming_events_outbound_audit() -> None:
     scanners: list[Scanner] = build_default_scanners(host=None, messaging=None)
-    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events"]
+    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events", "outbound_audit"]
 
 
 def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -243,8 +243,8 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
-    monkeypatch.setattr("teatree.loop.tick.discover_overlays", list)
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.discover_overlays", list)
 
     backends = [
         OverlayBackends(
@@ -269,7 +269,7 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
         msg = "toml parse failure"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", _boom)
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", _boom)
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
@@ -285,9 +285,9 @@ def test_user_identity_aliases_no_override_inherits_global(
     config_path.write_text('[teatree]\nuser_identity_aliases = ["a", "b"]\n', encoding="utf-8")
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick.discover_overlays",
+        "teatree.loop.tick_jobs.discover_overlays",
         lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
     )
     assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
@@ -317,9 +317,9 @@ def test_build_default_jobs_per_overlay_alias_override(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick.discover_overlays",
+        "teatree.loop.tick_jobs.discover_overlays",
         lambda: [
             OverlayEntry(
                 name="scoped",

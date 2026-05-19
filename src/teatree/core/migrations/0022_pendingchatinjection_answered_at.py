@@ -13,7 +13,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0020_review_request_post"),
+        ("core", "0021_outbound_claim"),
     ]
 
     operations = [
