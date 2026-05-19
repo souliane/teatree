@@ -616,6 +616,108 @@ class TestTasksCancelCommand(TestCase):
             call_command("tasks", "cancel", 99999)
 
 
+class TestTasksCompleteCommand(TestCase):
+    """Tests for the tasks complete subcommand (#1031).
+
+    Out-of-band terminal-success transition: a claimed task whose
+    underlying work was driven outside the loop is marked completed so
+    the loop stops re-emitting it.
+    """
+
+    def _claimed_task(self) -> Task:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        task.claim(claimed_by="worker-1")
+        return task
+
+    def test_complete_claimed_task_clears_lease(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert task.claimed_by == ""
+        assert task.lease_expires_at is None
+        assert task.heartbeat_at is None
+
+    def test_complete_advances_ticket(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        task.ticket.refresh_from_db()
+        assert task.ticket.state == Ticket.State.CODED
+
+    def test_complete_records_note_as_attempt(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk, note="work landed via !6219 out-of-band")
+
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.exit_code == 0
+        assert attempt.result == {"complete_note": "work landed via !6219 out-of-band"}
+
+    def test_complete_without_note_records_no_attempt(self) -> None:
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk)
+
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_complete_already_completed_is_idempotent(self) -> None:
+        task = self._claimed_task()
+        task.complete()
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+        # No exception, exit 0: idempotent no-op.
+        call_command("tasks", "complete", task.pk)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_complete_pending_task_rejected(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk)
+        assert exc.value.code == 1
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_complete_failed_task_rejected(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        session = Session.objects.create(ticket=ticket, overlay="test")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=Task.Status.FAILED,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk)
+        assert exc.value.code == 1
+
+    def test_complete_nonexistent_task(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", 99999)
+        assert exc.value.code == 1
+
+
 class TestTasksListCommand(TestCase):
     """Tests for the tasks list subcommand."""
 

@@ -109,6 +109,54 @@ class Command(TyperCommand):
             task.fail()
         self.stdout.write(f"Task {task_id} cancelled.")
 
+    @command()
+    def complete(
+        self,
+        task_id: Annotated[int, typer.Argument(help="Task ID (see `task_id` in `tasks list`).")],
+        *,
+        note: Annotated[
+            str,
+            typer.Option(help="Audit-trail reason recorded on a TaskAttempt (e.g. 'work landed via !6219')."),
+        ] = "",
+    ) -> None:
+        """Mark a claimed task COMPLETED for work finished out-of-band (#1031).
+
+        Drives the Task FSM ``claimed → completed`` (releasing the lease and
+        auto-advancing the ticket). Idempotent: completing an already-completed
+        task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
+        (``pending``, ``failed``) with a clear error.
+        """
+        from django.db import transaction  # noqa: PLC0415
+        from django.utils import timezone  # noqa: PLC0415
+
+        with transaction.atomic():
+            try:
+                task = Task.objects.select_for_update().get(pk=task_id)
+            except Task.DoesNotExist:
+                self.stderr.write(f"Task {task_id} not found.")
+                raise SystemExit(1) from None
+
+            if task.status == Task.Status.COMPLETED:
+                self.stdout.write(f"Task {task_id} already completed; nothing to do.")
+                return
+
+            if task.status != Task.Status.CLAIMED:
+                self.stderr.write(
+                    f"Task {task_id} is '{task.status}', not 'claimed'. Only a claimed task can be completed.",
+                )
+                raise SystemExit(1)
+
+            if note.strip():
+                TaskAttempt.objects.create(
+                    task=task,
+                    execution_target=task.execution_target,
+                    ended_at=timezone.now(),
+                    exit_code=0,
+                    result={"complete_note": note},
+                )
+            task.complete()
+        self.stdout.write(f"Task {task_id} completed.")
+
     @command(name="list")
     def list_tasks(
         self,
