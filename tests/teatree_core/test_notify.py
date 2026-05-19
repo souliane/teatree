@@ -81,7 +81,7 @@ class TestNotifyUser(TestCase):
         assert BotPing.objects.filter(idempotency_key="dup").count() == 1
 
     def test_missing_backend_records_noop_and_returns_false(self) -> None:
-        with patch("teatree.notify.messaging_from_overlay", return_value=None):
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
             sent = notify_user(
                 "no backend",
                 kind=NotifyKind.QUESTION,
@@ -147,7 +147,7 @@ class TestNotifyUser(TestCase):
         fake_settings = MagicMock()
         fake_settings.notify_user_via_bot = False
 
-        with patch("teatree.notify.get_effective_settings", return_value=fake_settings):
+        with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
             sent = notify_user(
                 "shh",
                 kind=NotifyKind.INFO,
