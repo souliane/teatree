@@ -149,9 +149,21 @@ class TestSessionIdentity(TestCase):
             assert current_session_id() == "t3-loop-1"
 
     def test_empty_when_neither_set(self) -> None:
+        """No env vars + isolated empty registry dir → ``""``.
+
+        #1107 widened ``current_session_id()`` with a third, lowest-precedence
+        loop-registry fallback; pointing at an empty tmp dir keeps this
+        invariant clean across environments (no leak from a real
+        ``~/.local/share/teatree/loop-registry.json`` on the dev box).
+        """
+        import tempfile  # noqa: PLC0415
+
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
-        with mock.patch.dict("os.environ", {}, clear=True):
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.dict("os.environ", {"T3_LOOP_REGISTRY_DIR": td}, clear=True),
+        ):
             assert current_session_id() == ""
 
     def test_claude_session_id_wins_over_t3(self) -> None:

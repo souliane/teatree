@@ -197,6 +197,20 @@ class Command(TyperCommand):
         finally:
             LoopLease.objects.release("loop-tick", owner=owner)
 
+        # #1107 Prong B — defense-in-depth safety net. We are PAST the
+        # #1073 owner gate (a non-owner SKIPped and returned at line 173,
+        # never reaching here) and PAST the `loop-tick` lease finally, so
+        # this only fires on the won-owner success path (including the
+        # unclaimed auto-claim-for-free case). Each reactive cycle runs
+        # behind its OWN dedicated `LoopLease` CAS, so a real dedicated
+        # `loop-slack-answer` / `loop-self-improve` slot is never
+        # double-run. Pure-cron / no-session deployments — where Prong A
+        # still cannot resolve an owner — keep answering user DMs because
+        # the won tick drives the reactive cycle directly.
+        from teatree.loop.tick_piggyback import run_piggyback_cycles  # noqa: PLC0415
+
+        run_piggyback_cycles()
+
         result = _report_to_dict(report)
         if json_output:
             self.stdout.write(json.dumps(result, indent=2))
