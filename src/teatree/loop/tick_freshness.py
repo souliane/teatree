@@ -1,17 +1,20 @@
-"""Per-tick metadata writer — statusline freshness + next-epoch hint.
+"""Repo-freshness snapshot for the statusline header and ``tick-meta.json``.
 
-Extracted from :mod:`teatree.loop.tick` to keep that file under the
-module-health LOC budget. Pure I/O around the statusline hook: scan the
-configured overlay repos, snapshot ``HEAD..origin/main`` count + last
-``FETCH_HEAD`` mtime, persist to ``tick-meta.json`` next to the
-statusline JSON.
+The ``run_tick`` orchestrator delegates here for everything that
+captures "how stale is each repo we track?" — the answer is written
+to the sidecar ``tick-meta.json`` so the statusline rendering hook
+(and ``t3 loop status``) can show staleness without re-shelling
+``git`` at display time.
 """
 
 import datetime as dt
 import json
+import logging
 import os
 import tomllib
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
@@ -106,8 +109,7 @@ def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     }
 
 
-def write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
-    """Persist next-epoch + repo-freshness for the statusline hook."""
+def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
     from teatree.loop.statusline import default_path  # noqa: PLC0415
 
     meta_path = (target or default_path()).with_name("tick-meta.json")
@@ -123,6 +125,3 @@ def write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> N
         json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness}) + "\n",
         encoding="utf-8",
     )
-
-
-__all__ = ["write_tick_meta"]
