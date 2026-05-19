@@ -14,7 +14,7 @@ then deleted — no migration command required.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from teatree.backends.protocols import CodeHostBackend, ReviewState
+from teatree.backends.protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -158,21 +158,31 @@ def _pr_url(pr: RawAPIDict) -> str:
 def _orphaned_task_signals(
     ticket_model: "TicketModel | None",
     scanned_urls: set[str],
+    host: CodeHostBackend,
     overlay: str = "",
 ) -> list[ScanSignal]:
-    """Emit ``reviewer_pr.task_orphaned`` for stuck PENDING/CLAIMED tasks (#998).
+    """Emit ``reviewer_pr.task_orphaned`` for genuinely merged/closed PRs (#1074).
 
-    Scenario the loop hit: scanner sees an open MR on tick #1 → persistence
-    creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
-    status=PENDING)``. The MR is merged externally before the slot processes
-    the task. On tick #2 the ``state=opened`` API no longer returns the MR,
-    so neither the dedup ``_has_open_task`` path nor the
-    ``_already_reviewed_at_head`` cache hit can ever fire — and the PENDING
-    task lingers forever, surfacing on every ``pending-spawn``. This sweep
-    closes that window: any reviewer-role ticket with a non-terminal
-    reviewing task whose URL is absent from the current scan gets a
-    ``task_orphaned`` signal so the mechanical handler can complete the
-    task and unblock the loop.
+    Scenario the sweep handles: scanner sees an open MR on tick #1 →
+    persistence creates ``Ticket(role=reviewer)`` + ``Task(phase=reviewing,
+    status=PENDING)``. The MR is merged/closed externally before the slot
+    processes the task. The PENDING task would otherwise linger forever,
+    surfacing on every ``pending-spawn`` and dispatching a reviewer
+    sub-agent for nothing (#998).
+
+    **The decision is state-authoritative, not absence-based (#1074).**
+    Absence from ``scanned_urls`` is NOT proof the PR closed:
+    ``scanned_urls`` only holds PRs returned by
+    ``list_review_requested_prs`` (a reviewer-*assignment* filter). A
+    Slack-review-request MR that never got a forge reviewer assignment is
+    permanently absent from that scan while still fully OPEN — reaping it
+    on absence alone silently drops a live review obligation. So a
+    candidate (reviewer-role ticket with a non-terminal reviewing task
+    whose URL is absent from the scan) is reaped ONLY when
+    ``host.get_pr_open_state`` confirms the PR is genuinely ``MERGED`` or
+    ``CLOSED``. ``OPEN`` and ``UNKNOWN`` (auth error, network, unparsable
+    URL, draft, anything ambiguous) both skip — fail open, never reap on
+    doubt.
 
     The scanner runs once per (overlay, code-host) pair in ``tick.py``, so
     the orphan sweep must be scoped to the scanner's own overlay — otherwise
@@ -197,14 +207,20 @@ def _orphaned_task_signals(
     if overlay:
         candidates = candidates.filter(overlay=overlay)
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
-    return [
-        ScanSignal(
-            kind="reviewer_pr.task_orphaned",
-            summary=f"Reviewing task orphaned (MR no longer open): {ticket.issue_url}",
-            payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
+    signals: list[ScanSignal] = []
+    for ticket in candidates:
+        state = host.get_pr_open_state(pr_url=ticket.issue_url)
+        if state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
+            # OPEN → live review still owed; UNKNOWN → fail open. Never reap.
+            continue
+        signals.append(
+            ScanSignal(
+                kind="reviewer_pr.task_orphaned",
+                summary=f"Reviewing task orphaned (PR {state.value}): {ticket.issue_url}",
+                payload={"url": ticket.issue_url, "ticket_id": ticket.pk},
+            ),
         )
-        for ticket in candidates
-    ]
+    return signals
 
 
 def _is_dismissed_from_approved(previous: str, current: ReviewState) -> bool:
@@ -310,7 +326,7 @@ class ReviewerPrsScanner:
                 )
             if current.value != previous.state and ticket_model is not None:
                 _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
-        signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.overlay_name))
+        signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
         return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:
