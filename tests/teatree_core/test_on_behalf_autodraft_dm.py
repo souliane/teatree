@@ -44,7 +44,10 @@ def _stub_backend() -> MagicMock:
     """A ``MessagingBackend``-shaped MagicMock that records ``post_message`` calls."""
     backend = MagicMock()
     backend.open_dm.return_value = "D-OPERATOR"
-    backend.post_message.return_value = {"ts": "1700000000.0001"}
+    # Real Slack ``chat.postMessage`` success carries ``ok:true`` AND a
+    # ``ts``. ``notify_user`` hard-fails on a missing ``ok`` (#1048-class
+    # phantom success), so the stub must mirror the real contract.
+    backend.post_message.return_value = {"ok": True, "ts": "1700000000.0001"}
     backend.get_permalink.return_value = "https://slack.example/archives/D-OPERATOR/p1"
     return backend
 
