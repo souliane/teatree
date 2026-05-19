@@ -734,6 +734,13 @@ class TestTickReapsOrphanedReviewingTask(django.test.TransactionTestCase):
 
                 return ReviewState.NONE
 
+            def get_pr_open_state(self, *, pr_url: str):
+                # #1074: the forge confirms the MR is genuinely merged, so
+                # the orphan sweep is allowed to reap the stale task.
+                from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+                return PrOpenState.MERGED
+
         # Step 1: scanner emits the orphan signal.
         signals = ReviewerPrsScanner(host=_ReviewerHost()).scan()
         assert any(s.kind == "reviewer_pr.task_orphaned" for s in signals)
