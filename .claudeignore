@@ -1,0 +1,47 @@
+# Paths Claude Code's Read/Grep/Glob should skip. These are generated
+# artifacts, build output, third-party code, and large generated files that
+# add noise to searches without helping an agent understand the codebase.
+# Source, tests, skills, BLUEPRINT.md and docs prose stay readable.
+
+# Generated caches and build artifacts
+.venv/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.tox/
+__pycache__/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+node_modules/
+site/
+
+# Sub-agent sidechain checkouts: Claude Code writes a full per-subagent
+# repo copy here, so every canonical file appears ~17 extra times in search.
+.claude/worktrees/
+
+# Third-party / package-manager dependency trees
+apm_modules/
+plugins/
+
+# Large generated artifacts (committed but noise for agents — the source
+# that produces them is what an agent should read instead)
+sbom.json
+uv.lock
+docs/generated/cli-reference.md
+*.min.js
+*.min.css
+*.map
+
+# Per-overlay generated E2E fixtures and run artifacts
+e2e/snapshot_tests_failures/
+e2e/.logs/
+e2e/.videos/
+
+# Per-ticket / loop runtime state regenerated from the DB, never authored
+.t3-cache/
+.t3-env.cache
+.t3.local.json
+.loop-review-state.json
