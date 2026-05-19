@@ -984,3 +984,52 @@ class TestUpdatePathSmokeFailure:
 
         assert result.exit_code == 1
         assert "Slack manifest API failed" in result.stdout
+
+
+class TestValidateOverlayKnownList:
+    """``_validate_overlay`` must not list bare ``teatree`` (souliane/teatree#1108).
+
+    The "Known overlays: ..." line is the user-visible symptom from the
+    ticket. With a legacy ``[overlays.teatree]`` table in ``~/.teatree.toml``
+    (written by older ``slack-bot`` runs) ``discover_overlays`` used to emit
+    both ``teatree`` and ``t3-teatree``; the error message then offered the
+    bogus ``teatree`` as a selectable overlay. The bundled overlay's only
+    canonical name is the entry-point name ``t3-teatree``.
+    """
+
+    def test_validate_overlay_does_not_list_bare_teatree(self, tmp_path: Path) -> None:
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+        from unittest.mock import MagicMock  # noqa: PLC0415
+
+        import typer  # noqa: PLC0415
+
+        from teatree.cli.slack_setup import _validate_overlay  # noqa: PLC0415
+
+        config_path = tmp_path / ".teatree.toml"
+        config_path.write_text(
+            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\nmode = "auto"\n',
+            encoding="utf-8",
+        )
+
+        real_ep = MagicMock()
+        real_ep.name = "t3-teatree"
+        real_ep.value = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"
+
+        out = io.StringIO()
+        with (
+            patch("teatree.cli.slack_setup.CONFIG_PATH", config_path),
+            patch("teatree.config.CONFIG_PATH", config_path),
+            patch("importlib.metadata.entry_points", return_value=[real_ep]),
+            patch("teatree.config._resolve_ep_project_path", return_value=None),
+            pytest.raises(typer.Exit),
+            redirect_stdout(out),
+        ):
+            _validate_overlay("ghost")
+
+        message = out.getvalue()
+        assert "t3-teatree" in message
+        known = message.split("Known overlays:", 1)[1]
+        assert "teatree" in known  # t3-teatree contains the substring
+        known_names = {n.strip() for n in known.split(",")}
+        assert "teatree" not in known_names

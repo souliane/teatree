@@ -107,8 +107,8 @@ one-line change to the registry — the resolver picks it up via
 mode = "interactive"         # global default
 branch_prefix = "ac"
 
-[overlays.teatree]
-mode = "auto"                # auto-mode for teatree dogfooding
+[overlays.t3-teatree]
+mode = "auto"                # auto-mode for the t3-teatree dogfooding overlay
 
 [overlays.client-project]
 mode = "interactive"         # stay gated on client code

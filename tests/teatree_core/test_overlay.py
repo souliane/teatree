@@ -273,6 +273,79 @@ class TestOverlayConfig(TestCase):
         assert config.exclude_labels == ["Process::DEV review", "Process::QA review"]
 
 
+class TestBundledOverlayConfigTable(TestCase):
+    """The bundled overlay reads ``[overlays.t3-teatree]`` (souliane/teatree#1108).
+
+    The entry point registers the bundled overlay as ``t3-teatree``; the
+    overlay's ``OverlayConfig`` must therefore read its TOML overrides from
+    ``[overlays.t3-teatree]``, not from a stray legacy ``[overlays.teatree]``
+    table. Before the fix ``overlay_name="teatree"`` made the config read
+    the wrong table — the split-brain root cause of the duplicate-overlay
+    symptom.
+    """
+
+    def _config_for_bundled_overlay(self) -> OverlayConfig:
+        from teatree.contrib.t3_teatree.overlay import TeatreeOverlay  # noqa: PLC0415
+
+        return TeatreeOverlay().config
+
+    def test_reads_t3_teatree_table_not_bare_teatree(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "t3-teatree": {"exclude_labels": ["from-t3-teatree"]},
+                "teatree": {"exclude_labels": ["from-bare-teatree"]},
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = self._config_for_bundled_overlay()
+
+        assert config.exclude_labels == ["from-t3-teatree"]
+        assert config.exclude_labels != ["from-bare-teatree"]
+
+    def test_reset_overlay_cache_drops_bundled_module_class_cache(self) -> None:
+        """``reset_overlay_cache()`` must enable a fresh class-body evaluation.
+
+        Regression-class guard for souliane/teatree#1108: any earlier test
+        in the suite that imports ``teatree.contrib.t3_teatree.overlay``
+        (directly or via ``overlay_loader._discover_overlays``) leaves the
+        module cached in ``sys.modules`` with its ``TeatreeOverlay.config``
+        class attribute already bound to the unpatched ``load_config()``.
+        ``reset_overlay_cache()`` is the canonical reset entry point and
+        MUST drop that module so the next import re-evaluates the class
+        body under whatever ``load_config`` is currently patched.
+
+        This test simulates a polluter by pre-importing the module, then
+        asserts the reset + patch combination produces the patched config
+        (not the stale class-attribute one). If this test breaks, the
+        whole class of "second polluter" bugs is back.
+        """
+        import sys  # noqa: PLC0415
+
+        # Pre-import the module to mimic a preceding teatree_core test
+        # that touched the bundled overlay (e.g. via _discover_overlays).
+        import teatree.contrib.t3_teatree.overlay  # noqa: F401, PLC0415
+
+        assert "teatree.contrib.t3_teatree.overlay" in sys.modules
+
+        reset_overlay_cache()
+
+        # The reset must have popped the module so a fresh class body
+        # evaluates against whatever load_config is patched below.
+        assert "teatree.contrib.t3_teatree.overlay" not in sys.modules
+
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "t3-teatree": {"exclude_labels": ["from-patched-config"]},
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = self._config_for_bundled_overlay()
+
+        assert config.exclude_labels == ["from-patched-config"]
+
+
 class TestDefaultHealthChecks(TestCase):
     def test_includes_worktree_and_symlink_checks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

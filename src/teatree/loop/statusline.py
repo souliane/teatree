@@ -33,6 +33,21 @@ _ZONE_COLORS: dict[str, str] = {
 # of vertical space per zone.
 _OVERLAY_PREFIX_RE = re.compile(r"^\[([^\]]+)\] ")
 
+# Strip CSI (color/cursor) escapes. Matches the canonical SGR/CSI shape:
+# the parameters (digits/semicolons/spaces) followed by any single final
+# byte in 0x40-0x7E.
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+# Match an OSC 8 terminal hyperlink and capture its URL and TEXT for the
+# Slack-mrkdwn rewrite. The hyperlink wraps TEXT in a start/end pair whose
+# terminators may be either the ST (ESC backslash) or BEL (0x07).
+_ANSI_OSC8_RE = re.compile(
+    r"\x1b\]8;[^;]*;(?P<url>[^\x07\x1b]*)(?:\x1b\\|\x07)"
+    r"(?P<text>.*?)"
+    r"\x1b\]8;[^;]*;(?:\x1b\\|\x07)",
+    flags=re.DOTALL,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StatuslineEntry:
@@ -200,6 +215,32 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     return "action_needed", f"loop-owner=session {short8} (NOT this session)"
 
 
+def statusline_for_slack(*, path: Path | None = None) -> str:
+    r"""Return the on-disk statusline transformed for Slack mrkdwn (#1121).
+
+    Reads the statusline file at *path* (or :func:`default_path`), strips
+    ANSI CSI escapes (colors/resets), and rewrites OSC 8 terminal
+    hyperlinks ``ESC]8;;URL ESC\ TEXT ESC]8;; ESC\`` to Slack's
+    ``<URL|TEXT>`` mrkdwn form.
+
+    Returns ``""`` when the file is missing or empty — callers treat an
+    empty result the same as "no statusline content", which is the cue to
+    fall through to a different answer path.
+
+    Never *regenerates* the statusline — Slack-answer is a reader, not a
+    producer.
+    """
+    target = path or default_path()
+    try:
+        body = target.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return ""
+    if not body:
+        return ""
+    rewritten = _ANSI_OSC8_RE.sub(lambda m: f"<{m.group('url')}|{m.group('text')}>", body)
+    return _ANSI_CSI_RE.sub("", rewritten)
+
+
 __all__ = [
     "StatuslineEntry",
     "StatuslineZones",
@@ -207,4 +248,5 @@ __all__ = [
     "default_path",
     "loop_owner_anchor",
     "render",
+    "statusline_for_slack",
 ]
