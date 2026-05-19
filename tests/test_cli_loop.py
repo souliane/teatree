@@ -87,6 +87,24 @@ class TestCadenceParser:
         monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
         assert _cadence_for_loop_slot() == "12m"
 
+    def test_uses_toml_cadence_when_env_unset(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #1036: with no T3_LOOP_CADENCE env, the slot cadence must fall
+        # back to ~/.teatree.toml [teatree] loop_cadence_seconds, not the
+        # hardcoded 720 default.
+        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        assert _cadence_for_loop_slot() == "1m"
+
+    def test_env_overrides_toml_cadence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #1036: env wins over toml (established sibling precedence).
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\nloop_cadence_seconds = 60\n", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
+        assert _cadence_for_loop_slot() == "10m"
+
 
 class TestStartCommand:
     def test_print_only_emits_slash_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
