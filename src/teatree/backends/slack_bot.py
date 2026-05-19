@@ -28,6 +28,15 @@ from teatree.types import RawAPIDict
 type SlackPayload = dict[str, object]
 
 
+def _is_bot_authored(msg: RawAPIDict, bot_id: str) -> bool:
+    return msg.get("user") == bot_id or msg.get("bot_id") == bot_id
+
+
+def _is_thread_root(msg: RawAPIDict) -> bool:
+    thread_ts = msg.get("thread_ts")
+    return isinstance(thread_ts, str) and bool(thread_ts) and thread_ts == msg.get("ts")
+
+
 class SlackBotBackend:
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
@@ -134,12 +143,22 @@ class SlackBotBackend:
         return events
 
     def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
-        """Return new DMs from the user.
+        """Return new DMs from the user, including thread replies.
 
         Drains the Socket Mode queue first (populated by a running receiver).
-        When the queue is empty, falls back to polling ``conversations.history``
-        on the bot's DM channel with the configured user. Only messages FROM
-        the user are returned (bot's own messages are filtered out).
+        When the queue is empty, falls back to polling
+        ``conversations.history`` on the bot's DM channel with the
+        configured user, then for every top-level bot message also polls
+        ``conversations.replies`` so thread replies are picked up (#1044).
+
+        Slack's ``conversations.history`` and ``conversations.replies``
+        do not stamp the ``channel`` field on each message — it is the
+        request parameter, not part of the response. We stamp it here so
+        downstream consumers (``SlackDmInboundScanner`` →
+        ``PendingChatInjection.record``) have it (#1043).
+
+        Only messages FROM the user are returned (bot's own messages are
+        filtered out).
         """
         if self._dms:
             events, self._dms = self._dms, []
@@ -149,6 +168,12 @@ class SlackBotBackend:
         channel = self.open_dm(self._user_id)
         if not channel:
             return []
+        messages = self._poll_dm_history(channel=channel, since=since)
+        bot_id = self._resolve_bot_id()
+        return self._collect_user_dms(channel=channel, messages=messages, bot_id=bot_id)
+
+    def _poll_dm_history(self, *, channel: str, since: str) -> list[RawAPIDict]:
+        """Return the ``conversations.history`` messages list (or empty)."""
         params: dict[str, str | int] = {"channel": channel, "limit": 20}
         if since:
             params["oldest"] = since
@@ -156,17 +181,45 @@ class SlackBotBackend:
         if not data.get("ok"):
             return []
         messages = data.get("messages")
+        return [cast("RawAPIDict", m) for m in messages if isinstance(m, dict)] if isinstance(messages, list) else []
+
+    def _collect_user_dms(
+        self,
+        *,
+        channel: str,
+        messages: list[RawAPIDict],
+        bot_id: str,
+    ) -> list[RawAPIDict]:
+        """Filter bot-authored top-level posts; fan out to thread replies."""
+        result: list[RawAPIDict] = []
+        for msg in messages:
+            msg.setdefault("channel", channel)
+            if not _is_bot_authored(msg, bot_id):
+                result.append(msg)
+            if _is_thread_root(msg):
+                result.extend(
+                    self._fetch_thread_replies(channel=channel, thread_ts=str(msg["ts"]), bot_id=bot_id),
+                )
+        return result
+
+    def _fetch_thread_replies(self, *, channel: str, thread_ts: str, bot_id: str) -> list[RawAPIDict]:
+        """Return non-bot replies on a thread, with ``channel`` stamped."""
+        data = self._get("conversations.replies", {"channel": channel, "ts": thread_ts, "limit": 50})
+        if not data.get("ok"):
+            return []
+        messages = data.get("messages")
         if not isinstance(messages, list):
             return []
-        bot_id = self._resolve_bot_id()
-        result: list[RawAPIDict] = []
+        replies: list[RawAPIDict] = []
         for m in messages:
             if not isinstance(m, dict):
                 continue
-            msg = cast("RawAPIDict", m)
-            if msg.get("user") != bot_id and msg.get("bot_id") != bot_id:
-                result.append(msg)
-        return result
+            reply = cast("RawAPIDict", m)
+            if reply.get("ts") == thread_ts or _is_bot_authored(reply, bot_id):
+                continue
+            reply.setdefault("channel", channel)
+            replies.append(reply)
+        return replies
 
     def _resolve_bot_id(self) -> str:
         if self._cached_bot_id is None:
