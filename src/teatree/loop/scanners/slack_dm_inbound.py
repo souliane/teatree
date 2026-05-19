@@ -16,9 +16,15 @@ only idempotent persistence. Duplicate ``ts`` values across polls are
 swallowed by ``PendingChatInjection.record``'s ``unique(overlay, ts)``
 constraint, so over-polling is safe.
 
-This scanner does NOT post anything back to Slack — that's the outbound
-path (``teatree.notify.notify_user``). v1 ships purely inbound; the
-outbound 👀 ack-reaction on receipt is deferred (#1014 § Out of scope).
+This scanner does NOT post anything back to Slack — recording is its only
+job. The reactive replies (the :eyes: receipt, an ack reaction, a
+threaded status answer, or a delegated ``t3:answerer`` task) are owned by
+the dedicated reactive Slack-answer loop — the third ``/loop`` slot
+(``teatree.loop.slack_answer``, ``manage.py loop_slack_answer``). That
+loop reads the rows this scanner records and stamps the orthogonal
+``answered_at`` / ``eyes_reacted_at`` columns; ``consumed_at`` (the
+prompt-drain) stays independent, so a row can be drained and answered
+without a double reply (#1014).
 """
 
 from dataclasses import dataclass

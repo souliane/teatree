@@ -109,6 +109,111 @@ class TestConsumeIdempotency:
         assert row.consumed_at == first_stamp
 
 
+class TestUnansweredQuery:
+    """The reactive Slack-answer loop reads its work via ``unanswered`` (#1014).
+
+    ``unanswered`` is orthogonal to ``pending``: it gates on
+    ``answered_at`` (a different column than ``consumed_at``), so a row
+    drained into the prompt (``consumed``) is still *unanswered* until the
+    answer loop posts a reply — and vice versa.
+    """
+
+    def test_unanswered_excludes_answered_rows(self) -> None:
+        answered = PendingChatInjection.record(channel="C", slack_ts="1.0", text="old")
+        assert answered is not None
+        answered.mark_answered("ack")
+        PendingChatInjection.record(channel="C", slack_ts="2.0", text="new")
+
+        unanswered = list(PendingChatInjection.unanswered())
+        assert [row.slack_ts for row in unanswered] == ["2.0"]
+
+    def test_unanswered_returns_oldest_first(self) -> None:
+        later = PendingChatInjection.record(channel="C", slack_ts="2.0", text="later")
+        earlier = PendingChatInjection.record(channel="C", slack_ts="1.0", text="earlier")
+        assert later is not None
+        assert earlier is not None
+        earlier.received_at = timezone.now().replace(microsecond=0)
+        later.received_at = earlier.received_at.replace(microsecond=1)
+        earlier.save(update_fields=["received_at"])
+        later.save(update_fields=["received_at"])
+
+        unanswered = list(PendingChatInjection.unanswered())
+        assert [row.slack_ts for row in unanswered] == ["1.0", "2.0"]
+
+    def test_unanswered_filters_by_overlay_when_given(self) -> None:
+        PendingChatInjection.record(channel="C", slack_ts="1.0", text="a", overlay="ovA")
+        PendingChatInjection.record(channel="C", slack_ts="2.0", text="b", overlay="other")
+
+        unanswered = list(PendingChatInjection.unanswered(overlay="ovA"))
+        assert [row.overlay for row in unanswered] == ["ovA"]
+
+    def test_consumed_row_is_still_unanswered(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.consume()
+
+        assert list(PendingChatInjection.unanswered()) == [row]
+        assert row.answered_at is None
+        assert row.consumed_at is not None
+
+
+class TestMarkAnswered:
+    """``mark_answered`` is a single-use compare-and-swap, like ``consume``."""
+
+    def test_first_mark_returns_true_and_stamps_kind(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.mark_answered("simple") is True
+        assert row.answered_at is not None
+        assert row.answer_kind == "simple"
+        assert row.is_answered is True
+
+    def test_second_mark_returns_false_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_answered("ack")
+        first_stamp = row.answered_at
+
+        assert row.mark_answered("delegated") is False
+        row.refresh_from_db()
+        assert row.answered_at == first_stamp
+        assert row.answer_kind == "ack"
+
+    def test_answered_is_orthogonal_to_consumed(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.consume() is True
+        assert row.mark_answered("simple") is True
+
+        row.refresh_from_db()
+        assert row.consumed_at is not None
+        assert row.answered_at is not None
+        assert row.answer_kind == "simple"
+
+
+class TestMarkEyesReacted:
+    """The :eyes: ack-reaction must fire at most once across re-runs."""
+
+    def test_first_mark_returns_true_and_stamps(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.mark_eyes_reacted() is True
+        assert row.eyes_reacted_at is not None
+
+    def test_second_mark_returns_false_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_eyes_reacted()
+        first_stamp = row.eyes_reacted_at
+
+        assert row.mark_eyes_reacted() is False
+        row.refresh_from_db()
+        assert row.eyes_reacted_at == first_stamp
+
+
 class TestStrRepr:
     def test_repr_for_pending_row(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x", overlay="ovA")

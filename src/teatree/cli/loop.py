@@ -36,6 +36,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.loop.statusline import default_path
 
 loop_app = typer.Typer(
@@ -409,3 +410,9 @@ def self_improve_start_command() -> None:
 
 
 loop_app.add_typer(self_improve_app, name="self-improve")
+
+
+# The reactive Slack-answer subapp (#1014, the third /loop slot) is
+# assembled in ``teatree.cli.loop_slack_answer`` (imported at module top)
+# so this file stays under the module-health public-function cap.
+loop_app.add_typer(slack_answer_app, name="slack-answer")

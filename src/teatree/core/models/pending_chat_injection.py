@@ -29,6 +29,12 @@ class PendingChatInjection(models.Model):
     of the hook is a clean no-op.
     """
 
+    class AnswerKind(models.TextChoices):
+        UNANSWERED = "", "Unanswered"
+        ACK = "ack", "Ack"
+        SIMPLE = "simple", "Simple"
+        DELEGATED = "delegated", "Delegated"
+
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
     slack_ts = models.CharField(max_length=64)
@@ -36,6 +42,20 @@ class PendingChatInjection(models.Model):
     text = models.TextField()
     received_at = models.DateTimeField(default=timezone.now)
     consumed_at = models.DateTimeField(null=True, blank=True)
+    # The reactive Slack-answer loop (#1014) stamps these; they are
+    # orthogonal to ``consumed_at`` (the prompt-drain column). A row may be
+    # consumed-but-unanswered (drained into a prompt, no reply posted yet)
+    # or answered-but-unconsumed (the loop replied before any interactive
+    # session drained it). Each is a single-use compare-and-swap, never
+    # written for the same column twice.
+    answered_at = models.DateTimeField(null=True, blank=True)
+    answer_kind = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        choices=AnswerKind.choices,
+    )
+    eyes_reacted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "teatree_pending_chat_injection"
@@ -51,6 +71,10 @@ class PendingChatInjection(models.Model):
     @property
     def is_pending(self) -> bool:
         return self.consumed_at is None
+
+    @property
+    def is_answered(self) -> bool:
+        return self.answered_at is not None
 
     @classmethod
     def record(
@@ -94,6 +118,24 @@ class PendingChatInjection(models.Model):
             qs = qs.filter(overlay=overlay)
         return qs.order_by("received_at")
 
+    @classmethod
+    def unanswered(cls, *, overlay: str = "") -> models.QuerySet["PendingChatInjection"]:
+        """Return the un-answered queue for *overlay*, oldest first.
+
+        Orthogonal to :meth:`pending`: gates on ``answered_at`` (the
+        reactive Slack-answer loop's column), not ``consumed_at`` (the
+        prompt-drain column). A row drained into a prompt is still
+        *unanswered* until the loop posts a reply, so the answer loop and
+        the prompt-drain never double-process the same column.
+
+        Pass ``overlay=""`` to scan every overlay's queue (the v1 single-
+        overlay path uses ``overlay=""`` consistently).
+        """
+        qs = cls.objects.filter(answered_at__isnull=True)
+        if overlay:
+            qs = qs.filter(overlay=overlay)
+        return qs.order_by("received_at")
+
     def consume(self) -> bool:
         """Mark this row consumed; return ``True`` on the transition, else ``False``.
 
@@ -104,4 +146,37 @@ class PendingChatInjection(models.Model):
         updated = type(self).objects.filter(pk=self.pk, consumed_at__isnull=True).update(consumed_at=timezone.now())
         if updated:
             self.refresh_from_db(fields=["consumed_at"])
+        return bool(updated)
+
+    def mark_answered(self, kind: str) -> bool:
+        """Stamp ``answered_at`` + ``answer_kind``; ``True`` on the transition.
+
+        Single-use compare-and-swap (``UPDATE … WHERE answered_at IS
+        NULL``) mirroring :meth:`consume`: a concurrent second caller sees
+        0 rows updated and returns ``False`` without overwriting the first
+        ``answer_kind``. Orthogonal to ``consumed_at`` — this never writes
+        the prompt-drain column.
+        """
+        updated = (
+            type(self)
+            .objects.filter(pk=self.pk, answered_at__isnull=True)
+            .update(answered_at=timezone.now(), answer_kind=kind)
+        )
+        if updated:
+            self.refresh_from_db(fields=["answered_at", "answer_kind"])
+        return bool(updated)
+
+    def mark_eyes_reacted(self) -> bool:
+        """Stamp ``eyes_reacted_at``; ``True`` on the transition, else ``False``.
+
+        Single-use CAS so the no-LLM :eyes: receipt-acknowledgement
+        reaction fires at most once even when the answer cycle re-runs the
+        same row across ticks (post/readback failures leave the row
+        un-answered for retry, but the :eyes: must not re-post).
+        """
+        updated = (
+            type(self).objects.filter(pk=self.pk, eyes_reacted_at__isnull=True).update(eyes_reacted_at=timezone.now())
+        )
+        if updated:
+            self.refresh_from_db(fields=["eyes_reacted_at"])
         return bool(updated)

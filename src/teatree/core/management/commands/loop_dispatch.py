@@ -19,10 +19,15 @@ from teatree.core.models import Task, Ticket
 
 # Maps ticket role + task phase → the sub-agent the slot should Agent().
 # Reviewer-role + reviewing → t3:reviewer; author-role + coding →
-# t3:orchestrator (it chains coder → tester → reviewer → shipper).
+# t3:orchestrator (it chains coder → tester → reviewer → shipper);
+# author-role + answering → t3:answerer (the reactive Slack-answer loop's
+# NEEDS_WORK delegation path, #1014 — the loop has no Agent tool, so it
+# enqueues a Task here and the fat loop's atomic `claim-next` spawns the
+# bounded answerer sub-agent; no new spawn path, no double-dispatch).
 _SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     (Ticket.Role.REVIEWER, "reviewing"): "t3:reviewer",
     (Ticket.Role.AUTHOR, "coding"): "t3:orchestrator",
+    (Ticket.Role.AUTHOR, "answering"): "t3:answerer",
 }
 
 
