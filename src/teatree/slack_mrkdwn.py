@@ -32,6 +32,29 @@ _BARE_ISSUE_RE = re.compile(r"(?<![A-Za-z0-9_/])#(\d+)(?![A-Za-z0-9_])")
 _BULLET_SPLIT_RE = re.compile(r"\s*•\s*")
 _EXCESS_BLANK_RE = re.compile(r"\n{3,}")
 
+_PROSE_SPLIT_MIN_LEN = 30
+_PROSE_SPLIT_MIN_SENTENCES = 2
+_INITIAL_TOKEN_LEN = 2
+_BARE_URL_RE = re.compile(r"https?://[^\s<>|]+")
+_SENTENCE_BREAK_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9*])")
+# Honorifics (Mr./Ms./Mrs./Dr.) are deliberately excluded: they collide
+# with domain tokens that legitimately end a sentence in agent messages
+# (e.g. "MRs." = merge requests, "Dr." rarely appears) and would suppress
+# the wall-of-text split this transform exists to perform.
+_ABBREVIATIONS = frozenset(
+    {
+        "e.g.",
+        "i.e.",
+        "vs.",
+        "etc.",
+        "no.",
+        "cf.",
+        "approx.",
+        "fig.",
+        "al.",
+    }
+)
+
 
 def slack_linkify(
     text: str,
@@ -82,15 +105,27 @@ def slack_linkify(
 def normalize_slack_message(text: str) -> str:
     """Enforce structural readability for outbound Slack mrkdwn messages.
 
-    Transformations applied (code fences and inline code are preserved verbatim):
+    Transformations applied (code fences, inline code, mrkdwn links and
+    bare URLs are preserved verbatim):
 
     - ``•``-in-paragraph bullets become newline-prefixed ``- `` items,
         one per line, so each renders on its own line in Slack.
     - Bullet groups (consecutive ``- `` lines) are surrounded by blank lines
         to separate them visually from surrounding prose blocks.
+    - A multi-sentence single-line prose "wall of text" is split on
+        sentence boundaries into blank-line-separated blocks, so
+        each idea renders as its own paragraph in Slack rather than one
+        unreadable run. Headings, bullets, quotes, table rows and lines
+        containing protected spans are never prose-split.
     - Consecutive blank lines (3+) are collapsed to a single blank line.
 
     The transform is idempotent: applying it twice yields the same result.
+
+    Accepted tradeoff: the sentence-boundary heuristic guards a fixed set of
+    common abbreviations and single-capital initials, so a rare unguarded
+    abbreviation (followed by a capitalised word) may produce one extra
+    paragraph break. This is preferred over leaving long walls of text
+    unsplit, which is the defect this transform exists to fix.
     """
     if not text:
         return text
@@ -104,9 +139,11 @@ def normalize_slack_message(text: str) -> str:
     text = _CODE_FENCE_RE.sub(_stash, text)
     text = _INLINE_CODE_RE.sub(_stash, text)
     text = _MRKDWN_LINK_RE.sub(_stash, text)
+    text = _BARE_URL_RE.sub(_stash, text)
 
     text = _normalize_bullets(text)
     text = _surround_bullet_groups(text)
+    text = _split_glued_prose(text)
     text = _EXCESS_BLANK_RE.sub("\n\n", text)
 
     def _restore(match: re.Match[str]) -> str:
@@ -158,6 +195,62 @@ def _surround_bullet_groups(text: str) -> str:
             result.append("")
 
     return "\n".join(result)
+
+
+def _is_guarded_abbreviation(preceding: str) -> bool:
+    """True if the token before a sentence-break candidate must not split.
+
+    Guards a fixed set of common abbreviations (``e.g.``, ``etc.`` …) and
+    single uppercase initials (``A.``) so they don't trigger a false break.
+    """
+    last = preceding.rsplit(None, 1)[-1] if preceding.strip() else ""
+    if last.lower() in _ABBREVIATIONS:
+        return True
+    return len(last) == _INITIAL_TOKEN_LEN and last[0].isupper() and last[1] == "."
+
+
+def _split_sentences(line: str) -> list[str]:
+    """Split a prose line into sentences, honoring the abbreviation guard."""
+    sentences: list[str] = []
+    start = 0
+    for match in _SENTENCE_BREAK_RE.finditer(line):
+        if _is_guarded_abbreviation(line[start : match.start()]):
+            continue
+        sentences.append(line[start : match.start()].strip())
+        start = match.end()
+    sentences.append(line[start:].strip())
+    return [s for s in sentences if s]
+
+
+def _split_glued_prose(text: str) -> str:
+    """Break long single-line prose walls into blank-line-separated blocks.
+
+    Only plain prose lines (≥2 sentences and longer than
+    ``_PROSE_SPLIT_MIN_LEN`` chars) are split. Headings, bullets, block
+    quotes and table rows pass through unchanged. Protected spans
+    (code fences, inline code, mrkdwn links, bare URLs) are already
+    NUL-delimited placeholders that contain no sentence terminator, so
+    they are opaque to the sentence splitter and survive verbatim. The
+    length
+    floor exists purely to leave short two-sentence pleasantries
+    ("Hi. Thanks.") intact — anything long enough to read as a "wall of
+    text" is split.
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=False):
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(("- ", "* ", "> ", "|", "#")):
+            out.append(line)
+            continue
+        if len(line) <= _PROSE_SPLIT_MIN_LEN:
+            out.append(line)
+            continue
+        sentences = _split_sentences(line)
+        if len(sentences) < _PROSE_SPLIT_MIN_SENTENCES:
+            out.append(line)
+            continue
+        out.append("\n\n".join(sentences))
+    return "\n".join(out)
 
 
 def _rewrite_md_link(match: re.Match[str]) -> str:
