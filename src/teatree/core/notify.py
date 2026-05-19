@@ -17,6 +17,7 @@ the dependency direction one-way.
 
 import enum
 import logging
+import re
 
 from django.db import IntegrityError, transaction
 
@@ -27,6 +28,14 @@ from teatree.core.models import BotPing
 from teatree.slack_mrkdwn import slack_linkify
 
 logger = logging.getLogger(__name__)
+
+# Idempotency-key convention for replies to a Slack-DM question (#1063):
+# ``answer-<anything>-<slack_ts>``. ``slack_ts`` is the Slack message
+# timestamp (e.g. ``1700000000.0001``) of the question the agent is
+# answering. When notify_user sees a key with this shape it auto-stamps
+# ``answered_at`` on the matching :class:`PendingChatInjection` row, so
+# the Stop hook stops nagging once the reply has been posted.
+_ANSWER_KEY_PATTERN = re.compile(r"^answer-.+-(\d+\.\d+)$")
 
 
 class NotifyKind(enum.StrEnum):
@@ -45,11 +54,21 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     backend: MessagingBackend | None = None,
     user_id: str | None = None,
     linkify: bool = True,
+    answering_slack_ts: str = "",
 ) -> bool:
     """Send a bot→user Slack DM and record an audit row.
 
     See :mod:`teatree.notify` for the full docstring — this is the
     canonical implementation; the public module is a re-export.
+
+    ``answering_slack_ts`` (#1063): when this DM is the agent's reply to
+    a queued user-question (the user DM'd, the question was injected via
+    :class:`PendingChatInjection`, the agent is now replying), pass the
+    Slack ``ts`` of that question. The matching row(s) get their
+    ``answered_at`` stamped so the Stop hook stops nagging. Alternatively
+    use an idempotency-key of the form ``answer-<anything>-<slack_ts>``
+    and the same auto-stamp triggers — useful for callers that don't
+    plumb the explicit kwarg through.
     """
     kind_value = NotifyKind(kind) if not isinstance(kind, NotifyKind) else kind
 
@@ -114,7 +133,48 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+
+    _maybe_stamp_answered(
+        idempotency_key=idempotency_key,
+        answering_slack_ts=answering_slack_ts,
+    )
     return True
+
+
+def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> None:
+    """Auto-stamp ``PendingChatInjection.answered_at`` when this DM is a reply (#1063).
+
+    Two trigger forms, both consulted (an explicit kwarg wins over the
+    pattern-match — the kwarg is the canonical, programmatic form). One:
+    ``answering_slack_ts="1700000000.0001"`` — the caller explicitly
+    passes the Slack ts of the question being answered. Two:
+    ``idempotency_key="answer-<anything>-<slack_ts>"`` — the agent used
+    the answer-key convention; the ts is extracted from the suffix.
+
+    The active overlay (``T3_OVERLAY_NAME``) scopes the stamp to its own
+    queue; the empty overlay (the default in the single-overlay v1 path)
+    matches the empty-overlay rows the scanner records under.
+    """
+    ts = answering_slack_ts
+    if not ts:
+        match = _ANSWER_KEY_PATTERN.match(idempotency_key)
+        if match is None:
+            return
+        ts = match.group(1)
+    # Deferred import (mirrors ``_resolve_user_id`` / ``_maybe_linkify``
+    # in this module): the answer-stamp is an opt-in side path; keeping
+    # the model + os imports out of ``teatree.core.notify`` import time
+    # avoids perturbing the module-import graph that the on-behalf gate
+    # and notify suites rely on.
+    import os  # noqa: PLC0415
+
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+
+    overlay = os.environ.get("T3_OVERLAY_NAME", "")
+    try:
+        PendingChatInjection.agent_answered_question(ts, overlay=overlay)
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break notify_user
+        logger.debug("notify_user answered_at stamp failed for ts=%s: %s", ts, exc)
 
 
 def _feature_enabled() -> bool:
