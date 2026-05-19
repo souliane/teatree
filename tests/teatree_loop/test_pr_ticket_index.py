@@ -200,6 +200,142 @@ class TestBuildTicketIndexFromDB(TestCase):
         assert build_ticket_index(actions) == {url_db: "855", url_parse: "856"}
 
 
+class TestBuildTicketIndexFromTicketExtraPrs(TestCase):
+    """#1113 Defect 3 — ``Ticket.extra["prs"]`` is the third resolution source.
+
+    A bare manually-opened MR has no ``PullRequest`` FK row and no
+    ``Closes #N`` footer, but the ship pipeline records it under
+    ``Ticket.extra["prs"]["<url>"]``. Pre-fix ``build_ticket_index``
+    only checked FK + footer and returned ``{}`` for such an MR.
+    """
+
+    URL = "https://gitlab.com/souliane/teatree/-/merge_requests/145"
+
+    def _actions(self) -> list[DispatchAction]:
+        return [
+            DispatchAction(
+                kind="statusline",
+                zone="in_flight",
+                detail="PR #145 open",
+                payload={"url": self.URL, "iid": 145, "raw": {}},
+            ),
+        ]
+
+    def test_resolves_via_ticket_extra_prs_when_no_fk_or_footer(self) -> None:
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/142",
+            state="started",
+            extra={"prs": {self.URL: {"iid": 145}}},
+        )
+        assert build_ticket_index(self._actions()) == {self.URL: "142"}
+
+    def test_fk_takes_precedence_over_ticket_extra_prs(self) -> None:
+        fk_ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://x/issues/855", state="started")
+        PullRequest.objects.create(ticket=fk_ticket, overlay="t3-teatree", url=self.URL, repo="x/y", iid="145")
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/142",
+            state="started",
+            extra={"prs": {self.URL: {"iid": 145}}},
+        )
+        # FK (855) outranks the extra["prs"] mapping (142).
+        assert build_ticket_index(self._actions()) == {self.URL: "855"}
+
+    def test_footer_takes_precedence_over_ticket_extra_prs(self) -> None:
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/142",
+            state="started",
+            extra={"prs": {self.URL: {"iid": 145}}},
+        )
+        actions = [
+            DispatchAction(
+                kind="statusline",
+                zone="in_flight",
+                detail="PR #145 open",
+                payload={"url": self.URL, "iid": 145, "raw": {"description": "Closes #856"}},
+            ),
+        ]
+        assert build_ticket_index(actions) == {self.URL: "856"}
+
+    def test_empty_actions_skip_ticket_extra_lookup(self) -> None:
+        """Empty URL set must short-circuit without touching the DB."""
+        from teatree.loop.pr_ticket_index import _lookup_ticket_extra_prs  # noqa: PLC0415
+
+        assert _lookup_ticket_extra_prs([]) == {}
+        assert _lookup_ticket_extra_prs([""]) == {}
+
+    def test_ticket_with_non_dict_extra_prs_is_skipped(self) -> None:
+        """Malformed ``extra["prs"]`` (not a dict) must be ignored, not crash."""
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/200",
+            state="started",
+            extra={"prs": "not-a-dict"},
+        )
+        assert build_ticket_index(self._actions()) == {}
+
+    def test_ticket_with_blank_issue_url_is_skipped(self) -> None:
+        """A ticket whose ``issue_url`` is empty has ticket_number = str(pk).
+
+        ``ticket_number`` falls back to ``pk`` for blank URLs, so the
+        guard is on "no number" — only triggered by a hypothetical empty
+        pk + empty URL combo. The realistic skip is "no matching URL in
+        the prs dict", verified here with a URL the prs map doesn't carry.
+        """
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="",
+            state="started",
+            extra={"prs": {"https://other/mr/1": {"iid": 1}}},
+        )
+        assert build_ticket_index(self._actions()) == {}
+
+    def test_ticket_extra_lookup_failing_apps_get_model_fails_open(self) -> None:
+        """A non-ready Django apps registry must collapse to {} silently."""
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.pr_ticket_index import _lookup_ticket_extra_prs  # noqa: PLC0415
+
+        with patch("django.apps.apps.get_model", side_effect=LookupError("boom")):
+            assert _lookup_ticket_extra_prs({"https://x/mr/1"}) == {}
+
+    def test_ticket_extra_lookup_failing_query_fails_open(self) -> None:
+        """A DB query that raises must collapse to {} silently."""
+        from types import SimpleNamespace  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.pr_ticket_index import _lookup_ticket_extra_prs  # noqa: PLC0415
+
+        def _raise(**_kwargs: object) -> object:
+            msg = "db down"
+            raise RuntimeError(msg)
+
+        broken = SimpleNamespace(objects=SimpleNamespace(exclude=_raise))
+        with patch("django.apps.apps.get_model", return_value=broken):
+            assert _lookup_ticket_extra_prs({"https://x/mr/1"}) == {}
+
+    def test_ticket_with_falsy_ticket_number_is_skipped(self) -> None:
+        """A ticket with ``ticket_number`` resolving falsy must be skipped without crash."""
+        from types import SimpleNamespace  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.pr_ticket_index import _lookup_ticket_extra_prs  # noqa: PLC0415
+
+        stub = SimpleNamespace(
+            ticket_number="",
+            extra={"prs": {"https://x/mr/1": {"iid": 1}}},
+        )
+
+        def _exclude(**_kwargs: object) -> object:
+            return SimpleNamespace(only=lambda *_args: [stub])
+
+        model = SimpleNamespace(objects=SimpleNamespace(exclude=_exclude))
+        with patch("django.apps.apps.get_model", return_value=model):
+            assert _lookup_ticket_extra_prs({"https://x/mr/1"}) == {}
+
+
 class TestZonesForGroupsByParentTicket(TestCase):
     """End-to-end: ``zones_for`` buckets MRs under parent tickets via FK + footer."""
 

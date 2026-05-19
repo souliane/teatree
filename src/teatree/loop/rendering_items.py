@@ -48,6 +48,11 @@ class _PRRef:
     iid: int
     url: str
     annotation: str
+    # #1113 enhancement: when a ``ReviewRequestPost`` row exists for this
+    # MR's URL, the renderer surfaces a clickable Slack permalink chunk so
+    # the operator can jump from the statusline straight to the review
+    # thread. Empty string when no post recorded — the chunk is omitted.
+    review_permalink: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,4 +130,14 @@ def _render_canonical_item(
     if child_refs:
         pr_parts = [ctx.link(f"!{r.iid}", r.url, colorize=ctx.colorize) for r in child_refs]
         text += f" ({', '.join(pr_parts)})"
+    # #1113 enhancement: append a clickable Slack permalink chunk per child
+    # MR whose ``ReviewRequestPost`` row recorded a thread post, so the
+    # operator can jump from the statusline straight to the review thread.
+    review_links = [
+        ctx.link(f"review !{r.iid}", r.review_permalink, colorize=ctx.colorize)
+        for r in child_refs
+        if r.review_permalink
+    ]
+    if review_links:
+        text += f" ({', '.join(review_links)})"
     return text

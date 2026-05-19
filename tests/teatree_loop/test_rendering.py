@@ -10,9 +10,22 @@ garbage and no ``text <url>`` fallback. These drive the full
 
 from pathlib import Path
 
-from teatree.loop.dispatch import DispatchAction
+import pytest
+
+from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.rendering import zones_for
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.statusline import render
+
+
+def _render_blob(actions: list[DispatchAction]) -> str:
+    zones = zones_for(actions, colorize=False)
+    return "".join(
+        item if isinstance(item, str) else item.text
+        for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+        for item in zone
+    )
+
 
 _ACTIONS = [
     DispatchAction(
@@ -410,3 +423,173 @@ class TestInboundDmsCollapseToOneNeutralLine:
         assert "[teatree] DMs (1):" in dm_lines[0], repr(dm_lines)
         # Body text must still be absent even in the fallback form.
         assert "x" not in dm_lines[0].split("DMs (1):")[1].split(" · ")[0].split()
+
+
+class TestSlackUserReplyNeverRendersVerbatim:
+    """#1113 Defect 2 — raw Slack reply text + ts must never leak verbatim.
+
+    The full pipeline: a ``slack.user_reply`` signal → real ``dispatch()``
+    → ``zones_for``. Pre-fix the signal fell through to the statusline
+    fallback and ``c.other`` rendered ``Slack user reply <ts>: <text>``
+    verbatim into the red zone.
+    """
+
+    def _signal(self) -> ScanSignal:
+        return ScanSignal(
+            kind="slack.user_reply",
+            summary="Slack user reply 1779215938.999779: if there are posted in the channel",
+            payload={
+                "ts": "1779215938.999779",
+                "channel": "C9XYZ",
+                "user_id": "U123",
+                "text": "if there are posted in the channel",
+                "overlay": "t3-teatree",
+            },
+        )
+
+    def test_slack_user_reply_text_and_ts_never_render_verbatim(self) -> None:
+        blob = _render_blob(dispatch([self._signal()]))
+        assert "1779215938.999779" not in blob, repr(blob)
+        assert "if there are posted in the channel" not in blob, repr(blob)
+
+    def test_render_defense_drops_a_statusline_slack_user_reply_action(self) -> None:
+        """Defence-in-depth drops a stray ``slack.user_reply`` statusline shape.
+
+        Even if the dispatcher regresses and emits a ``slack.user_reply``-shaped
+        statusline action, the classifier must drop it before ``c.other``
+        renders the raw text/ts verbatim.
+        """
+        action = DispatchAction(
+            kind="statusline",
+            zone="action_needed",
+            detail="Slack user reply 1779.0001: some text",
+            payload={
+                "ts": "1779.0001",
+                "channel": "C9",
+                "user_id": "U1",
+                "text": "some text",
+                "overlay": "t3-teatree",
+            },
+        )
+        blob = _render_blob([action])
+        assert "1779.0001" not in blob, repr(blob)
+        assert "some text" not in blob, repr(blob)
+
+
+@pytest.mark.django_db
+class TestTicketExtraPrsResolvesMrToTicket:
+    """#1113 Defect 3 — bare manually-opened MR buckets under its ticket.
+
+    No ``PullRequest`` FK row, no ``Closes #N`` footer; the only link is
+    ``Ticket.extra["prs"]["<url>"]``. Pre-fix ``build_ticket_index``
+    returned ``{}`` and the MR rendered detached as an orphan
+    ``[t3-teatree] !145`` row instead of nested under ``#142``.
+    """
+
+    URL = "https://gitlab.com/souliane/teatree/-/merge_requests/145"
+
+    def _seed_ticket(self) -> None:
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/142",
+            state=Ticket.State.STARTED,
+            extra={"prs": {self.URL: {"iid": 145, "state": "opened"}}},
+        )
+
+    def _actions(self) -> list[DispatchAction]:
+        return [
+            DispatchAction(
+                kind="statusline",
+                zone="in_flight",
+                detail="PR #145 open",
+                payload={"url": self.URL, "iid": 145, "overlay": "t3-teatree"},
+            ),
+        ]
+
+    def test_build_ticket_index_resolves_via_ticket_extra_prs(self) -> None:
+        from teatree.loop.pr_ticket_index import build_ticket_index  # noqa: PLC0415
+
+        self._seed_ticket()
+        assert build_ticket_index(self._actions()).get(self.URL) == "142"
+
+    def test_render_buckets_bare_mr_under_parent_ticket(self) -> None:
+        self._seed_ticket()
+        blob = _render_blob(self._actions())
+        assert "#142" in blob, repr(blob)
+        assert "(!145)" in blob or "!145" in blob, repr(blob)
+        assert "\n[t3-teatree] !145" not in blob, repr(blob)
+
+
+@pytest.mark.django_db
+class TestPostedReviewRequestPermalink:
+    """#1113 enhancement — a posted review-request renders a clickable link.
+
+    A ``ReviewRequestPost`` row records the review-channel post's channel +
+    thread ts. The ticket whose MR was posted should surface the clickable
+    Slack permalink as an extra ref chunk. Pre-fix nothing reads
+    ``ReviewRequestPost`` into the render path.
+    """
+
+    URL = "https://gitlab.com/souliane/teatree/-/merge_requests/145"
+
+    def _seed(self) -> None:
+        from teatree.core.models.review_request_post import ReviewRequestPost  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/142",
+            state=Ticket.State.STARTED,
+            extra={"prs": {self.URL: {"iid": 145, "state": "opened"}}},
+        )
+        ReviewRequestPost.objects.create(
+            mr_url=self.URL,
+            slack_channel_id="C9",
+            slack_thread_ts="1779.0001",
+        )
+
+    def _actions(self) -> list[DispatchAction]:
+        return [
+            DispatchAction(
+                kind="statusline",
+                zone="in_flight",
+                detail="PR #145 open",
+                payload={"url": self.URL, "iid": 145, "overlay": "t3-teatree"},
+            ),
+        ]
+
+    def test_posted_review_request_surfaces_clickable_permalink(self) -> None:
+        self._seed()
+        blob = _render_blob(self._actions())
+        assert "slack.com/archives/C9" in blob, repr(blob)
+
+
+def test_canonical_item_renders_review_permalink_chunk() -> None:
+    """Canonical item appends a ``(review)`` chunk per child MR with a permalink.
+
+    When a state-line item's child MR has a recorded permalink, the
+    canonical item shape adds the clickable ``(review)`` chunk.
+    """
+    from teatree.loop.rendering_items import _LinkCtx, _PRRef, _render_canonical_item  # noqa: PLC0415
+
+    def _link(text: str, url: object, *, colorize: bool) -> str:
+        _ = colorize
+        return f"{text} <{url}>" if isinstance(url, str) and url else text
+
+    rendered = _render_canonical_item(
+        label="#142",
+        url="https://x/issues/142",
+        title="example",
+        child_refs=[
+            _PRRef(
+                iid=145,
+                url="https://x/mr/145",
+                annotation="",
+                review_permalink="https://slack.com/archives/C9/p17790001",
+            ),
+        ],
+        ctx=_LinkCtx(colorize=False, link=_link),
+    )
+    assert "review !145 <https://slack.com/archives/C9/p17790001>" in rendered, rendered
