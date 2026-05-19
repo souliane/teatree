@@ -137,6 +137,13 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # is permanently absent yet fully OPEN). The mechanical handler then
     # completes the task so ``pending-spawn`` stops surfacing it.
     "reviewer_pr.task_orphaned": ("mechanical", "reviewer_task_orphaned"),
+    # #1113 Defect 2: ``SlackDmInboundScanner`` emits ``slack.user_reply`` per
+    # drained user reply. The real consumer is the reactive Slack-answer loop
+    # (``teatree.loop.slack_answer`` — drains the ``PendingChatInjection`` rows
+    # this scanner records, see ``slack_dm_inbound`` docstring). Without an
+    # explicit mechanical route, the signal fell through to the statusline
+    # fallback and leaked raw ``ts``/``text`` verbatim into ``action_needed``.
+    "slack.user_reply": ("mechanical", "slack_user_reply"),
     "notion.unrouted": ("webhook", "n8n"),
 }
 
