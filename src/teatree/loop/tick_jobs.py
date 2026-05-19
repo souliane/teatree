@@ -61,6 +61,15 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     ticket_completion_emitted = False
     gitlab_approvals_enabled = _gitlab_approvals_enabled()
     identity_groups = _identity_alias_groups_for_overlay(tag, backend)
+    # #1113 Defect 1: the trusted operator identity set (``backend.identities``,
+    # #976) is an implicit self-group when no explicit ``identity_aliases``
+    # config overrides it. Without this union, ``user_identity_aliases`` and
+    # ``identity_alias_groups`` both resolve to empty in the user's deployment
+    # → ``_is_self_handoff`` short-circuits to False → same-human reassigns
+    # between ``backend.identities`` members (the multi-identity operator set)
+    # render as ``reassigned`` churn. Explicit groups still take precedence.
+    if not identity_groups and len(backend.identities) > 1:
+        identity_groups = (tuple(backend.identities),)
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
         jobs.extend(

@@ -6,6 +6,7 @@ from typing import Any
 from django.test import TestCase
 
 from teatree.core.models.ticket import Ticket
+from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
 from teatree.types import RawAPIDict
 
@@ -192,7 +193,7 @@ class TicketDispositionScannerAliasTests(TestCase):
 
     OVERLAY = "acme"
     URL = "https://example.com/issues/300"
-    ALIASES: tuple[str, ...] = ("adrien.work", "souliane", "adrien.cossa")
+    ALIASES: tuple[str, ...] = ("adrien.work", "souliane", "acme.work")
 
     def _scanner(
         self,
@@ -221,12 +222,12 @@ class TicketDispositionScannerAliasTests(TestCase):
         assert [s.payload["reason"] for s in signals if s.payload["reason"] == "unassigned"] == []
 
     def test_alias_to_multiple_aliases_reassign_is_suppressed(self) -> None:
-        """old=adrien.work, new=[souliane, adrien.cossa] all in aliases → no signal."""
+        """old=adrien.work, new=[souliane, acme.work] all in aliases → no signal."""
         self._ticket()
         host = _Host(
             user="adrien.work",
             issues_by_url={
-                self.URL: self._issue(assignees=[{"username": "souliane"}, {"username": "adrien.cossa"}]),
+                self.URL: self._issue(assignees=[{"username": "souliane"}, {"username": "acme.work"}]),
             },
         )
         signals = self._scanner(host).scan()
@@ -280,3 +281,123 @@ class TicketDispositionScannerAliasTests(TestCase):
         )
         reasons = sorted(s.payload["reason"] for s in self._scanner(host).scan())
         assert reasons == ["issue_closed"]
+
+
+class _FakeBackend:
+    """Minimal :class:`OverlayBackends` stand-in for ``_jobs_for_backend_hosts``.
+
+    Carries the trusted multi-identity operator set on ``identities`` but
+    leaves ``overlay`` ``None`` so no explicit ``identity_aliases`` config
+    is contributed — exactly the user's deployment shape (#1113 Defect 1):
+    aliases empty everywhere, only the operator identity set known.
+    """
+
+    def __init__(self, host: _Host, *, name: str, identities: tuple[str, ...]) -> None:
+        self.name = name
+        self.hosts = (host,)
+        self.messaging = None
+        self.ready_labels: tuple[str, ...] = ("ready",)
+        self.exclude_labels: tuple[str, ...] = ()
+        self.overlay = None
+        self.auto_start_assigned_issues = False
+        self.max_concurrent_auto_starts = 1
+        self.stale_threshold_days = 3
+        self.external_db = None
+        self.identities = identities
+
+
+class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
+    """#1113 Defect 1 — the trusted operator identity set is an implicit self-group.
+
+    ``_user_identity_aliases_for_overlay`` / ``_identity_alias_groups_for_overlay``
+    both resolve empty in the user's deployment (no explicit config), so the
+    scanner's self-handoff predicate never fired and same-human reassigns
+    (``acme-gh → souliane``) rendered as ``reassigned`` churn. The fix
+    unions ``backend.identities`` into the alias groups passed to the
+    disposition scanner. This drives the real
+    ``tick_jobs._jobs_for_backend_hosts`` builder → scan → dispatch →
+    render pipeline (integration, not a hand-rolled comparator).
+    """
+
+    OVERLAY = "t3-teatree"
+    URL = "https://github.com/souliane/teatree/issues/900"
+    IDENTITIES: tuple[str, ...] = ("acme-gh", "souliane", "acme.work")
+
+    def _disposition_scanner(self, backend: _FakeBackend) -> TicketDispositionScanner:
+        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
+
+        jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)
+        scanner = next(j.scanner for j in jobs if j.scanner.name == "ticket_dispositions")
+        assert isinstance(scanner, TicketDispositionScanner)
+        return scanner
+
+    def _render_blob(self, scanner: TicketDispositionScanner) -> str:
+        from teatree.loop.dispatch import dispatch  # noqa: PLC0415
+        from teatree.loop.rendering import zones_for  # noqa: PLC0415
+
+        signals = [
+            ScanSignal(kind=s.kind, summary=s.summary, payload={**s.payload, "overlay": self.OVERLAY})
+            for s in scanner.scan()
+        ]
+        zones = zones_for(dispatch(signals), colorize=False)
+        return "".join(
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        )
+
+    def test_reassign_between_operator_identities_emits_no_reassigned_row(self) -> None:
+        """acme-gh → souliane (both in backend.identities) → no reassigned churn."""
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        host = _Host(
+            user="acme-gh",
+            issues_by_url={
+                self.URL: {
+                    "state": "opened",
+                    "assignees": [{"login": "acme.work"}],
+                    "labels": [{"name": "ready"}],
+                },
+            },
+        )
+        backend = _FakeBackend(host, name=self.OVERLAY, identities=self.IDENTITIES)
+        blob = self._render_blob(self._disposition_scanner(backend))
+        assert "reassigned (from acme-gh → to" not in blob, repr(blob)
+
+    def test_reassign_to_real_colleague_still_renders(self) -> None:
+        """acme-gh → colleague (∉ backend.identities) — still an actionable handoff."""
+        Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL, state=Ticket.State.STARTED)
+        host = _Host(
+            user="acme-gh",
+            issues_by_url={
+                self.URL: {
+                    "state": "opened",
+                    "assignees": [{"login": "real-colleague"}],
+                    "labels": [{"name": "ready"}],
+                },
+            },
+        )
+        backend = _FakeBackend(host, name=self.OVERLAY, identities=self.IDENTITIES)
+        blob = self._render_blob(self._disposition_scanner(backend))
+        assert "reassigned (from acme-gh → to real-colleague):" in blob, repr(blob)
+
+    def test_single_identity_backend_does_not_trigger_self_group_union(self) -> None:
+        """Explicit identity-group config must take precedence over backend.identities.
+
+        A single-identity ``backend.identities`` (no real multi-handle
+        ambiguity) must NOT short-circuit reassigns to itself — the union
+        path is skipped when an explicit group is already set.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
+
+        # An explicit non-empty groups tuple skips the union branch entirely.
+        backend = _FakeBackend(_Host(user="acme-gh"), name=self.OVERLAY, identities=("acme-gh",))
+        with patch(
+            "teatree.loop.tick_jobs._identity_alias_groups_for_overlay",
+            return_value=(("explicit", "group"),),
+        ):
+            jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)
+        disposition = next(j.scanner for j in jobs if j.scanner.name == "ticket_dispositions")
+        assert isinstance(disposition, TicketDispositionScanner)
+        assert disposition.identity_alias_groups == (("explicit", "group"),)

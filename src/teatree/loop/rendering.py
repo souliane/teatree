@@ -20,6 +20,7 @@ from teatree.loop.dispatch import DispatchAction
 from teatree.loop.pr_ticket_index import build_ticket_index
 from teatree.loop.rendering_classification import _ClassifiedActions, _classify_actions, _issue_ref_from
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
+from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
 from teatree.loop.rendering_zones import (
     _populate_overlay_zones,
     _render_action_line,
@@ -55,6 +56,7 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     _populate_availability_anchor(zones)
     c = _classify_actions(actions)
     ticket_index = build_ticket_index(actions)
+    enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
     _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
 
     for zone_name, entry in c.other:
