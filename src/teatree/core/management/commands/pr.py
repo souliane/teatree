@@ -584,11 +584,12 @@ class Command(TyperCommand):
         Files (screenshots, videos) are uploaded and embedded as ``![name](url)`` in the body.
         If an existing note contains ``## Test Plan``, it is updated instead of creating a new one.
 
-        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
-        upload or host side effect when the gate is on and no recorded
-        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
-        gate is inlined here (not at the ``code_host`` layer) so PR creation —
-        which is not an on-behalf colleague-facing post — remains ungated.
+        Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
+        ``draft_or_ask``): the call is refused with no upload or host side
+        effect when no recorded :class:`OnBehalfApproval` matches
+        ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
+        at the ``code_host`` layer) so PR creation — which is not an
+        on-behalf colleague-facing post — remains ungated.
         """
         host = code_host_from_overlay()
         if host is None:

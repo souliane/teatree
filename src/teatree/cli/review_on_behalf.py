@@ -24,6 +24,31 @@ discovery, by a privacy-scan subprocess, etc.) before
 import typer
 
 
+def on_behalf_gate_active() -> bool:
+    """Whether the on-behalf pre-gate forbids unattended ``approve``/``unapprove``.
+
+    An MR approval/unapproval is an outward, state-changing post made under
+    the user's identity, so it must respect the tri-state
+    ``on_behalf_post_mode`` pre-gate (souliane/teatree#960). Approve is
+    not a draft-form action: it is gated (returns ``True`` from this
+    helper) under both :attr:`~teatree.config.OnBehalfPostMode.ASK` and
+    :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, and only
+    permitted (returns ``False``) under
+    :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE`.
+
+    Wired through a soft import so this command works whether or not the
+    gate PR has merged yet: if the module is absent the gate is treated
+    as inactive (no behaviour change until it lands).
+    """
+    try:
+        from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict  # noqa: PLC0415
+    except ModuleNotFoundError:
+        return False
+    # "approve" is a non-draft action: PROCEED under IMMEDIATE, BLOCK under
+    # ASK and DRAFT_OR_ASK. AUTO_DRAFT never fires for "approve".
+    return resolve_on_behalf_verdict("approve") is not OnBehalfVerdict.PROCEED
+
+
 def gate_target(repo: str, mr: int) -> str:
     """Stable ``(repo, mr)`` identifier the recorded approval scopes to.
 
@@ -94,7 +119,7 @@ def register(review_app: typer.Typer) -> None:
         """Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
 
         The recorded-approval channel is the no-TTY satisfier for the
-        ``ask_before_post_on_behalf`` pre-gate (#960). It mirrors the
+        ``on_behalf_post_mode`` pre-gate (#960, BLOCK verdict). It mirrors the
         #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
         durable, single-use, strictly scoped to one
         ``(target, action)`` pair, maker!=checker enforced. After this
