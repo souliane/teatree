@@ -29,6 +29,7 @@ from teatree.loop.scanners import (
     Scanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
+    SlackReviewIntentScanner,
     StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
@@ -248,9 +249,17 @@ def build_default_jobs(
             if backend.messaging is not None:
                 jobs.extend(
                     [
+                        # ``SlackMentionsScanner`` owns the JSONL drain and
+                        # fans reaction events into the backend's reactions
+                        # queue; ``SlackReviewIntentScanner`` must run after
+                        # it so the queue is populated for the same tick.
                         _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
                         _ScannerJob(
                             scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
+                        _ScannerJob(
+                            scanner=SlackReviewIntentScanner(backend=backend.messaging, overlay=tag),
                             overlay=tag,
                         ),
                         _ScannerJob(
@@ -276,6 +285,7 @@ def build_default_jobs(
                 [
                     _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
                     _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
+                    _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
                 ]
             )
 

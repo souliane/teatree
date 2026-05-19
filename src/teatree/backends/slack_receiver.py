@@ -1,10 +1,15 @@
-"""Socket Mode receiver — writes inbound Slack events to a JSONL queue file.
+"""Socket Mode receiver — writes inbound Slack events to JSONL queue files.
 
 One global singleton process handles all slack-enabled overlays. Each overlay
-gets its own WebSocket connection (one per ``xapp-`` token). Events are written
-to a single append-only JSONL queue at ``$XDG_DATA_HOME/teatree/slack-events.jsonl``
-tagged with the overlay name. The fat loop tick drains the queue via
-:func:`drain_event_queue`.
+gets its own WebSocket connection (one per ``xapp-`` token). Events are
+partitioned across two append-only JSONL queues at
+``$XDG_DATA_HOME/teatree/`` so independent scanners can each own a queue
+without racing on a shared drain:
+
+* ``slack-events.jsonl`` — ``app_mention`` and ``message`` events
+    (consumed by :class:`SlackMentionsScanner`).
+* ``slack-reactions.jsonl`` — ``reaction_added`` events
+    (consumed by :class:`SlackReviewIntentScanner`, #1047).
 
 Start with ``t3 slack listen`` (all overlays) or ``t3 slack listen --overlay X``.
 """
@@ -15,18 +20,46 @@ import os
 import signal
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _QUEUE_FILENAME = "slack-events.jsonl"
-_HANDLED_EVENT_TYPES = frozenset({"app_mention", "message"})
+_REACTIONS_QUEUE_FILENAME = "slack-reactions.jsonl"
+_HANDLED_EVENT_TYPES = frozenset({"app_mention", "message", "reaction_added"})
+
+
+def _data_dir() -> Path:
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "teatree"
 
 
 def default_queue_path() -> Path:
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "teatree" / _QUEUE_FILENAME
+    return _data_dir() / _QUEUE_FILENAME
+
+
+def default_reactions_queue_path() -> Path:
+    return _data_dir() / _REACTIONS_QUEUE_FILENAME
+
+
+@dataclass(frozen=True, slots=True)
+class QueuePaths:
+    """Per-listener JSONL queue file locations.
+
+    Mentions and messages share one file; reactions get a dedicated file so
+    :class:`SlackMentionsScanner` and :class:`SlackReviewIntentScanner` each
+    own an atomic-rename drain without racing on a shared inode (#1047).
+    """
+
+    events: Path
+    reactions: Path
+
+    def for_event_type(self, event_type: str) -> Path:
+        if event_type == "reaction_added":
+            return self.reactions
+        return self.events
 
 
 def _enqueue(path: Path, overlay: str, event: dict) -> None:
@@ -55,12 +88,23 @@ def drain_event_queue(path: Path | None = None) -> list[dict]:
     return events
 
 
+def drain_reactions_queue(path: Path | None = None) -> list[dict]:
+    """Drain the reactions JSONL queue (#1047).
+
+    Mirrors :func:`drain_event_queue` but reads ``slack-reactions.jsonl``.
+    Kept as a separate function (rather than a parameter) so callers can't
+    accidentally drain the wrong queue, and so the file system race
+    (atomic rename) stays scoped per file.
+    """
+    return drain_event_queue(path or default_reactions_queue_path())
+
+
 def _run_single_overlay(
     *,
     overlay_name: str,
     app_token: str,
     bot_token: str,
-    queue_path: Path,
+    queues: QueuePaths,
     stop_event: threading.Event,
 ) -> None:
     try:
@@ -87,7 +131,8 @@ def _run_single_overlay(
         subtype = event.get("subtype", "")
         if subtype in {"bot_message", "message_changed", "message_deleted"}:
             return
-        _enqueue(queue_path, overlay_name, event)
+        target = queues.for_event_type(event_type)
+        _enqueue(target, overlay_name, event)
         logger.info("[%s] Queued %s event (ts=%s)", overlay_name, event_type, event.get("ts", "?"))
 
     client.socket_mode_request_listeners.append(_handle)
@@ -105,8 +150,12 @@ def run_listener(
     overlays: list[tuple[str, str, str]],
     *,
     queue_path: Path | None = None,
+    reactions_queue_path: Path | None = None,
 ) -> None:
-    queue = queue_path or default_queue_path()
+    queues = QueuePaths(
+        events=queue_path or default_queue_path(),
+        reactions=reactions_queue_path or default_reactions_queue_path(),
+    )
     stop = threading.Event()
 
     def _signal_handler(signum: int, frame: object) -> None:
@@ -125,7 +174,7 @@ def run_listener(
                 "overlay_name": overlay_name,
                 "app_token": app_token,
                 "bot_token": bot_token,
-                "queue_path": queue,
+                "queues": queues,
                 "stop_event": stop,
             },
             daemon=True,
