@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Self-Improving Factory Architecture (deep)
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §17. The §17.1 Invariants list stays in the top-level (it is parsed by `scripts/hooks/check_blueprint_invariant_numbering.py`). The flywheel diagram, components, orchestrator/loop topology, CLEAR record, gate placement, and orchestrator-as-keystone contract live here. Consumer cross-references such as `BLUEPRINT §17.3`, `§17.4`, `§17.4.2`, `§17.6`, `§17.6.3`, `§17.8` resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §17. The §17.1 Invariants list stays in the top-level (it is parsed by `scripts/hooks/check_blueprint_invariant_numbering.py`). The flywheel diagram, components, orchestrator/loop topology, CLEAR record, gate placement, and orchestrator-as-keystone contract live here. Consumer cross-references such as `BLUEPRINT §17.3`, `§17.4`, `§17.4.2`, `§17.6`, `§17.6.3`, `§17.8` resolve here.
 
 ## 17. The Self-Improving Factory Architecture
 

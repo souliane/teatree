@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Dependencies & Key Conventions
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §15–§16.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §15–§16.
 
 ## 15. Dependencies
 

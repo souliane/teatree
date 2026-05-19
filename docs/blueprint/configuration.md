@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Configuration
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §10. Consumer cross-references such as `BLUEPRINT §10.1` (~/.teatree.toml, slack-bot setup) resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §10. Consumer cross-references such as `BLUEPRINT §10.1` (~/.teatree.toml, slack-bot setup) resolve here.
 
 ## 10. Configuration
 

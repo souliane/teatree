@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Overlay System
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §6. Consumer cross-references such as `BLUEPRINT §6` resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §6. Consumer cross-references such as `BLUEPRINT §6` resolve here.
 
 ## 6. Overlay System
 

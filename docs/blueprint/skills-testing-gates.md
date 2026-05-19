@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Skills, Plugin Architecture, Testing, Quality Gates
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §11–§13. Consumer cross-references such as `BLUEPRINT §11.4` (Bash permissions, classifier protocol) resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §11–§13. Consumer cross-references such as `BLUEPRINT §11.4` (Bash permissions, classifier protocol) resolve here.
 
 ## 11. Skills & Plugin Architecture
 

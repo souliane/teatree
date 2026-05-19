@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Agent Execution
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §5 (§5.1–§5.5 + §5.7–§5.8). §5.6 Loop Topology stays inline in the top-level. Consumer cross-references such as `BLUEPRINT §5.2`, `§5.4`, `§5.7` resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5 (§5.1–§5.5 + §5.7–§5.8). §5.6 Loop Topology stays inline in the top-level. Consumer cross-references such as `BLUEPRINT §5.2`, `§5.4`, `§5.7` resolve here.
 
 ## 5. Agent Execution
 

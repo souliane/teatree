@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Command Tiers
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §8 (Management commands, global CLI, overlay subcommands, overlay contract-check, dev loop, teatree source resolution).
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §8 (Management commands, global CLI, overlay subcommands, overlay contract-check, dev loop, teatree source resolution).
 
 ## 8. Command Tiers
 

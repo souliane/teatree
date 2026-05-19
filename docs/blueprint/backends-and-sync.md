@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Backend Protocols and Sync
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §7 and §9. Consumer cross-references such as `BLUEPRINT §3.6` (Slack bot setup) and §7 protocols resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §7 and §9. Consumer cross-references such as `BLUEPRINT §3.6` (Slack bot setup) and §7 protocols resolve here.
 
 ## 7. Backend Protocols and ABCs
 

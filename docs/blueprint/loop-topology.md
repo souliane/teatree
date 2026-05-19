@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Loop Topology (deep)
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §5.6. The umbrella retired/subsumed paragraphs stay in the top-level (they satisfy doc-alignment tests). The deep mechanics — scanners, dispatch, multi-overlay/multi-host scanning, statusline rendering, mode + training-wheel, availability — live here. Consumer cross-references such as `BLUEPRINT §5.6`, `§5.6.1`, `§5.6.2`, `§5.6.3` resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §5.6. The umbrella retired/subsumed paragraphs stay in the top-level (they satisfy doc-alignment tests). The deep mechanics — scanners, dispatch, multi-overlay/multi-host scanning, statusline rendering, mode + training-wheel, availability — live here. Consumer cross-references such as `BLUEPRINT §5.6`, `§5.6.1`, `§5.6.2`, `§5.6.3` resolve here.
 
 Each tick runs three stages:
 

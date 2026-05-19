@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Django Project Workflows
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §14 (DB provisioning, import fallback, migrations, post-import, DSLR, validation, worktree provision/start, state reconciler).
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §14 (DB provisioning, import fallback, migrations, post-import, DSLR, validation, worktree provision/start, state reconciler).
 
 ## 14. Django Project Workflows
 

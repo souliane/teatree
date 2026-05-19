@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Domain Models
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §4. Sections §4.1–§4.5 retain their numeric anchors so consumer cross-references like `BLUEPRINT §4`, `§4.1`, `§4.3` resolve here.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §4. Sections §4.1–§4.5 retain their numeric anchors so consumer cross-references like `BLUEPRINT §4`, `§4.1`, `§4.3` resolve here.
 
 ## 4. Domain Models
 

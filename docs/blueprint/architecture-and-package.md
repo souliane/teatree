@@ -1,6 +1,6 @@
 # BLUEPRINT Appendix — Architecture & Package Structure
 
-Detail behind [BLUEPRINT.md](../../BLUEPRINT.md) §2–§3.
+Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEPRINT.md) §2–§3.
 
 ## 2. Architecture Principle: Code-First, Not Skills-First
 
