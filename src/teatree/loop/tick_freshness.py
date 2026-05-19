@@ -69,10 +69,14 @@ def _repos_from_toml() -> dict[str, Path]:
 def _canonical_overlay_names() -> dict[str, str]:
     """Map raw ``~/.teatree.toml`` overlay keys to canonical overlay names.
 
-    The toml entry ``[overlays.teatree]`` corresponds to the canonical
-    overlay name ``t3-teatree`` — without this mapping the freshness segment
-    would label as ``teatree=0`` even though the rest of the statusline tags
-    its rows as ``[t3-teatree]``.
+    Generic legacy-alias protection: a user whose ``~/.teatree.toml`` still
+    carries a short ``[overlays.<alias>]`` table (e.g. ``[overlays.<short>]``
+    for a canonical ``t3-<short>`` entry-point overlay) would otherwise have
+    the freshness segment label as ``<short>=0`` even though the rest of the
+    statusline tags its rows as ``[t3-<short>]``. The bundled overlay no
+    longer needs this remap — it registers and reads its TOML under its
+    canonical entry-point name (souliane/teatree#1108) — but the generic
+    mapping stays for arbitrary operator aliases.
     """
     try:
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
