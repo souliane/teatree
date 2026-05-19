@@ -12,33 +12,28 @@ This gate is overlay-scoped: it only enforces when the active overlay sets
 unaffected. It scans both the proposed MR description and every commit body
 on the branch, and raises ``SystemExit`` with the offending line + suggested
 rewrite when an auto-close keyword is found.
-"""
 
-import re
+Detection uses ``teatree.core.runners.ship.CLOSE_KEYWORD_RE`` — the single
+source of truth shared with ``sanitize_close_keywords`` so the gate and the
+auto-rewrite stay in lockstep, including the colon form GitLab auto-closes
+(#1090).
+"""
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.runners.ship import CLOSE_KEYWORD_RE
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
-
-# GitHub/GitLab recognise the full close/fix/resolve verb set including the
-# past-tense ``-ed`` forms. ``#N``, ``<project>#N``, ``<group/project>#N``
-# and the full ``https://…/issues/N`` URL form all trigger auto-close.
-_FORBIDDEN_CLOSE_RE = re.compile(
-    r"\b(?P<kw>close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+"
-    r"(?P<ref>(?:[\w./-]+)?#\d+|https?://\S+/issues/\d+)",
-    re.IGNORECASE,
-)
 
 
 def _offending_lines(text: str) -> list[str]:
     """Return each line of *text* that carries a forbidden auto-close keyword."""
-    return [line.strip() for line in text.splitlines() if _FORBIDDEN_CLOSE_RE.search(line)]
+    return [line.strip() for line in text.splitlines() if CLOSE_KEYWORD_RE.search(line)]
 
 
 def _suggest_rewrite(line: str) -> str:
     """Rewrite the keyword to the allowlisted ``Relates to`` form."""
-    return _FORBIDDEN_CLOSE_RE.sub(lambda m: f"Relates to {m.group('ref')}", line)
+    return CLOSE_KEYWORD_RE.sub(lambda m: f"Relates to {m.group('ref')}", line)
 
 
 def _scan_sources(worktree: Worktree) -> list[str]:

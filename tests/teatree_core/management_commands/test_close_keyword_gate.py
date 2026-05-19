@@ -19,7 +19,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.management.commands._close_keyword_gate as gate_mod
 import teatree.core.management.commands.pr as pr_mod
-from teatree.core.management.commands._close_keyword_gate import _scan_sources
+from teatree.core.management.commands._close_keyword_gate import _scan_sources, _suggest_rewrite
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.utils import git as git_mod
 from tests.teatree_core.management_commands._overlays import (
@@ -157,6 +157,21 @@ class TestCloseKeywordGateForbiddenOverlay(TestCase):
             ):
                 call_command("pr", "create", str(ticket.pk))
             ticket.delete()
+
+    @_patch_overlays(FORBID_CLOSE_KEYWORDS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_rejects_colon_form_closes(self) -> None:
+        """#1090: GitLab auto-closes the colon form, so the gate must reject it."""
+        for subject in ("Closes: downstream-product#1632.", "Fixes:  #1632"):
+            ticket = _shippable_ticket()
+            with (
+                pytest.raises(SystemExit) as ctx,
+                _git_boundary(subject=subject),
+            ):
+                call_command("pr", "create", str(ticket.pk))
+            assert ctx.value.code != 0
+            ticket.delete()
+        assert _suggest_rewrite("Closes: downstream-product#1632.") == "Relates to downstream-product#1632."
 
 
 class TestCloseKeywordGateNonForbiddenOverlay(TestCase):
