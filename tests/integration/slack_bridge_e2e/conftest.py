@@ -34,7 +34,7 @@ back to a single real TOML; that would risk coverage drift on the
 per-overlay routing branches.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -127,6 +127,43 @@ class FakeSlackTransport:
 
     def calls_to(self, method: str) -> list[_Call]:
         return [c for c in self.calls if c.method == method]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_bundled_overlay_module() -> Iterator[None]:
+    """Drop the ``teatree.contrib.t3_teatree.overlay`` module + cache after each test.
+
+    The fortress tests reach :func:`teatree.core.notify.notify_user`
+    (directly or via the management-command tick), whose ``_maybe_linkify``
+    path calls ``overlay_loader.get_overlay`` → ``_discover_overlays``.
+    The first call imports ``teatree.contrib.t3_teatree.overlay``, whose
+    ``TeatreeOverlay`` class evaluates
+    ``OverlayConfig(overlay_name="t3-teatree")`` at class-definition time
+    against the live ``teatree.config.load_config()``. The resulting
+    ``TeatreeOverlay.config`` is a class-level singleton bound to that
+    first-import config, so downstream tests that
+    ``patch("teatree.config.load_config")`` and expect a fresh class build
+    (notably ``test_reads_t3_teatree_table_not_bare_teatree`` for
+    souliane/teatree#1108) silently see the stale class attribute and
+    fail. ``overlay_loader.reset_overlay_cache()`` alone is insufficient —
+    it clears the ``lru_cache`` but leaves the imported module (and its
+    class attribute) in ``sys.modules``.
+
+    Removing the module here lets the next first-import (typically inside
+    the victim's ``with patch(...)`` context) re-evaluate the class body
+    under the test's patched ``load_config``. Pairing with
+    ``reset_overlay_cache`` keeps the ``_discover_overlays`` cache aligned
+    so the rebuild actually fires.
+    """
+    import sys  # noqa: PLC0415
+
+    from teatree.core import overlay_loader  # noqa: PLC0415
+
+    try:
+        yield
+    finally:
+        overlay_loader.reset_overlay_cache()
+        sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
 
 
 @pytest.fixture
