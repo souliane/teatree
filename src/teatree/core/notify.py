@@ -19,12 +19,13 @@ import enum
 import logging
 import re
 
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.models import BotPing, OutboundClaim
+from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,14 @@ def _record_outbound_claim(
     because :mod:`teatree.outbound_claim` lives outside ``teatree.core``
     and adding ``teatree.core → teatree.outbound_claim`` would cycle
     through ``teatree.outbound_claim → teatree.core``.
+
+    Unlike the sibling :func:`teatree.outbound_claim.record_claim` (which
+    returns ``OutboundClaim | None``), this helper intentionally returns
+    ``None``: there is no consumer of the row here (the publish path
+    ignores it), so adding a return value would be dead code — a future
+    sibling-sync pass should not "fix" this asymmetry.
     """
+    session_id = current_session_id()
     try:
         with transaction.atomic():
             OutboundClaim.objects.get_or_create(
@@ -241,11 +249,14 @@ def _record_outbound_claim(
                 defaults={
                     "kind": OutboundClaim.Kind.SLACK_DM.value,
                     "target_url": target_url,
+                    "agent_session_id": session_id,
                     "extra": {"channel": channel, "ts": posted_ts},
                 },
             )
     except IntegrityError:
         logger.debug("notify_user outbound-claim race on key=%s", idempotency_key)
+    except DatabaseError as exc:
+        logger.warning("notify_user outbound-claim DB failure for key=%s: %s", idempotency_key, exc)
     except Exception as exc:  # noqa: BLE001 — claim ledger is best-effort
         logger.debug("notify_user outbound-claim record failed for key=%s: %s", idempotency_key, exc)
 
