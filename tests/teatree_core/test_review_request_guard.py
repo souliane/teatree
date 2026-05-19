@@ -415,6 +415,44 @@ class TestResolveGuardTarget(TestCase):
         assert target.token == "xoxp-connect"
         rct.assert_called_once_with(_CHANNEL_ID)
 
+    def test_connect_guard_token_is_xoxp_when_conversations_info_flaky(self) -> None:
+        """Guard read-token == post-token even when ``conversations.info`` fails (#1110).
+
+        The #1084 guard reads channel history with the exact token an
+        outbound post would use. On a Slack-Connect review channel whose
+        ``conversations.info`` probe is flaky (``ok:false``), the
+        pre-#1110 policy resolved the guard token to the bot ``xoxb`` —
+        a token the Connect channel rejects, so the live dedup read
+        always saw an empty history and never suppressed a duplicate
+        review-request post. #1110: an unconfirmable Connect channel
+        resolves the guard (a WRITE-class read-as-the-post) to the user
+        ``xoxp`` token. RED on main: ``target.token == "xoxb-bot"``.
+
+        The real ``resolve_channel_token`` / ``_channel_token`` run; only
+        the ``httpx`` boundary is faked so ``conversations.info`` fails.
+        """
+        from teatree.backends import slack_bot  # noqa: PLC0415
+
+        overlay = _overlay_with_channel()
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+
+        def fake_get(url: str, **_kwargs: object) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "ratelimited"},
+                request=httpx.Request("GET", url),
+            )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
+            patch.object(slack_bot.httpx, "get", fake_get),
+        ):
+            target = resolve_guard_target()
+
+        assert target is not None
+        assert target.token == "xoxp-user"
+
     def test_returns_none_when_no_token(self) -> None:
         overlay = _bare_overlay()
         overlay.config.get_review_channel = lambda: (_CHANNEL_NAME, _CHANNEL_ID)  # type: ignore[method-assign]
