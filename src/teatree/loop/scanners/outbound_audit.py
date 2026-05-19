@@ -138,11 +138,16 @@ class OutboundAuditScanner:
         A row is eligible when:
         - it is not yet verified, AND
         - it has not yet been alerted as drift, AND
-        - its ``claim_ts`` is older than the per-kind settling window.
+        - its ``claim_ts`` is older than the per-kind settling window, AND
+        - its ``idempotency_key`` does not start with ``outbound_drift:``.
 
-        The SQL filter uses the most permissive (largest) settling window
-        so one queryset covers every kind; the per-kind window is
-        re-checked in Python to stay portable across DB backends.
+        The last condition is the recursion guard: the drift DM itself
+        records an ``OutboundClaim`` row (any successful Slack post does).
+        Without the prefix exclusion the scanner would re-verify those DM
+        claims on the next tick and, if the drift DM itself failed to
+        land, would emit *another* drift DM about the missing drift DM —
+        a feedback loop. The fixed ``outbound_drift:`` prefix is wired by
+        :meth:`_apply_result` below, so the contract is local.
         """
         rows = (
             model.objects.filter(
@@ -150,6 +155,7 @@ class OutboundAuditScanner:
                 drift_alerted_at__isnull=True,
             )
             .filter(claim_ts__lte=now)
+            .exclude(idempotency_key__startswith="outbound_drift:")
             .order_by("claim_ts")[: self.limit * 2]
         )
         eligible: list[OutboundClaimModel] = []
@@ -309,8 +315,16 @@ def _slack_dm_verifier() -> Verifier | None:
     """Build a Slack-DM verifier from the overlay messaging backend.
 
     Confirms via ``chat.getPermalink`` that the ``(channel, ts)`` recorded
-    in the claim's ``extra`` still resolves to a permalink. A 404 from
-    Slack is the canonical "this message never landed" signal.
+    in the claim's ``extra`` still resolves to a permalink. Mirrors the
+    GitLab verifier's error doctrine:
+
+    - An empty permalink (the backend's "ok=false" / 404-equivalent
+        return shape: ``channel_not_found`` / ``message_not_found``)
+        → :class:`VerifyResult.drift` — the message did not land.
+    - Any transport-level exception (``httpx.HTTPStatusError`` for HTTP
+        5xx, ``httpx.NetworkError`` for connection failures, etc.)
+        → re-raise. ``scan()`` catches and skips the row silently so we
+        do not spam drift DMs on a temporary backend outage.
     """
     try:
         from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
@@ -325,10 +339,11 @@ def _slack_dm_verifier() -> Verifier | None:
         ts = str(claim.extra.get("ts", ""))
         if not (channel and ts):
             return VerifyResult.ok()
-        try:
-            permalink = backend.get_permalink(channel=channel, ts=ts)
-        except Exception as exc:  # noqa: BLE001
-            return VerifyResult.drift(f"Slack get_permalink raised: {exc}")
+        # Let httpx.* and any other transport-layer exception propagate
+        # so ``scan()`` can skip the row silently — drift is reserved for
+        # "the backend told us the artifact is gone", not "we could not
+        # reach the backend".
+        permalink = backend.get_permalink(channel=channel, ts=ts)
         if not permalink:
             return VerifyResult.drift(f"Slack message {ts} not found in {channel}")
         return VerifyResult.ok()

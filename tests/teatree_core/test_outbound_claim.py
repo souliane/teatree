@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from django.db import DatabaseError
+from django.db import DatabaseError, IntegrityError
 from django.test import TestCase
 
 from teatree.core.models import OutboundClaim
@@ -80,3 +80,58 @@ class RecordClaimTests(TestCase):
             )
         assert claim is not None
         assert claim.agent_session_id == "sess-123"
+
+    def test_integrity_error_refetches_existing_row(self) -> None:
+        # First create an existing row so the refetch can succeed.
+        existing = record_claim(
+            kind=OutboundClaim.Kind.SLACK_DM,
+            idempotency_key="ie-refetch",
+        )
+        assert existing is not None
+        # Simulate a race: get_or_create raises IntegrityError; the helper
+        # must catch it and refetch the existing row by idempotency_key.
+        with patch.object(
+            OutboundClaim.objects,
+            "get_or_create",
+            side_effect=IntegrityError("uniq race"),
+        ):
+            claim = record_claim(
+                kind=OutboundClaim.Kind.SLACK_DM,
+                idempotency_key="ie-refetch",
+            )
+        assert claim is not None
+        assert claim.pk == existing.pk
+
+    def test_integrity_error_with_failing_refetch_returns_none(self) -> None:
+        # Both the initial write AND the refetch fail -> caller gets None.
+        with (
+            patch.object(
+                OutboundClaim.objects,
+                "get_or_create",
+                side_effect=IntegrityError("uniq race"),
+            ),
+            patch.object(
+                OutboundClaim.objects,
+                "filter",
+                side_effect=RuntimeError("DB down during refetch"),
+            ),
+        ):
+            claim = record_claim(
+                kind=OutboundClaim.Kind.SLACK_DM,
+                idempotency_key="ie-refetch-fail",
+            )
+        assert claim is None
+
+    def test_unexpected_exception_returns_none(self) -> None:
+        # A non-DatabaseError, non-IntegrityError exception is the last
+        # safety net — record_claim must never break the publish path.
+        with patch.object(
+            OutboundClaim.objects,
+            "get_or_create",
+            side_effect=RuntimeError("totally unexpected"),
+        ):
+            claim = record_claim(
+                kind=OutboundClaim.Kind.GITLAB_NOTE,
+                idempotency_key="unexpected",
+            )
+        assert claim is None
