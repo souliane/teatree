@@ -255,6 +255,21 @@ def last_commit_message(repo: str = ".") -> tuple[str, str]:
     return subject, body
 
 
+def commit_messages(repo: str = ".", range_spec: str = "") -> list[str]:
+    """Return the full message (subject + body) of each commit in *range_spec*.
+
+    Commits are separated by an ASCII record separator so a body that
+    itself contains blank lines never splits one commit into two. An
+    empty/missing range yields ``[]`` (nothing to scan, not an error) —
+    a close-keyword gate over zero commits must pass, not blow up.
+    """
+    if not range_spec:
+        return []
+    sep = "\x1e"
+    output = run(repo=repo, args=["log", range_spec, f"--format=%B{sep}"])
+    return [chunk.strip() for chunk in output.split(sep) if chunk.strip()]
+
+
 def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = True) -> bool:
     args = ["worktree", "add"]
     if create_branch:
@@ -347,6 +362,9 @@ class GitRepo:
 
     def last_commit_message(self) -> tuple[str, str]:
         return last_commit_message(self.path)
+
+    def commit_messages(self, range_spec: str = "") -> list[str]:
+        return commit_messages(self.path, range_spec)
 
     def worktree_add(self, path: str, branch: str, *, create_branch: bool = True) -> bool:
         return worktree_add(self.path, path, branch, create_branch=create_branch)
