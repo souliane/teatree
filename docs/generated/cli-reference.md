@@ -558,7 +558,10 @@ Usage: t3 review approve [OPTIONS] REPO MR
 
  Precondition: a review note/discussion authored by your identity must
  already exist on the MR (review before approve). Also respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+ record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+ approve --approver <user-id>`` to satisfy the gate without disabling
+ it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -578,7 +581,10 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
  Revoke your approval on a GitLab MR.
 
  No review precondition (revoking is the safe direction). Respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+ record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+ unapprove --approver <user-id>`` to satisfy the gate without disabling
+ it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │

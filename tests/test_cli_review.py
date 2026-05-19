@@ -1,6 +1,3 @@
-import builtins
-import sys
-import types
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,7 +6,6 @@ from typer.testing import CliRunner
 import teatree.backends.gitlab_api as gitlab_api_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import app
-from teatree.cli import review as review_mod
 from teatree.cli.review import ReviewService, _find_added_line
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -581,21 +577,22 @@ class TestApprove:
             assert result.exit_code == 1
             assert "Failed: HTTP 403" in result.output
 
-    def test_approve_blocked_by_on_behalf_gate(self, monkeypatch):
-        """When the ask-before-post-on-behalf gate is active, approve refuses unattended."""
+    @pytest.mark.django_db
+    def test_approve_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
+        """Gate ON + no recorded approval → approve refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
         mock_api.get_json.side_effect = lambda endpoint: (
             _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
         )
-        with (
-            patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api),
-            patch("teatree.cli.review._on_behalf_gate_active", return_value=True),
-        ):
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "ask_before_post_on_behalf" in result.output
+            assert "approve-on-behalf" in result.output
             mock_api.post_status.assert_not_called()
 
     def test_unapprove_succeeds(self, monkeypatch):
@@ -620,44 +617,19 @@ class TestApprove:
             assert result.exit_code == 1
             assert "Failed: HTTP 404" in result.output
 
-    def test_unapprove_blocked_by_on_behalf_gate(self, monkeypatch):
+    @pytest.mark.django_db
+    def test_unapprove_blocked_by_on_behalf_gate(self, tmp_path, monkeypatch):
+        """Gate ON + no recorded approval → unapprove refuses without an API call (#1013)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
         mock_api = MagicMock()
-        with (
-            patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api),
-            patch("teatree.cli.review._on_behalf_gate_active", return_value=True),
-        ):
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "unapprove", "org/repo", "7"])
             assert result.exit_code == 1
-            assert "ask_before_post_on_behalf" in result.output
+            assert "approve-on-behalf" in result.output
             mock_api.post_status.assert_not_called()
-
-
-class TestOnBehalfGateActive:
-    def test_inactive_when_gate_module_absent(self, monkeypatch):
-        """Absent gate module (not yet merged) -> integration point reports inactive."""
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):
-            if name == "teatree.on_behalf_gate":
-                raise ModuleNotFoundError(name)
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
-        assert review_mod._on_behalf_gate_active() is False
-
-    def test_active_when_gate_module_present_and_enabled(self, monkeypatch):
-        """Present gate module + enabled setting -> integration point reports active."""
-        fake = types.ModuleType("teatree.on_behalf_gate")
-        fake.ask_before_post_on_behalf_enabled = lambda: True
-        monkeypatch.setitem(sys.modules, "teatree.on_behalf_gate", fake)
-        assert review_mod._on_behalf_gate_active() is True
-
-    def test_inactive_when_gate_module_present_but_disabled(self, monkeypatch):
-        fake = types.ModuleType("teatree.on_behalf_gate")
-        fake.ask_before_post_on_behalf_enabled = lambda: False
-        monkeypatch.setitem(sys.modules, "teatree.on_behalf_gate", fake)
-        assert review_mod._on_behalf_gate_active() is False
 
 
 # -- _require_token helper -----------------------------------------------------
