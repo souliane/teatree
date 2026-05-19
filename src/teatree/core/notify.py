@@ -23,7 +23,7 @@ from django.db import IntegrityError, transaction
 from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, OutboundClaim
 from teatree.slack_mrkdwn import slack_linkify
 
 logger = logging.getLogger(__name__)
@@ -114,7 +114,45 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+    _record_outbound_claim(
+        idempotency_key=f"slack_dm:{idempotency_key}",
+        target_url=permalink,
+        channel=str(channel),
+        posted_ts=posted_ts,
+    )
     return True
+
+
+def _record_outbound_claim(
+    *,
+    idempotency_key: str,
+    target_url: str,
+    channel: str,
+    posted_ts: str,
+) -> None:
+    """Record an :class:`OutboundClaim` row for the outbound-audit verifier (#1019).
+
+    Best-effort — never breaks the publish path. The audit scanner reads
+    this ledger on the next tick and DMs the user on drift. Inlined here
+    (instead of delegating to :func:`teatree.outbound_claim.record_claim`)
+    because :mod:`teatree.outbound_claim` lives outside ``teatree.core``
+    and adding ``teatree.core → teatree.outbound_claim`` would cycle
+    through ``teatree.outbound_claim → teatree.core``.
+    """
+    try:
+        with transaction.atomic():
+            OutboundClaim.objects.get_or_create(
+                idempotency_key=idempotency_key,
+                defaults={
+                    "kind": OutboundClaim.Kind.SLACK_DM.value,
+                    "target_url": target_url,
+                    "extra": {"channel": channel, "ts": posted_ts},
+                },
+            )
+    except IntegrityError:
+        logger.debug("notify_user outbound-claim race on key=%s", idempotency_key)
+    except Exception as exc:  # noqa: BLE001 — claim ledger is best-effort
+        logger.debug("notify_user outbound-claim record failed for key=%s: %s", idempotency_key, exc)
 
 
 def _feature_enabled() -> bool:

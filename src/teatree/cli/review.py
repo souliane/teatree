@@ -26,6 +26,8 @@ from http import HTTPStatus
 
 import typer
 
+from teatree.cli.review_approval import identity_has_reviewed
+from teatree.cli.review_audit import record_note_claim
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
@@ -98,7 +100,9 @@ class ReviewService:
             result = api.post_json(endpoint, {"note": note})
             if not result:
                 return "Failed to post draft note", 1
-            return f"OK draft_note_id={dict(result).get('id')}", 0
+            note_id = dict(result).get("id")
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes")
+            return f"OK draft_note_id={note_id}", 0
 
         position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
@@ -111,6 +115,7 @@ class ReviewService:
         note_id = result_dict.get("id")
         line_code = result_dict.get("line_code")
         if line_code:
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes", file=file, line=line)
             return f"OK draft_note_id={note_id}\nline_code={line_code}", 0
 
         if isinstance(note_id, int):
@@ -165,7 +170,9 @@ class ReviewService:
             result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/notes", {"body": note})
             if not result:
                 return "Failed to post comment", 1
-            return f"OK note_id={dict(result).get('id')}", 0
+            note_id = dict(result).get("id")
+            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="notes")
+            return f"OK note_id={note_id}", 0
 
         position, error = resolve_inline_position(api, encoded, mr, file, line)
         if position is None:
@@ -184,6 +191,7 @@ class ReviewService:
         note_type = first_note.get("type") if isinstance(first_note, dict) else None
         if note_type != "DiffNote":
             return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
+        record_note_claim(self._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
     def post_comment(
@@ -234,6 +242,7 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
         if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            record_note_claim(self._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
             return "OK — all draft notes published", 0
         return f"Failed: HTTP {status}", 1
 
@@ -256,6 +265,9 @@ class ReviewService:
         if not result:
             return "Failed to post reply", 1
         note_id = dict(result).get("id")
+        record_note_claim(
+            self._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
+        )
         return f"OK reply_note_id={note_id}", 0
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
@@ -273,6 +285,14 @@ class ReviewService:
         flag = "true" if resolved else "false"
         status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
         if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+            record_note_claim(
+                self._resolve_base_url,
+                repo,
+                mr,
+                f"{discussion_id}#resolved={flag}",
+                endpoint="discussions/resolve",
+                resolved=resolved,
+            )
             return f"OK resolved={resolved}", 0
         return f"Failed: HTTP {status}", 1
 
@@ -297,6 +317,9 @@ class ReviewService:
             {"note": body},
         )
         if draft_status == HTTPStatus.OK:
+            record_note_claim(
+                self._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update"
+            )
             return f"OK updated draft_note_id={note_id}", 0
         if draft_status != HTTPStatus.NOT_FOUND:
             return f"Failed (draft): HTTP {draft_status}", 1
@@ -306,6 +329,7 @@ class ReviewService:
             {"body": body},
         )
         if pub_status == HTTPStatus.OK:
+            record_note_claim(self._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
             return f"OK updated note_id={note_id}", 0
         return f"Failed: HTTP {pub_status}", 1
 
@@ -354,36 +378,6 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
-    def _identity_has_reviewed(self, encoded_repo: str, mr: int) -> tuple[bool, str]:
-        """Whether the approving identity already authored a note on this MR.
-
-        Encodes the review-before-approve doctrine: an approval may only be
-        recorded once the same identity has left a reviewing footprint
-        (any note in any discussion thread). Returns ``(reviewed, error)``;
-        ``error`` is non-empty only when the identity itself cannot be
-        resolved (a hard precondition failure, not "no review yet").
-        """
-        api = self._get_api()
-        username = api.current_username()
-        if not username:
-            return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
-        discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
-        if not isinstance(discussions, list):
-            return False, ""
-        for discussion in discussions:
-            if not isinstance(discussion, dict):
-                continue
-            notes = discussion.get("notes")
-            if not isinstance(notes, list):
-                continue
-            for note in notes:
-                if not isinstance(note, dict):
-                    continue
-                author = note.get("author")
-                if isinstance(author, dict) and author.get("username") == username:
-                    return True, ""
-        return False, ""
-
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
         """Approve an MR — refuses unless the identity has already reviewed it.
 
@@ -402,7 +396,7 @@ class ReviewService:
         if blocked:
             return blocked, 1
         encoded = repo.replace("/", "%2F")
-        reviewed, error = self._identity_has_reviewed(encoded, mr)
+        reviewed, error = identity_has_reviewed(self._get_api(), encoded, mr)
         if error:
             return error, 1
         if not reviewed:
@@ -415,6 +409,7 @@ class ReviewService:
         api = self._get_api()
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
         if status in _HTTP_OK_CODES:
+            record_note_claim(self._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
             return f"OK approved !{mr}", 0
         return f"Failed: HTTP {status}", 1
 
@@ -437,158 +432,20 @@ class ReviewService:
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
         if status in _HTTP_OK_CODES:
+            record_note_claim(
+                self._resolve_base_url, repo, mr, "unapprove", kind="gitlab_approve", endpoint="unapprove"
+            )
             return f"OK unapproved !{mr}", 0
         return f"Failed: HTTP {status}", 1
 
 
-def _require_token() -> ReviewService:
-    # Bootstrap Django (idempotent) before the on-behalf pre-gate (#960)
-    # touches the ORM. CLI module stays Django-free at import time so
-    # typer can render --help / discover commands; mirrors cli/loop.py.
-    # See souliane/teatree#1003.
-    import os  # noqa: PLC0415
-
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
-
-    token = ReviewService.get_gitlab_token()
-    if not token:
-        typer.echo("No GitLab token found. Run: glab auth login")
-        raise typer.Exit(code=1)
-    return ReviewService(token)
-
-
-@review_app.command(name="post-draft-note")
-def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. The arg list IS the CLI contract, not an internal design smell (same rationale as ticket.clear / db.refresh / pr.create).
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    note: str = typer.Argument(help="Comment text (markdown)"),
-    file: str = typer.Option(
-        "",
-        help="File path for inline comment — REQUIRED unless --general is passed.",
-    ),
-    line: int | None = typer.Option(
-        None,
-        help="Line number in the new file (must be an added line) — REQUIRED unless --general is passed.",
-    ),
-    *,
-    general: bool = typer.Option(
-        False,
-        "--general",
-        help=(
-            "Post a general (MR-wide) note instead of an inline one. Mutually exclusive "
-            "with --file/--line. Without this flag, --file AND --line are both required "
-            "— omitting either is refused upfront so a missed-flag invocation can no "
-            "longer silently degrade an intended-inline draft into a general note "
-            "(souliane/teatree#72)."
-        ),
-    ),
-) -> None:
-    """Post a draft note on a GitLab MR (inline or general).
-
-    The inline-vs-general decision is explicit: pass ``--general`` for an
-    MR-wide note, or pass both ``--file`` and ``--line`` for an inline
-    draft. Pre-#72 the default silently degraded a missing flag pair into
-    a general note — observed in !6220 where 4 of 5 cold-review drafts
-    intended as inline became general. The validator
-    :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
-    both half-specified-inline and contradictory invocations before any
-    GitLab API call is attempted.
-    """
-    from teatree.cli.review_drafts import validate_inline_or_general  # noqa: PLC0415
-
-    service = _require_token()
-    validate_inline_or_general(file=file, line=line, general=general)
-    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="post-comment")
-def post_comment(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    note: str = typer.Argument(help="Comment text (markdown)"),
-    file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
-    line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
-) -> None:
-    """Post an immediate (non-draft) comment on a GitLab MR.
-
-    Useful when `post-draft-note` fails to anchor inline because the file's
-    diff is collapsed (large files). This bypasses the draft workflow and
-    posts straight to a discussion, where GitLab's anchoring works.
-    """
-    service = _require_token()
-    msg, code = service.post_comment(repo, mr, note, file=file, line=line)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="reply-to-discussion")
-def reply_to_discussion(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    discussion_id: str = typer.Argument(help="Discussion (thread) ID"),
-    body: str = typer.Argument(help="Reply body (markdown)"),
-) -> None:
-    """Reply to a GitLab MR discussion thread (immediate, not draft)."""
-    service = _require_token()
-    msg, code = service.reply_to_discussion(repo, mr, discussion_id, body)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="approve")
-def approve(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """Approve a GitLab MR — only after you have reviewed it.
-
-    Precondition: a review note/discussion authored by your identity must
-    already exist on the MR (review before approve). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
-    souliane/teatree#960/#1013) — record an approval via
-    ``t3 review approve-on-behalf <repo>!<mr> approve --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
-    """
-    service = _require_token()
-    msg, code = service.approve(repo, mr)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="unapprove")
-def unapprove(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """Revoke your approval on a GitLab MR.
-
-    No review precondition (revoking is the safe direction). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
-    souliane/teatree#960/#1013) — record an approval via
-    ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
-    """
-    service = _require_token()
-    msg, code = service.unapprove(repo, mr)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
 # Register sibling-module typer commands. Kept out of this file so the
 # OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
-# satisfied — see `teatree.cli.review_on_behalf` and
-# `teatree.cli.review_drafts`.
+# satisfied — see `teatree.cli.review_on_behalf`,
+# `teatree.cli.review_drafts`, and `teatree.cli.review_commands`.
+from teatree.cli import review_commands as _review_commands  # noqa: E402 — registration side-effect
+from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
+
 _register_on_behalf(review_app)
 _register_drafts(review_app)
+_ = _review_commands  # quiet "unused import" — module load is the side-effect
