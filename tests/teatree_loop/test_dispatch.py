@@ -46,6 +46,30 @@ def test_notion_unrouted_routes_to_webhook() -> None:
     assert actions[0].zone == "n8n"
 
 
+def test_slack_review_intent_dual_dispatches_to_reviewer_and_statusline() -> None:
+    """#1047: reaction-driven review intent routes to the reviewer agent + statusline mirror."""
+    payload: dict[str, object] = {
+        "url": "https://gitlab.com/group/proj/-/merge_requests/42",
+        "mr_url": "https://gitlab.com/group/proj/-/merge_requests/42",
+        "trigger": "reaction",
+    }
+    actions = dispatch([ScanSignal(kind="slack.review_intent", summary="intent", payload=payload)])
+    kinds = [(a.kind, a.zone) for a in actions]
+    assert ("agent", "t3:reviewer") in kinds
+    assert ("statusline", "action_needed") in kinds
+
+
+def test_slack_review_intent_payload_propagates() -> None:
+    payload: dict[str, object] = {
+        "url": "https://gitlab.com/group/proj/-/merge_requests/42",
+        "trigger": "mention",
+        "user_id": "U0DEMOUSER1",
+    }
+    actions = dispatch([ScanSignal(kind="slack.review_intent", summary="intent", payload=payload)])
+    agent_action = next(a for a in actions if a.kind == "agent")
+    assert agent_action.payload == payload
+
+
 def test_reviewer_pr_task_orphaned_routes_to_mechanical_handler() -> None:
     """#998: scanner-emitted orphan signal dispatches to the cleanup handler."""
     payload: dict[str, object] = {

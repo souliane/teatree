@@ -12,6 +12,7 @@ from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
+from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.session import Session
@@ -49,6 +50,8 @@ __all__ = [
     "PullRequest",
     "QualityGateError",
     "ReplyDispatch",
+    "ReviewAssignment",
+    "ReviewIntent",
     "ReviewRequestPost",
     "SelfImproveFiring",
     "Session",

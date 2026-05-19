@@ -1,6 +1,7 @@
 """Scan Slack mentions and DMs from the MessagingBackend and the Socket Mode queue."""
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from teatree.backends.protocols import MessagingBackend
 from teatree.loop.scanners.base import ScanSignal
 from teatree.paths import DATA_DIR
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 def _default_cursor_path() -> Path:
@@ -61,10 +64,20 @@ def _resolve_permalink(backend: MessagingBackend, channel: str, ts: str) -> str:
 
 @dataclass(slots=True)
 class SlackMentionsScanner:
-    """Surface ``app_mention`` and ``message.im`` events queued by Socket Mode."""
+    """Surface ``app_mention`` and ``message.im`` events queued by Socket Mode.
+
+    Side-effect for mentions referencing an MR/PR URL (#1047): record a
+    :class:`ReviewAssignment` row and post the ``:eyes:`` reaction on the
+    user's behalf via :func:`record_mention_intent`. Idempotent — the row
+    is keyed on ``(overlay, mr_url, user_id)`` so re-firing on the same
+    mention is a no-op. The existing ``slack.mention`` signal still routes
+    to ``t3:reviewer`` via the dispatcher; the side effect just persists
+    the ledger and acks the user.
+    """
 
     backend: MessagingBackend
     cursor_path: Path = field(default_factory=_default_cursor_path)
+    overlay: str = ""
     name: str = "slack_mentions"
 
     def scan(self) -> list[ScanSignal]:
@@ -83,6 +96,9 @@ class SlackMentionsScanner:
                 channel_type = event.get("channel_type", "")
                 if channel_type == "im":
                     dms.append(event)
+            # ``reaction_added`` events land in ``slack-reactions.jsonl``
+            # (drained by ``SlackReviewIntentScanner``, #1047) — handled by
+            # the receiver-side routing in ``_run_single_overlay``.
 
         signals: list[ScanSignal] = []
         for event in mentions:
@@ -94,6 +110,7 @@ class SlackMentionsScanner:
                     payload={"ts": ts, "event": event},
                 )
             )
+            self._record_review_intent(event)
             if ts:
                 cursors["mentions"] = max(cursors.get("mentions", ""), ts)
         for event in dms:
@@ -112,3 +129,20 @@ class SlackMentionsScanner:
         if signals:
             _write_cursors(self.cursor_path, cursors)
         return signals
+
+    def _record_review_intent(self, event: RawAPIDict) -> None:
+        """Persist a ``ReviewAssignment`` row and post ``:eyes:`` for MR-bearing mentions.
+
+        Best-effort: any failure (DB unavailable in a test, Slack outage)
+        logs and continues so the mention scanner never blocks on a
+        side-effect. The maker/checker boundary (BLUEPRINT §17.8) is
+        preserved because the actual review dispatch happens through the
+        dispatcher's ``_review_request_dispatch`` on the ``slack.mention``
+        signal — this side-effect just persists the ledger and acks.
+        """
+        try:
+            from teatree.loop.scanners.slack_review_intent import record_mention_intent  # noqa: PLC0415
+
+            record_mention_intent(event, backend=self.backend, overlay=self.overlay)
+        except Exception:
+            logger.exception("Failed to record review intent for mention %s", _ts(event))
