@@ -507,11 +507,12 @@ Usage: t3 review approve [OPTIONS] REPO MR
  Approve a GitLab MR — only after you have reviewed it.
 
  Precondition: a review note/discussion authored by your identity must
- already exist on the MR (review before approve). Also respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
- record an approval via ``t3 review approve-on-behalf <repo>!<mr>
- approve --approver <user-id>`` to satisfy the gate without disabling
- it.
+ already exist on the MR (review before approve). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> approve --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -530,11 +531,12 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
 
  Revoke your approval on a GitLab MR.
 
- No review precondition (revoking is the safe direction). Respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
- record an approval via ``t3 review approve-on-behalf <repo>!<mr>
- unapprove --approver <user-id>`` to satisfy the gate without disabling
- it.
+ No review precondition (revoking is the safe direction). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -554,7 +556,7 @@ Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
  Record an :class:`OnBehalfApproval` that satisfies the on-behalf gate.
 
  The recorded-approval channel is the no-TTY satisfier for the
- ``ask_before_post_on_behalf`` pre-gate (#960). It mirrors the
+ ``on_behalf_post_mode`` pre-gate (#960, BLOCK verdict). It mirrors the
  #953 ``DbApproval`` / section 17.4 ``MergeClear`` shape:
  durable, single-use, strictly scoped to one
  ``(target, action)`` pair, maker!=checker enforced. After this
@@ -2700,11 +2702,12 @@ Usage: t3 teatree pr post-evidence [OPTIONS] MR_IID
  If an existing note contains ``## Test Plan``, it is updated instead of
  creating a new one.
 
- Gated by ``ask_before_post_on_behalf`` (#960): the call is refused with no
- upload or host side effect when the gate is on and no recorded
- :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_evidence")``. The
- gate is inlined here (not at the ``code_host`` layer) so PR creation —
- which is not an on-behalf colleague-facing post — remains ungated.
+ Gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask`` /
+ ``draft_or_ask``): the call is refused with no upload or host side
+ effect when no recorded :class:`OnBehalfApproval` matches
+ ``(<repo>!<mr>, "post_evidence")``. The gate is inlined here (not
+ at the ``code_host`` layer) so PR creation — which is not an
+ on-behalf colleague-facing post — remains ungated.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    mr_iid      INTEGER  [required]                                         │

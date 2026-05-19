@@ -14,7 +14,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _no_on_behalf_gate(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Disable the ``ask_before_post_on_behalf`` gate for these mechanics tests.
+    """Set ``on_behalf_post_mode = "immediate"`` for these mechanics tests.
 
     The CLI's on-behalf gate (#960) is exercised by its own dedicated
     suite in ``tests/teatree_cli/test_review_on_behalf_gate.py``. These

@@ -92,7 +92,7 @@ class TestReviewPostDraftNoteBootstrapsDjango:
         # An empty teatree.toml gate-off config so we exercise the gate
         # chokepoint without needing a recorded approval row.
         cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nask_before_post_on_behalf = false\n", encoding="utf-8")
+        cfg.write_text('[teatree]\non_behalf_post_mode = "immediate"\n', encoding="utf-8")
 
         probe = (
             "import os\n"
