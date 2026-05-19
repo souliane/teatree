@@ -1,16 +1,16 @@
-"""Unit tests for ``teatree.cli.review_approval.identity_has_reviewed`` (#1019).
+"""Unit tests for ``teatree.cli.review_approval`` helpers (#1019, #1029).
 
-The function is exercised end-to-end in ``test_review_approve_gate.py``,
-but the branches around malformed payloads and the username-resolution
-failure mode are easier to pin directly. Pure stub against the
-``GitLabAPI.current_username`` / ``get_json`` shape — no Django, no
-network, no migrations.
+The functions are exercised end-to-end in ``test_review_approve_gate.py``
+and ``test_review_approve_already_approved.py``, but the branches around
+malformed payloads and the username-resolution failure mode are easier
+to pin directly. Pure stub against the ``GitLabAPI.current_username`` /
+``get_json`` shape — no Django, no network, no migrations.
 """
 
 from typing import Any
 from unittest.mock import MagicMock
 
-from teatree.cli.review_approval import identity_has_reviewed
+from teatree.cli.review_approval import identity_has_reviewed, identity_in_approved_by
 
 
 def _api(*, username: str = "souliane", discussions: Any = None) -> MagicMock:
@@ -116,3 +116,50 @@ class TestIdentityHasReviewed:
         reviewed, error = identity_has_reviewed(api, "org%2Frepo", 1)
         assert reviewed is False
         assert error == ""
+
+
+class TestIdentityInApprovedBy:
+    """Distinguish GitLab's idempotent already-approved 401 from a real one (#1029)."""
+
+    def test_true_when_identity_in_approved_by(self) -> None:
+        api = _api(
+            username="souliane",
+            discussions={"approved_by": [{"user": {"username": "souliane"}}]},
+        )
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is True
+
+    def test_false_when_identity_not_in_approved_by(self) -> None:
+        api = _api(
+            username="souliane",
+            discussions={"approved_by": [{"user": {"username": "someone-else"}}]},
+        )
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is False
+
+    def test_false_when_username_unresolved(self) -> None:
+        # An unresolvable identity can't be matched — fail closed so a
+        # genuine auth failure still surfaces.
+        api = _api(username="")
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is False
+        api.get_json.assert_not_called()
+
+    def test_false_when_approvals_payload_not_a_dict(self) -> None:
+        api = _api(username="souliane", discussions=["garbage"])
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is False
+
+    def test_false_when_approved_by_not_a_list(self) -> None:
+        api = _api(username="souliane", discussions={"approved_by": "nope"})
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is False
+
+    def test_skips_non_dict_and_non_dict_user_entries(self) -> None:
+        api = _api(
+            username="souliane",
+            discussions={
+                "approved_by": [
+                    None,
+                    "garbage",
+                    {"user": "not-a-dict"},
+                    {"user": {"username": "souliane"}},
+                ],
+            },
+        )
+        assert identity_in_approved_by(api, "org%2Frepo", 7) is True
