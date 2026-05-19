@@ -38,6 +38,7 @@ import typer
 
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
+from teatree.config import cadence_seconds
 from teatree.loop.statusline import default_path
 
 loop_app = typer.Typer(
@@ -225,12 +226,13 @@ def spawn_claim_command(
 
 
 def _cadence_for_loop_slot() -> str:
-    """Return the ``/loop <duration>`` argument from ``T3_LOOP_CADENCE`` (seconds, default 720)."""
-    raw = os.environ.get("T3_LOOP_CADENCE", "720").strip() or "720"
-    try:
-        seconds = max(60, int(raw))
-    except ValueError:
-        seconds = 720
+    """Return the ``/loop <duration>`` argument.
+
+    The cadence is resolved by :func:`cadence_seconds` — ``T3_LOOP_CADENCE``
+    env first, then ``~/.teatree.toml`` ``loop_cadence_seconds`` (per-overlay
+    override, then global ``[teatree]``), then the 720 default.
+    """
+    seconds = cadence_seconds()
     if seconds % 60 == 0:
         return f"{seconds // 60}m"
     return f"{seconds}s"
@@ -283,7 +285,10 @@ def start_command(
         typer.echo("Run this in your interactive Claude Code session to register the loop:")
         typer.echo(f"    {register_command}")
         typer.echo("")
-        typer.echo("Override the cadence with `T3_LOOP_CADENCE=<seconds> t3 loop start` (default 720).")
+        typer.echo(
+            "Override the cadence with `T3_LOOP_CADENCE=<seconds> t3 loop start`, or set"
+            " `loop_cadence_seconds` in `~/.teatree.toml` (env wins; default 720)."
+        )
         typer.echo("")
         typer.echo(
             "The tick scans, dispatches, persists agent dispatches as Ticket+Task DB"
