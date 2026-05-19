@@ -188,6 +188,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "ask_before_post_on_behalf": bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
     "notify_user_via_bot": bool,
+    "notify_on_post_on_behalf": bool,
     "user_identity_aliases": _parse_user_identity_aliases,
 }
 
@@ -287,6 +288,20 @@ class UserSettings:
     # the user to colleagues/customers; this is the bot talking to its own
     # operator. Default on; turn off to keep notifications CLI-only.
     notify_user_via_bot: bool = True
+    # After-receipt visibility DM (#949). When true (default), every
+    # colleague-visible post the agent makes under the user's identity is
+    # followed by a bot→user DM naming the destination, a clickable
+    # artifact link, and a one-line summary — durable enforcement that
+    # retires the per-session memory `notify-user-on-every-post-on-behalf`.
+    # Distinct from the `on_behalf_post_mode` pre-gate (which decides
+    # *whether* a post may publish): this fires *after* a successful
+    # publish and never blocks or rolls back the post. Flip off via
+    # `[teatree] notify_on_post_on_behalf = false`; per-overlay
+    # overridable; intentionally NO env var (notify_user_via_bot, its
+    # sibling, has none — a copied-by-analogy env layer would be a lie).
+    # Out of scope: internal orchestration writes (bot→user DMs, the
+    # loop's own bookkeeping) — only colleague-visible on-behalf posts.
+    notify_on_post_on_behalf: bool = True
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
@@ -355,6 +370,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         ask_before_post_on_behalf=ask_before_post_on_behalf,
         on_behalf_post_mode=on_behalf_post_mode,
         notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
+        notify_on_post_on_behalf=bool(teatree.get("notify_on_post_on_behalf", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],

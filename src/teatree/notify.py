@@ -6,11 +6,14 @@ helper provides a single, always-on egress for those three directions —
 post as the **bot** to the user's DM (the same channel ``DailyDigest``
 opens) so the message arrives in Slack outside the active session.
 
-Out of scope of the on-behalf gates (#960 ``on_behalf_post_mode``
-and #949 ``notify_on_post_on_behalf``): those govern posts the agent
-makes *as the user* to a colleague/customer surface. ``notify_user`` is
-the **bot** talking to its own operator — a different concern with a
-different doctrine.
+Out of scope of the on-behalf concerns (#960 ``on_behalf_post_mode``,
+the pre-gate; and #949 ``notify_on_post_on_behalf``, a real default-ON
+``UserSettings`` field whose after-receipt helper
+:mod:`teatree.core.on_behalf_post_receipt` delegates the actual DM to
+this module): those govern posts the agent makes *as the user* to a
+colleague/customer surface. ``notify_user`` itself is the **bot**
+talking to its own operator — a different concern with a different
+doctrine.
 
 Usage:
 

@@ -31,7 +31,7 @@ from django.test import TestCase, override_settings
 
 import teatree.core.management.commands.pr as pr_mod
 from teatree.config import OnBehalfPostMode
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit
+from teatree.core.models import BotPing, OnBehalfApproval, OnBehalfAudit
 from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, SETTINGS, _patch_overlays
 
 pytestmark = pytest.mark.filterwarnings(
@@ -167,3 +167,73 @@ class TestPostEvidenceOnBehalfGate(TestCase):
         assert approval.consumed_at is not None
         assert OnBehalfAudit.objects.filter(approval=approval).count() == 1
         mock_host.post_pr_comment.assert_called_once()
+
+
+def _notify_backend() -> MagicMock:
+    backend = MagicMock()
+    backend.open_dm.return_value = "D-OPERATOR"
+    backend.post_message.return_value = {"ok": True, "ts": "1700000000.0001"}
+    backend.get_permalink.return_value = "https://slack.example/archives/D-OPERATOR/p1"
+    return backend
+
+
+class TestPostEvidenceAfterReceiptDm(TestCase):
+    """#949: a successful post-evidence comment fires one after-receipt DM."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(
+            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "immediate"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        self.monkeypatch = monkeypatch
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_successful_post_evidence_emits_after_receipt_dm(self) -> None:
+        notify_backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
+        mock_host = MagicMock()
+        mock_host.post_pr_comment.return_value = {"id": 7, "web_url": "https://gl.example/my/repo/-/mr/100#note_7"}
+        mock_host.list_pr_comments.return_value = []
+
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
+            call_command("pr", "post-evidence", "100", repo="my/repo", body="proof")
+
+        ping = BotPing.objects.get(idempotency_key="on_behalf_post:my/repo!100:post_evidence")
+        assert ping.status == BotPing.Status.SENT
+        assert "my/repo!100" in ping.text
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_blocked_post_evidence_emits_no_after_receipt_dm(self) -> None:
+        """Gate refusal (DRAFT_OR_ASK, no approval) → no post, no after-receipt DM."""
+        notify_backend = _notify_backend()
+        self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: notify_backend)
+        self.monkeypatch.setattr(
+            "teatree.config.CONFIG_PATH",
+            self._write_blocking_cfg(),
+        )
+        mock_host = MagicMock()
+
+        with patch.object(pr_mod, "code_host_from_overlay", return_value=mock_host):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "post-evidence", "100", repo="my/repo", body="proof"),
+            )
+
+        assert "error" in result
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
+
+    def _write_blocking_cfg(self) -> Path:
+        import tempfile  # noqa: PLC0415
+
+        d = Path(tempfile.mkdtemp())
+        cfg = d / ".teatree.toml"
+        cfg.write_text(
+            '[teatree]\nslack_user_id = "U-OPERATOR"\non_behalf_post_mode = "draft_or_ask"\n',
+            encoding="utf-8",
+        )
+        return cfg

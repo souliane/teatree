@@ -7,12 +7,14 @@ public CLI-facing import; pre-existing callers that already
 ``from teatree.notify import notify_user`` keep working without churn.
 
 Reason for the split: ``teatree.core`` modules that need to fire a
-bot→user DM (notably :mod:`teatree.core.on_behalf_gate_recorded` under
-the AUTO_DRAFT verdict — #960) cannot import a top-level
-``teatree.notify`` because the tach module graph forbids a
-``teatree.core → teatree.notify`` edge (notify itself depends on core,
-which would create a cycle). Moving the implementation into core keeps
-the dependency direction one-way.
+bot→user DM — :mod:`teatree.core.on_behalf_gate_recorded` under the
+AUTO_DRAFT verdict (#960) and :mod:`teatree.core.on_behalf_post_receipt`
+for the after-receipt visibility DM (the real default-ON
+``notify_on_post_on_behalf`` ``UserSettings`` field, #949) — cannot
+import a top-level ``teatree.notify`` because the tach module graph
+forbids a ``teatree.core → teatree.notify`` edge (notify itself depends
+on core, which would create a cycle). Moving the implementation into
+core keeps the dependency direction one-way.
 """
 
 import enum
