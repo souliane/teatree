@@ -2,6 +2,7 @@
 
 import datetime as dt
 import json
+import os
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -336,15 +337,23 @@ class TestLoopOwnerGate(TestCase):
         assert "loop not owned by this session" in stdout.getvalue()
 
     def test_anonymous_session_skips_when_live_owner(self) -> None:
+        import tempfile  # noqa: PLC0415
+
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
         stdout = StringIO()
+        # Drop ONLY the session-id vars (anonymous session) — never
+        # ``clear=True`` the whole environment: that wipes ``$HOME`` and
+        # ``default_path()``'s ``Path.home()`` then raises in containers
+        # with no fallback home (the Docker test-matrix).
+        env = {k: v for k, v in os.environ.items() if k not in {"CLAUDE_SESSION_ID", "T3_LOOP_SESSION_ID"}}
         with (
-            patch.dict("os.environ", {}, clear=True),
+            tempfile.TemporaryDirectory() as d,
+            patch.dict("os.environ", env, clear=True),
             patch("teatree.loop.tick.run_tick") as run_tick_mock,
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loop_tick", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
 
         run_tick_mock.assert_not_called()
         assert "loop not owned by this session" in stdout.getvalue()
