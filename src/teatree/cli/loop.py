@@ -28,6 +28,7 @@ command via subprocess — anything that touches the Django ORM must be a
 management command, not a plain typer command with manual ``django.setup()``.
 """
 
+import datetime as dt
 import os
 import shutil
 import sys
@@ -104,6 +105,66 @@ def status_command() -> None:
         typer.echo("No statusline rendered yet — run `t3 loop tick` first.")
         raise typer.Exit(code=1)
     typer.echo(target.read_text(encoding="utf-8"))
+
+
+@loop_app.command("dashboard")
+def dashboard_command(
+    *,
+    send_to_slack: bool = typer.Option(
+        False,
+        "--send-to-slack",
+        help="Send the rendered dashboard to the user's Slack DM via the bot.",
+    ),
+    fmt: str = typer.Option(
+        "markdown",
+        "--format",
+        help="Output format: 'markdown' (stdout, default) or 'slack' (mrkdwn).",
+    ),
+    source: Path = typer.Option(
+        None,
+        "--source",
+        help="Override the tick-actions sidecar path (test hook).",
+    ),
+    self_dm_marker: bool = typer.Option(
+        False,
+        "--self-dm-marker",
+        help="Tag the slack_dm row with '(this DM)' — matches manual dashboard form.",
+    ),
+) -> None:
+    """Render the tabular per-tick dashboard, optionally DM it to the user.
+
+    Default is print-to-stdout for piping or visual inspection. Pass
+    ``--send-to-slack`` to additionally route the rendered table via
+    :func:`teatree.notify.notify_user` (#963) — the send is idempotent
+    per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
+    """
+    from teatree.loop.dashboard import (  # noqa: PLC0415
+        DashboardFormat,
+        default_actions_path,
+        render_dashboard,
+        send_dashboard,
+    )
+
+    try:
+        fmt_value = DashboardFormat(fmt)
+    except ValueError as exc:
+        typer.echo(f"Invalid --format {fmt!r}: {exc}")
+        raise typer.Exit(code=2) from exc
+    path = source or default_actions_path()
+    # Slack mrkdwn for the wire; the local copy in stdout always matches
+    # what the user just received on Slack so the two surfaces don't drift.
+    wire_fmt = DashboardFormat.SLACK if send_to_slack else fmt_value
+    rendered = render_dashboard(fmt=wire_fmt, source_path=path, self_dm_marker=self_dm_marker)
+    typer.echo(rendered)
+    if not send_to_slack:
+        return
+    from teatree.notify import notify_user  # noqa: PLC0415
+
+    now = dt.datetime.now(dt.UTC)
+    ok = send_dashboard(rendered, tick_ts=now, notify_user_fn=notify_user)
+    if not ok:
+        typer.echo("[dashboard] notify_user returned False — bot unconfigured or send failed.")
+        raise typer.Exit(code=1)
 
 
 @loop_app.command("pending-spawn")

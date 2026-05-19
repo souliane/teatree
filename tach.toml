@@ -105,6 +105,7 @@ depends_on = [
   "teatree.claude_sessions",
   "teatree.overlay_init",
   "teatree.loop",
+  "teatree.notify",
   "teatree.utils",
   "teatree.repo_mode",
   "teatree.triage",
