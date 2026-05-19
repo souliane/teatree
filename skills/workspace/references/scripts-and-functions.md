@@ -31,7 +31,7 @@ t3 <overlay> --help            # overlay-specific commands (from overlay project
 | `t3 ci fetch-errors` | Fetch error logs from the latest CI pipeline |
 | `t3 ci fetch-failed-tests` | Extract failed test IDs from the latest CI pipeline |
 | `t3 ci quality-check` | Run quality analysis (fetch test report from latest pipeline) |
-| `t3 review post-draft-note` / `publish-draft-notes` / `delete-draft-note` / `list-draft-notes` / `update-note` / `reply-to-discussion` / `resolve-discussion` | Code review helpers |
+| `t3 review post-draft-note` / `publish-draft-notes` / `delete-draft-note` / `delete-discussion` / `list-draft-notes` / `update-note` / `reply-to-discussion` / `resolve-discussion` | Code review helpers |
 | `t3 review-request discover` | Discover open PRs awaiting review |
 | `t3 setup` | First-time setup and global skill management |
 | `t3 assess` | Codebase health assessment |

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.branch_currency import branch_behind_target
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
@@ -121,6 +122,15 @@ class ShipExecutor(RunnerBase):
                 ok=False, detail=f"branch {branch!r} is already merged into base — refusing duplicate PR"
             )
 
+        # #940 defense-in-depth: re-check branch currency before
+        # pushing. The `pr create` gate already auto-merged the target,
+        # but ``execute_ship`` may run in an async worker after a
+        # window where ``origin/<target>`` advanced again. Abort with a
+        # durable backlog entry rather than push a stale base.
+        currency_error = self._check_branch_currency(ticket, extra, repo_path, branch)
+        if currency_error is not None:
+            return RunnerResult(ok=False, detail=currency_error)
+
         git.push(repo=repo_path, remote="origin", branch=branch)
 
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
@@ -129,6 +139,49 @@ class ShipExecutor(RunnerBase):
         self._record_pr_url(ticket, extra, url)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
+
+    @staticmethod
+    def _check_branch_currency(
+        ticket: "Ticket",
+        extra: "TicketExtra",
+        repo_path: str,
+        branch: str,
+    ) -> str | None:
+        """#940 defense-in-depth: refuse to push when target advanced again.
+
+        The ``pr create`` gate ran auto-merge before the async-worker
+        window opened. If ``origin/<target>`` has advanced again since,
+        the loop must escalate via a durable backlog entry (the worker
+        cannot re-derive consent to mutate the working tree) rather
+        than push a stale base. ``branch_behind_target`` only reports —
+        it never merges — so this stays a non-mutating defense gate.
+        """
+        explicit = str(extra.get("target_branch") or "").strip()
+        if explicit:
+            target = explicit if "/" in explicit else f"origin/{explicit}"
+        else:
+            try:
+                target = f"origin/{git.default_branch(repo=repo_path)}"
+            except (RuntimeError, ValueError):
+                return None
+        staleness = branch_behind_target(repo_path, branch, target)
+        if staleness is None:
+            return None
+        # Record on the ticket so the orchestrator's backlog scanner
+        # can pick this up — durable signal, not an ephemeral log.
+        ticket.merge_extra(
+            set_keys={
+                "ship_branch_currency_blocker": {
+                    "branch": branch,
+                    "target": target,
+                    "behind": staleness.behind_count,
+                }
+            },
+        )
+        return (
+            f"refusing to push: {branch!r} is {staleness.behind_count} commit(s) behind "
+            f"{target} — re-run `pr create` after merging target into the branch."
+        )
 
     @staticmethod
     def _clear_invoking_branch(ticket: "Ticket", extra: "TicketExtra") -> None:

@@ -1,12 +1,19 @@
 """Review CLI commands — GitLab draft note operations.
 
 Every method that publishes under the user's identity to an MR (a
-``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*``
-call) routes through the same recorded-approval pre-gate
-(``ask_before_post_on_behalf``, #960) the reply transport uses. Read-
-only methods (``list_draft_notes``, ``delete_draft_note``) bypass the
-gate: ``list`` does not publish; deleting one's own draft *pre*-
-publication is not a colleague-facing post.
+``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*`` /
+``approve`` / ``unapprove`` / ``delete_discussion`` call) routes through
+the same recorded-approval pre-gate (``ask_before_post_on_behalf``,
+#960/#1013) the reply transport uses. Read-only methods
+(``list_draft_notes``, ``delete_draft_note``) bypass the gate: ``list``
+does not publish; deleting one's own draft *pre*-publication is not a
+colleague-facing post.
+
+``delete_discussion`` IS gated even though it is the deletion-shaped
+sibling of ``delete_draft_note`` — it removes a *published* note that
+colleagues can already see, so the removal itself is an on-behalf
+colleague-visible mutation. Mirrors the ``update_note`` gating shape
+exactly.
 
 The gate is satisfiable without a TTY — the user records an
 :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval` scoped
@@ -21,6 +28,7 @@ from http import HTTPStatus
 import typer
 
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
+from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf
 from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.utils.run import run_allowed_to_fail
@@ -37,34 +45,13 @@ _TOKEN_PARTS_COUNT = 2
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
-def _on_behalf_gate_active() -> bool:
-    """Whether the ask-before-post-on-behalf pre-gate forbids unattended posting.
-
-    An MR approval/unapproval is an outward, state-changing post made under
-    the user's identity, so it must respect the same
-    ``ask_before_post_on_behalf`` pre-gate the posting subcommands use
-    (souliane/teatree#960).
-
-    The gate module (``teatree.on_behalf_gate``) is the single source of
-    truth. It is wired here through a soft import so this command works
-    whether or not the gate PR has merged yet: if the module is absent the
-    gate is treated as inactive (no behaviour change until it lands); once
-    present, ``ask_before_post_on_behalf_enabled()`` decides.
-    """
-    try:
-        from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled  # noqa: PLC0415
-    except ModuleNotFoundError:
-        return False
-    return ask_before_post_on_behalf_enabled()
-
-
 class ReviewService:
     """GitLab draft note operations for code review.
 
     Every method that publishes to an MR (post comment, post draft note,
-    publish drafts, reply, resolve, update note) is wrapped by the
-    recorded-approval on-behalf pre-gate. See module docstring for the
-    full contract.
+    publish drafts, reply, resolve, update note, approve, unapprove,
+    delete discussion) is wrapped by the recorded-approval on-behalf
+    pre-gate. See module docstring for the full contract.
     """
 
     def __init__(self, token: str) -> None:
@@ -317,6 +304,29 @@ class ReviewService:
             return f"OK updated note_id={note_id}", 0
         return f"Failed: HTTP {pub_status}", 1
 
+    def delete_discussion(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
+        """Delete a *published* note from an MR. Returns (message, exit_code).
+
+        Use to clean up a published general discussion that should have
+        been inline (or any other published note that needs removal).
+        Distinct from :meth:`delete_draft_note`, which removes the user's
+        own unpublished draft — that is not a colleague-visible mutation
+        and stays ungated; this one is.
+
+        Gated by ``ask_before_post_on_behalf`` (#960): the call is refused
+        without any GitLab side effect when the gate is on and no recorded
+        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "delete_discussion")``.
+        """
+        blocked = check_on_behalf(repo, mr, "delete_discussion")
+        if blocked:
+            return blocked, 1
+        api = self._get_api()
+        encoded = repo.replace("/", "%2F")
+        status = api.delete(f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}")
+        if status == HTTPStatus.NO_CONTENT:
+            return f"OK deleted note_id={note_id}", 0
+        return f"Failed: HTTP {status}", status
+
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """List draft notes. Returns (message, exit_code)."""
         api = self._get_api()
@@ -375,7 +385,17 @@ class ReviewService:
         Returns (message, exit_code). The review-first precondition encodes
         the approve-on-review doctrine: an approval cannot be recorded
         without a prior reviewing footprint from the same identity.
+
+        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an approval is
+        an outward post on the user's identity, so it routes through the
+        same recorded-approval gate every other on-behalf method uses. Gate
+        ON + no recorded :class:`OnBehalfApproval` matching
+        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
+        effect; gate ON + recorded row → consume single-use and proceed.
         """
+        blocked = check_on_behalf(repo, mr, "approve")
+        if blocked:
+            return blocked, 1
         encoded = repo.replace("/", "%2F")
         reviewed, error = self._identity_has_reviewed(encoded, mr)
         if error:
@@ -398,24 +418,22 @@ class ReviewService:
 
         No review-first precondition — removing an approval is the safe
         direction and must always be reachable.
+
+        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an unapproval
+        is still a colleague-visible post on the user's identity, so it
+        routes through the same recorded-approval gate as ``approve`` (and
+        every other on-behalf method). The recorded row scopes to
+        ``(<repo>!<mr>, "unapprove")``.
         """
+        blocked = check_on_behalf(repo, mr, "unapprove")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
         if status in _HTTP_OK_CODES:
             return f"OK unapproved !{mr}", 0
         return f"Failed: HTTP {status}", 1
-
-
-def _refuse_if_on_behalf_gated() -> None:
-    """Refuse an approval/unapproval when the on-behalf pre-gate is active."""
-    if _on_behalf_gate_active():
-        typer.echo(
-            "Refusing: `ask_before_post_on_behalf` is enabled — an MR approval is an outward "
-            "post on your behalf and must be user-approved first. Disable the gate per-overlay "
-            "in ~/.teatree.toml once you trust the workflow, or record the approval manually.",
-        )
-        raise typer.Exit(code=1)
 
 
 def _require_token() -> ReviewService:
@@ -438,16 +456,47 @@ def _require_token() -> ReviewService:
 
 
 @review_app.command(name="post-draft-note")
-def post_draft_note(
+def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. The arg list IS the CLI contract, not an internal design smell (same rationale as ticket.clear / db.refresh / pr.create).
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
-    file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
-    line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
+    file: str = typer.Option(
+        "",
+        help="File path for inline comment — REQUIRED unless --general is passed.",
+    ),
+    line: int | None = typer.Option(
+        None,
+        help="Line number in the new file (must be an added line) — REQUIRED unless --general is passed.",
+    ),
+    *,
+    general: bool = typer.Option(
+        False,
+        "--general",
+        help=(
+            "Post a general (MR-wide) note instead of an inline one. Mutually exclusive "
+            "with --file/--line. Without this flag, --file AND --line are both required "
+            "— omitting either is refused upfront so a missed-flag invocation can no "
+            "longer silently degrade an intended-inline draft into a general note "
+            "(souliane/teatree#72)."
+        ),
+    ),
 ) -> None:
-    """Post a draft note on a GitLab MR (inline or general)."""
+    """Post a draft note on a GitLab MR (inline or general).
+
+    The inline-vs-general decision is explicit: pass ``--general`` for an
+    MR-wide note, or pass both ``--file`` and ``--line`` for an inline
+    draft. Pre-#72 the default silently degraded a missing flag pair into
+    a general note — observed in !6220 where 4 of 5 cold-review drafts
+    intended as inline became general. The validator
+    :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
+    both half-specified-inline and contradictory invocations before any
+    GitLab API call is attempted.
+    """
+    from teatree.cli.review_drafts import validate_inline_or_general  # noqa: PLC0415
+
     service = _require_token()
-    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line)
+    validate_inline_or_general(file=file, line=line, general=general)
+    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
@@ -474,44 +523,6 @@ def post_comment(
         raise typer.Exit(code=code)
 
 
-@review_app.command(name="delete-draft-note")
-def delete_draft_note(
-    repo: str = typer.Argument(help="GitLab project path"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    note_id: int = typer.Argument(help="Draft note ID to delete"),
-) -> None:
-    """Delete a draft note from a GitLab MR."""
-    service = _require_token()
-    msg, code = service.delete_draft_note(repo, mr, note_id)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="publish-draft-notes")
-def publish_draft_notes(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """Publish all draft notes on a GitLab MR (bulk submit)."""
-    service = _require_token()
-    msg, code = service.publish_draft_notes(repo, mr)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="list-draft-notes")
-def list_draft_notes(
-    repo: str = typer.Argument(help="GitLab project path"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """List draft notes on a GitLab MR."""
-    service = _require_token()
-    msg, _code = service.list_draft_notes(repo, mr)
-    typer.echo(msg)
-
-
 @review_app.command(name="reply-to-discussion")
 def reply_to_discussion(
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
@@ -527,21 +538,6 @@ def reply_to_discussion(
         raise typer.Exit(code=code)
 
 
-@review_app.command(name="update-note")
-def update_note(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    note_id: int = typer.Argument(help="Note ID (draft or published)"),
-    body: str = typer.Argument(help="New comment body (markdown)"),
-) -> None:
-    """Update a note on a GitLab MR — auto-detects draft vs published."""
-    service = _require_token()
-    msg, code = service.update_note(repo, mr, note_id, body)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
 @review_app.command(name="approve")
 def approve(
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
@@ -551,9 +547,11 @@ def approve(
 
     Precondition: a review note/discussion authored by your identity must
     already exist on the MR (review before approve). Also respects the
-    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+    record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+    approve --approver <user-id>`` to satisfy the gate without disabling
+    it.
     """
-    _refuse_if_on_behalf_gated()
     service = _require_token()
     msg, code = service.approve(repo, mr)
     typer.echo(msg)
@@ -569,9 +567,11 @@ def unapprove(
     """Revoke your approval on a GitLab MR.
 
     No review precondition (revoking is the safe direction). Respects the
-    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+    record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+    unapprove --approver <user-id>`` to satisfy the gate without disabling
+    it.
     """
-    _refuse_if_on_behalf_gated()
     service = _require_token()
     msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
@@ -579,23 +579,9 @@ def unapprove(
         raise typer.Exit(code=code)
 
 
-@review_app.command(name="resolve-discussion")
-def resolve_discussion(
-    repo: str = typer.Argument(help="GitLab project path"),
-    mr: int = typer.Argument(help="Merge request IID"),
-    discussion_id: str = typer.Argument(help="Discussion (thread) ID"),
-    *,
-    resolved: bool = typer.Option(True, "--resolved/--no-resolved", help="Mark resolved (default) or re-open."),
-) -> None:
-    """Mark a GitLab MR discussion thread resolved or unresolved."""
-    service = _require_token()
-    msg, code = service.resolve_discussion(repo, mr, discussion_id, resolved=resolved)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-# Register the `approve-on-behalf` command (defined in a sibling module
-# to keep this file under the OOP/LOC ceiling — see
-# `teatree.cli.review_on_behalf`).
+# Register sibling-module typer commands. Kept out of this file so the
+# OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
+# satisfied — see `teatree.cli.review_on_behalf` and
+# `teatree.cli.review_drafts`.
 _register_on_behalf(review_app)
+_register_drafts(review_app)

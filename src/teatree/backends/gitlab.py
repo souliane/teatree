@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.backends.protocols import PullRequestSpec, ReviewState
+from teatree.backends.protocols import ApprovalState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
@@ -13,6 +13,56 @@ _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
 # GitLab serves the same iid under both /-/issues/<iid> and /-/work_items/<iid>;
 # the notes API endpoint is identical for either.
 _ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
+
+
+def _read_int(data: RawAPIDict, key: str) -> int:
+    """Return ``data[key]`` as an int, or ``-1`` when the key is absent / non-int.
+
+    The sentinel ``-1`` lets callers distinguish "field missing in payload" from
+    a legitimate zero. GitLab's approvals payload uses both ``int`` and ``str``
+    encodings across versions, so we accept either.
+    """
+    value = data.get(key)
+    if isinstance(value, bool):
+        return -1
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return -1
+    return -1
+
+
+def _count_unresolved_resolvable_threads(discussions: list[RawAPIDict]) -> int:
+    """Count open ``resolvable`` discussion threads — what blocks an MR merge.
+
+    A thread is "unresolved-resolvable" when at least one of its notes is
+    ``resolvable: true`` AND no note carries ``resolved: true``. System notes
+    and non-resolvable comments are skipped: the GitLab "must resolve all
+    threads" policy is keyed on the same ``resolvable`` flag.
+    """
+    count = 0
+    for disc in discussions:
+        if not isinstance(disc, dict):
+            continue
+        notes_raw = disc.get("notes", [])
+        if not isinstance(notes_raw, list):
+            continue
+        has_resolvable = False
+        has_resolved = False
+        for note in notes_raw:
+            if not isinstance(note, dict):
+                continue
+            note_dict = cast("RawAPIDict", note)
+            if note_dict.get("resolvable") is True:
+                has_resolvable = True
+            if note_dict.get("resolved") is True:
+                has_resolved = True
+        if has_resolvable and not has_resolved:
+            count += 1
+    return count
 
 
 class _GitLabUser(TypedDict, total=False):
@@ -208,6 +258,40 @@ class GitLabCodeHost:
                 {"body": body},
             )
             or {}
+        )
+
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+        """Return the approval state for an MR — used by ``GitLabApprovalsScanner`` (#936).
+
+        ``approvals_left`` is computed from the same ``/merge_requests/<iid>/approvals``
+        endpoint that :py:meth:`get_review_state` already consults — the upstream
+        ``approvals_left`` field is canonical; falling back to ``required - count``
+        when the field is absent. ``unresolved_resolvable`` counts open
+        ``resolvable`` discussion threads from ``/merge_requests/<iid>/discussions``
+        (system notes and non-resolvable comments are excluded — they cannot block a
+        merge under the "must resolve" policy).
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)
+
+        raw = self._client.get_mr_approvals(project.project_id, pr_iid)
+        approved_by_raw = raw.get("approved_by", [])
+        approved_by = (
+            [name for name in approved_by_raw if isinstance(name, str)] if isinstance(approved_by_raw, list) else []
+        )
+        approvals_left = _read_int(raw, "approvals_left")
+        if approvals_left < 0:
+            required = _read_int(raw, "required")
+            count = _read_int(raw, "count")
+            approvals_left = max(required - count, 0)
+
+        discussions = self._client.get_mr_discussions(project.project_id, pr_iid)
+        unresolved_resolvable = _count_unresolved_resolvable_threads(discussions)
+        return ApprovalState(
+            approvals_left=approvals_left,
+            approved_by=approved_by,
+            unresolved_resolvable=unresolved_resolvable,
         )
 
     def _resolve_project(self, repo: str) -> ProjectInfo | None:

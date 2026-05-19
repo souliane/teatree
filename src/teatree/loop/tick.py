@@ -22,12 +22,14 @@ from teatree.loop.rendering import zones_for
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AssignedIssuesScanner,
+    GitLabApprovalsScanner,
     IncomingEventsScanner,
     MyPrsScanner,
     NotionViewScanner,
     PendingTasksScanner,
     ReviewerPrsScanner,
     Scanner,
+    SlackDmInboundScanner,
     SlackMentionsScanner,
     StaleTicketsScanner,
     TicketCompletionScanner,
@@ -94,6 +96,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     """
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
+    gitlab_approvals_enabled = _gitlab_approvals_enabled()
     for code_host in backend.hosts:
         jobs.extend(
             [
@@ -144,7 +147,29 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                 ),
             )
             ticket_completion_emitted = True
+        if gitlab_approvals_enabled:
+            # Poll-driven complement to the webhook-driven `SCHEDULE_MERGE` path
+            # (#936). Off by default — opt-in via the env flag so deployments
+            # that already wire the GitLab webhook do not double-emit.
+            jobs.append(
+                _ScannerJob(
+                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
+                    overlay=tag,
+                ),
+            )
     return jobs
+
+
+def _gitlab_approvals_enabled() -> bool:
+    """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
+
+    Default off — the scanner is poll-driven and overlaps with the webhook
+    path; deployments that already wire ``/hooks/gitlab/`` do not need it.
+    Returns True for any truthy value (``1``, ``true``, ``yes``,
+    case-insensitive); anything else (unset, ``0``, ``false``) is off.
+    """
+    raw = os.environ.get("TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED", "")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
@@ -236,7 +261,15 @@ def build_default_jobs(
             # ``backend.hosts`` (which is empty when no token resolved).
             jobs.extend(_jobs_for_backend_hosts(backend, tag))
             if backend.messaging is not None:
-                jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag))
+                jobs.extend(
+                    [
+                        _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
+                        _ScannerJob(
+                            scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
+                    ]
+                )
     else:
         if host is not None:
             jobs.extend(
@@ -247,7 +280,12 @@ def build_default_jobs(
                 ],
             )
         if messaging is not None:
-            jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""))
+            jobs.extend(
+                [
+                    _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
+                    _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
+                ]
+            )
 
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
