@@ -60,6 +60,7 @@ class TicketExtra(TypedDict, total=False):
     tracker_404: bool
     more_prs_coming: bool
     e2e_recipe: "E2ERecipeSerialized"
+    last_approval_sha: str
 
 
 class E2ERepoEntrySerialized(TypedDict, total=False):
