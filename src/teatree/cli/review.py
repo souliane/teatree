@@ -32,6 +32,7 @@ from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
 from teatree.cli.review_on_behalf import register as _register_on_behalf
+from teatree.cli.review_shape_gate import check_review_shape
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -151,6 +152,12 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "post_draft_note")
         if blocked:
             return blocked, 1
+        encoded = repo.replace("/", "%2F")
+        shape_error = check_review_shape(
+            api=self._get_api(), encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line)
+        )
+        if shape_error:
+            return shape_error, 1
         return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
 
     def _post_comment_impl(
@@ -237,6 +244,12 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "post_comment")
         if blocked:
             return blocked, 1
+        encoded = repo.replace("/", "%2F")
+        shape_error = check_review_shape(
+            api=self._get_api(), encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line)
+        )
+        if shape_error:
+            return shape_error, 1
         return self._post_comment_impl(repo, mr, note, file=file, line=line)
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
@@ -288,6 +301,11 @@ class ReviewService:
             return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
+        # Reply bodies are always inline (anchored on the existing discussion's
+        # diff position), so the inline cap applies.
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=True)
+        if shape_error:
+            return shape_error, 1
         result = api.post_json(
             f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}/notes",
             {"body": body},
@@ -361,6 +379,12 @@ class ReviewService:
             return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
+        # Without diff coordinates here, treat the updated body as MR-level
+        # prose — the tight cap applies. If the updated note is itself an
+        # inline DiffNote the body will fit the inline cap too.
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=False)
+        if shape_error:
+            return shape_error, 1
 
         draft_status = api.put_status(
             f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
