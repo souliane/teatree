@@ -68,13 +68,22 @@ def _loop_registry_path() -> Path:
 
 
 def _session_id_from_loop_registry() -> str:
-    """Read the tick-owner's session id from the loop registry, ``""`` on any error."""
-    path = _loop_registry_path()
-    if not path.is_file():
-        return ""
+    """Read the tick-owner's session id from the loop registry, ``""`` on any error.
+
+    Fail-open spans the whole resolve+read because ``_loop_registry_path``
+    can itself raise (``Path.home()`` raises ``RuntimeError`` when neither
+    ``HOME`` nor ``XDG_DATA_HOME`` nor ``T3_LOOP_REGISTRY_DIR`` is set —
+    seen in CI sandboxes that clear the env). A read failure here must
+    NEVER block claim resolution; the right behaviour is "no registry
+    fallback available → return ``""``" so the caller proceeds to the
+    final ``""`` outcome rather than crashing.
+    """
     try:
+        path = _loop_registry_path()
+        if not path.is_file():
+            return ""
         data = json.loads(path.read_text(encoding="utf-8") or "{}")
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         return ""
     owner = data.get(_OWNER_KEY) if isinstance(data, dict) else None
     if not isinstance(owner, dict):

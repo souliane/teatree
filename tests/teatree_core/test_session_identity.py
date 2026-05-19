@@ -64,6 +64,26 @@ class TestSessionIdRegistryFallback:
         with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
             assert current_session_id() == ""
 
+    def test_home_unresolvable_falls_back_to_empty(self) -> None:
+        """``Path.home()`` raising ``RuntimeError`` must NOT crash claim resolution.
+
+        Seen in CI sandboxes that ``clear=True`` the environment so neither
+        ``HOME``, ``XDG_DATA_HOME``, nor ``T3_LOOP_REGISTRY_DIR`` is set —
+        ``Path.home()`` then raises. Observed live in the pre-push hook
+        on Linux aarch64 (#1107). The fail-open must absorb ``RuntimeError``
+        too, not just ``OSError``/``ValueError``.
+        """
+        from pathlib import Path as _PathRef  # noqa: PLC0415
+
+        def _boom() -> _PathRef:
+            msg = "Could not determine home directory."
+            raise RuntimeError(msg)
+
+        env = {k: v for k, v in _no_session_env().items() if k != "T3_LOOP_REGISTRY_DIR"}
+        env = {k: v for k, v in env.items() if k != "XDG_DATA_HOME"}
+        with patch.dict("os.environ", env, clear=True), patch.object(_PathRef, "home", _boom):
+            assert current_session_id() == ""
+
     def test_xdg_data_home_resolution_when_no_registry_dir_env(self, tmp_path: Path) -> None:
         teatree_dir = tmp_path / "teatree"
         teatree_dir.mkdir()
