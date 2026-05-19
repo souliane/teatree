@@ -45,4 +45,33 @@ def identity_has_reviewed(api: "GitLabAPI", encoded_repo: str, mr: int) -> tuple
     return False, ""
 
 
-__all__ = ["identity_has_reviewed"]
+def identity_in_approved_by(api: "GitLabAPI", encoded_repo: str, mr: int) -> bool:
+    """Whether the approving identity is already in the MR's ``approved_by``.
+
+    GitLab's ``POST /merge_requests/:iid/approve`` returns ``401
+    Unauthorized`` for *both* a genuine auth failure and the idempotent
+    case where this identity has already approved (#1029). The two are
+    distinguished only by probing ``GET /merge_requests/:iid/approvals``:
+    a username match in ``approved_by[*].user.username`` means the
+    approve is a no-op success; no match (or an unresolvable identity)
+    means the failure is real and must surface.
+    """
+    username = api.current_username()
+    if not username:
+        return False
+    approvals = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/approvals")
+    if not isinstance(approvals, dict):
+        return False
+    approved_by = approvals.get("approved_by")
+    if not isinstance(approved_by, list):
+        return False
+    for entry in approved_by:
+        if not isinstance(entry, dict):
+            continue
+        user = cast("RawAPIDict", entry).get("user")
+        if isinstance(user, dict) and cast("RawAPIDict", user).get("username") == username:
+            return True
+    return False
+
+
+__all__ = ["identity_has_reviewed", "identity_in_approved_by"]
