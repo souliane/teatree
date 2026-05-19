@@ -259,14 +259,27 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
-        assert backend._channel_token(_EXT_SHARED) == "xoxp-user"
-        assert backend._channel_token(_INTERNAL) == "xoxb-bot"
-        assert backend._channel_token(_DM) == "xoxb-bot"
+        assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.WRITE) == "xoxp-user"
+        assert backend._channel_token(_INTERNAL, op=slack_bot.SlackOp.WRITE) == "xoxb-bot"
+        assert backend._channel_token(_DM, op=slack_bot.SlackOp.WRITE) == "xoxb-bot"
 
-    def test_channel_token_fails_safe_to_bot_on_info_failure(
+    def test_channel_token_write_fails_toward_user_on_info_failure(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        """#1110 behaviour change: a WRITE in an ambiguous channel -> xoxp.
+
+        Pre-#1110 this asserted ``== "xoxb-bot"`` (the buggy fail-safe):
+        ``conversations.info`` ``ok:false`` was treated as
+        "internal" and the post went out under the bot token, which
+        Slack-Connect rejects with
+        ``mcp_externally_shared_channel_restricted`` — silently dropping
+        the partner write. The intentional new contract: when Connect
+        membership cannot be confirmed, a WRITE fails *toward* the user
+        ``xoxp`` token (the only token that can reach a Connect channel),
+        never silently toward the bot. This is the central anti-vacuous
+        proof for #1110.
+        """
         captured: list[dict[str, object]] = []
 
         def fake_get(url: str, **kwargs: object) -> httpx.Response:
@@ -284,4 +297,154 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
-        assert backend._channel_token(_EXT_SHARED) == "xoxb-bot"
+        assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.WRITE) == "xoxp-user"
+
+    def test_channel_token_read_still_uses_bot_on_info_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A READ in an ambiguous channel stays on the bot token.
+
+        The bot can always read its own metadata; on an unreachable
+        Connect channel a bot-token history read returns an empty list
+        at worst — which the #1084 dedup tolerates. READ stays
+        conservative on the bot token; only WRITE fails toward xoxp.
+        """
+        captured: list[dict[str, object]] = []
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"url": url, **kwargs})
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "channel_not_found"},
+                request=httpx.Request("GET", url),
+            )
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.READ) == "xoxb-bot"
+
+    def test_react_on_info_failed_channel_uses_user_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A reaction on an ambiguous channel goes out under xoxp (#1110).
+
+        Reacting is a WRITE. Pre-#1110 a flaky ``conversations.info``
+        sent ``reactions.add`` under the bot token (RED here: xoxb),
+        which Slack-Connect rejects — the agent's ``:eyes:`` ack on a
+        partner review channel silently never lands.
+        """
+        captured: list[dict[str, object]] = []
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"method": "GET", "url": url, **kwargs})
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "ratelimited"},
+                request=httpx.Request("GET", url),
+            )
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"method": "POST", "url": url, **kwargs})
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.react(channel=_EXT_SHARED, ts="1.0", emoji="eyes")
+
+        assert _auth_header_for(captured, url_suffix="/reactions.add") == "Bearer xoxp-user"
+
+    def test_post_message_internal_still_bot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A confirmed-internal channel post is bit-for-bit unchanged.
+
+        ``conversations.info`` returns ``ok:true`` /
+        ``is_ext_shared:false`` -> the policy resolves a concrete
+        ``False`` (not the ambiguous ``None``) and keeps the bot token.
+        """
+        captured: list[dict[str, object]] = []
+        fake_post, fake_get = _router(captured, ext_shared_channels=set())
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.post_message(channel=_INTERNAL, text="status")
+
+        assert _auth_header_for(captured, url_suffix="/chat.postMessage") == "Bearer xoxb-bot"
+
+    def test_dm_skips_probe_and_uses_bot(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The 131-row DM drain path: ``D…`` -> bot, no probe (regression pin).
+
+        DMs short-circuit to the bot token *before* any Connect probe.
+        The 2026-05-19 131-row DM drain worked precisely because
+        ``channel.startswith("D")`` -> bot; #1110's ambiguous-WRITE
+        branch must never regress this.
+        """
+        captured: list[dict[str, object]] = []
+        fake_post, fake_get = _router(captured, ext_shared_channels=set())
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.post_message(channel=_DM, text="dm drain")
+
+        assert _auth_header_for(captured, url_suffix="/chat.postMessage") == "Bearer xoxb-bot"
+        assert not any(str(c["url"]).endswith("/conversations.info") for c in captured)
+
+    def test_repeat_posts_after_info_failure_reprobe(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unknown (``None``) membership is NOT cached — re-probed next call.
+
+        Pre-#1110 an ``ok:false`` was cached as ``False`` (so a later
+        recovered ``conversations.info`` was never consulted). #1110
+        caches only concrete ``True`` / ``False``; an unknown re-probes,
+        so a transient failure that recovers resolves correctly on the
+        second post. RED on main: there is no ``None`` concept and the
+        ``False`` is cached, so the second call issues no probe.
+        """
+        captured: list[dict[str, object]] = []
+        responses = iter(
+            [
+                {"ok": False, "error": "ratelimited"},
+                {"ok": True, "channel": {"id": _EXT_SHARED, "is_ext_shared": True, "is_shared": True}},
+            ]
+        )
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"method": "GET", "url": url, **kwargs})
+            if url.endswith("/conversations.info"):
+                return httpx.Response(200, json=next(responses), request=httpx.Request("GET", url))
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"method": "POST", "url": url, **kwargs})
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.post_message(channel=_EXT_SHARED, text="one")  # info fails -> WRITE -> xoxp
+        backend.post_message(channel=_EXT_SHARED, text="two")  # re-probe -> confirmed ext-shared -> xoxp
+
+        info_calls = [c for c in captured if str(c["url"]).endswith("/conversations.info")]
+        assert len(info_calls) == 2  # None was NOT cached; second post re-probes
+        post_calls = [c for c in captured if str(c["url"]).endswith("/chat.postMessage")]
+        for call in post_calls:
+            headers = cast("dict[str, str]", call["headers"])
+            assert headers["Authorization"] == "Bearer xoxp-user"

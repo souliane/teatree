@@ -23,14 +23,32 @@ error probe.  DMs and ordinary internal channels keep the bot token
 (those are scoped to the bot's own IM channels and cache; routing them
 through ``xoxp`` would impersonate the user against their own history).
 ``conversations.open`` and ``users.lookupByEmail`` are always bot-token.
+
+Reads-fail-safe-to-bot, writes-fail-toward-user (#1110). When a
+``conversations.info`` probe cannot confirm membership (``ok:false`` —
+bad token, missing scope, not-found, rate-limit), :meth:`_is_ext_shared`
+returns ``None`` (unknown), not a silent ``False``. The operation then
+decides: a *read* (history / metadata) falls safe to the bot token —
+reads fail safe to the bot, since a bot-token read of an unreachable
+Connect channel is empty at worst (the #1084 dedup tolerates that); a
+*write* (``post_message`` / ``post_reply`` / ``react``, plus
+``get_reactions`` and the #1084 dedup guard's read-as-the-post) fails
+*toward* the user ``xoxp`` token — writes / reactions in a shared or
+ambiguous context fail toward the user xoxp, never silently to the bot
+(which a Connect channel rejects, dropping the partner write). Only
+confirmed membership (``True`` / ``False``) is cached; an unknown is
+re-probed on the next call so a transient failure that recovers
+resolves correctly.
 """
 
 from typing import cast
 
 import httpx
 
-from teatree.backends.slack_token_policy import channel_token
+from teatree.backends.slack_token_policy import SlackOp, channel_token
 from teatree.types import RawAPIDict
+
+__all__ = ["SlackBotBackend", "SlackOp"]
 
 type SlackPayload = dict[str, object]
 
@@ -101,11 +119,16 @@ class SlackBotBackend:
 
         Public accessor over the single token-selection policy so the
         review-request dedup guard reads channel history with the exact
-        token the post will use — read-token == post-token. Connect
+        token the post will use — read-token == post-token. The guard's
+        live read is *taken as the post*, so it routes under
+        ``SlackOp.WRITE``: a Connect channel rejects the bot token for
+        both posting and reading, so the dedup read must use whatever the
+        post will (the user ``xoxp`` on a Connect / ambiguous channel),
+        not fail safe to a bot token the channel rejects (#1110). Connect
         membership is probed once (cached) only when both credentials
         exist, identical to ``post_message``'s routing.
         """
-        return self._channel_token(channel)
+        return self._channel_token(channel, op=SlackOp.WRITE)
 
     def enqueue_mention(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``app_mention`` event into the inbound queue."""
@@ -148,50 +171,71 @@ class SlackBotBackend:
         response.raise_for_status()
         return cast("RawAPIDict", response.json())
 
-    def _is_ext_shared(self, channel: str) -> bool:
+    def _is_ext_shared(self, channel: str) -> bool | None:
         """Whether *channel* is a Slack-Connect externally-shared channel.
 
         Resolved deterministically from ``conversations.info``
         (``is_ext_shared`` / ``is_shared``) on the bot token — the bot
         can always *read* channel metadata even on channels it cannot
-        *post* to.  The answer is cached per channel id for the lifetime
-        of the backend so repeat posts to the same channel probe once.
-        On any API-level lookup failure (``ok:false`` — bad token, missing
-        scope, channel not found) we treat the channel as internal so the
-        policy fails safe to the bot token (the legacy behaviour). A
-        transport-level failure (5xx / connection error) instead propagates
-        out of ``_get``'s ``raise_for_status()`` through ``_channel_token``
-        and aborts the post — still conservative (no wrong-token send), but
-        the call does not complete.
+        *post* to.  Returns ``True`` (confirmed externally-shared) or
+        ``False`` (confirmed internal) only when the API call succeeds
+        (``ok:true``).  On any API-level lookup failure (``ok:false`` —
+        bad token, missing scope, channel not found, rate-limit) it
+        returns ``None`` (membership *unknown*) so the policy decides by
+        operation class — reads fail safe to the bot, writes/reactions
+        fail toward the user ``xoxp`` (#1110).  Only the confirmed
+        ``True`` / ``False`` answer is cached per channel id; an unknown
+        is **not** cached, so a transient failure that later recovers is
+        re-probed and resolves correctly.  A transport-level failure
+        (5xx / connection error) instead propagates out of ``_get``'s
+        ``raise_for_status()`` through ``_channel_token`` and aborts the
+        call — still conservative (no wrong-token send), but the call
+        does not complete.
         """
         cached = self._ext_shared_cache.get(channel)
         if cached is not None:
             return cached
         data = self._get("conversations.info", {"channel": channel})
+        if not data.get("ok"):
+            return None
         info = cast("RawAPIDict", data.get("channel") or {})
-        is_ext = bool(data.get("ok")) and (bool(info.get("is_ext_shared")) or bool(info.get("is_shared")))
+        is_ext = bool(info.get("is_ext_shared")) or bool(info.get("is_shared"))
         self._ext_shared_cache[channel] = is_ext
         return is_ext
 
-    def _channel_token(self, channel: str) -> str:
-        """The token authorising an outbound call to *channel*.
+    def _channel_token(self, channel: str, *, op: SlackOp) -> str:
+        """The token authorising an outbound *op* against *channel*.
 
         The single, deterministic token-selection policy consulted by
-        every outbound surface (``post_message``, ``post_reply``,
-        ``react``, ``get_reactions``) — and, via the shared
+        every outbound surface — ``post_message`` / ``post_reply`` /
+        ``react`` / ``get_reactions`` (all ``SlackOp.WRITE``) — and, via
+        the shared
         :func:`teatree.backends.slack_token_policy.channel_token` helper,
-        by the review-request dedup guard's history read so read-token ==
-        post-token (#1084). Connect membership is only probed when both
-        credentials exist (the helper short-circuits the single-token
-        cases first), preserving the legacy no-probe behaviour.
+        by the review-request dedup guard's read-as-the-post
+        (``resolve_channel_token`` → ``SlackOp.WRITE``, so read-token ==
+        post-token #1084). Connect membership is only probed when both
+        credentials exist (the helper short-circuits the single-token /
+        DM cases first), preserving the legacy no-probe behaviour. When
+        the probe cannot confirm membership the policy falls back by
+        ``op``: a ``READ`` fails safe to the bot token (a bot-token read
+        of an unreachable Connect channel is empty at worst), a ``WRITE``
+        fails toward the user ``xoxp`` token (the bot token is rejected
+        on a Connect channel and the partner write is silently dropped).
         """
         if not self._user_token or not self._bot_token or channel.startswith("D"):
-            return channel_token(channel, bot_token=self._bot_token, user_token=self._user_token, is_ext_shared=False)
+            return channel_token(
+                channel,
+                bot_token=self._bot_token,
+                user_token=self._user_token,
+                is_ext_shared=False,
+                op=op,
+            )
         return channel_token(
             channel,
             bot_token=self._bot_token,
             user_token=self._user_token,
             is_ext_shared=self._is_ext_shared(channel),
+            op=op,
         )
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
@@ -338,20 +382,20 @@ class SlackBotBackend:
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload, token=self._channel_token(channel))
+        return self._post("chat.postMessage", payload, token=self._channel_token(channel, op=SlackOp.WRITE))
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         return self._post(
             "chat.postMessage",
             {"channel": channel, "thread_ts": ts, "text": text},
-            token=self._channel_token(channel),
+            token=self._channel_token(channel, op=SlackOp.WRITE),
         )
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         return self._post(
             "reactions.add",
             {"channel": channel, "timestamp": ts, "name": emoji},
-            token=self._channel_token(channel),
+            token=self._channel_token(channel, op=SlackOp.WRITE),
         )
 
     def open_dm(self, user_id: str) -> str:
@@ -378,7 +422,7 @@ class SlackBotBackend:
         data = self._get(
             "reactions.get",
             {"channel": channel, "timestamp": ts},
-            token=self._channel_token(channel),
+            token=self._channel_token(channel, op=SlackOp.WRITE),
         )
         if not data.get("ok"):
             return []
