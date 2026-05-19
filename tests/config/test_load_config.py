@@ -87,6 +87,34 @@ def test_require_human_approval_to_answer_can_be_disabled(tmp_path: Path) -> Non
     assert load_config(config_path).user.require_human_approval_to_answer is False
 
 
+def test_notify_on_post_on_behalf_defaults_true(tmp_path: Path) -> None:
+    """#949: after-receipt visibility DM ships ON by default."""
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.notify_on_post_on_behalf is True
+
+
+def test_notify_on_post_on_behalf_global_false(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nnotify_on_post_on_behalf = false\n")
+    assert load_config(config_path).user.notify_on_post_on_behalf is False
+
+
+def test_notify_on_post_on_behalf_no_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity guard: no copied-by-analogy ``T3_*`` env layer exists.
+
+    ``notify_on_post_on_behalf`` is intentionally NOT in
+    ``ENV_SETTING_OVERRIDES`` (its sibling ``notify_user_via_bot`` has no
+    env peer). An env var must therefore have ZERO effect — only the
+    documented dataclass-default → global → per-overlay chain resolves it.
+    """
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nnotify_on_post_on_behalf = true\n")
+    monkeypatch.setenv("T3_NOTIFY_ON_POST_ON_BEHALF", "false")
+    monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
+    assert get_effective_settings().notify_on_post_on_behalf is True
+
+
 def test_on_behalf_post_mode_defaults_to_draft_or_ask(tmp_path: Path) -> None:
     """New default mode is DRAFT_OR_ASK — replaces the old default-true bool."""
     from teatree.config import OnBehalfPostMode  # noqa: PLC0415
