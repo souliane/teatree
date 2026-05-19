@@ -5,8 +5,8 @@ This module bridges ``teatree.core`` (overlay registry) and
 need to extract tokens or branch on platform themselves.
 """
 
+import os
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -57,35 +57,84 @@ class OverlayBackends:
         return self.hosts[0] if self.hosts else None
 
 
-@lru_cache(maxsize=1)
-def code_host_from_overlay() -> CodeHostBackend | None:
+_code_host_cache: dict[str, CodeHostBackend | None] = {}
+_messaging_cache: dict[str, MessagingBackend | None] = {}
+
+
+def _active_overlay_name(overlay_name: str | None) -> str:
+    """Resolve the overlay name to use for cache and TOML lookup.
+
+    Explicit *overlay_name* wins over the ``T3_OVERLAY_NAME`` env var; an
+    empty string is the canonical "default overlay" cache key for callers
+    that rely on single-overlay environments.
+    """
+    if overlay_name:
+        return overlay_name
+    return os.environ.get("T3_OVERLAY_NAME", "") or ""
+
+
+def code_host_from_overlay(overlay_name: str | None = None) -> CodeHostBackend | None:
     """Build a code-host backend using the active overlay's credentials.
 
-    Cached for the loop tick — every scanner that needs the host shares one
-    instance per process. Tests that swap overlays must call
-    :func:`reset_backend_caches` to discard the cached client.
+    Cached per overlay name for the loop tick — every scanner that needs
+    the host shares one instance per process. Tests and wrapper scripts
+    that swap overlays must call :func:`reset_backend_caches`.
+
+    *overlay_name* lets a wrapper script select an overlay explicitly
+    without mutating ``T3_OVERLAY_NAME``. When omitted, falls back to the
+    env var (the same source ``get_overlay()`` reads). Path-only TOML
+    overlays (no ``class:`` key) are supported via a TOML fallback so a
+    bare ``django.setup()`` resolves the right credentials.
     """
+    key = _active_overlay_name(overlay_name)
+    if key in _code_host_cache:
+        return _code_host_cache[key]
+    backend = _build_code_host(key)
+    _code_host_cache[key] = backend
+    return backend
+
+
+def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
-        return None
+        return _code_host_from_toml_overlay(overlay_name)
     return get_code_host(overlay)
 
 
-@lru_cache(maxsize=1)
-def messaging_from_overlay() -> MessagingBackend | None:
-    """Build a messaging backend using the active overlay's config (cached)."""
+def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
+    """Build a messaging backend using the active overlay's config (cached).
+
+    *overlay_name* lets a wrapper script select an overlay explicitly
+    without mutating ``T3_OVERLAY_NAME``. When omitted, falls back to the
+    env var. Path-only TOML overlays (no ``class:`` key, e.g. an overlay
+    declared via ``[overlays.<name>]`` with only a ``path``) are supported
+    via a TOML fallback — the same chain ``iter_overlay_backends`` uses —
+    so wrapper scripts and bare ``django.setup()`` callers route DMs to
+    the correct overlay's Slack bot instead of silently falling back to
+    no-backend.
+    """
+    key = _active_overlay_name(overlay_name)
+    if key in _messaging_cache:
+        return _messaging_cache[key]
+    backend = _build_messaging(key)
+    _messaging_cache[key] = backend
+    return backend
+
+
+def _build_messaging(overlay_name: str) -> MessagingBackend | None:
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
-        return None
+        return _messaging_from_toml_overlay(overlay_name)
     return get_messaging(overlay)
 
 
-def ci_service_from_overlay() -> CIService | None:
+def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None:
     """Build a CI-service backend using the active overlay's credentials."""
+    key = _active_overlay_name(overlay_name)
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(key or None)
     except ImproperlyConfigured:
         return None
 
@@ -93,6 +142,38 @@ def ci_service_from_overlay() -> CIService | None:
         gitlab_token=overlay.config.get_gitlab_token(),
         gitlab_url=overlay.config.gitlab_url,
     )
+
+
+def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
+    """Build a messaging backend from a path-only TOML overlay entry.
+
+    Used by the fallback in :func:`messaging_from_overlay` so wrapper
+    scripts that opt into an overlay without a registered Python class
+    still route to its credentials. Mirrors the discovery shape of
+    ``_backends_from_toml``.
+    """
+    if not overlay_name:
+        return None
+    from teatree.config import load_config  # noqa: PLC0415
+
+    overlays = load_config().raw.get("overlays") or {}
+    cfg = overlays.get(overlay_name)
+    if not isinstance(cfg, dict):
+        return None
+    return _messaging_from_toml(cfg)
+
+
+def _code_host_from_toml_overlay(overlay_name: str) -> CodeHostBackend | None:
+    """Build a code-host backend from a path-only TOML overlay entry."""
+    if not overlay_name:
+        return None
+    from teatree.config import load_config  # noqa: PLC0415
+
+    overlays = load_config().raw.get("overlays") or {}
+    cfg = overlays.get(overlay_name)
+    if not isinstance(cfg, dict):
+        return None
+    return _host_from_toml(cfg)
 
 
 def iter_overlay_backends() -> list[OverlayBackends]:
@@ -246,9 +327,16 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
         return None
     bot_token = read_pass(f"{token_ref}-bot")
     app_token = read_pass(f"{token_ref}-app")
+    user_token_ref = cfg.get("user_token_ref", "")
+    user_token = read_pass(user_token_ref) if user_token_ref else ""
     user_id = cfg.get("slack_user_id", "")
     if bot_token:
-        return SlackBotBackend(bot_token=bot_token, app_token=app_token or "", user_id=user_id)
+        return SlackBotBackend(
+            bot_token=bot_token,
+            app_token=app_token or "",
+            user_token=user_token,
+            user_id=user_id,
+        )
     return None
 
 
@@ -258,8 +346,8 @@ def reset_backend_caches() -> None:
     Call when the active overlay changes (overlay reload, multi-overlay
     test fixtures) so the next factory call rebuilds with fresh credentials.
     """
-    code_host_from_overlay.cache_clear()
-    messaging_from_overlay.cache_clear()
+    _code_host_cache.clear()
+    _messaging_cache.clear()
     _reset_loader_caches()
 
 

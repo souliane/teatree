@@ -399,19 +399,21 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ post-draft-note      Post a draft note on a GitLab MR (inline or general).   │
 │ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
-│ delete-draft-note    Delete a draft note from a GitLab MR.                   │
-│ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
-│ list-draft-notes     List draft notes on a GitLab MR.                        │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
-│ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
-│                      published.                                              │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
 │ unapprove            Revoke your approval on a GitLab MR.                    │
-│ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
-│                      unresolved.                                             │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
 │                      on-behalf gate.                                         │
+│ delete-draft-note    Delete a draft note from a GitLab MR.                   │
+│ delete-discussion    Delete a *published* note (discussion) from a GitLab    │
+│                      MR.                                                     │
+│ publish-draft-notes  Publish all draft notes on a GitLab MR (bulk submit).   │
+│ list-draft-notes     List draft notes on a GitLab MR.                        │
+│ update-note          Update a note on a GitLab MR — auto-detects draft vs    │
+│                      published.                                              │
+│ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
+│                      unresolved.                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -422,6 +424,15 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 
  Post a draft note on a GitLab MR (inline or general).
 
+ The inline-vs-general decision is explicit: pass ``--general`` for an
+ MR-wide note, or pass both ``--file`` and ``--line`` for an inline
+ draft. Pre-#72 the default silently degraded a missing flag pair into
+ a general note — observed in !6220 where 4 of 5 cold-review drafts
+ intended as inline became general. The validator
+ :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
+ both half-specified-inline and contradictory invocations before any
+ GitLab API call is attempted.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
@@ -429,10 +440,18 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file        TEXT     File path for inline comment (omit for general note)  │
-│ --line        INTEGER  Line number in the new file (must be an added line)   │
-│                        [default: 0]                                          │
-│ --help                 Show this message and exit.                           │
+│ --file           TEXT     File path for inline comment — REQUIRED unless     │
+│                           --general is passed.                               │
+│ --line           INTEGER  Line number in the new file (must be an added      │
+│                           line) — REQUIRED unless --general is passed.       │
+│ --general                 Post a general (MR-wide) note instead of an inline │
+│                           one. Mutually exclusive with --file/--line.        │
+│                           Without this flag, --file AND --line are both      │
+│                           required — omitting either is refused upfront so a │
+│                           missed-flag invocation can no longer silently      │
+│                           degrade an intended-inline draft into a general    │
+│                           note (souliane/teatree#72).                        │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -461,56 +480,6 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 review delete-draft-note`
-
-```
-Usage: t3 review delete-draft-note [OPTIONS] REPO MR NOTE_ID
-
- Delete a draft note from a GitLab MR.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo         TEXT     GitLab project path [required]                    │
-│ *    mr           INTEGER  Merge request IID [required]                      │
-│ *    note_id      INTEGER  Draft note ID to delete [required]                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review publish-draft-notes`
-
-```
-Usage: t3 review publish-draft-notes [OPTIONS] REPO MR
-
- Publish all draft notes on a GitLab MR (bulk submit).
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review list-draft-notes`
-
-```
-Usage: t3 review list-draft-notes [OPTIONS] REPO MR
-
- List draft notes on a GitLab MR.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path [required]                       │
-│ *    mr        INTEGER  Merge request IID [required]                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 review reply-to-discussion`
 
 ```
@@ -530,25 +499,6 @@ Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 review update-note`
-
-```
-Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
-
- Update a note on a GitLab MR — auto-detects draft vs published.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo         TEXT     GitLab project path (e.g., my-org/my-repo)        │
-│                            [required]                                        │
-│ *    mr           INTEGER  Merge request IID [required]                      │
-│ *    note_id      INTEGER  Note ID (draft or published) [required]           │
-│ *    body         TEXT     New comment body (markdown) [required]            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
 #### `t3 review approve`
 
 ```
@@ -558,7 +508,10 @@ Usage: t3 review approve [OPTIONS] REPO MR
 
  Precondition: a review note/discussion authored by your identity must
  already exist on the MR (review before approve). Also respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+ record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+ approve --approver <user-id>`` to satisfy the gate without disabling
+ it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -578,7 +531,10 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
  Revoke your approval on a GitLab MR.
 
  No review precondition (revoking is the safe direction). Respects the
- `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+ `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+ record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+ unapprove --approver <user-id>`` to satisfy the gate without disabling
+ it.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -587,25 +543,6 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review resolve-discussion`
-
-```
-Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
-
- Mark a GitLab MR discussion thread resolved or unresolved.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo               TEXT     GitLab project path [required]              │
-│ *    mr                 INTEGER  Merge request IID [required]                │
-│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
-│                                  [default: resolved]                         │
-│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -647,6 +584,117 @@ Usage: t3 review approve-on-behalf [OPTIONS] TARGET ACTION
 │                            17.8).                                            │
 │                            [required]                                        │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review delete-draft-note`
+
+```
+Usage: t3 review delete-draft-note [OPTIONS] REPO MR NOTE_ID
+
+ Delete a draft note from a GitLab MR.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo         TEXT     GitLab project path [required]                    │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Draft note ID to delete [required]                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review delete-discussion`
+
+```
+Usage: t3 review delete-discussion [OPTIONS] REPO MR NOTE_ID
+
+ Delete a *published* note (discussion) from a GitLab MR.
+
+ Use to clean up a published general comment that should have
+ been inline, or any other published note that needs removal.
+ Distinct from `delete-draft-note`, which removes a user's own
+ pre-publication draft. Respects the `ask_before_post_on_behalf`
+ pre-gate (souliane/teatree#960).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo         TEXT     GitLab project path [required]                    │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Published note ID to delete [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review publish-draft-notes`
+
+```
+Usage: t3 review publish-draft-notes [OPTIONS] REPO MR
+
+ Publish all draft notes on a GitLab MR (bulk submit).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review list-draft-notes`
+
+```
+Usage: t3 review list-draft-notes [OPTIONS] REPO MR
+
+ List draft notes on a GitLab MR.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path [required]                       │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review update-note`
+
+```
+Usage: t3 review update-note [OPTIONS] REPO MR NOTE_ID BODY
+
+ Update a note on a GitLab MR — auto-detects draft vs published.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo         TEXT     GitLab project path (e.g., my-org/my-repo)        │
+│                            [required]                                        │
+│ *    mr           INTEGER  Merge request IID [required]                      │
+│ *    note_id      INTEGER  Note ID (draft or published) [required]           │
+│ *    body         TEXT     New comment body (markdown) [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review resolve-discussion`
+
+```
+Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
+
+ Mark a GitLab MR discussion thread resolved or unresolved.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo               TEXT     GitLab project path [required]              │
+│ *    mr                 INTEGER  Merge request IID [required]                │
+│ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
+│                                  [default: resolved]                         │
+│ --help                           Show this message and exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1263,6 +1311,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
+│ dashboard      Render the tabular per-tick dashboard, optionally DM it to    │
+│                the user.                                                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
@@ -1306,6 +1356,32 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop dashboard`
+
+```
+Usage: t3 loop dashboard [OPTIONS]
+
+ Render the tabular per-tick dashboard, optionally DM it to the user.
+
+ Default is print-to-stdout for piping or visual inspection. Pass
+ ``--send-to-slack`` to additionally route the rendered table via
+ :func:`teatree.notify.notify_user` (#963) — the send is idempotent
+ per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --send-to-slack               Send the rendered dashboard to the user's      │
+│                               Slack DM via the bot.                          │
+│ --format                TEXT  Output format: 'markdown' (stdout, default) or │
+│                               'slack' (mrkdwn).                              │
+│                               [default: markdown]                            │
+│ --source                PATH  Override the tick-actions sidecar path (test   │
+│                               hook).                                         │
+│ --self-dm-marker              Tag the slack_dm row with '(this DM)' —        │
+│                               matches manual dashboard form.                 │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

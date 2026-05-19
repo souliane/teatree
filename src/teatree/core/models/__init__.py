@@ -9,8 +9,10 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
+from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
+from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
@@ -42,10 +44,12 @@ __all__ = [
     "OnBehalfApprovalError",
     "OnBehalfAudit",
     "OutboundClaim",
+    "PendingChatInjection",
     "Ports",
     "PullRequest",
     "QualityGateError",
     "ReplyDispatch",
+    "ReviewRequestPost",
     "SelfImproveFiring",
     "Session",
     "Task",
