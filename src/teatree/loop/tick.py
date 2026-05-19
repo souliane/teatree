@@ -322,6 +322,7 @@ def run_tick(
     report.actions = dispatch(report.signals)
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
+    _record_dashboard_actions(report, started_at)
 
     zones = zones_for(report.actions, colorize=colorize)
     _write_tick_meta(started_at, target=statusline_path)
@@ -360,6 +361,26 @@ def _reap_stale_task_claims() -> None:
         Task.objects.replay_orphaned_transitions()
         Task.objects.reclaim_orphaned_claims()
         Task.objects.reap_stale_claims()
+
+
+def _record_dashboard_actions(report: TickReport, started_at: dt.datetime) -> None:
+    """Append one ``tick-actions.jsonl`` line per dispatched action.
+
+    The sidecar is the input the ``t3 loop dashboard`` command reads to
+    render the tabular DM. Recording happens here (not in the dashboard
+    CLI) so each tick produces ground truth even when the dashboard is
+    never displayed — observability is decoupled from rendering.
+    """
+    from teatree.loop.dashboard import record_actions  # noqa: PLC0415
+
+    try:
+        identities = tuple(load_config().user.user_identity_aliases)
+    except Exception:  # noqa: BLE001 — config read must never break a tick
+        identities = ()
+    try:
+        record_actions(report.actions, now=started_at, identities=identities)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Recording dashboard actions failed: %s", exc)
 
 
 def _persist_agent_dispatches(report: TickReport) -> None:

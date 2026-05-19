@@ -2112,6 +2112,7 @@ graph TD
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
+    teatree.cli --> teatree.notify
     teatree.cli --> teatree.utils
     teatree.cli --> teatree.repo_mode
     teatree.cli --> teatree.triage
