@@ -83,6 +83,13 @@ class OverlayConfig:
     stale_threshold_days: int = 3
     notion_database_id: str = ""
     mr_close_ticket: bool = False
+    # When True the pre-push ship gate REJECTS any auto-close keyword
+    # (Closes/Fixes/Resolves #N, full-URL forms) in the MR description or
+    # any commit body on the branch, instead of silently rewriting it.
+    # An overlay sets this when issue closure is managed via the forge's
+    # linked-items API rather than auto-close trailers (#1012); teatree's
+    # own overlay leaves it False (teatree PRs legitimately use ``Closes #N``).
+    forbid_close_keywords: bool = False
     teardown_removes_pass_entries: bool = False
     known_variants: list[str]
     pr_auto_labels: list[str]

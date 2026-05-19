@@ -801,6 +801,8 @@ Defined in `teatree.core.overlay`. All methods receive the `worktree` instance f
 | `get_e2e_env_extras(env_cache)` | `→ dict[str, str]` | `{}` | Overlay-specific env vars merged into the Playwright environment (e.g. `WT_VARIANT`→`CUSTOMER`) |
 | `get_e2e_preflight(customer, base_url)` | `→ list[Callable[[], None]]` | `[]` | Pre-Playwright gates; each callable raises `RuntimeError` on failure |
 
+**Auto-close trailer rejection (`OverlayConfig.forbid_close_keywords`, default `False`, [#1012](https://github.com/souliane/teatree/issues/1012)).** An overlay that manages issue closure through the forge's linked-items API — not `Closes/Fixes/Resolves #N` auto-close trailers — sets `config.forbid_close_keywords = True`. The `_run_ship_gates` sequence then runs `_close_keyword_gate.run_close_keyword_gate` after the shipping gate and before visual QA: it scans the **raw** MR-description source (the branch's last commit message, pre-`sanitize_close_keywords` — that rewrite would otherwise mask the trailer) and every branch commit body for the full GitHub/GitLab auto-close keyword set (`close/closes/closed`, `fix/fixes/fixed`, `resolve/resolves/resolved`; `#N`, `<project>#N`, full-URL forms; case-insensitive) and `raise SystemExit` with the offending line + a suggested `Relates to` rewrite. A merged trailer would otherwise auto-close the referenced issue and break the lifecycle FSM. teatree's own overlay leaves the flag at its `False` default, so teatree PRs that legitimately use `Closes #N` are unaffected — the gate is a no-op unless an overlay opts in.
+
 ### 6.2 Supporting TypedDicts
 
 ```python
