@@ -327,9 +327,16 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
         return None
     bot_token = read_pass(f"{token_ref}-bot")
     app_token = read_pass(f"{token_ref}-app")
+    user_token_ref = cfg.get("user_token_ref", "")
+    user_token = read_pass(user_token_ref) if user_token_ref else ""
     user_id = cfg.get("slack_user_id", "")
     if bot_token:
-        return SlackBotBackend(bot_token=bot_token, app_token=app_token or "", user_id=user_id)
+        return SlackBotBackend(
+            bot_token=bot_token,
+            app_token=app_token or "",
+            user_token=user_token,
+            user_id=user_id,
+        )
     return None
 
 

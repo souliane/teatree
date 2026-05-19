@@ -69,6 +69,11 @@ class OverlayConfig:
     code_host: str = ""
     messaging_backend: str = "noop"
     slack_token_ref: str = ""
+    # ``user_token_ref`` points at a ``pass`` entry holding the human user's
+    # Slack OAuth token (``xoxp-…``).  Routed by ``SlackBotBackend`` for
+    # reactions on Slack-Connect externally-shared channels where the bot
+    # token is rejected by the workspace restriction policy.
+    user_token_ref: str = ""
     slack_user_id: str = ""
     require_ticket: bool = False
     ready_labels: list[str]
