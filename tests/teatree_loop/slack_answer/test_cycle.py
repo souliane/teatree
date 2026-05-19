@@ -115,8 +115,8 @@ class TestSimple:
 
         with (
             patch(
-                "teatree.loop.slack_answer.simple_answer.render_dashboard",
-                return_value="# Loop dashboard\n\n## [acme]\n| x |\n",
+                "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+                return_value="overlay=acme\nticket=#1\n",
             ),
             patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku,
         ):
@@ -126,7 +126,7 @@ class TestSimple:
         assert len(backend.replies) == 1
         channel, ts, text = backend.replies[0]
         assert (channel, ts) == ("C1", "1.0")  # threaded under the user msg
-        assert "Loop dashboard" in text
+        assert "overlay=acme" in text
         row.refresh_from_db()
         assert row.answer_kind == "simple"
         assert report.answered_simple == 1
@@ -136,8 +136,8 @@ class TestSimple:
         backend = RecordingBackend(permalink_ok=False)
 
         with patch(
-            "teatree.loop.slack_answer.simple_answer.render_dashboard",
-            return_value="# Loop dashboard\n\n## [acme]\n| x |\n",
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
         ):
             run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
@@ -149,8 +149,8 @@ class TestSimple:
         backend = RecordingBackend(post_reply_raises=True)
 
         with patch(
-            "teatree.loop.slack_answer.simple_answer.render_dashboard",
-            return_value="# Loop dashboard\n\n## [acme]\n| x |\n",
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
         ):
             run_slack_answer_cycle(messaging_resolver=_resolver(backend))
 
