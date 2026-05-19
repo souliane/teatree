@@ -1,0 +1,149 @@
+"""``t3 review-request post`` — sanctioned authorized review-request post (#1098).
+
+The post-half of #1084/#1094. One classifier-legible transaction:
+
+1.  #1094 ``review_request_guard`` live-channel dedup (``resolve_guard_target``
+    + ``should_post_review_request`` — the latter takes the atomic
+    ``ReviewRequestPost`` claim internally). ``suppress`` → no post.
+2.  #960 ``require_on_behalf_approval`` — the single chokepoint. No recorded,
+    unconsumed, exactly-scoped ``OnBehalfApproval`` → ``OnBehalfPostBlockedError``
+    (its ``str`` already names the exact ``t3 review approve-on-behalf``
+    remediation). On that refusal the just-created guard claim is rolled
+    back (Risk-c: an orphan claim would make every future legitimate post
+    suppress with ``already_claimed`` forever).
+3.  Only then post to the review channel, persist the permalink record.
+
+``action``/``target`` are the canonical strings, derived once via
+``canonical_mr_url`` so the dedup claim and the #960 approval scope are
+provably the same string.
+"""
+
+from typing import Annotated, NoReturn
+
+import typer
+from django_typer.management import TyperCommand, command
+
+from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.review_message_cache import persist_review_message
+from teatree.core.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
+from teatree.types import RawAPIDict
+
+_ACTION = "review_request_post"
+
+
+# Used when ``--title`` is absent. The command does NOT fetch the live MR
+# title (that needs a GitLab token + network — out of scope for "one
+# legible recorded-approval post"); ``--title`` is the recommended subject.
+_DEFAULT_TITLE = "Please review"
+
+
+def _iid_from_mr(canonical: str) -> str:
+    """Last numeric path segment of the canonical MR URL (the ticket dir key)."""
+    for segment in reversed(canonical.split("/")):
+        if segment.isdigit():
+            return segment
+    return canonical.rsplit("/", 1)[-1]
+
+
+class Command(TyperCommand):
+    @command()
+    def handle(
+        self,
+        mr_url: Annotated[str, typer.Option("--mr-url", help="Canonical MR/PR URL to post.")],
+        approver: Annotated[str, typer.Option("--approver", help="User id that recorded the #960 approval.")],
+        title: Annotated[str, typer.Option("--title", help="Review-request subject (recommended).")] = "",
+    ) -> None:
+        """Post a review request after #1094 dedup + #960 recorded approval.
+
+        Machine-legible: prints a single JSON dict (``action`` is
+        ``post``/``suppress``/``refused``) and uses exit codes — ``0``
+        post/suppress, ``2`` refused (no recorded approval).
+        """
+        _ = approver  # the #960 approver is bound at approve-on-behalf record time.
+
+        target = resolve_guard_target()
+        if target is None:
+            self._emit(
+                {"action": "suppress", "reason": "no_review_channel_or_token", "mr_url": mr_url},
+                exit_code=0,
+            )
+
+        canonical = canonical_mr_url(mr_url)
+        decision = should_post_review_request(mr_url=canonical, target=target)
+        if not decision.should_post:
+            self._emit(
+                {
+                    "action": "suppress",
+                    "reason": decision.reason,
+                    "permalink": decision.permalink,
+                    "mr_url": canonical,
+                },
+                exit_code=0,
+            )
+
+        try:
+            require_on_behalf_approval(target=canonical, action=_ACTION)
+        except OnBehalfPostBlockedError as err:
+            self._rollback_orphan_claim(canonical)
+            self.stdout.write(str(err))
+            self._emit(
+                {"action": "refused", "reason": "on_behalf_not_approved", "mr_url": canonical},
+                exit_code=2,
+            )
+
+        messaging = messaging_from_overlay()
+        if messaging is None:
+            self._emit(
+                {"action": "suppress", "reason": "no_messaging_backend", "mr_url": canonical},
+                exit_code=0,
+            )
+
+        text = f"{title or _DEFAULT_TITLE} {canonical}"
+        resp = messaging.post_message(channel=target.channel_id, text=text, thread_ts="")
+        ts = str(resp.get("ts", ""))
+        permalink = messaging.get_permalink(channel=target.channel_id, ts=ts)
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        persist_review_message(
+            mr_url=canonical,
+            iid=_iid_from_mr(canonical),
+            permalink=permalink,
+            channel=target.channel_id,
+            when=timezone.now(),
+        )
+        self._emit(
+            {"action": "post", "permalink": permalink, "mr_url": canonical},
+            exit_code=0,
+        )
+
+    @staticmethod
+    def _rollback_orphan_claim(canonical: str) -> None:
+        """Delete the guard's just-created ``ReviewRequestPost`` claim on refusal.
+
+        Risk-c: ``should_post_review_request`` already took the atomic
+        ``get_or_create`` claim before #960 refused. If a refusal leaves
+        that row, every future legitimate post for this MR suppresses with
+        ``already_claimed`` forever. Only delete a claim that has no posted
+        message yet (``done_at`` unset and no thread ts) — never reconcile
+        away a real prior post the guard reconciled.
+        """
+        from teatree.core.models import ReviewRequestPost  # noqa: PLC0415
+
+        ReviewRequestPost.objects.filter(
+            mr_url=canonical,
+            done_at__isnull=True,
+            slack_thread_ts="",
+        ).delete()
+
+    def _emit(self, payload: RawAPIDict, *, exit_code: int) -> NoReturn:
+        """Print the single machine-legible JSON dict, then exit.
+
+        Always raises ``SystemExit`` (``0`` post/suppress, ``2`` refused) so
+        the handle body has one uniform terminator and no dead ``return``.
+        """
+        import json  # noqa: PLC0415
+
+        self.stdout.write(json.dumps(payload))
+        raise SystemExit(exit_code)
