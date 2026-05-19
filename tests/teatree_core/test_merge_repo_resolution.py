@@ -22,7 +22,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core import merge_execution
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr, resolve_pr_repo_slug
+from teatree.core.merge_execution import (
+    _GIT_BRANCH_PREFIXES,
+    MergePreconditionError,
+    merge_ticket_pr,
+    resolve_pr_repo_slug,
+)
 from teatree.core.models import MergeClear, Ticket
 
 pytestmark = pytest.mark.django_db
@@ -309,9 +314,12 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
     A real GitHub owner cannot be one of the standard git-branch
     namespaces (``fix``, ``feat``, ``feature``, ``chore``, ``docs``,
     ``bugfix``, ``hotfix``, ``release``, ``refactor``, ``test``, ``ci``,
-    ``build``, ``perf``, ``style``), so any slug whose first path segment
-    matches that set (case-insensitive) is a branch name, not an
-    ``owner/repo``.
+    ``build``, ``perf``, ``style``) or the user's personal workflow
+    prefixes (``ac``, ``wip``, ``dev``, ``tmp``), so any slug whose first
+    path segment matches that set (case-insensitive) is a branch name,
+    not an ``owner/repo``. The covered set is sourced from
+    :data:`_GIT_BRANCH_PREFIXES` so adding a new prefix to the production
+    frozenset automatically extends this test's coverage.
     """
 
     _BRANCH_SLUG = "fix/review-cli-django-bootstrap"
@@ -358,24 +366,13 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         because ``django.test.TestCase`` doesn't compose with pytest
         parametrize cleanly — but each case carries its own subTest label
         so failures point at the offending prefix.
+
+        Sources the prefix set directly from
+        :data:`_GIT_BRANCH_PREFIXES` so adding a new entry to the
+        production frozenset automatically extends this test's coverage —
+        no parallel hardcoded tuple to drift.
         """
-        branch_prefixes = (
-            "fix",
-            "feat",
-            "feature",
-            "chore",
-            "docs",
-            "bugfix",
-            "hotfix",
-            "release",
-            "refactor",
-            "test",
-            "ci",
-            "build",
-            "perf",
-            "style",
-        )
-        for index, prefix in enumerate(branch_prefixes):
+        for index, prefix in enumerate(sorted(_GIT_BRANCH_PREFIXES)):
             with self.subTest(prefix=prefix):
                 slug = f"{prefix}/some-workstream-name"
                 # Each subTest needs a fresh ticket+CLEAR; offset pr_id to keep
@@ -386,6 +383,21 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
                     return_value="souliane/teatree",
                 ):
                     assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+
+    def test_user_workflow_prefixes_are_covered(self) -> None:
+        """The user's personal-workflow prefixes must be in the rejected set.
+
+        ``ac/`` (the user's initials) and ``wip/``/``dev/``/``tmp/`` are the
+        prefixes the user's branches actually carry — when missing from
+        :data:`_GIT_BRANCH_PREFIXES` a CLEAR whose slug is the branch name
+        (e.g. ``ac/cli-bundle-…``) was misparsed as ``owner=ac``, breaking
+        the §17.4 merge with the opaque "could not resolve the live head"
+        error. Pin them explicitly so a future refactor that "cleans up
+        non-standard" prefixes from the frozenset cannot regress this.
+        """
+        for prefix in ("ac", "wip", "dev", "tmp"):
+            with self.subTest(prefix=prefix):
+                assert prefix in _GIT_BRANCH_PREFIXES
 
     def test_uppercase_branch_prefix_also_rejected(self) -> None:
         """Branch-prefix detection is case-insensitive — ``Fix/X`` is still a branch."""
