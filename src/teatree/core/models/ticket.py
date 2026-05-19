@@ -454,6 +454,50 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             # last_review_state.
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.APPROVED.value})
 
+    @transition(
+        field=state,
+        source=[
+            State.NOT_STARTED,
+            State.SCOPED,
+            State.STARTED,
+            State.CODED,
+            State.TESTED,
+            State.REVIEWED,
+        ],
+        target=State.DELIVERED,
+        conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
+    )
+    def mark_review_no_action(self) -> None:
+        """Reviewer-role terminal disposition for a no-postable-action review.
+
+        Sibling of :meth:`mark_reviewed_externally` for the case the
+        reviewer concludes an external review with nothing to post or
+        approve (e.g. a bot MR — Aikido/Dependabot — where there is no
+        diff worth commenting on and no approval to give). The reviewing
+        Task would otherwise never reach a terminal state — the only
+        terminal path is ``Task.complete()`` → ``mark_reviewed_externally``
+        which requires an APPROVED outcome — so ``pending-spawn``
+        re-dispatched the same task every Stop-hook pump forever (#1077).
+
+        Unlike ``mark_reviewed_externally`` (fired *from* an
+        already-COMPLETED task) this transition is driven directly via
+        ``t3 ticket transition <id> mark_review_no_action`` while the
+        reviewing task is still PENDING, so it consumes that task itself.
+        It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER
+        APPROVED): the dedup's APPROVED-only suppression therefore does not
+        hide a future *genuine* review, while ``_already_reviewed_at_head``
+        still treats a no-action observation at the current head SHA as
+        "already handled" so the task is not re-queued. A head-SHA move
+        drops ``last_review_state`` (the existing #959 reset) so a new
+        revision is still reviewed — no lost obligation.
+        """
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        sha = str(self._extra().get("reviewed_sha", ""))
+        if self.issue_url and sha:
+            self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
+        self._consume_pending_phase_tasks("reviewing")
+
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
         """Schedule push + PR creation.

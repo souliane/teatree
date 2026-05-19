@@ -435,3 +435,104 @@ def test_post_issue_comment_returns_empty_dict_when_post_returns_none() -> None:
     )
 
     assert result == {}
+
+
+def test_get_pr_open_state_maps_opened_to_open() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"state": "opened"}
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.OPEN
+    client.get_json.assert_called_once_with("projects/42/merge_requests/12")
+
+
+def test_get_pr_open_state_maps_merged_to_merged() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"state": "merged"}
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.MERGED
+
+
+def test_get_pr_open_state_maps_closed_and_locked_to_closed() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    host = GitLabCodeHost(client=client)
+
+    client.get_json.return_value = {"state": "closed"}
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.CLOSED
+    client.get_json.return_value = {"state": "locked"}
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.CLOSED
+
+
+def test_get_pr_open_state_unrecognised_state_is_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"state": "weird"}
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+def test_get_pr_open_state_non_string_or_missing_state_is_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    host = GitLabCodeHost(client=client)
+
+    client.get_json.return_value = {}  # state key absent
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+    client.get_json.return_value = {"state": 42}  # non-string state
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+def test_get_pr_open_state_unparsable_url_is_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
+    client.resolve_project.assert_not_called()
+
+
+def test_get_pr_open_state_unresolved_project_is_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+def test_get_pr_open_state_non_dict_payload_is_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = ["not", "a", "dict"]
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+def test_get_pr_open_state_any_exception_fails_open_to_unknown() -> None:
+    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.side_effect = RuntimeError("network down / auth error")
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN

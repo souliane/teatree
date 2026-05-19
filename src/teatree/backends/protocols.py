@@ -45,6 +45,28 @@ class ReviewState(StrEnum):
     APPROVED = "approved"
     CHANGES_REQUESTED = "changes_requested"
     DISMISSED = "dismissed"
+    # The reviewer concluded an external review with no postable/approvable
+    # action (e.g. a bot MR there is nothing to comment on or approve).
+    # Distinct from APPROVED so the dedup never hides a future genuine
+    # review, yet terminal so the reviewing task stops re-queueing (#1077).
+    REVIEWED_NO_ACTION = "reviewed_no_action"
+
+
+class PrOpenState(StrEnum):
+    """Whether a pull/merge request is genuinely still open on the forge.
+
+    Used by ``CodeHostBackend.get_pr_open_state`` so the orphan-task sweep
+    (``ReviewerPrsScanner._orphaned_task_signals``) can confirm a reviewing
+    task's PR is really MERGED/CLOSED before reaping it — absence from a
+    reviewer-assignment scan is NOT proof the PR closed (#1074). ``UNKNOWN``
+    is the fail-open value: any auth error, network failure, unparsable URL,
+    or unrecognised payload maps here, and the sweep never reaps on UNKNOWN.
+    """
+
+    OPEN = "open"
+    MERGED = "merged"
+    CLOSED = "closed"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +120,8 @@ class CodeHostBackend(Protocol):
     ) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState: ...  # pragma: no branch
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 

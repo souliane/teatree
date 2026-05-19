@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.backends.protocols import ApprovalState, PullRequestSpec, ReviewState
+from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<path>.+?)/-/issues/(?P<iid>\d+)/?$")
@@ -13,6 +13,14 @@ _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
 # GitLab serves the same iid under both /-/issues/<iid> and /-/work_items/<iid>;
 # the notes API endpoint is identical for either.
 _ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
+
+
+_GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
+    "opened": PrOpenState.OPEN,
+    "merged": PrOpenState.MERGED,
+    "closed": PrOpenState.CLOSED,
+    "locked": PrOpenState.CLOSED,
+}
 
 
 def _read_int(data: RawAPIDict, key: str) -> int:
@@ -72,9 +80,10 @@ class _GitLabUser(TypedDict, total=False):
 
 
 class _GitLabMergeRequestSummary(TypedDict, total=False):
-    """Subset of the GitLab MR response read for the review state lookup."""
+    """Subset of the GitLab MR response read for the review/open-state lookup."""
 
     reviewers: list[_GitLabUser]
+    state: str
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -214,6 +223,32 @@ class GitLabCodeHost:
                     if isinstance(entry, dict) and entry.get("username") == reviewer:
                         return ReviewState.PENDING
         return ReviewState.NONE
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        """Return whether the MR at *pr_url* is genuinely open/merged/closed (#1074).
+
+        Fetches the MR's real ``state`` field. ``opened`` → OPEN, ``merged``
+        → MERGED, ``closed``/``locked`` → CLOSED. Any exception, unresolvable
+        project, unparsable URL, or non-dict / unrecognised payload →
+        ``UNKNOWN`` so the orphan sweep fails open (never reaps on doubt).
+        GitHub's implementation maps the same ambiguity to ``UNKNOWN``.
+        """
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return PrOpenState.UNKNOWN
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return PrOpenState.UNKNOWN
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
+            return PrOpenState.UNKNOWN
+        if not isinstance(mr, dict):
+            return PrOpenState.UNKNOWN
+        state = cast("_GitLabMergeRequestSummary", mr).get("state")
+        if not isinstance(state, str):
+            return PrOpenState.UNKNOWN
+        return _GITLAB_MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)
 
     def get_issue(self, issue_url: str) -> RawAPIDict:
         """Fetch a GitLab issue from its full URL.

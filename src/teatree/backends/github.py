@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
-from teatree.backends.protocols import ApprovalState, PullRequestSpec, ReviewState
+from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CompletedProcess, run_checked
@@ -40,6 +40,8 @@ class _GitHubPullRequestSummary(TypedDict, total=False):
     """Subset of the GitHub PR response read for the review state lookup."""
 
     requested_reviewers: list[_GitHubUser]
+    state: str
+    merged: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +87,25 @@ def _latest_review_state_from_reviews(reviews: object, reviewer: str) -> ReviewS
         if mapped is not None:
             return mapped
     return None
+
+
+def _pr_open_state_from_payload(pr: object) -> PrOpenState:
+    """Map a GitHub PR payload to a :class:`PrOpenState` (#1074).
+
+    ``state=="open"`` → OPEN; ``merged is True`` → MERGED; ``state=="closed"``
+    without ``merged`` → CLOSED. Any non-dict or unrecognised shape →
+    ``UNKNOWN`` so the orphan sweep fails open.
+    """
+    if not isinstance(pr, dict):
+        return PrOpenState.UNKNOWN
+    summary = cast("_GitHubPullRequestSummary", pr)
+    if summary.get("state") == "open":
+        return PrOpenState.OPEN
+    if summary.get("merged") is True:
+        return PrOpenState.MERGED
+    if summary.get("state") == "closed":
+        return PrOpenState.CLOSED
+    return PrOpenState.UNKNOWN
 
 
 def _reviewer_is_requested(pr: object, reviewer: str) -> bool:
@@ -405,3 +426,25 @@ class GitHubCodeHost:
         if _reviewer_is_requested(pr, reviewer):
             return ReviewState.PENDING
         return ReviewState.NONE
+
+    def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
+        """Return whether the PR at *pr_url* is genuinely open/merged/closed (#1074).
+
+        Fetches the PR's real ``state``/``merged`` fields. ``state=="open"``
+        → OPEN, ``merged is True`` → MERGED, ``state=="closed"`` without
+        ``merged`` → CLOSED. Any exception (``gh api`` failure, auth error),
+        unparsable URL, or non-dict / unrecognised payload → ``UNKNOWN`` so
+        the orphan sweep fails open (never reaps on doubt). GitLab's
+        implementation maps the same ambiguity to ``UNKNOWN`` identically.
+        """
+        match = _PR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return PrOpenState.UNKNOWN
+        try:
+            pr = _gh_api_get(
+                f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}",
+                token=self._token,
+            )
+        except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
+            return PrOpenState.UNKNOWN
+        return _pr_open_state_from_payload(pr)
