@@ -516,6 +516,28 @@ class TestReviewRequestDiscover:
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(tmp_path, "followup", "discover-mrs", overlay_name="t3-test")
 
+    def test_review_request_check(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
+        mr = "https://gitlab.com/org/repo/-/merge_requests/385"
+        with (
+            patch.object(config_mod, "discover_active_overlay", return_value=active),
+            patch.object(cli_review_request_mod, "managepy") as mock_manage,
+        ):
+            result = runner.invoke(app, ["review-request", "check", "--mr-url", mr])
+            assert result.exit_code == 0
+            mock_manage.assert_called_once_with(
+                tmp_path,
+                "review_request_check",
+                "--mr-url",
+                mr,
+                overlay_name="t3-test",
+            )
+
 
 # ── Internal helpers ─────────────────────────────────────────────────
 

@@ -347,3 +347,78 @@ class TestReviewNagScannerCustomNow(TestCase):
         assert len(slack.posts) == 1
         post.refresh_from_db()
         assert post.last_nag_step == 2
+
+
+class TestNagConsultsDedupGuard(TestCase):
+    """Before nagging, the scanner live-reads for an out-of-band post (#1084).
+
+    If the review was requested again / picked up out-of-band, the row is
+    reconciled (``done_at`` set, PR transitioned by the guard) and the nag
+    is skipped — the train stops. Fails open: no channel/token or a
+    failed read means the nag proceeds as before.
+    """
+
+    def _due_post(self) -> ReviewRequestPost:
+        return ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/1",
+            slack_channel_id="C0DEMOCHAN1",
+            slack_thread_ts="1700000000.001",
+            created_at=timezone.now() - dt.timedelta(days=2),
+            last_nag_step=0,
+        )
+
+    def test_nag_skipped_when_guard_reconciles(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+
+        self._due_post()
+        slack = FakeSlack()
+        target = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="rev", token="xoxb")
+        with (
+            patch(
+                "teatree.core.review_request_guard.resolve_guard_target",
+                return_value=target,
+            ),
+            patch(
+                "teatree.core.review_request_guard.reconcile_out_of_band",
+                return_value="https://team.slack.com/archives/C/p1",
+            ),
+        ):
+            signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
+
+        assert slack.posts == []
+        assert any(s.kind == "review_nag.reconciled" for s in signals)
+
+    def test_nag_proceeds_when_no_guard_target(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        self._due_post()
+        slack = FakeSlack()
+        with patch(
+            "teatree.core.review_request_guard.resolve_guard_target",
+            return_value=None,
+        ):
+            ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
+        assert len(slack.posts) == 1
+
+    def test_nag_proceeds_when_guard_finds_nothing(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+
+        self._due_post()
+        slack = FakeSlack()
+        target = GuardTarget(channel_id="C0DEMOCHAN1", channel_name="rev", token="xoxb")
+        with (
+            patch(
+                "teatree.core.review_request_guard.resolve_guard_target",
+                return_value=target,
+            ),
+            patch(
+                "teatree.core.review_request_guard.reconcile_out_of_band",
+                return_value="",
+            ),
+        ):
+            ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
+        assert len(slack.posts) == 1
