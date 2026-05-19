@@ -1,12 +1,13 @@
 """Review CLI commands — GitLab draft note operations.
 
 Every method that publishes under the user's identity to an MR (a
-``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*``
-call) routes through the same recorded-approval pre-gate
-(``ask_before_post_on_behalf``, #960) the reply transport uses. Read-
-only methods (``list_draft_notes``, ``delete_draft_note``) bypass the
-gate: ``list`` does not publish; deleting one's own draft *pre*-
-publication is not a colleague-facing post.
+``post_*`` / ``reply_*`` / ``resolve_*`` / ``publish_*`` / ``update_*`` /
+``approve`` / ``unapprove`` call) routes through the same recorded-
+approval pre-gate (``ask_before_post_on_behalf``, #960/#1013) the reply
+transport uses. Read-only methods (``list_draft_notes``,
+``delete_draft_note``) bypass the gate: ``list`` does not publish;
+deleting one's own draft *pre*-publication is not a colleague-facing
+post.
 
 The gate is satisfiable without a TTY — the user records an
 :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval` scoped
@@ -37,34 +38,13 @@ _TOKEN_PARTS_COUNT = 2
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
-def _on_behalf_gate_active() -> bool:
-    """Whether the ask-before-post-on-behalf pre-gate forbids unattended posting.
-
-    An MR approval/unapproval is an outward, state-changing post made under
-    the user's identity, so it must respect the same
-    ``ask_before_post_on_behalf`` pre-gate the posting subcommands use
-    (souliane/teatree#960).
-
-    The gate module (``teatree.on_behalf_gate``) is the single source of
-    truth. It is wired here through a soft import so this command works
-    whether or not the gate PR has merged yet: if the module is absent the
-    gate is treated as inactive (no behaviour change until it lands); once
-    present, ``ask_before_post_on_behalf_enabled()`` decides.
-    """
-    try:
-        from teatree.on_behalf_gate import ask_before_post_on_behalf_enabled  # noqa: PLC0415
-    except ModuleNotFoundError:
-        return False
-    return ask_before_post_on_behalf_enabled()
-
-
 class ReviewService:
     """GitLab draft note operations for code review.
 
     Every method that publishes to an MR (post comment, post draft note,
-    publish drafts, reply, resolve, update note) is wrapped by the
-    recorded-approval on-behalf pre-gate. See module docstring for the
-    full contract.
+    publish drafts, reply, resolve, update note, approve, unapprove) is
+    wrapped by the recorded-approval on-behalf pre-gate. See module
+    docstring for the full contract.
     """
 
     def __init__(self, token: str) -> None:
@@ -375,7 +355,17 @@ class ReviewService:
         Returns (message, exit_code). The review-first precondition encodes
         the approve-on-review doctrine: an approval cannot be recorded
         without a prior reviewing footprint from the same identity.
+
+        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an approval is
+        an outward post on the user's identity, so it routes through the
+        same recorded-approval gate every other on-behalf method uses. Gate
+        ON + no recorded :class:`OnBehalfApproval` matching
+        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
+        effect; gate ON + recorded row → consume single-use and proceed.
         """
+        blocked = check_on_behalf(repo, mr, "approve")
+        if blocked:
+            return blocked, 1
         encoded = repo.replace("/", "%2F")
         reviewed, error = self._identity_has_reviewed(encoded, mr)
         if error:
@@ -398,24 +388,22 @@ class ReviewService:
 
         No review-first precondition — removing an approval is the safe
         direction and must always be reachable.
+
+        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an unapproval
+        is still a colleague-visible post on the user's identity, so it
+        routes through the same recorded-approval gate as ``approve`` (and
+        every other on-behalf method). The recorded row scopes to
+        ``(<repo>!<mr>, "unapprove")``.
         """
+        blocked = check_on_behalf(repo, mr, "unapprove")
+        if blocked:
+            return blocked, 1
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
         if status in _HTTP_OK_CODES:
             return f"OK unapproved !{mr}", 0
         return f"Failed: HTTP {status}", 1
-
-
-def _refuse_if_on_behalf_gated() -> None:
-    """Refuse an approval/unapproval when the on-behalf pre-gate is active."""
-    if _on_behalf_gate_active():
-        typer.echo(
-            "Refusing: `ask_before_post_on_behalf` is enabled — an MR approval is an outward "
-            "post on your behalf and must be user-approved first. Disable the gate per-overlay "
-            "in ~/.teatree.toml once you trust the workflow, or record the approval manually.",
-        )
-        raise typer.Exit(code=1)
 
 
 def _require_token() -> ReviewService:
@@ -551,9 +539,11 @@ def approve(
 
     Precondition: a review note/discussion authored by your identity must
     already exist on the MR (review before approve). Also respects the
-    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+    record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+    approve --approver <user-id>`` to satisfy the gate without disabling
+    it.
     """
-    _refuse_if_on_behalf_gated()
     service = _require_token()
     msg, code = service.approve(repo, mr)
     typer.echo(msg)
@@ -569,9 +559,11 @@ def unapprove(
     """Revoke your approval on a GitLab MR.
 
     No review precondition (revoking is the safe direction). Respects the
-    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960).
+    `ask_before_post_on_behalf` pre-gate (souliane/teatree#960/#1013) —
+    record an approval via ``t3 review approve-on-behalf <repo>!<mr>
+    unapprove --approver <user-id>`` to satisfy the gate without disabling
+    it.
     """
-    _refuse_if_on_behalf_gated()
     service = _require_token()
     msg, code = service.unapprove(repo, mr)
     typer.echo(msg)
