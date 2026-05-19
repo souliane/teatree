@@ -270,12 +270,39 @@ _LOOP_CADENCE_DEFAULT = 720
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
+def _loop_cadence_seconds() -> int:
+    """Resolve the loop cadence the same way ``t3 loop`` does (#1036).
+
+    Routes through the shared ``teatree.config.cadence_seconds()`` resolver
+    (``T3_LOOP_CADENCE`` env first, then ``~/.teatree.toml``
+    ``loop_cadence_seconds``) so the hook's tick-staleness window and the
+    loop-registration cron minutes can never diverge from the real slot
+    cadence. Best-effort: if ``teatree`` is not importable in this hook
+    process, fall back to the env-only read.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.config import cadence_seconds  # noqa: PLC0415
+
+        return cadence_seconds()
+    except Exception:  # noqa: BLE001
+        return int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
 def _tick_meta_stale() -> bool:
     xdg = os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local" / "share"))
     meta = Path(xdg) / "teatree" / "tick-meta.json"
     if not meta.is_file():
         return True
-    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    cadence = _loop_cadence_seconds()
     import time  # noqa: PLC0415
 
     age = int(time.time()) - int(meta.stat().st_mtime)
@@ -320,7 +347,7 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
         return
     if not _tick_meta_stale():
         return
-    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    cadence = _loop_cadence_seconds()
     minutes = max(1, cadence // 60)
     pending.write_text("1", encoding="utf-8")
     print(  # noqa: T201
@@ -344,7 +371,7 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     if _session_has_loop(session_id):
         pending.unlink(missing_ok=True)
         return False
-    cadence = int(os.environ.get("T3_LOOP_CADENCE", _LOOP_CADENCE_DEFAULT) or _LOOP_CADENCE_DEFAULT)
+    cadence = _loop_cadence_seconds()
     minutes = max(1, cadence // 60)
     reason = (
         f"The teatree background loop is not registered yet. "

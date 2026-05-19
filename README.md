@@ -131,7 +131,7 @@ t3 loop tick
 t3 loop status
 ```
 
-The cadence is configurable via `T3_LOOP_CADENCE` (seconds, default `720`). To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.
+The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting `loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`). To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.
 
 **Wire up the Claude Code statusline hook** so the rendered file actually shows in the bottom bar. Either enable the `t3` plugin (the plugin's `settings.json` registers the hook automatically), or add it to `~/.claude/settings.json`:
 
