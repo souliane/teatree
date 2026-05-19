@@ -1,14 +1,18 @@
-"""Tests for ``handle_inject_pending_chat`` UserPromptSubmit hook (#1014).
+"""Tests for ``handle_inject_pending_chat`` UserPromptSubmit hook (#1014 followup).
 
 The drain side of the Slack inbound bridge — WS2 / WS4. The handler
-reads unconsumed :class:`PendingChatInjection` rows for the loop-owner
-session and writes them into the next user turn's ``additionalContext``
+reads unconsumed :class:`PendingChatInjection` rows targeted at the
+user and writes them into the next user turn's ``additionalContext``
 so a Slack DM reaches the agent as if the user had typed it.
 
-Gated on ``_session_owns_loop`` — a non-owner session never drains the
-queue, matching the §5.6 ``handle_loop_self_pump`` discipline so a
-fresh side-session does not steal the user's reply intended for the
-loop owner.
+**Drain eligibility (corrected):** ANY interactive Claude Code session
+may drain the queue — the original ``_session_owns_loop`` gate was the
+wrong invariant. The autonomous ``t3 loop start`` session owns the
+loop record but never receives ``UserPromptSubmit`` events, so the
+owner-gate caused the queue to pile up (32 unconsumed rows observed
+in production). At-most-once delivery is preserved by the durable
+single-use ``consume()`` transition plus the ``(overlay, slack_ts)``
+``UniqueConstraint`` — the owner-gate added nothing real.
 """
 
 import os
@@ -46,7 +50,7 @@ def _own_loop(session_id: str) -> None:
     )
 
 
-class TestDrainAsOwner:
+class TestDrain:
     def test_owner_session_drains_one_pending_row(self, capsys: pytest.CaptureFixture[str]) -> None:
         _own_loop("owner-1")
         PendingChatInjection.record(
@@ -114,29 +118,79 @@ class TestDrainAsOwner:
         assert capsys.readouterr().out == ""
 
 
-class TestOwnershipGate:
-    def test_non_owner_session_does_not_drain(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _own_loop("the-owner")
-        PendingChatInjection.record(channel="D", slack_ts="1.0", text="message for owner")
+class TestAnySessionDrains:
+    """Drain eligibility (#1014 followup).
 
-        handle_inject_pending_chat({"session_id": "some-other-session"})
+    The original implementation gated the drain on ``_session_owns_loop``,
+    matching the §5.6 self-pump owner discipline. That was the wrong
+    invariant for the inbound bridge: the loop-owner record points at the
+    autonomous ``t3 loop start`` session, which never receives
+    ``UserPromptSubmit`` events. User DMs land in the interactive Claude
+    Code session — a non-owner session — so the queue piled up unconsumed
+    (32 rows observed in production). The fix drops the owner gate; these
+    tests are the regression guard.
+
+    At-most-once delivery is preserved by the durable single-use
+    ``consume()`` transition (a second caller sees ``consumed_at`` set)
+    and the ``(overlay, slack_ts)`` ``UniqueConstraint`` (deduping the
+    ingest side), so the owner-gate was redundant safety, not a real
+    correctness primitive.
+    """
+
+    def test_non_owner_session_drains(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Regression: a session that does NOT own the loop must still drain.
+
+        Anti-vacuous proof: reverting the fix (re-introducing the
+        ``_session_owns_loop`` gate at the head of the handler) turns
+        this RED — the message stays in ``out`` empty and the row's
+        ``consumed_at`` stays ``None``.
+        """
+        _own_loop("the-loop-owner")
+        PendingChatInjection.record(
+            channel="D0B36P8LU86",
+            slack_ts="1700000000.0001",
+            text="merge PR #42",
+            user_id="U0A72P7CK0A",
+        )
+
+        handle_inject_pending_chat({"session_id": "interactive-session-not-owner"})
 
         out = capsys.readouterr().out
-        assert "message for owner" not in out
+        assert "merge PR #42" in out
+        assert "Slack" in out
         row = PendingChatInjection.objects.get()
-        assert row.consumed_at is None
+        assert row.consumed_at is not None
+        assert row.is_pending is False
 
-    def test_no_owner_registered_does_not_drain(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """If no session owns the loop, no session may drain the queue."""
-        PendingChatInjection.record(channel="D", slack_ts="1.0", text="message")
+    def test_non_owner_drains_multiple_rows(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Regression: the full backlog drains for a non-owner session."""
+        _own_loop("loop-owner-elsewhere")
+        PendingChatInjection.record(channel="D", slack_ts="1.0", text="reply one")
+        PendingChatInjection.record(channel="D", slack_ts="2.0", text="reply two")
 
-        handle_inject_pending_chat({"session_id": "any"})
+        handle_inject_pending_chat({"session_id": "interactive"})
 
         out = capsys.readouterr().out
-        assert "message" not in out
-        assert PendingChatInjection.objects.get().is_pending is True
+        assert "reply one" in out
+        assert "reply two" in out
+        assert PendingChatInjection.objects.filter(consumed_at__isnull=True).count() == 0
 
-    def test_missing_session_id_is_no_op(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_drain_works_when_no_owner_registered(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """No loop-owner record exists ⇒ the queue still drains.
+
+        Models a fresh interactive session before ``t3 loop start`` has
+        claimed the registry. The user's queued reply must still surface.
+        """
+        PendingChatInjection.record(channel="D", slack_ts="1.0", text="ping the agent")
+
+        handle_inject_pending_chat({"session_id": "any-interactive"})
+
+        out = capsys.readouterr().out
+        assert "ping the agent" in out
+        assert PendingChatInjection.objects.get().is_pending is False
+
+    def test_missing_session_id_is_still_a_no_op(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """An empty ``session_id`` is a malformed payload — no drain."""
         _own_loop("owner")
         PendingChatInjection.record(channel="D", slack_ts="1.0", text="msg")
 
@@ -144,6 +198,27 @@ class TestOwnershipGate:
 
         assert capsys.readouterr().out == ""
         assert PendingChatInjection.objects.get().is_pending is True
+
+    def test_concurrent_drain_at_most_once_via_consume(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """At-most-once delivery: ``consume()`` enforces single-emit across sessions.
+
+        Two interactive sessions both invoke the drain on the same row.
+        The durable ``consume()`` single-use transition guarantees only
+        one of them emits the text; the second sees ``consumed_at`` set
+        and is a clean no-op. The owner-gate was redundant safety on top
+        of this primitive.
+        """
+        PendingChatInjection.record(channel="D", slack_ts="1.0", text="exactly once")
+
+        handle_inject_pending_chat({"session_id": "session-A"})
+        first = capsys.readouterr().out
+
+        handle_inject_pending_chat({"session_id": "session-B"})
+        second = capsys.readouterr().out
+
+        assert "exactly once" in first
+        assert second == ""
+        assert PendingChatInjection.objects.filter(consumed_at__isnull=True).count() == 0
 
 
 class TestRouterWiring:
