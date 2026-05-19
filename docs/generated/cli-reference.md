@@ -401,8 +401,6 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
-│ approve              Approve a GitLab MR — only after you have reviewed it.  │
-│ unapprove            Revoke your approval on a GitLab MR.                    │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
 │                      on-behalf gate.                                         │
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
@@ -414,6 +412,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
+│ approve              Approve a GitLab MR — only after you have reviewed it.  │
+│ unapprove            Revoke your approval on a GitLab MR.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -493,55 +493,6 @@ Usage: t3 review reply-to-discussion [OPTIONS] REPO MR DISCUSSION_ID BODY
 │ *    mr                 INTEGER  Merge request IID [required]                │
 │ *    discussion_id      TEXT     Discussion (thread) ID [required]           │
 │ *    body               TEXT     Reply body (markdown) [required]            │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review approve`
-
-```
-Usage: t3 review approve [OPTIONS] REPO MR
-
- Approve a GitLab MR — only after you have reviewed it.
-
- Precondition: a review note/discussion authored by your identity must
- already exist on the MR (review before approve). Gated by
- `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
- souliane/teatree#960/#1013) — record an approval via
- ``t3 review approve-on-behalf <repo>!<mr> approve --approver
- <user-id>`` to satisfy the gate without switching mode to
- `immediate`.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 review unapprove`
-
-```
-Usage: t3 review unapprove [OPTIONS] REPO MR
-
- Revoke your approval on a GitLab MR.
-
- No review precondition (revoking is the safe direction). Gated by
- `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
- souliane/teatree#960/#1013) — record an approval via
- ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
- <user-id>`` to satisfy the gate without switching mode to
- `immediate`.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
-│                         [required]                                           │
-│ *    mr        INTEGER  Merge request IID [required]                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -697,6 +648,55 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve`
+
+```
+Usage: t3 review approve [OPTIONS] REPO MR
+
+ Approve a GitLab MR — only after you have reviewed it.
+
+ Precondition: a review note/discussion authored by your identity must
+ already exist on the MR (review before approve). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> approve --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review unapprove`
+
+```
+Usage: t3 review unapprove [OPTIONS] REPO MR
+
+ Revoke your approval on a GitLab MR.
+
+ No review precondition (revoking is the safe direction). Gated by
+ `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
+ souliane/teatree#960/#1013) — record an approval via
+ ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
+ <user-id>`` to satisfy the gate without switching mode to
+ `immediate`.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
+│                         [required]                                           │
+│ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

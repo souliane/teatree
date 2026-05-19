@@ -98,7 +98,11 @@ src/teatree/
     loop.py             # `t3 loop start|stop|status|tick` (tick delegates to loop_tick mgmt cmd)
     overlay.py          # OverlayAppBuilder — builds the per-overlay subapp
     overlay_dev.py      # `t3 overlay install|uninstall|status` (dev loop)
-    review.py           # `t3 review ...`
+    review.py           # `t3 review ...` (typer entrypoint + ReviewService)
+    review_approvals.py # `t3 review approve|unapprove` + review-before-approve precondition (#1056)
+    review_diff.py      # MR-diff helpers shared by `review` (find_added_line, resolve_inline_position)
+    review_drafts.py    # `t3 review delete-draft-note|delete-discussion|...` (draft-note cluster)
+    review_on_behalf.py # `t3 review approve-on-behalf` + on-behalf-gate chokepoint (#960)
     review_request.py   # `t3 review-request ...`
     sessions.py         # `t3 sessions`
     setup.py            # `t3 setup ...`

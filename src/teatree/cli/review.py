@@ -26,6 +26,8 @@ from http import HTTPStatus
 
 import typer
 
+from teatree.cli import review_approvals
+from teatree.cli.review_approvals import register as _register_approvals
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
@@ -40,7 +42,6 @@ _on_behalf_gate_active = on_behalf_gate_active
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
-_HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
 class ReviewService:
@@ -354,91 +355,22 @@ class ReviewService:
             lines.append(f"  {nid}  {fp}:{ln}  {body}...")
         return "\n".join(lines), 0
 
-    def _identity_has_reviewed(self, encoded_repo: str, mr: int) -> tuple[bool, str]:
-        """Whether the approving identity already authored a note on this MR.
-
-        Encodes the review-before-approve doctrine: an approval may only be
-        recorded once the same identity has left a reviewing footprint
-        (any note in any discussion thread). Returns ``(reviewed, error)``;
-        ``error`` is non-empty only when the identity itself cannot be
-        resolved (a hard precondition failure, not "no review yet").
-        """
-        api = self._get_api()
-        username = api.current_username()
-        if not username:
-            return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
-        discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
-        if not isinstance(discussions, list):
-            return False, ""
-        for discussion in discussions:
-            if not isinstance(discussion, dict):
-                continue
-            notes = discussion.get("notes")
-            if not isinstance(notes, list):
-                continue
-            for note in notes:
-                if not isinstance(note, dict):
-                    continue
-                author = note.get("author")
-                if isinstance(author, dict) and author.get("username") == username:
-                    return True, ""
-        return False, ""
-
     def approve(self, repo: str, mr: int) -> tuple[str, int]:
         """Approve an MR — refuses unless the identity has already reviewed it.
 
-        Returns (message, exit_code). The review-first precondition encodes
-        the approve-on-review doctrine: an approval cannot be recorded
-        without a prior reviewing footprint from the same identity.
-
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an approval is
-        an outward post on the user's identity, so it routes through the
-        same recorded-approval gate every other on-behalf method uses. Gate
-        ON + no recorded :class:`OnBehalfApproval` matching
-        ``(<repo>!<mr>, "approve")`` → refuse without any GitLab side
-        effect; gate ON + recorded row → consume single-use and proceed.
+        Delegates to :func:`teatree.cli.review_approvals.approve` for the
+        implementation body; see that module for the full review-first
+        precondition and on-behalf-gate contract.
         """
-        blocked = check_on_behalf(repo, mr, "approve")
-        if blocked:
-            return blocked, 1
-        encoded = repo.replace("/", "%2F")
-        reviewed, error = self._identity_has_reviewed(encoded, mr)
-        if error:
-            return error, 1
-        if not reviewed:
-            msg = (
-                f"Refusing to approve !{mr}: review before approve — no review note authored by your "
-                "identity exists on this MR yet. Post a review (`t3 review post-comment` / "
-                "`post-draft-note`) first, then approve."
-            )
-            return msg, 1
-        api = self._get_api()
-        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
-        if status in _HTTP_OK_CODES:
-            return f"OK approved !{mr}", 0
-        return f"Failed: HTTP {status}", 1
+        return review_approvals.approve(self, repo, mr)
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
         """Revoke this identity's approval on an MR. Returns (message, exit_code).
 
-        No review-first precondition — removing an approval is the safe
-        direction and must always be reachable.
-
-        Gated by ``ask_before_post_on_behalf`` (#960/#1013): an unapproval
-        is still a colleague-visible post on the user's identity, so it
-        routes through the same recorded-approval gate as ``approve`` (and
-        every other on-behalf method). The recorded row scopes to
-        ``(<repo>!<mr>, "unapprove")``.
+        Delegates to :func:`teatree.cli.review_approvals.unapprove`; see
+        that module for the on-behalf-gate contract.
         """
-        blocked = check_on_behalf(repo, mr, "unapprove")
-        if blocked:
-            return blocked, 1
-        api = self._get_api()
-        encoded = repo.replace("/", "%2F")
-        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
-        if status in _HTTP_OK_CODES:
-            return f"OK unapproved !{mr}", 0
-        return f"Failed: HTTP {status}", 1
+        return review_approvals.unapprove(self, repo, mr)
 
 
 def _require_token() -> ReviewService:
@@ -543,52 +475,10 @@ def reply_to_discussion(
         raise typer.Exit(code=code)
 
 
-@review_app.command(name="approve")
-def approve(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """Approve a GitLab MR — only after you have reviewed it.
-
-    Precondition: a review note/discussion authored by your identity must
-    already exist on the MR (review before approve). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
-    souliane/teatree#960/#1013) — record an approval via
-    ``t3 review approve-on-behalf <repo>!<mr> approve --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
-    """
-    service = _require_token()
-    msg, code = service.approve(repo, mr)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
-@review_app.command(name="unapprove")
-def unapprove(
-    repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
-    mr: int = typer.Argument(help="Merge request IID"),
-) -> None:
-    """Revoke your approval on a GitLab MR.
-
-    No review precondition (revoking is the safe direction). Gated by
-    `on_behalf_post_mode` (BLOCK under `ask` / `draft_or_ask`,
-    souliane/teatree#960/#1013) — record an approval via
-    ``t3 review approve-on-behalf <repo>!<mr> unapprove --approver
-    <user-id>`` to satisfy the gate without switching mode to
-    `immediate`.
-    """
-    service = _require_token()
-    msg, code = service.unapprove(repo, mr)
-    typer.echo(msg)
-    if code:
-        raise typer.Exit(code=code)
-
-
 # Register sibling-module typer commands. Kept out of this file so the
 # OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
-# satisfied — see `teatree.cli.review_on_behalf` and
-# `teatree.cli.review_drafts`.
+# satisfied — see `teatree.cli.review_on_behalf`,
+# `teatree.cli.review_drafts`, and `teatree.cli.review_approvals`.
 _register_on_behalf(review_app)
 _register_drafts(review_app)
+_register_approvals(review_app)
