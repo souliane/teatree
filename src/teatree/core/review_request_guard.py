@@ -60,6 +60,12 @@ def _canonical(url: str) -> str:
     return url.rstrip("/").split("#")[0]
 
 
+# Public alias so the #1098 sanctioned-post command uses the exact same
+# canonicalization for BOTH the guard arg and the #960 approval target —
+# provably one string, no drift between the dedup claim and the approval scope.
+canonical_mr_url = _canonical
+
+
 @dataclass(frozen=True, slots=True)
 class GuardTarget:
     """The review channel and the token an outbound post would use.

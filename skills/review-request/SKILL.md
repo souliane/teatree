@@ -88,11 +88,23 @@ Always present **two tables** before posting:
 
 ### 7. Send Review Requests
 
-Only after user approval, and **for each PR, in the same turn**: run `t3 review-request check --mr-url <PR_URL>` (§5) and post **only if** it returned `{"action": "post"}`. If it returned `suppress`, skip that PR — never post over the guard. Re-running `check` immediately before each `slack_send_message` is what closes the check→post race; do not batch all checks up front and then post later.
+Only after user approval, **for each Ready PR** run the single sanctioned post command — it bundles the §5 live-channel dedup, the #960 recorded-approval chokepoint, and the post in one classifier-legible transaction (#1098):
 
-Use the project's channel routing rules.
+```bash
+t3 <overlay> review-request post --mr-url <PR_URL> --approver <user-id> --title "<type(scope): description>"
+```
 
-**Message format:** `<MR_title_without_ticket_url> <MR_URL>` — one line, nothing else.
+This is the **only** sanctioned post path. **Never** post a review request with a raw `messaging_from_overlay(...).post_message(...)` Bash call — that bypasses the dedup claim and the recorded-approval binding and is (correctly) blocked by the auto-mode classifier. The command:
+
+- runs `review_request_check`'s live-channel dedup internally and prints `{"action": "suppress", ...}` + exits 0 with **no post** on a live duplicate;
+- requires a matching, unconsumed, exactly-scoped #960 `OnBehalfApproval`. With none it prints the exact `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <id>` remediation, refuses (`{"action": "refused", "reason": "on_behalf_not_approved"}`, exit 2), and **rolls back** the dedup claim so a later approved retry is not wedged;
+- on success posts once, consumes the approval (single-use), writes the #960 audit row, records the permalink, and prints `{"action": "post", "permalink": ...}`.
+
+The user records the approval (no terminal required) with `t3 review approve-on-behalf '<MR_URL>' review_request_post --approver <their-id>`; then re-run the post command. `--approver` is the user id that recorded it. The approver can never be the executing agent/loop (maker≠checker, enforced at record time).
+
+Use the project's channel routing rules. `--title` is recommended (the command does not fetch the MR title over the network — without it the subject defaults to `Please review`).
+
+**Message format:** `<title> <MR_URL>` — one line, nothing else.
 
 **Batching rules** (project-specific, see extension points):
 
@@ -101,7 +113,7 @@ Use the project's channel routing rules.
 
 ### 8. Persistence Is Automatic
 
-The dedup gate (§5/§7) takes the atomic `ReviewRequestPost` claim itself, and the Slack review-sync attaches the permalink to the PR's ticket record. **The live channel + the `ReviewRequestPost` row are the source of truth — not a hand-written JSON file.** Do not maintain `mr_review_messages.json` as a dedup oracle; a stale or missing file must never cause a duplicate post (killing the file does not, by design — the guard reads the live channel). No manual persistence step is required after posting.
+`t3 <overlay> review-request post` (§7) takes the atomic `ReviewRequestPost` claim, consumes the #960 approval, writes the audit row, and records the permalink to `mr_review_messages.json` itself — and the Slack review-sync attaches the permalink to the PR's ticket record. **The live channel + the `ReviewRequestPost` row are the dedup source of truth — NOT the JSON file.** `mr_review_messages.json` is only a durable *record* of where the post landed (the permalink, outside Slack); it is never consulted as a dedup oracle, so a stale or missing file can never cause a duplicate post (the guard reads the live channel). No manual persistence step — and no hand-written JSON — is required after posting.
 
 ### 9. Check Doing → Technical Review Transition
 
@@ -129,7 +141,7 @@ After sending, remind the user about PRs that couldn't be sent:
 ## Rules
 
 - **Never post without user approval.** Always present the summary tables first and wait for explicit "send" / "go ahead".
-- **Never post duplicates — enforced, not advisory.** Run `t3 review-request check --mr-url <url>` in the **same turn** as every post and abort the post on `suppress` (#1084). The gate reads the live channel with the post-token and takes an atomic DB claim, so two posts (agent+agent, or user+agent) for the same PR within the dedup window are impossible. A user's manual out-of-band post suppresses the agent. Do not rely on a JSON cache or an out-of-turn manual search — both are racy and stale-prone.
+- **Post only via the sanctioned command — enforced, not advisory.** `t3 <overlay> review-request post --mr-url <url> --approver <id>` is the ONLY sanctioned post path (#1098). It runs the #1084 live-channel dedup + atomic DB claim and the #960 recorded-approval chokepoint in one transaction, so two posts (agent+agent, or user+agent) for the same PR within the dedup window are impossible and an unapproved post cannot go out. A user's manual out-of-band post suppresses the agent. **Never** post with a raw `messaging_from_overlay(...).post_message(...)` Bash call, a JSON cache, or an out-of-turn manual search — all bypass the dedup+approval binding and are racy and stale-prone.
 - **Draft PRs are invisible.** Exclude them from all tables and counts.
 - **Validate before posting.** Never send a review request for a PR that fails validation — fix it first.
 - **Preserve description bodies.** When fixing the first line, never lose the rest of the description.
