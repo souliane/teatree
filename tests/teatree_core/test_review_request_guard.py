@@ -24,6 +24,7 @@ from teatree.core.review_request_guard import (
     GuardDecision,
     GuardOptions,
     GuardTarget,
+    peek_should_post_review_request,
     reconcile_out_of_band,
     resolve_guard_target,
     should_post_review_request,
@@ -537,6 +538,108 @@ class TestReconcileIdempotent(TestCase):
             )
         assert permalink != ""
         assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+
+class TestStaleOrphanReclaim(TestCase):
+    """A stale unposted orphan must not suppress an authoritative POST (#1103).
+
+    ``review_request_check`` (pre-#1103) left a durable claim row with
+    ``done_at=None`` and ``slack_thread_ts=''``. Such an orphan older
+    than ``_CLAIM_RACE_WINDOW`` is NOT a concurrent dup — the live scan
+    is the authority that nothing was posted, so the orphan is reclaimed.
+    A *recent* orphan (< window) is still a genuine race → SUPPRESS.
+    """
+
+    def test_stale_orphan_does_not_suppress(self) -> None:
+        stale_at = timezone.now() - dt.timedelta(minutes=5)
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id="",
+            slack_thread_ts="",
+            done_at=None,
+            created_at=stale_at,
+        )
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        assert post.created_at > stale_at
+        assert post.slack_channel_id == _CHANNEL_ID
+        assert post.done_at is None
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 1
+
+    def test_recent_unposted_claim_suppresses(self) -> None:
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="",
+            done_at=None,
+            created_at=timezone.now(),
+        )
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_claimed"
+
+    def test_stale_but_posted_row_still_suppresses(self) -> None:
+        """A stale row that DID post (slack_thread_ts set) is not an orphan."""
+        ReviewRequestPost.objects.create(
+            mr_url=_MR_URL,
+            slack_channel_id=_CHANNEL_ID,
+            slack_thread_ts="1700000000.000100",
+            done_at=None,
+            created_at=timezone.now() - dt.timedelta(minutes=5),
+        )
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_claimed"
+
+
+class TestPeekTakesNoClaim(TestCase):
+    """``peek_should_post_review_request`` never persists a row (#1103)."""
+
+    def test_peek_clean_scan_posts_without_claim(self) -> None:
+        fake = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "post"
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_peek_passes_through_terminal_suppress(self) -> None:
+        page = {
+            "ok": True,
+            "messages": [{"text": f"review {_MR_URL}", "ts": _ts_now(), "user": _HUMAN_AUTHOR}],
+            "has_more": False,
+        }
+        fake = FakeClient(pages=[page])
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            decision = peek_should_post_review_request(
+                mr_url=_MR_URL,
+                target=GuardTarget(channel_id=_CHANNEL_ID, channel_name=_CHANNEL_NAME, token="xoxb-bot"),
+            )
+        assert decision.action == "suppress"
+        assert decision.reason == "already_posted"
 
 
 class TestNoLoopTaskTouched(TestCase):
