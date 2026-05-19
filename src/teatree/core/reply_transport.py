@@ -84,8 +84,9 @@ class _BaseReplier:
     """
 
     #: Actions that post under the user's identity to a colleague/customer
-    #: surface — gated by ``ask_before_post_on_behalf`` (#960). ``post_dm``
-    #: is a bot→user message and is intentionally absent (never gated).
+    #: surface — gated by ``on_behalf_post_mode`` (#960, BLOCK under ``ask``
+    #: / ``draft_or_ask``). ``post_dm`` is a bot→user message and is
+    #: intentionally absent (never gated).
     _ON_BEHALF_ACTIONS: ClassVar[frozenset[str]] = frozenset({"post_in_thread", "post_comment"})
 
     def post_in_thread(
@@ -178,7 +179,7 @@ class _BaseReplier:
                 # FAILED row + actionable message is the user-notify path —
                 # the retry sweep re-attempts once a user records the
                 # OnBehalfApproval (no TTY) and the gate then passes.
-                logger.warning("Reply %s gated by ask_before_post_on_behalf", spec.idempotency_key)
+                logger.warning("Reply %s gated by on_behalf_post_mode", spec.idempotency_key)
                 return self._finalize(
                     dispatch,
                     status=ReplyDispatch.Status.FAILED,

@@ -66,7 +66,8 @@ depends_on = [
   "teatree.trigger_parser",
   "teatree.agents",
   "teatree.backends",
-  "teatree.on_behalf_gate"
+  "teatree.on_behalf_gate",
+  "teatree.slack_mrkdwn"
 ]
 
 [[modules]]

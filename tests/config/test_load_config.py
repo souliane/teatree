@@ -87,16 +87,44 @@ def test_require_human_approval_to_answer_can_be_disabled(tmp_path: Path) -> Non
     assert load_config(config_path).user.require_human_approval_to_answer is False
 
 
-def test_ask_before_post_on_behalf_defaults_on(tmp_path: Path) -> None:
+def test_on_behalf_post_mode_defaults_to_draft_or_ask(tmp_path: Path) -> None:
+    """New default mode is DRAFT_OR_ASK — replaces the old default-true bool."""
+    from teatree.config import OnBehalfPostMode  # noqa: PLC0415
+
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\n")
-    assert load_config(config_path).user.ask_before_post_on_behalf is True
+    assert load_config(config_path).user.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
 
 
-def test_ask_before_post_on_behalf_can_be_disabled(tmp_path: Path) -> None:
+def test_on_behalf_post_mode_explicit_immediate(tmp_path: Path) -> None:
+    from teatree.config import OnBehalfPostMode  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\non_behalf_post_mode = "immediate"\n')
+    assert load_config(config_path).user.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+
+
+def test_legacy_ask_before_post_on_behalf_true_maps_to_ask(tmp_path: Path) -> None:
+    """Backward-compat: ``ask_before_post_on_behalf = true`` → ASK mode."""
+    from teatree.config import OnBehalfPostMode  # noqa: PLC0415
+
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nask_before_post_on_behalf = true\n")
+    cfg = load_config(config_path)
+    assert cfg.user.on_behalf_post_mode is OnBehalfPostMode.ASK
+    # Derived legacy boolean stays consistent for the one deprecation release.
+    assert cfg.user.ask_before_post_on_behalf is True
+
+
+def test_legacy_ask_before_post_on_behalf_false_maps_to_immediate(tmp_path: Path) -> None:
+    """Backward-compat: ``ask_before_post_on_behalf = false`` → IMMEDIATE mode."""
+    from teatree.config import OnBehalfPostMode  # noqa: PLC0415
+
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\nask_before_post_on_behalf = false\n")
-    assert load_config(config_path).user.ask_before_post_on_behalf is False
+    cfg = load_config(config_path)
+    assert cfg.user.on_behalf_post_mode is OnBehalfPostMode.IMMEDIATE
+    assert cfg.user.ask_before_post_on_behalf is False
 
 
 def test_loop_cadence_seconds_defaults_to_720(tmp_path: Path) -> None:

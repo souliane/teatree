@@ -49,6 +49,55 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class OnBehalfPostMode(StrEnum):
+    """Tri-state pre-gate over on-behalf colleague/customer posts (#960).
+
+    Three points on the autonomy ramp for posts the agent makes *as the
+    user* to a colleague/customer surface (PR/MR comment, issue comment,
+    Slack channel/thread post, Notion post, PR/MR approve, reaction on
+    someone else's message):
+
+    *   :attr:`DRAFT_OR_ASK` (default) — colleague-invisible, revocable
+        draft notes (``t3 review post-draft-note``) publish autonomously
+        and the agent DMs the user with publish/delete commands; every
+        other gated action collapses to BLOCK, identical to :attr:`ASK`.
+        The user gets autonomous draft-note posting (drafts are not visible
+        to colleagues until explicitly published) without yielding control
+        over any other colleague-visible mutation.
+    *   :attr:`ASK` — every gated action requires an explicit recorded
+        approval (``t3 review approve-on-behalf <target> <action>
+        --approver <id>``) before it publishes.
+    *   :attr:`IMMEDIATE` — the gate is off; gated actions publish
+        directly (subject to the always-gated list in :class:`Mode`).
+
+    The user satisfies the gate without a TTY by recording an
+    :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`;
+    DMs *to the user themselves* and internal-only orchestration writes
+    are out of scope and remain ungated under every mode.
+    """
+
+    DRAFT_OR_ASK = "draft_or_ask"
+    ASK = "ask"
+    IMMEDIATE = "immediate"
+
+    @classmethod
+    def parse(cls, value: str) -> "OnBehalfPostMode":
+        """Parse an on-behalf-post-mode string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`DRAFT_OR_ASK`) is applied by the caller when the setting
+        is absent, so typos never silently downgrade to a less-safe
+        mode.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid on_behalf_post_mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 def default_logging(namespace: str) -> dict:
     """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/teatree.log``.
 
@@ -137,6 +186,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_human_approval_to_merge": bool,
     "require_human_approval_to_answer": bool,
     "ask_before_post_on_behalf": bool,
+    "on_behalf_post_mode": OnBehalfPostMode.parse,
     "notify_user_via_bot": bool,
     "user_identity_aliases": _parse_user_identity_aliases,
 }
@@ -145,6 +195,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 # global setting. Mapped to ``(UserSettings field, parser)``.
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
+    "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
 }
 
 
@@ -188,16 +239,32 @@ class UserSettings:
     # Pre-gate for posts the agent makes under the user's identity to a
     # colleague/customer surface (PR/MR comment, issue comment, Slack
     # channel/thread post, Notion post, PR/MR approve, reaction on
-    # someone else's message). When true the post path must obtain
-    # explicit user approval *before* publishing — the "how/what/to-whom/
-    # when" of a colleague reply is not encodable, so the gate (ask-first)
-    # is the generic mechanism. Default on; the user flips it off
-    # per-overlay once they trust the system posts well. Out of scope:
-    # internal-only orchestration writes and DMs to the user themselves.
-    # Complementary to the notify-*after* path (#949). The companion rule
-    # for ad-hoc agent posting (MCP Slack, raw `gh`/`glab`) lives in
-    # `skills/rules/SKILL.md`. Resolved via `teatree.on_behalf_gate`.
+    # someone else's message).
+    #
+    # **Deprecated** in favour of the tri-state ``on_behalf_post_mode``
+    # below. Kept on ``UserSettings`` for one release as a derived
+    # computed value: ``True`` when the resolved mode is ``ASK`` or
+    # ``DRAFT_OR_ASK``, ``False`` when ``IMMEDIATE``. The toml loader
+    # still accepts ``[teatree] ask_before_post_on_behalf = true/false``
+    # and translates it into the new mode (see ``load_config``) so
+    # existing user configs keep working.
     ask_before_post_on_behalf: bool = True
+    # Tri-state pre-gate over on-behalf colleague/customer posts (#960):
+    #
+    # * ``DRAFT_OR_ASK`` (default) — colleague-invisible, revocable draft
+    #   notes (``t3 review post-draft-note``) publish autonomously and
+    #   the agent DMs the user with the publish/delete commands; every
+    #   other gated action collapses to BLOCK identical to ``ASK``.
+    # * ``ASK`` — every gated action requires an explicit recorded
+    #   approval (``t3 review approve-on-behalf``) before it publishes.
+    # * ``IMMEDIATE`` — the gate is off; gated actions publish directly
+    #   (subject to the always-gated list in ``Mode``).
+    #
+    # Backward-compat shim: if ``on_behalf_post_mode`` is absent but the
+    # legacy ``ask_before_post_on_behalf`` is set, the loader resolves
+    # the mode as ``ASK`` (true) / ``IMMEDIATE`` (false). The default
+    # when neither is set is ``DRAFT_OR_ASK``.
+    on_behalf_post_mode: OnBehalfPostMode = OnBehalfPostMode.DRAFT_OR_ASK
     # Pass --chrome to every spawned `claude` session so Claude in Chrome is
     # available wherever it could be useful (browser inspection, UI debugging,
     # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
@@ -269,6 +336,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     toml_mode = teatree.get("mode")
     mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
 
+    on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
+
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
@@ -283,7 +352,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
-        ask_before_post_on_behalf=bool(teatree.get("ask_before_post_on_behalf", True)),
+        ask_before_post_on_behalf=ask_before_post_on_behalf,
+        on_behalf_post_mode=on_behalf_post_mode,
         notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
         claude_chrome=bool(teatree.get("claude_chrome", True)),
         agent_signature=bool(teatree.get("agent_signature", False)),
@@ -293,6 +363,36 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     )
 
     return TeaTreeConfig(user=user, raw=raw)
+
+
+def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:
+    """Resolve ``on_behalf_post_mode`` from a ``[teatree]`` toml table.
+
+    Precedence:
+
+    1.  Explicit ``on_behalf_post_mode = "..."`` always wins.
+    2.  Legacy ``ask_before_post_on_behalf = true/false`` maps to
+        :attr:`OnBehalfPostMode.ASK` / :attr:`OnBehalfPostMode.IMMEDIATE`.
+    3.  Neither set → :attr:`OnBehalfPostMode.DRAFT_OR_ASK` (new default).
+
+    Returns ``(mode, derived_ask_bool)`` so the legacy boolean field on
+    ``UserSettings`` stays consistent with the resolved mode for the one
+    deprecation release we keep it around.
+    """
+    raw_mode = teatree.get("on_behalf_post_mode")
+    if raw_mode is not None:
+        mode = OnBehalfPostMode.parse(raw_mode)
+    elif "ask_before_post_on_behalf" in teatree:
+        # Backward-compat alias: explicit legacy boolean → matching mode.
+        legacy = bool(teatree["ask_before_post_on_behalf"])
+        mode = OnBehalfPostMode.ASK if legacy else OnBehalfPostMode.IMMEDIATE
+    else:
+        mode = OnBehalfPostMode.DRAFT_OR_ASK
+    # Derived legacy boolean: ASK/DRAFT_OR_ASK both block colleague-visible
+    # publishing (only the draft-form variant publishes autonomously under
+    # DRAFT_OR_ASK), so they map to "ask before post" = True.
+    derived_ask = mode is not OnBehalfPostMode.IMMEDIATE
+    return mode, derived_ask
 
 
 def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
