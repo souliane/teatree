@@ -9,6 +9,7 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, group
 
+from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
 from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
@@ -243,6 +244,17 @@ class Command(TyperCommand):
                 resolved_ticket = Ticket.objects.get(pk=ticket_id)
             except Ticket.DoesNotExist:
                 return {"issued": False, "error": f"Ticket {ticket_id} not found"}
+
+        # #940 branch-currency pre-flight: refuse a CLEAR whose
+        # ``reviewed_sha`` trails the target branch. Otherwise the cold
+        # reviewer attests a tree missing target-branch fixes and the
+        # release pipeline certifies a stale base. Run BEFORE
+        # ``MergeClear.issue`` so the CLEAR — if issued — already points
+        # at a current SHA.
+        currency_error = check_clear_branch_currency(reviewed_sha, resolved_ticket)
+        if currency_error is not None:
+            self.stdout.write(f"  CLEAR refused: {currency_error}")
+            return {"issued": False, "error": currency_error}
 
         try:
             clear = MergeClear.issue(

@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0018_deferred_question"),
+        ("core", "0019_pendingchatinjection"),
     ]
 
     operations = [

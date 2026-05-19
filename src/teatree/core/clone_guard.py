@@ -2,9 +2,10 @@
 
 A bug-investigation sub-agent that begins root-causing against a clone
 many commits behind ``origin/<default>`` forms an initially-wrong
-root-cause hypothesis on phantom symptoms. #940 covers branch-currency
-*before cold review/ship* (the PR-branch path). This module covers the
-earlier point: **before any bug investigation reads repo files**.
+root-cause hypothesis on phantom symptoms. :mod:`teatree.core.branch_currency`
+(#940) covers branch-currency *before cold review/ship* (the PR-branch
+exit-point). This module covers the earlier point: **before any bug
+investigation reads repo files**.
 
 The gate mirrors :mod:`teatree.core.schema_guard` (#869). For each
 in-scope clone it runs ``git fetch origin``, then asserts
@@ -14,9 +15,9 @@ warning, a deterministic refusal — quoting the remediation command (the
 canonical ``t3 update`` and the in-repo fallback) so the sub-agent
 cannot proceed against stale code.
 
-Distinct from #940: this is the *entry-point* gate (before reading any
-file for investigation); #940 is the *exit-point* gate (before cold
-review/ship on a feature branch).
+Distinct from :mod:`teatree.core.branch_currency` (#940): this is the
+*entry-point* gate (before reading any file for investigation); #940 is
+the *exit-point* gate (before cold review/ship on a feature branch).
 """
 
 from dataclasses import dataclass

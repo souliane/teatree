@@ -141,6 +141,17 @@ _GIT_BRANCH_PREFIXES = frozenset(
         "build",
         "perf",
         "style",
+        # Personal-workflow prefixes the user's branches actually carry.
+        # ``ac/`` is the user's initials; ``wip/``, ``dev/``, and ``tmp/``
+        # are common scratch / iteration namespaces. They are NOT GitHub
+        # owners, so any CLEAR slug whose first segment matches must fall
+        # through to the ticket-issue-url / clone-origin fallbacks (#1005).
+        # Keep these — they're load-bearing for the user's day-to-day
+        # merges, not "non-standard" prefixes to strip.
+        "ac",
+        "wip",
+        "dev",
+        "tmp",
     }
 )
 
@@ -152,13 +163,15 @@ def _looks_like_owner_repo(slug: str) -> bool:
     slug (``souliane/teatree``) has exactly one path separator and is not
     a filesystem path.
 
-    A *branch-shaped* slug (``fix/review-cli-django-bootstrap``) also has
-    exactly one ``/`` and would otherwise pass the structural check —
-    yet it is a git branch name, not an ``owner/repo`` (#1005). Such a
-    slug must fall through to the ticket-issue-url and clone-origin
-    fallbacks so the real repo is resolved. A real GitHub owner cannot
-    be one of the standard git branch namespaces (``fix``, ``feat``,
-    ``chore``, …), so any slug whose first path segment is in
+    A *branch-shaped* slug (``fix/review-cli-django-bootstrap``,
+    ``ac/cli-bundle-…``) also has exactly one ``/`` and would otherwise
+    pass the structural check — yet it is a git branch name, not an
+    ``owner/repo`` (#1005). Such a slug must fall through to the
+    ticket-issue-url and clone-origin fallbacks so the real repo is
+    resolved. A real GitHub owner cannot be one of the standard git
+    branch namespaces (``fix``, ``feat``, ``chore``, …) nor the user's
+    personal-workflow prefixes (``ac``, ``wip``, ``dev``, ``tmp``), so
+    any slug whose first path segment is in
     :data:`_GIT_BRANCH_PREFIXES` (case-insensitive) is rejected here.
     The alternative — re-ordering :func:`resolve_pr_repo_slug` to consult
     the ticket/clone fallbacks before the structural check — would change

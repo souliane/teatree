@@ -30,6 +30,7 @@ from teatree.loop.scanners import (
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
+    SlackDmInboundScanner,
     SlackMentionsScanner,
     StaleTicketsScanner,
     TicketCompletionScanner,
@@ -288,6 +289,10 @@ def build_default_jobs(
                     [
                         _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
                         _ScannerJob(
+                            scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
+                        _ScannerJob(
                             scanner=ReviewNagScanner(
                                 messaging=backend.messaging,
                                 user_slack_id=_user_slack_id_for_overlay(tag),
@@ -306,7 +311,12 @@ def build_default_jobs(
                 ],
             )
         if messaging is not None:
-            jobs.append(_ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""))
+            jobs.extend(
+                [
+                    _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
+                    _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
+                ]
+            )
 
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))

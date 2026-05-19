@@ -3,15 +3,19 @@
 ``ReviewService`` is the second on-behalf chokepoint (alongside
 ``_BaseReplier``) — its ``post_comment``, ``post_draft_note``,
 ``publish_draft_notes``, ``reply_to_discussion``, ``resolve_discussion``,
-and ``update_note`` methods all publish on the user's identity to a
-GitLab MR. They route through the same satisfiable recorded-approval
-gate as the reply transport: gate ON + no approval → refuse without
-posting (and surface the approve-on-behalf invocation that satisfies
-it); gate ON + recorded :class:`OnBehalfApproval` → publish and consume
-the row; gate OFF → publish.
+``update_note``, and ``delete_discussion`` methods all publish on the
+user's identity to a GitLab MR. They route through the same
+satisfiable recorded-approval gate as the reply transport: gate ON +
+no approval → refuse without posting (and surface the
+approve-on-behalf invocation that satisfies it); gate ON + recorded
+:class:`OnBehalfApproval` → publish and consume the row; gate OFF →
+publish.
 
-Pure-read methods (``list_draft_notes``, ``delete_draft_note``) are NOT
-on-behalf posts and remain ungated.
+Pure-read / pre-publication methods (``list_draft_notes``,
+``delete_draft_note``) are NOT on-behalf posts and remain ungated —
+``delete_draft_note`` removes the *user's own* unpublished draft, no
+colleague sees it. ``delete_discussion`` is different: it removes a
+*published* (colleague-visible) note and IS gated.
 
 The companion ``t3 review approve-on-behalf`` CLI command is the
 no-TTY satisfier — its end-to-end behaviour is also exercised here so
@@ -239,6 +243,52 @@ class TestReviewServiceUpdateNoteGated:
 
         _, code = service.update_note("org/repo", 7, 99, "edited")
         assert code == 0
+
+
+class TestReviewServiceDeleteDiscussionGated:
+    """Deleting a *published* discussion is a colleague-visible mutation — gated.
+
+    Mirrors :class:`TestReviewServiceUpdateNoteGated` exactly: the action
+    routes through the on-behalf gate just like ``update_note``, because
+    removing a published comment under the user's identity is as visible
+    to colleagues as editing one. Distinct from ``delete_draft_note``
+    (ungated): a draft is pre-publication and not colleague-visible.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
+
+    def test_delete_discussion_blocked_when_gate_on_no_approval(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, on=True)
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        assert stub.calls == []
+
+    def test_delete_discussion_proceeds_with_recorded_approval(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, on=True)
+        OnBehalfApproval.record(target="org/repo!7", action="delete_discussion", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 0
+        assert "OK" in msg
+        assert any(c[0] == "delete" for c in stub.calls)
+
+    def test_delete_discussion_proceeds_when_gate_off(self) -> None:
+        _gate(self.tmp_path, self.monkeypatch, on=False)
+        service, stub = _service_with_stub()
+
+        _, code = service.delete_discussion("org/repo", 7, 99)
+
+        assert code == 0
+        assert any(c[0] == "delete" for c in stub.calls)
 
 
 class TestReviewServiceReadMethodsNotGated:
