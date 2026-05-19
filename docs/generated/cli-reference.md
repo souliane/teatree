@@ -1372,6 +1372,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ owner          Show which session currently owns the loop-owner slot         │
 │                (#1073).                                                      │
 │ release        Release this session's loop-owner claim (#1073).              │
+│ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
+│                emit it.                                                      │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs in the same loop-owner session as  │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
@@ -1587,6 +1589,20 @@ Usage: t3 loop release [OPTIONS]
 │                     [default: loop-owner]                                    │
 │ --json              Emit JSON.                                               │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop claim-next`
+
+```
+Usage: t3 loop claim-next [OPTIONS]
+
+ Atomically claim the oldest pending dispatchable Task, then emit it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --claimed-by        TEXT  Worker identifier stored on the claim.             │
+│ --json                    Emit the claimed dispatch as JSON.                 │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

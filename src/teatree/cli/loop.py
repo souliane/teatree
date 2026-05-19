@@ -36,6 +36,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.loop_claim_next import claim_next_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.config import cadence_seconds
@@ -426,3 +427,8 @@ register_loop_owner(loop_app)
 # assembled in ``teatree.cli.loop_slack_answer`` (imported at module top)
 # so this file stays under the module-health public-function cap.
 loop_app.add_typer(slack_answer_app, name="slack-answer")
+
+# #1107 Prong C — the canonical atomic-claim CLI command lives in
+# ``teatree.cli.loop_claim_next`` (split for the same module-health
+# reason). Registered as a flat ``t3 loop claim-next``.
+loop_app.command("claim-next")(claim_next_command)

@@ -217,11 +217,14 @@ class TestLoopOwnerGate(TestCase):
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
             patch("teatree.loop.tick.run_tick") as run_tick_mock,
             patch("teatree.loop.tick.build_default_jobs") as build_jobs_mock,
+            patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback_mock,
         ):
             call_command("loop_tick", stdout=stdout)
 
         run_tick_mock.assert_not_called()
         build_jobs_mock.assert_not_called()
+        # #1107 Prong B anti-#1073: a non-owner SKIP must NOT piggyback.
+        piggyback_mock.assert_not_called()
         output = stdout.getvalue()
         assert "SKIP  loop not owned by this session" in output
         assert "owner is session owner-session" in output
@@ -270,10 +273,13 @@ class TestLoopOwnerGate(TestCase):
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
+            patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback_mock,
         ):
             call_command("loop_tick", stdout=stdout)
 
         run_tick_mock.assert_called_once()
+        # #1107 Prong B: the won-owner success path fires the piggyback.
+        piggyback_mock.assert_called_once()
         row = LoopLease.objects.get(name="loop-owner")
         assert row.session_id == "owner-session"
         assert row.lease_expires_at is not None
