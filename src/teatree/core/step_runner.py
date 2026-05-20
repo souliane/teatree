@@ -5,7 +5,7 @@ pattern with explicit success/failure tracking per step.
 """
 
 import logging
-import subprocess  # noqa: S404
+import subprocess  # noqa: S404 — only TimeoutExpired/CompletedProcess accessed, no shelling
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field

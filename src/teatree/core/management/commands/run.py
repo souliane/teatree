@@ -49,7 +49,7 @@ class Command(TyperCommand):
         all_ok = True
         for name, url in endpoints.items():
             try:
-                with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310
+                with urllib.request.urlopen(url, timeout=5) as resp:  # noqa: S310 — fixed http://localhost URL built from local ports
                     results[name] = {"url": url, "status": resp.status, "ok": True}
                     self.stdout.write(f"  {name}: {url} → {resp.status}")
             except Exception as exc:  # noqa: BLE001

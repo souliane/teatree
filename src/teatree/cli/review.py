@@ -567,7 +567,7 @@ class ReviewService:
 # `teatree.cli.review_commands`.
 from teatree.cli import review_commands as _review_commands  # noqa: E402 — registration side-effect
 from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
-from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402
+from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)

@@ -28,7 +28,7 @@ from pathlib import Path
 # module has its own binding patched by the test setup that exercises
 # the moved functions).
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import discover_overlays, load_config  # noqa: F401
+from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.rendering import zones_for
