@@ -7,9 +7,9 @@ testing lives here as plain Python.
 Per-concern helpers live in sibling modules to keep this orchestrator
 under the module-health LOC gate. ``tick_jobs`` builds scanner jobs,
 ``tick_recovery`` runs boot/tick recovery and post-dispatch
-side-effects (mechanical handlers, agent dispatch persistence,
-dashboard recording), and ``tick_freshness`` captures the repo-
-freshness snapshot for the ``tick-meta.json`` sidecar.
+side-effects (mechanical handlers, agent dispatch persistence), and
+``tick_freshness`` captures the repo-freshness snapshot for the
+``tick-meta.json`` sidecar.
 
 The names re-exported below are the public surface other modules and
 tests rely on — keep the re-export list in sync with downstream
@@ -52,12 +52,7 @@ from teatree.loop.tick_jobs import (
     build_default_jobs,
     build_default_scanners,
 )
-from teatree.loop.tick_recovery import (
-    _execute_mechanical,
-    _persist_agent_dispatches,
-    _reap_stale_task_claims,
-    _record_dashboard_actions,
-)
+from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches, _reap_stale_task_claims
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 
 logger = logging.getLogger(__name__)
@@ -77,7 +72,6 @@ __all__ = [
     "_jobs_for_backend_hosts",
     "_persist_agent_dispatches",
     "_reap_stale_task_claims",
-    "_record_dashboard_actions",
     "_repo_freshness",
     "_repos_from_toml",
     "_run_job",
@@ -177,7 +171,6 @@ def run_tick(
     report.actions = dispatch(report.signals)
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
-    _record_dashboard_actions(report, started_at)
 
     zones = zones_for(report.actions, colorize=colorize)
     _write_tick_meta(started_at, target=statusline_path)

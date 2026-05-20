@@ -14,6 +14,7 @@ import typer
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
 from teatree.cli.slack_setup import slack_bot_setup
+from teatree.cli.slack_user_token_setup import slack_user_token_setup
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -531,3 +532,4 @@ def run(
 
 
 setup_app.command("slack-bot")(slack_bot_setup)
+setup_app.command("slack-user-token")(slack_user_token_setup)
