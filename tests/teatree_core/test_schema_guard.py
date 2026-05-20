@@ -122,7 +122,7 @@ class UnmigratedSelfDbTest(TransactionTestCase):
                 "clear",
                 866,
                 "statusline-stale-wakeup",
-                "29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
                 reviewer_identity="coldrev-866",
                 blast_class="logic",
             ),

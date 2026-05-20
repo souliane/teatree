@@ -180,8 +180,8 @@ class Command(TyperCommand):
         self,
         pr_id: int,
         slug: str,
-        reviewed_sha: str,
         *,
+        reviewed_sha: Annotated[str, typer.Option("--reviewed-sha", help="Hex commit id (§17.4.2).")] = "",
         reviewer_identity: Annotated[
             str,
             typer.Option(
@@ -236,6 +236,11 @@ class Command(TyperCommand):
         transition (invariant 8 — never raw ``gh``, never a human-performed
         merge), with the human approval durably on the CLEAR.
         """
+        if not reviewed_sha.strip():
+            # #1231: ``--reviewed-sha`` is the canonical named option; the
+            # default keeps ``call_command`` happy, this guard enforces it.
+            self.stderr.write("  CLEAR refused: --reviewed-sha is required (hex commit id of the reviewed tree)")
+            raise SystemExit(1)
         try:
             require_current_schema()
         except SelfDbMigrationError as exc:
