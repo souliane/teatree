@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
 from teatree.core.models.merge_clear import MergeClear
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
+_GH_NOT_INSTALLED_RC = 127
 
 
 class GhPrJson(TypedDict, total=False):
@@ -192,6 +193,11 @@ class PrSweepScanner:
     def _safe_list(self, slug: str) -> list[PrSummary]:
         try:
             return self.api.list_open_prs(slug=slug)
+        except ScannerError:
+            # Auth / rate-limit / missing-scope: propagate to the dispatcher
+            # so this scanner is recorded in ``report.errors`` and skipped for
+            # one tick (#1287). Silently swallowing would mask the failure.
+            raise
         except Exception:
             logger.exception("pr_sweep failed to list PRs for %s", slug)
             return []
@@ -338,6 +344,30 @@ def _as_str(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _classify_gh_stderr(stderr: str) -> ScannerErrorClass:
+    """Classify a non-zero ``gh`` stderr into a :class:`ScannerErrorClass` (#1287).
+
+    The classifier reads gh's well-known error wording: auth-required
+    prompts (``gh auth login``, ``GH_TOKEN``, ``Bad credentials``, ``401``),
+    GitHub rate-limit messages (``API rate limit exceeded``, ``rate
+    limit``, ``secondary rate limit``), and network failures (``dial
+    tcp``, ``no such host``, ``Could not resolve``). Anything else falls
+    through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
+    surfaces the failure rather than masking it.
+    """
+    lower = stderr.lower()
+    rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
+    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
+    network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
+    if any(marker in lower for marker in rate_limit_markers):
+        return ScannerErrorClass.RATE_LIMIT
+    if any(marker in lower for marker in auth_markers):
+        return ScannerErrorClass.AUTH
+    if any(marker in lower for marker in network_markers):
+        return ScannerErrorClass.NETWORK
+    return ScannerErrorClass.UNKNOWN
+
+
 def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
     return ScanSignal(
         kind="pr_sweep.merged" if attempt.merged else f"pr_sweep.{attempt.decision}",
@@ -376,8 +406,22 @@ class GhPrApiClient:
             "--json",
             "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup",
         ]
-        rc, out, _ = self._run_gh(argv)
-        if rc != 0 or not out.strip():
+        rc, out, err = self._run_gh(argv)
+        if rc == _GH_NOT_INSTALLED_RC:
+            # gh-not-installed is an environmental error, not an upstream
+            # auth/rate-limit issue — preserve the pre-existing "fall back
+            # to empty" behaviour so a machine without ``gh`` does not spam
+            # ScannerError per tick.
+            return []
+        if rc != 0:
+            error_class = _classify_gh_stderr(err)
+            detail = f"gh pr list {slug!r} rc={rc}: {err.strip()[:200]}"
+            raise ScannerError(
+                scanner="pr_sweep",
+                error_class=error_class,
+                detail=detail,
+            )
+        if not out.strip():
             return []
         try:
             data = json.loads(out)

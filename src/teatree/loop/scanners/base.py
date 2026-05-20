@@ -8,6 +8,16 @@ note, webhook trigger) or hand off to a phase agent.
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
+from teatree.types import ScannerError, ScannerErrorClass
+
+__all__ = [
+    "ScanSignal",
+    "Scanner",
+    "ScannerError",
+    "ScannerErrorClass",
+    "SignalPayload",
+]
+
 type SignalPayload = dict[str, Any]
 
 
