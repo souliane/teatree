@@ -239,8 +239,8 @@ class Command(TyperCommand):
         if not reviewed_sha.strip():
             # #1231: ``--reviewed-sha`` is the canonical named option; the
             # default keeps ``call_command`` happy, this guard enforces it.
-            self.stdout.write("  CLEAR refused: --reviewed-sha is required (hex commit id of the reviewed tree)")
-            return {"issued": False, "error": "--reviewed-sha is required (hex commit id of the reviewed tree)"}
+            self.stderr.write("  CLEAR refused: --reviewed-sha is required (hex commit id of the reviewed tree)")
+            raise SystemExit(1)
         try:
             require_current_schema()
         except SelfDbMigrationError as exc:

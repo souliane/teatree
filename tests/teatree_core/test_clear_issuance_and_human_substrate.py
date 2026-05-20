@@ -323,16 +323,18 @@ class TestClearIssuanceSeam(TestCase):
         clear = MergeClear.objects.get(pk=result["clear_id"])
         assert clear.reviewed_sha == _SHA
 
-    def test_clear_without_reviewed_sha_is_refused_with_actionable_error(self) -> None:
-        """#1231: omitting ``--reviewed-sha`` refuses the CLEAR with a clear message.
+    def test_clear_without_reviewed_sha_exits_nonzero(self) -> None:
+        """#1231: omitting ``--reviewed-sha`` exits non-zero so shell automation sees the failure.
 
         The option needs a default for ``call_command`` to accept it as a
         kwarg (django-typer requires defaults on ``Annotated`` options),
-        so the runtime check is what makes the flag effectively required
-        — same refusal shape as every other contract violation.
+        so the runtime check is what makes the flag effectively required.
+        Codex flagged the soft-fail variant: a zero-exit refusal hid the
+        failure from any script piping the CLEAR through `&&`. Same
+        ``stderr + SystemExit(1)`` shape as the sibling refusals in this
+        command (`_resolve_ticket`, `context_add`).
         """
-        result = cast(
-            "dict[str, object]",
+        with pytest.raises(SystemExit) as excinfo:
             call_command(
                 "ticket",
                 "clear",
@@ -341,10 +343,8 @@ class TestClearIssuanceSeam(TestCase):
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
-            ),
-        )
-        assert not result["issued"]
-        assert "--reviewed-sha is required" in result["error"]
+            )
+        assert excinfo.value.code == 1
         assert MergeClear.objects.count() == 0
 
 
