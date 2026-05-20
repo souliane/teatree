@@ -550,10 +550,15 @@ def assert_merge_preconditions(
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
     if live_sha != authorized_clear.reviewed_sha:
+        # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
+        # silent difference is obvious in the diagnostic (#1162).
+        reviewed_sha = authorized_clear.reviewed_sha
         msg = (
-            f"PR head moved: live={live_sha[:8]} != reviewed={authorized_clear.reviewed_sha[:8]} — "
-            f"the CLEAR is stale (force-push / new commits). Re-escalate; the loop never "
-            f"self-issues a replacement (§17.4.3 step 2)"
+            f"PR head moved: live={live_sha} (length={len(live_sha)}) != "
+            f"reviewed={reviewed_sha} (length={len(reviewed_sha)}) — "
+            f"the CLEAR is stale (force-push / new commits) or was issued with a "
+            f"truncated SHA. Re-escalate; the loop never self-issues a replacement "
+            f"(§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
 
@@ -604,10 +609,13 @@ def execute_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str) -> str
     if rc != 0:
         combined = f"{out}\n{err}".lower()
         if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
+            # Print the full ``expected_head_oid`` so a length mismatch can never
+            # masquerade as a value mismatch (#1162).
             msg = (
                 f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
-                f"{expected_head_oid[:8]} (expected_head_oid mismatch). Treated as a "
-                f"failed check — NOT retried with a new head (§17.4.3)"
+                f"{expected_head_oid} (length={len(expected_head_oid)}, "
+                f"expected_head_oid mismatch). Treated as a failed check — "
+                f"NOT retried with a new head (§17.4.3)"
             )
             raise MergeHeadMovedError(msg)
         msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
