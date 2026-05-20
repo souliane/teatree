@@ -593,8 +593,11 @@ def test_zones_pr_annotations_show_notes_and_failures() -> None:
     ]
     zones = _zones_for(actions)
     text = zones.action_needed[0] if isinstance(zones.action_needed[0], str) else zones.action_needed[0].text
-    assert "!330 (7 notes)" in text
-    assert "!99 (pipeline failed)" in text
+    # #1156: NO_COLOR puts the URL between the iid and annotation chunks.
+    assert "!330" in text
+    assert "(7 notes)" in text
+    assert "!99" in text
+    assert "(pipeline failed)" in text
 
 
 def test_active_tickets_shown_in_anchors() -> None:
@@ -1080,7 +1083,9 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             sl = Path(d) / "sl.txt"
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
-            assert "loop-owner=THIS session ✓" in sl.read_text(encoding="utf-8")
+            # #1156: a live LoopLease row is rendered as ``loop:owner``
+            # (the ``loop-`` prefix is stripped).
+            assert "loop:owner" in sl.read_text(encoding="utf-8")
 
     def test_normal_path_flags_foreign_owner_in_red_zone(self) -> None:
         import tempfile  # noqa: PLC0415
