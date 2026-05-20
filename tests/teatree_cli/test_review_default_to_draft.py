@@ -1,8 +1,8 @@
 """``t3 review post-comment`` defaults to DRAFT — ``--live`` needs a Slack-recorded token (#1207).
 
 The historical ``post-comment`` published live to GitLab on every
-invocation. Per the user mandate captured on #1207 the default flips to
-a DRAFT (safe-by-default); the live, colleague-visible path is gated on
+invocation. Per #1207 the default flips to a DRAFT (safe-by-default);
+the live, colleague-visible path is gated on
 a single-use, MR-URL-scoped
 :class:`~teatree.core.models.live_post_approval.LivePostApproval`
 minted by ``t3 review approve-live-post`` after the helper verifies a
