@@ -91,7 +91,9 @@ class TestEnsurePr(TestCase):
 
     def test_creates_pr_when_pushed_orphan(self) -> None:
         host = MagicMock()
-        host.create_pr.return_value = {"url": "https://github.com/souliane/teatree/pull/999"}
+        # #1222 / #1226: ``web_url`` is the canonical cross-host key
+        # (GitHub backend was aligned to it; GitLab API native).
+        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/999"}
         host.current_user.return_value = "souliane"
         self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
 

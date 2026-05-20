@@ -10,7 +10,7 @@ from urllib.parse import quote_plus, urlparse
 from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 from teatree.utils import git
-from teatree.utils.run import CompletedProcess, run_checked
+from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
@@ -278,7 +278,21 @@ class GitHubCodeHost:
             cmd.append("--draft")
 
         result = _run_gh(*cmd, token=self._token)
-        return {"url": result.stdout.strip()}
+        # #1222 / #1226: align with the cross-host canonical key (``web_url``)
+        # that ``ShipExecutor`` reads — returning ``url`` silently produced
+        # empty PR rows because the consumer never looked at that field. The
+        # producer also enforces the verify-by-re-read invariant: an empty /
+        # non-URL stdout (e.g. the ``no commits between`` pre-push race that
+        # exits 0) is rejected so ``ok=True`` never escapes with no PR.
+        url = result.stdout.strip()
+        if not url.startswith(("http://", "https://")):
+            raise CommandFailedError(
+                cmd,
+                result.returncode,
+                result.stdout,
+                f"gh pr create produced no PR URL (stdout={url!r})",
+            )
+        return {"web_url": url}
 
     def current_user(self) -> str:
         """Return the authenticated GitHub login (e.g. ``souliane``)."""

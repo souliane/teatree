@@ -87,6 +87,61 @@ class TestShipExecutor(TestCase):
         assert result.ok is False
         assert "worktree" in result.detail.lower()
 
+    def test_returns_failure_when_backend_returns_empty_url(self) -> None:
+        """#1226 / #1222: empty backend URL must surface as ``ok=False``.
+
+        The producer (``host.create_pr``) is expected to refuse empty URLs
+        (covered in the GitHub backend tests). This consumer-side guard is
+        belt-and-braces: even if a backend mis-returns ``{}`` or a dict with
+        only ``url=""`` / ``web_url=""``, the ship runner must NOT advance
+        the FSM to ``SHIPPED`` with an empty ``pr_urls`` entry.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": ""}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "url" in result.detail.lower()
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_accepts_html_url_for_github_native_payloads(self) -> None:
+        """The consumer reads ``html_url`` too — GitHub's native API key.
+
+        The canonical cross-host key is ``web_url`` (GitLab) and the GitHub
+        backend produces it. But raw GitHub API payloads piped through other
+        producers (e.g. webhooks, lists) carry ``html_url`` natively. The
+        consumer's fallback chain must keep accepting it so future code that
+        forwards raw payloads doesn't hit the same field-name silent-failure
+        trap as #1222.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"html_url": "https://github.com/org/repo/pull/9"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        assert result.detail == "https://github.com/org/repo/pull/9"
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_urls"] == ["https://github.com/org/repo/pull/9"]
+
     def test_description_starts_with_commit_subject(self) -> None:
         """Default MR description prepends the commit subject.
 
@@ -120,7 +175,7 @@ class TestShipExecutor(TestCase):
     def test_description_is_just_subject_when_body_empty(self) -> None:
         ticket = self._ticket_with_worktree()
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "u"}
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
         host.current_user.return_value = "dev"
 
         with (
@@ -137,7 +192,7 @@ class TestShipExecutor(TestCase):
     def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
         ticket = self._ticket_with_worktree()
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "u"}
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
         host.current_user.return_value = ""
 
         with (
