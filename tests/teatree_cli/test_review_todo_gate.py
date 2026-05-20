@@ -72,7 +72,10 @@ class _StubAPI:
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
-        return {"id": 1, "notes": [{"type": "DiffNote"}], "web_url": ""}
+        # ``line_code`` keeps the draft-notes anchor check happy on the
+        # new default-draft ``post_comment`` path (#1207); the discussions
+        # endpoint ignores it, so the same shape serves both branches.
+        return {"id": 1, "notes": [{"type": "DiffNote"}], "web_url": "", "line_code": "abc_42_42"}
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
@@ -139,7 +142,7 @@ class TestNoMarkerAcceptsBlocker:
         )
 
         assert code == 0, f"plain-line blocker must pass: code={code} msg={msg!r}"
-        assert any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls), (
+        assert any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls), (
             "API POST must hit on accepted blocker"
         )
 
@@ -189,7 +192,7 @@ class TestTodoMarkerRefusesBlocker:
 
         assert code == 1, f"TODO-anchor blocker must refuse: code={code} msg={msg!r}"
         assert "author-marked" in msg.lower() or "todo" in msg.lower(), f"refusal must mention the TODO marker: {msg!r}"
-        assert not any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls), (
+        assert not any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls), (
             "no GitLab POST must fire when the gate refuses"
         )
 
@@ -209,7 +212,7 @@ class TestTodoMarkerRefusesBlocker:
         )
 
         assert code == 1, f"marker at offset {offset} must refuse: code={code} msg={msg!r}"
-        assert not any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls)
+        assert not any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls)
 
     def test_marker_at_offset_four_does_not_refuse(self) -> None:
         """A marker at ±4 is outside the window — the blocker post is allowed."""
@@ -226,7 +229,7 @@ class TestTodoMarkerRefusesBlocker:
         )
 
         assert code == 0, f"marker outside ±3 must NOT refuse: code={code} msg={msg!r}"
-        assert any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls)
+        assert any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls)
 
 
 class TestDeferralPhrasesRefuseBlocker:
@@ -262,7 +265,7 @@ class TestDeferralPhrasesRefuseBlocker:
         )
 
         assert code == 1, f"deferral phrase must refuse: code={code} msg={msg!r}"
-        assert not any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls)
+        assert not any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls)
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +296,7 @@ class TestNonBlockerCommentsAllowed:
         )
 
         assert code == 0, f"nit on TODO line must pass: code={code} msg={msg!r}"
-        assert any(c[0] == "post_json" and "/discussions" in c[1] for c in stub.calls)
+        assert any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls)
 
     def test_cross_reference_comment_on_todo_line_is_accepted(self) -> None:
         """A neutral cross-reference comment on a TODO line passes."""
