@@ -179,4 +179,9 @@ def unapprove(
         raise typer.Exit(code=code)
 
 
+# `review_run` (#1206) registers its own command on `review_app` at import time.
+# Loaded here, alongside the other typer command bindings, so the review.py
+# LOC ceiling (`scripts/hooks/check_module_health.py`) stays satisfied.
+from teatree.cli import review_run as _review_run  # noqa: E402, F401 — registration side-effect
+
 __all__ = ["approve", "post_comment", "post_draft_note", "reply_to_discussion", "unapprove"]
