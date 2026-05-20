@@ -1787,6 +1787,8 @@ Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
 │ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
 │         overlays.                                                            │
 │ check   Drain the event queue, ack with 👀, and print new user messages.     │
+│ react   Add *emoji* to ``(channel, ts)`` using the personal user-OAuth       │
+│         token.                                                               │
 │ status  Check if the Socket Mode listener is running.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1821,6 +1823,35 @@ Usage: t3 slack check [OPTIONS]
  Returns exit code 0 when messages were found, 1 when the queue
  was empty. Designed to be called from a fast cron (every 30s).
 
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 slack react`
+
+```
+Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
+
+ Add *emoji* to ``(channel, ts)`` using the personal user-OAuth token.
+
+ The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
+ (provisioned by ``t3 setup slack-user-token``) is the only credential
+ that reliably reaches user DMs and Slack-Connect externally-shared
+ channels for ``reactions.add`` (#1232). Exits 0 on success (including
+ the idempotent ``already_reacted`` case), 1 when the token is missing,
+ 2 on any other Slack-side failure.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
+│                         channel).                                            │
+│                         [required]                                           │
+│ *    ts           TEXT  Message timestamp (e.g. `1700000000.000100`).        │
+│                         [required]                                           │
+│ *    emoji        TEXT  Emoji name without colons (e.g. `eyes`,              │
+│                         `white_check_mark`).                                 │
+│                         [required]                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
