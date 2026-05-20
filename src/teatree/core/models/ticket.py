@@ -593,12 +593,24 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         Triggered when new draft MRs appear after the ticket was shipped,
         indicating additional work is needed.
+
+        #1286: retire every session's phase ledger here — ``reopen()`` is
+        the explicit workstream-boundary transition. Without this, the
+        prior workstream's ``testing``/``reviewing`` attestations remain
+        in ``aggregate_phase_records()`` and false-pass the next
+        workstream's shipping gate (the ``AGENTS.md`` § "Reused-ticket
+        attestation" risk). Same operation the sanctioned
+        ``lifecycle clear-ledger --confirm`` performs, run inside the FSM
+        transition body so the cross-workstream gate-bypass is structurally
+        foreclosed rather than relying on the agent remembering to call
+        ``clear-ledger`` on reuse.
         """
         extra = self._extra()
         extra.pop("tests_passed", None)
         extra["reopened_from"] = self.state
         self.extra = extra
         self._cancel_pending_tasks()
+        self._retire_phase_ledger()
 
     @transition(
         field=state,
@@ -645,6 +657,30 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         for task in self.tasks.filter(status__in=[Task.Status.PENDING, Task.Status.CLAIMED]):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
+
+    def _retire_phase_ledger(self) -> None:
+        """Retire every session's phase ledger for this ticket (#1286).
+
+        Mirrors ``lifecycle clear-ledger --confirm``: a per-session reset
+        of ``visited_phases``, ``phase_visits``, ``repos_modified``,
+        ``repos_tested`` so the next workstream re-earns its attestations
+        from scratch. Invoked from ``reopen()`` because that transition
+        IS the workstream boundary — prior testing/reviewing no longer
+        attest the new work.
+
+        Wrapped in ``transaction.atomic`` so the ``select_for_update``
+        works even when the FSM caller has not opened a surrounding
+        transaction (the loop ``reopen_ticket`` mechanical path).
+        """
+        with transaction.atomic():
+            for session in self.sessions.select_for_update().all():  # type: ignore[attr-defined]  # Django reverse FK
+                session.visited_phases = []
+                session.phase_visits = {}
+                session.repos_modified = []
+                session.repos_tested = []
+                session.save(
+                    update_fields=["visited_phases", "phase_visits", "repos_modified", "repos_tested"],
+                )
 
     def _refuse_if_worktree_dirty(self, phase: str) -> None:
         """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.

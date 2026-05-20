@@ -121,17 +121,12 @@ class Command(TyperCommand):
                 f"Refusing to clear ticket {ticket.pk}'s phase ledger without --confirm "
                 f"(destructive: every session's visited_phases/phase_visits is wiped)"
             )
-        with transaction.atomic():
-            cleared = 0
-            for session in ticket.sessions.select_for_update().all():
-                session.visited_phases = []
-                session.phase_visits = {}
-                session.repos_modified = []
-                session.repos_tested = []
-                session.save(
-                    update_fields=["visited_phases", "phase_visits", "repos_modified", "repos_tested"],
-                )
-                cleared += 1
+        # #1286: delegate to the canonical ``Ticket._retire_phase_ledger``
+        # helper so the CLI and the ``reopen()`` FSM workstream-boundary
+        # call retire the ledger the same way. One source of truth, no
+        # drift if the retire policy ever has to learn a new column.
+        cleared = ticket.sessions.count()
+        ticket._retire_phase_ledger()  # noqa: SLF001
         logger.warning(
             "Phase ledger cleared for ticket %s across %d session(s) — sanctioned session-retire",
             ticket.pk,
