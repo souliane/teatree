@@ -568,3 +568,110 @@ class TestGitHubCodeHost:
         with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
+
+
+import pytest  # noqa: E402
+
+from teatree.core.models import OutboundClaim  # noqa: E402
+from teatree.loop.scanners.outbound_audit import _hash_body  # noqa: E402
+
+
+@pytest.mark.django_db
+class TestGitHubCommentOutboundClaim:
+    """``post_pr_comment`` / ``post_issue_comment`` record an OutboundClaim (#1198).
+
+    The claim row is the audit handle the outbound-audit scanner uses to
+    later verify the comment really landed on GitHub. Recording is
+    best-effort — a ledger outage must not break a publish that already
+    succeeded.
+    """
+
+    def test_post_pr_comment_records_github_note_claim(self) -> None:
+        with patch.object(
+            github_mod,
+            "_gh_api_post",
+            return_value={"id": 42, "html_url": "https://github.com/org/repo/pull/5#issuecomment-42"},
+        ):
+            host = GitHubCodeHost()
+            result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="LGTM")
+        assert result["id"] == 42
+        claim = OutboundClaim.objects.get(idempotency_key="github_note:org/repo#5:42")
+        assert claim.kind == OutboundClaim.Kind.GITHUB_NOTE
+        assert claim.target_url == "https://github.com/org/repo/pull/5#issuecomment-42"
+        assert claim.extra["repo"] == "org/repo"
+        assert claim.extra["target_number"] == 5
+        assert claim.extra["artifact_id"] == "42"
+        assert claim.extra["payload_digest"] == _hash_body("LGTM")
+
+    def test_post_pr_comment_idempotent_on_repeated_post(self) -> None:
+        """A retried POST that the API collapsed to the same id no-ops at the ledger."""
+        with patch.object(github_mod, "_gh_api_post", return_value={"id": 99}):
+            host = GitHubCodeHost()
+            host.post_pr_comment(repo="org/repo", pr_iid=7, body="thanks")
+            host.post_pr_comment(repo="org/repo", pr_iid=7, body="thanks")
+        rows = OutboundClaim.objects.filter(idempotency_key="github_note:org/repo#7:99")
+        assert rows.count() == 1
+
+    def test_post_pr_comment_without_id_records_no_claim(self) -> None:
+        """A 4xx/5xx-shaped response that lacks ``id`` does not write a phantom claim."""
+        with patch.object(github_mod, "_gh_api_post", return_value={"error": "boom"}):
+            host = GitHubCodeHost()
+            host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
+        assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITHUB_NOTE).exists()
+
+    def test_post_pr_comment_non_dict_response_records_no_claim(self) -> None:
+        with patch.object(github_mod, "_gh_api_post", return_value="error string"):
+            host = GitHubCodeHost()
+            result = host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
+        assert result == {}
+        assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITHUB_NOTE).exists()
+
+    def test_post_pr_comment_post_raises_records_no_claim_and_propagates(self) -> None:
+        """Transport error on POST: claim never written, exception propagates to caller."""
+        with patch.object(github_mod, "_gh_api_post", side_effect=RuntimeError("network down")):
+            host = GitHubCodeHost()
+            with pytest.raises(RuntimeError, match="network down"):
+                host.post_pr_comment(repo="org/repo", pr_iid=5, body="x")
+        assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITHUB_NOTE).exists()
+
+    def test_post_issue_comment_records_github_note_claim(self) -> None:
+        with patch.object(
+            github_mod,
+            "_gh_api_post",
+            return_value={"id": 77, "html_url": "https://github.com/org/repo/issues/9#issuecomment-77"},
+        ):
+            host = GitHubCodeHost()
+            result = host.post_issue_comment(
+                issue_url="https://github.com/org/repo/issues/9",
+                body="ack",
+            )
+        assert result["id"] == 77
+        claim = OutboundClaim.objects.get(idempotency_key="github_note:org/repo#9:77")
+        assert claim.kind == OutboundClaim.Kind.GITHUB_NOTE
+        assert claim.extra["target_number"] == 9
+        assert claim.extra["payload_digest"] == _hash_body("ack")
+
+    def test_post_issue_comment_rejects_non_issue_url_records_no_claim(self) -> None:
+        with patch.object(github_mod, "_gh_api_post") as mock_post:
+            host = GitHubCodeHost()
+            result = host.post_issue_comment(
+                issue_url="https://github.com/org/repo/pull/9",
+                body="ack",
+            )
+        assert "error" in result
+        mock_post.assert_not_called()
+        assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITHUB_NOTE).exists()
+
+    def test_record_failure_does_not_break_publish_path(self) -> None:
+        """Even if claim recording somehow raises, the publish's return value is unchanged."""
+        with (
+            patch.object(github_mod, "_gh_api_post", return_value={"id": 5}),
+            patch(
+                "teatree.core.models.OutboundClaim.objects",
+                new_callable=lambda: MagicMock(get_or_create=MagicMock(side_effect=RuntimeError("DB down"))),
+            ),
+        ):
+            host = GitHubCodeHost()
+            # The publish succeeded — the swallow happens inside _record_github_note_claim.
+            result = host.post_pr_comment(repo="org/repo", pr_iid=1, body="hi")
+        assert result == {"id": 5}

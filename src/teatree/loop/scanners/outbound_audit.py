@@ -51,6 +51,7 @@ kind_settling_seconds: dict[str, int] = {
     "slack_reaction": 30,
     "gitlab_note": 30,
     "gitlab_approve": 30,
+    "github_note": 30,
     "notion_comment": 120,
     "notion_edit": 120,
 }
@@ -215,6 +216,8 @@ def _default_verifier_for(kind: str) -> Verifier | None:
         return _gitlab_note_verifier()
     if kind == "gitlab_approve":
         return _gitlab_approve_verifier()
+    if kind == "github_note":
+        return _github_note_verifier()
     if kind == "slack_dm":
         return _slack_dm_verifier()
     return None
@@ -251,6 +254,83 @@ def _gitlab_note_verifier() -> Verifier | None:
         return VerifyResult.ok()
 
     return _verify
+
+
+def _github_note_verifier() -> Verifier | None:
+    """Build a GitHub-note verifier from the overlay's GitHub credentials (#1198).
+
+    Confirms via ``GET repos/<repo>/issues/comments/<id>`` that the
+    comment claimed in ``extra`` still exists and that its body hash
+    matches the recorded ``payload_digest``. The endpoint covers both PR
+    review comments and issue comments — GitHub returns the same shape
+    under ``issues/comments`` for both.
+
+    Mirrors :func:`_gitlab_note_verifier`'s error doctrine: a 404 → drift
+    (the comment is genuinely missing); any other transport-level error
+    is re-raised so the scanner can skip the row silently rather than
+    spamming DMs on a temporary GitHub-API outage.
+    """
+    try:
+        from teatree.backends.github import GitHubCodeHost, _gh_api_get  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        host = GitHubCodeHost()
+    except Exception:  # noqa: BLE001
+        return None
+    _ = host  # held only to surface auth/import errors uniformly with the GitLab verifier
+
+    def _verify(claim: "OutboundClaimModel") -> VerifyResult:
+        repo = str(claim.extra.get("repo", ""))
+        artifact_id = str(claim.extra.get("artifact_id", ""))
+        expected_digest = str(claim.extra.get("payload_digest", ""))
+        if not (repo and artifact_id and artifact_id.isdigit()):
+            return VerifyResult.ok()
+        try:
+            data = _gh_api_get(f"repos/{repo}/issues/comments/{artifact_id}")
+        except Exception as exc:
+            if _is_github_not_found(exc):
+                return VerifyResult.drift(
+                    f"GitHub comment {artifact_id} not found on {repo}",
+                )
+            raise
+        if not isinstance(data, dict):
+            return VerifyResult.drift(
+                f"GitHub comment {artifact_id} on {repo} returned non-dict payload",
+            )
+        if expected_digest:
+            actual_body = str(cast("RawAPIDict", data).get("body", ""))
+            if _hash_body(actual_body) != expected_digest:
+                return VerifyResult.drift(
+                    f"GitHub comment {artifact_id} body digest mismatch on {repo}",
+                )
+        return VerifyResult.ok()
+
+    return _verify
+
+
+def _is_github_not_found(exc: BaseException) -> bool:
+    """``gh api`` surfaces HTTP 404 in the CommandFailedError's stderr.
+
+    The ``gh`` CLI exits non-zero on 404 and prints ``HTTP 404: Not Found``
+    to stderr (the exact phrasing has been stable since ``gh`` 2.x). We
+    detect by substring match — looser than a strict regex but robust to
+    the small wording variations ``gh`` has shipped over the years.
+    """
+    stderr = getattr(exc, "stderr", "") or ""
+    return "HTTP 404" in stderr or "404 Not Found" in stderr
+
+
+def _hash_body(body: str) -> str:
+    """SHA-256 digest of the comment body, hex-encoded.
+
+    Used as the claim's ``payload_digest`` so the verifier can detect
+    silent body-divergence (e.g. a server-side edit between POST and
+    verify) without storing the full body in the claim row.
+    """
+    import hashlib  # noqa: PLC0415 — stdlib, cheap, only used here
+
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def _usernames_from_approvers(approved_by: list[object]) -> set[str]:
@@ -356,5 +436,6 @@ __all__ = [
     "OutboundAuditScanner",
     "Verifier",
     "VerifyResult",
+    "_hash_body",
     "kind_settling_seconds",
 ]
