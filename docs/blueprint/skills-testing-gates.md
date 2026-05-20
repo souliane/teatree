@@ -104,6 +104,10 @@ The full config surface for instance-specific agent behaviour — operating mode
 
 **Classifier denial = immediate session blocker.** When the classifier denies a tool call mid-workflow (Bash rejected, MCP call refused, etc.), the agent must stop, inform the user, and use `AskUserQuestion` to ask whether to relax the classifier or proceed differently. If the user opts to relax, the agent **attempts the edit to `~/.claude/settings.json` itself** (zero manual steps for the user); only if the harness self-modification guardrail blocks the write does the agent fall back to a paste-ready snippet for the user to apply. Silent workarounds (alternate command shape, alternate tool, decomposed invocations) are forbidden. The full agent-facing protocol lives in `skills/rules/SKILL.md` § "Classifier Denial Protocol (Non-Negotiable)" — that section is the canonical source; this paragraph is just a pointer. Teatree defines the protocol but never modifies the user's classifier permissivity itself.
 
+### 11.5 Architecture-design gate
+
+The `architecture-design` companion skill (`skills/architecture-design/SKILL.md`) is the structural form of the "design before code" rule. Implementation skills (`code`, `ticket`, `retro`) declare `requires: [architecture-design]` so it loads transitively whenever those skills are selected by the trigger index. The companion delegates generic planning methodology to `obra/superpowers/writing-plans` (declared as a `companions:` entry) and adds the teatree-specific seven-check pass — BLUEPRINT § alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, and the #1192 resilience invariants. The implementer's artifact is an `ARCHITECTURE.md` snippet in the worktree root, filled in BEFORE touching `src/`; the PR review surfaces a missing or empty snippet as a review gap. This is invariant 2 ("flywheel produces a gate, not a prose rule") applied to the design step itself — the prose vigilance of "remember to design first" is replaced by a loaded skill plus an in-worktree artifact the reviewer can see.
+
 ---
 
 ## 12. Testing
