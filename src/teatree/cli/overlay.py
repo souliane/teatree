@@ -102,6 +102,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
         [
             ("cancel", "Cancel a task by ID."),
             ("claim", "Claim the next available task."),
+            ("complete", "Mark a claimed task COMPLETED for work finished out-of-band."),
             ("create", "Enqueue the next-phase task for a ticket."),
             ("list", "List tasks with optional filters."),
             ("start", "Claim and run the next interactive task in the current terminal."),
