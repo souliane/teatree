@@ -1,4 +1,13 @@
-"""Doctor CLI commands — smoke-test hooks, imports, services."""
+"""Doctor CLI commands — smoke-test hooks, imports, services.
+
+Module size policy: this module hosts ``DoctorService`` + ``IntrospectionHelpers``
++ the ``check()`` Typer entry point. The ``_check_*`` helpers live in
+``_doctor_checks`` and the plugin-registration repair helpers live in
+``_doctor_plugin_repair`` (souliane/teatree#1270). Both private modules are
+re-exported below so existing consumers (tests, sibling CLI modules) keep
+their ``from teatree.cli.doctor import _x`` and ``teatree.cli.doctor._x``
+access paths intact.
+"""
 
 import json
 import os
@@ -10,6 +19,22 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli._doctor_checks import (
+    _check_editable_sanity,
+    _check_legacy_overlay_alias,
+    _check_single_db,
+    _check_singletons,
+    _check_skills,
+)
+from teatree.cli._doctor_plugin_repair import (
+    _do_ensure_plugin_registered,
+    _ensure_plugin_registered,
+    _read_json_safe,
+    _repair_enabled_plugins,
+    _repair_installed_plugins,
+    _repair_marketplace_json,
+    _resolve_main_clone,
+)
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
 from teatree.utils.run import run_allowed_to_fail
 
@@ -22,6 +47,34 @@ _CLAUDE_PLUGIN_ID = "t3@souliane"
 # into each runtime's skills directory that already exists — missing dirs are
 # skipped silently.  The Claude dir is always ensured by setup.
 AGENT_SKILL_RUNTIMES: tuple[str, ...] = ("claude", "codex")
+
+__all__ = (
+    "AGENT_SKILL_RUNTIMES",
+    "_CLAUDE_PLUGIN_ID",
+    "_REQUIRED_TOOLS",
+    "DoctorService",
+    "IntrospectionHelpers",
+    "PackageNotFoundError",
+    "_check_editable_sanity",
+    "_check_legacy_overlay_alias",
+    "_check_single_db",
+    "_check_singletons",
+    "_check_skills",
+    "_do_ensure_plugin_registered",
+    "_ensure_plugin_registered",
+    "_find_host_project_root",
+    "_find_teatree_pyproject_from_cwd",
+    "_patch_uv_source",
+    "_read_json_safe",
+    "_repair_enabled_plugins",
+    "_repair_installed_plugins",
+    "_repair_marketplace_json",
+    "_resolve_main_clone",
+    "_write_dev_sources_marker",
+    "agent_skill_dirs",
+    "check",
+    "doctor_app",
+)
 
 
 def agent_skill_dirs() -> list[tuple[str, Path]]:
@@ -420,204 +473,6 @@ class IntrospectionHelpers:
             editable = data.get("dir_info", {}).get("editable", False)
             url = data.get("url", "")
             return editable, url
-
-
-def _check_single_db() -> bool:
-    """Warn if any ``db.sqlite3`` other than the canonical path exists under DATA_DIR."""
-    from teatree.paths import CANONICAL_DB, DATA_DIR, find_stale_dbs  # noqa: PLC0415
-
-    stale = list(find_stale_dbs(DATA_DIR, canonical=CANONICAL_DB))
-    if not stale:
-        return True
-    for path in stale:
-        typer.echo(f"WARN  Stale DB at {path} — canonical DB is {CANONICAL_DB}. Remove to silence.")
-    return False
-
-
-def _check_singletons() -> bool:
-    """Clean up stale pid files for known singleton processes."""
-    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
-
-    for name in ("teatree-worker", "slack-listener", "loop-tick"):
-        path = default_pid_path(name)
-        had_file = path.is_file()
-        if read_pid(path) is None and had_file:
-            typer.echo(f"OK    Cleared stale {name} pid file")
-    return True
-
-
-def _check_editable_sanity() -> bool:
-    ok = True
-    try:
-        for problem in DoctorService.check_editable_sanity():
-            typer.echo(f"WARN  {problem}")
-            ok = False
-    except Exception as exc:  # noqa: BLE001 — overlay loading can fail in many ways
-        typer.echo(f"FAIL  Editable sanity check crashed: {exc.__class__.__name__}: {exc}")
-        ok = False
-    return ok
-
-
-def _check_skills() -> bool:
-    ok = True
-    claude_skills = Path.home() / ".claude" / "skills"
-    if claude_skills.is_dir():
-        from teatree.skill_schema import validate_directory  # noqa: PLC0415
-
-        errors, warnings = validate_directory(claude_skills)
-        for warning in warnings:
-            typer.echo(f"WARN  {warning}")
-        for error in errors:
-            typer.echo(f"FAIL  {error}")
-            ok = False
-        if not errors:
-            skill_count = sum(1 for d in claude_skills.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
-            typer.echo(f"OK    {skill_count} skill(s) validated")
-    return ok
-
-
-def _check_legacy_overlay_alias() -> None:
-    """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
-
-    souliane/teatree#1108: older ``slack-bot`` runs wrote a short
-    ``[overlays.<alias>]`` table (e.g. ``[overlays.teatree]``) for an
-    overlay whose canonical entry-point name is ``t3-<alias>``. Discovery
-    now folds such a bare config-only alias table into its canonical
-    overlay so it is no longer listed twice — but the stale table is
-    confusing to read. Surface it as a WARN with the corrective rename;
-    the agent/user does the edit (no auto-rewrite of the user's config).
-    """
-    try:
-        from importlib.metadata import entry_points  # noqa: PLC0415
-
-        from teatree.config import CONFIG_PATH, _match_canonical_ep, load_config  # noqa: PLC0415
-
-        config = load_config(CONFIG_PATH)
-        ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
-        for name, overlay_cfg in config.raw.get("overlays", {}).items():
-            if name in ep_names or overlay_cfg.get("class") or overlay_cfg.get("path"):
-                continue
-            canonical = _match_canonical_ep(name, ep_names)
-            if canonical is not None:
-                typer.echo(
-                    f"WARN  Stale '[overlays.{name}]' table in ~/.teatree.toml — "
-                    f"the canonical overlay is '{canonical}'. Rename it to "
-                    f"'[overlays.{canonical}]' (discovery folds it for now)."
-                )
-    except Exception:  # noqa: BLE001 — doctor warnings must never crash the run
-        return
-
-
-def _read_json_safe(path: Path) -> dict:
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _resolve_main_clone() -> Path | None:
-    env_path = os.environ.get("T3_REPO", "")
-    if env_path:
-        candidate = Path(env_path).expanduser()
-        if (candidate / "pyproject.toml").is_file():
-            return candidate
-    try:
-        repo = DoctorService.find_teatree_repo()
-    except OSError:
-        return None
-    if not repo:
-        return None
-    git = repo / ".git"
-    if git.is_file():
-        match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
-        if match:
-            main_git = Path(match.group(1)).parent.parent
-            if main_git.name == ".git" and main_git.is_dir():
-                return main_git.parent
-    return repo
-
-
-def _repair_marketplace_json(plugins_dir: Path, target: str, now: str) -> bool:
-    path = plugins_dir / "known_marketplaces.json"
-    data = _read_json_safe(path)
-    mp_name = _CLAUDE_PLUGIN_ID.split("@", 1)[1]
-    if data.get(mp_name, {}).get("installLocation") == target:
-        return False
-    data[mp_name] = {
-        "source": {"source": "directory", "path": target},
-        "installLocation": target,
-        "lastUpdated": now,
-    }
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
-
-
-def _repair_installed_plugins(plugins_dir: Path, target: str, now: str) -> bool:
-    path = plugins_dir / "installed_plugins.json"
-    data = _read_json_safe(path)
-    plugins = data.setdefault("plugins", {})
-    entries = plugins.get(_CLAUDE_PLUGIN_ID, [])
-    if entries and entries[0].get("installPath") == target:
-        return False
-    data.setdefault("version", 2)
-    plugins[_CLAUDE_PLUGIN_ID] = [
-        {
-            "scope": "user",
-            "installPath": target,
-            "version": "local",
-            "installedAt": entries[0].get("installedAt", now) if entries else now,
-            "lastUpdated": now,
-        },
-    ]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
-
-
-def _repair_enabled_plugins() -> bool:
-    settings_path = Path.home() / ".claude" / "settings.json"
-    resolved = settings_path.resolve() if settings_path.is_file() else settings_path
-    data = _read_json_safe(resolved)
-    enabled = data.setdefault("enabledPlugins", {})
-    if enabled.get(_CLAUDE_PLUGIN_ID) is True:
-        return False
-    enabled[_CLAUDE_PLUGIN_ID] = True
-    resolved.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    return True
-
-
-def _ensure_plugin_registered() -> bool:
-    """Verify and auto-repair t3 plugin registration.
-
-    Called at every ``t3 doctor check`` (and thus every Claude session start).
-    Best-effort — never fails the check if the repo or filesystem is unavailable.
-    """
-    try:
-        return _do_ensure_plugin_registered()
-    except OSError:
-        return True
-
-
-def _do_ensure_plugin_registered() -> bool:
-    repo = _resolve_main_clone()
-    if not repo:
-        return True
-
-    from datetime import UTC, datetime  # noqa: PLC0415
-
-    target = str(repo.resolve())
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-    plugins_dir = Path.home() / ".claude" / "plugins"
-
-    repaired = _repair_marketplace_json(plugins_dir, target, now)
-    repaired = _repair_installed_plugins(plugins_dir, target, now) or repaired
-    repaired = _repair_enabled_plugins() or repaired
-
-    if repaired:
-        typer.echo(f"OK    Auto-repaired {_CLAUDE_PLUGIN_ID} plugin → {target}")
-    return True
 
 
 @doctor_app.command()
