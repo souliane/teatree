@@ -7,19 +7,6 @@ requires:
   - rules
 companions:
   - finishing-a-development-branch
-triggers:
-  priority: 10
-  exclude: '\breview\b'
-  keywords:
-    - '\b(merge request|pull request|create an? (mr|pr)|\bmr\b|push\b|finalize|deliver|ship it|create mr|create pr)\b'
-    - '\bcommit\b'
-search_hints:
-  - commit
-  - push
-  - ship
-  - deliver
-  - merge request
-  - pull request
 metadata:
   version: 0.0.1
   subagent_safe: false
