@@ -16,9 +16,9 @@ via the injected :class:`MrStateClassifier`, persists a
 ``(channel, slack_ts)``), and reacts on the Slack message:
 
 * **All merged + approved** → react ``:white_check_mark:`` and skip
-    reviewer dispatch. Matches the user mandate in #1131 comment 2: the
-    reaction is sufficient acknowledgement, the agent does not re-review
-    already-done work.
+    reviewer dispatch. Matches the rule from #1131: the reaction is
+    sufficient acknowledgement, the agent does not re-review already-done
+    work.
 * **At least one open MR** → react ``:eyes:`` and emit one
     ``slack.review_intent`` signal per open MR. The existing dispatcher
     routes each signal to the ``t3:reviewer`` agent — no separate

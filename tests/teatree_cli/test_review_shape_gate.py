@@ -142,8 +142,7 @@ class TestColleagueMRShapeGate:
     def test_legitimate_three_sentence_finding_passes(self) -> None:
         """Issue #1159: a legitimate 3-sentence MR-level finding must pass.
 
-        Per user feedback "it's ok if nits are longer than 2 sentences...
-        you must just not abuse. the 2 sentences hard check is too much".
+        Per #1159 the cap is paragraph-and-word, not sentence-count.
         A short, single-paragraph 3-sentence finding with a file:line cite
         is the canonical case the old 2-sentence cap false-rejected.
         """

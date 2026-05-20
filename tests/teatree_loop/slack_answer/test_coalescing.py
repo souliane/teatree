@@ -1,10 +1,9 @@
 """Message coalescing — consecutive follow-ups are one logical turn (#1014).
 
-Real example the user flagged: two Slack messages 3s apart ("will you
-bump my review requests..." then "I have a lot") are one logical request,
-not two. The loop must concatenate consecutive same-user/channel rows
-with no bot reply between them and within the window into ONE unit:
-classify once, thread on the FIRST ts, :eyes: + answer ALL rows together.
+Real example: two Slack messages 3s apart - same logical request coalesced.
+The loop must concatenate consecutive same-user/channel rows with no bot
+reply between them and within the window into ONE unit: classify once,
+thread on the FIRST ts, :eyes: + answer ALL rows together.
 Zero-token — pure DB/time logic.
 """
 
@@ -70,14 +69,14 @@ def _seed(ts: str, text: str, *, user: str, channel: str, secs_after_base: float
 
 class TestCoalesceGrouping:
     def test_two_messages_3s_apart_no_bot_between_is_one_unit(self) -> None:
-        _seed("1.0", "will you bump my review requests", user="U1", channel="C1", secs_after_base=0)
-        _seed("2.0", "I have a lot", user="U1", channel="C1", secs_after_base=3)
+        _seed("1.0", "please bump my review requests", user="U1", channel="C1", secs_after_base=0)
+        _seed("2.0", "there are several", user="U1", channel="C1", secs_after_base=3)
 
         units = _coalesce(list(PendingChatInjection.loop_unreplied()))
 
         assert len(units) == 1
         assert units[0].slack_ts == "1.0"  # threads on the FIRST message
-        assert units[0].text == "will you bump my review requests\nI have a lot"
+        assert units[0].text == "please bump my review requests\nthere are several"
         assert len(units[0].rows) == 2
 
     def test_gap_greater_than_window_is_two_units(self) -> None:

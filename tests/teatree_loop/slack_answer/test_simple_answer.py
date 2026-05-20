@@ -146,12 +146,12 @@ class TestStageAReturnsStatuslineNotDashboard:
     def test_stage_a_does_not_return_dashboard_table_for_dashboard_keyword(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # Exact regression: user typed "wtf is this loop dashboard?" — Stage
-        # A matched on the "dashboard" token in _DASHBOARD_TOKENS and replied
-        # with the dashboard table. The fix must return statusline content
-        # instead, regardless of which dashboard keyword matched.
+        # Regression: a message containing the "dashboard" token from
+        # _DASHBOARD_TOKENS used to make Stage A reply with the dashboard
+        # table. The fix must return statusline content instead, regardless
+        # of which dashboard keyword matched.
         self._write_statusline(tmp_path, monkeypatch, "overlay=teatree\nticket=#1121\n")
-        row = _row("wtf is this loop dashboard?")
+        row = _row("hey what is this loop dashboard")
         with patch("teatree.loop.slack_answer.simple_answer._run_haiku") as haiku:
             answer = build_simple_answer(row)
 
