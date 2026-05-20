@@ -1,9 +1,7 @@
 """TeaTree configuration — overlay discovery from ~/.teatree.toml."""
 
 import importlib.util
-import json
 import os
-import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -12,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.paths import DATA_DIR, get_data_dir
-from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
+from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
 
@@ -190,6 +188,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "notify_user_via_bot": bool,
     "notify_on_post_on_behalf": bool,
     "user_identity_aliases": _parse_user_identity_aliases,
+    "architectural_review_disabled": bool,
+    "architectural_review_skill": str,
+    "architectural_review_cadence_hours": int,
+    "architectural_review_after_merge_count": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -324,6 +326,15 @@ class UserSettings:
     # ask-first-vs-fix-proactively decision lives in one place, not in
     # every skill.
     repo_mode: str = ""
+    # #1136 / #1152 Periodic architectural-review scanner — CORE
+    # always-on (not per-overlay opt-in). The cadence applies uniformly
+    # to every overlay's worktrees because it is a teatree-platform
+    # behaviour. Set ``architectural_review_disabled = true`` in
+    # ``[teatree]`` (or per-overlay) as the escape hatch.
+    architectural_review_disabled: bool = False
+    architectural_review_skill: str = "ac-reviewing-codebase"
+    architectural_review_cadence_hours: int = 168
+    architectural_review_after_merge_count: int = 25
 
 
 @dataclass
@@ -376,6 +387,10 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
         user_identity_aliases=_parse_user_identity_aliases(teatree.get("user_identity_aliases", [])),
         repo_mode=str(teatree.get("repo_mode", "")),
+        architectural_review_disabled=bool(teatree.get("architectural_review_disabled", False)),
+        architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
+        architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
+        architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
@@ -530,64 +545,14 @@ def _active_overlay_entry() -> OverlayEntry | None:
 
 
 def check_for_updates(*, force: bool = False) -> str | None:
-    """Check PyPI/GitHub for a newer teatree release.
+    """Resolve a "new release available" notice from config + update_check.
 
-    Returns a human-readable upgrade message, or ``None`` when already
-    up-to-date (or when update checks are disabled in user settings and
-    *force* is ``False``).
-
-    Results are cached for 24 h in ``DATA_DIR / "update-check.json"``.
+    Reads ``check_updates`` from user config and delegates to
+    :func:`teatree.update_check.run_update_check`. The implementation
+    lives in :mod:`teatree.update_check` (split out for module-health
+    LOC); this wrapper is the config-aware entry point.
     """
-    config = load_config()
-    if not force and not config.user.check_updates:
-        return None
-
-    cache_path = DATA_DIR / "update-check.json"
-    ttl = 86_400  # 24 h
-
-    # Return cached result when still fresh.
-    if not force and cache_path.is_file():
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if time.time() - cached.get("ts", 0) < ttl:
-                return cached.get("message") or None
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    import importlib.metadata  # noqa: PLC0415
-
-    current = importlib.metadata.version("teatree")
-
-    try:
-        result = run_allowed_to_fail(
-            ["gh", "api", "repos/souliane/teatree/releases/latest", "--jq", ".tag_name"],
-            expected_codes=None,
-            timeout=10,
-        )
-        tag = result.stdout.strip()
-    except (TimeoutExpired, FileNotFoundError):
-        return None
-
-    if not tag:
-        return None
-
-    latest = tag.lstrip("v")
-    if latest == current:
-        _write_update_cache(cache_path, "")
-        return None
-
-    message = f"teatree {tag} available (you have {current}). Run: uv pip install --upgrade teatree"
-    _write_update_cache(cache_path, message)
-    return message
-
-
-def _write_update_cache(cache_path: Path, message: str) -> None:
-    """Persist the update-check result so we don't hit the network every invocation."""
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(
-        json.dumps({"ts": time.time(), "message": message}),
-        encoding="utf-8",
-    )
+    return run_update_check(check_updates=load_config().user.check_updates, force=force)
 
 
 def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
