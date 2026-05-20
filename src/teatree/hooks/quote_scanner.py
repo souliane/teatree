@@ -40,6 +40,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, TypedDict
 
+from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
+from teatree.hooks._command_parser import first_shell_command as _first_shell_command
+from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._command_parser import normalize_line_continuations as _normalize_line_continuations
+
 Severity = str  # "high" | "medium"
 
 
@@ -213,13 +218,49 @@ def _load_blocklist_patterns(path: Path | None = None) -> list[Pattern]:
     return patterns
 
 
+# Unicode smart-quote variants normalised to their ASCII equivalents before
+# pattern matching. Codex round-2 #7 surfaced curly-quoted blockquote bodies
+# bypassing every quote-aware regex — the fix is upstream normalisation, not
+# new patterns per quote shape. Code points referenced by ``\N{...}`` so the
+# lint checker is not confused by ambiguous glyphs in the source file.
+_SMART_QUOTE_TRANSLATIONS: Final[dict[int, str]] = {
+    # Double quotes
+    ord("\N{LEFT DOUBLE QUOTATION MARK}"): '"',
+    ord("\N{RIGHT DOUBLE QUOTATION MARK}"): '"',
+    ord("\N{DOUBLE LOW-9 QUOTATION MARK}"): '"',
+    ord("\N{DOUBLE HIGH-REVERSED-9 QUOTATION MARK}"): '"',
+    ord("\N{LEFT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
+    ord("\N{RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK}"): '"',
+    # Single quotes / apostrophes
+    ord("\N{LEFT SINGLE QUOTATION MARK}"): "'",
+    ord("\N{RIGHT SINGLE QUOTATION MARK}"): "'",
+    ord("\N{SINGLE LOW-9 QUOTATION MARK}"): "'",
+    ord("\N{SINGLE HIGH-REVERSED-9 QUOTATION MARK}"): "'",
+}
+
+
+def _normalize_quotes(text: str) -> str:
+    """Translate Unicode smart-quote variants to straight ASCII quotes.
+
+    The detection regexes are written against ASCII quotes; normalising
+    upstream means a single regex per shape continues to cover every
+    typographic variant a publish surface might emit.
+    """
+    return text.translate(_SMART_QUOTE_TRANSLATIONS)
+
+
 def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
-    """Match every built-in pattern and every blocklist regex against ``text``."""
+    """Match every built-in pattern and every blocklist regex against ``text``.
+
+    Smart-quote variants in the input are normalised to ASCII before
+    matching so a single regex catches all typographic forms.
+    """
     result = ScanResult()
     if not text:
         return result
+    normalized = _normalize_quotes(text)
     for pattern in (*_BUILTIN_PATTERNS, *_load_blocklist_patterns(blocklist_path)):
-        match = pattern.regex.search(text)
+        match = pattern.regex.search(normalized)
         if match is None:
             continue
         excerpt = match.group(0)[:120]
@@ -227,132 +268,52 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     return result
 
 
-# ── Bash / t3 command surface parsing ──────────────────────────────
+# ── Slack MCP write-tool body-field allowlist ──────────────────────
 
-# Bash commands that publish to an external surface. The substring match
-# is sufficient — Bash strings come from the LLM, not from a shell, so
-# we don't have to worry about ``echo "gh issue create" | grep``-style
-# embedding.
-_BASH_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
-    "gh issue create",
-    "gh issue edit",
-    "gh issue comment",
-    "gh pr create",
-    "gh pr edit",
-    "gh pr comment",
-    "gh pr review",
-    "glab issue create",
-    "glab issue update",
-    "glab issue note create",
-    # ``glab issue note <id>`` (no ``create`` segment) is the real
-    # comment subcommand — trailing space pins the substring to the
-    # subcommand boundary so ``glab issue notebook`` would not match.
-    "glab issue note ",
-    "glab mr create",
-    "glab mr update",
-    "glab mr note create",
-    "glab mr note ",
-    "git commit -m",
-    "git commit --message",
-    "git commit -F",
-    "git commit --file",
-    "git tag --message",
-    # ``gh api`` / ``glab api`` POST/PATCH calls land on REST endpoints
-    # that publish issue/PR/MR comments. The payload is carried via
-    # ``-f``/``-F``/``--raw-field``/``--field``/``--input`` and parsed
-    # by :func:`_extract_bash_payload`.
-    "gh api ",
-    "glab api ",
-    "chat.postMessage",
-)
-
-# t3 sub-commands that publish on the user's behalf. The overlay segment
-# between ``t3`` and the verb is arbitrary (one of the registered
-# overlays), so we match the verb-segment substring directly — e.g.
-# ``review post-comment`` matches both ``t3 teatree review post-comment``
-# and the equivalent per-overlay variant.
-_T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
-    "notify send",
-    "review post-comment",
-    "review post-draft-note",
-    "ticket create-issue",
-    "t3 slack react",
-)
+# Slack MCP outbound write tools → body-field map. The substring "send"
+# heuristic from round 1 missed ``slack_schedule_message``,
+# ``slack_create_canvas`` and ``slack_update_canvas`` — explicit allowlist
+# replaces it (codex round-2 #6).
+_SLACK_MCP_WRITE_TOOLS: Final[dict[str, tuple[str, ...]]] = {
+    "slack_send_message": ("text", "message"),
+    "slack_send_message_draft": ("text", "message"),
+    "slack_schedule_message": ("text", "message"),
+    "slack_create_canvas": ("document_content", "content", "text"),
+    "slack_update_canvas": ("document_content", "content", "text"),
+    "slack_create_conversation": ("name",),
+}
 
 
-def _is_t3_publish_invocation(command: str) -> bool:
-    # All overlay-routed verbs go through ``t3`` — restrict the substring
-    # match to commands that actually start with the ``t3`` binary so a
-    # ``git log --grep "review post-comment"`` does not trip the gate.
-    if not command.lstrip().startswith("t3 "):
-        return False
-    return any(needle in command for needle in _T3_PUBLISH_SUBSTRINGS)
+def _slack_tool_suffix(tool_name: str) -> str:
+    """Extract the trailing slack tool name (``slack_*``) from an MCP id.
+
+    MCP tool ids are shaped ``mcp__<server>__<tool>`` — we want the
+    ``<tool>`` segment for an exact-match allowlist lookup.
+    """
+    return tool_name.rsplit("__", 1)[-1]
 
 
-def _is_publish_command(command: str) -> bool:
-    if any(needle in command for needle in _BASH_PUBLISH_SUBSTRINGS):
-        return True
-    return _is_t3_publish_invocation(command)
+def _extract_slack_mcp_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+    """Return body text for a Slack MCP write tool, or ``None`` for read-only tools.
 
-
-# Capture --body / --description / --message / --title / -m / -F arg
-# values plus heredocs. Heredocs cover the standard ``$(cat <<'EOF' …
-# EOF)`` shape the rest of the codebase already uses for multi-line PR
-# bodies.
-_FLAG_VALUE_RE: Final[re.Pattern[str]] = re.compile(
-    r"--(?:body|description|message|title)(?:[ =])\s*(['\"])(.*?)\1",
-    re.DOTALL,
-)
-_SHORT_M_RE: Final[re.Pattern[str]] = re.compile(r"\s-m\s+(['\"])(.*?)\1", re.DOTALL)
-# ``gh pr comment`` / ``gh issue comment`` use ``-b`` for the body. We
-# only ever invoke the short-flag parser from inside a publish surface
-# (``_is_publish_command`` already gated us), so a global ``-b`` shape
-# match is safe.
-_SHORT_B_RE: Final[re.Pattern[str]] = re.compile(r"\s-b\s+(['\"])(.*?)\1", re.DOTALL)
-_HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
-    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
-    re.DOTALL,
-)
-_FILE_FLAG_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:--body-file|--description-file|--file)[ =]+(\S+)",
-)
-_GIT_SHORT_F_RE: Final[re.Pattern[str]] = re.compile(r"\s-F[ =]?(\S+)")
-
-# ``gh api`` / ``glab api`` carry their JSON payload in ``-f key=value``
-# (string), ``-F key=value`` / ``--field`` (typed), ``--raw-field`` (raw
-# string), or ``--input <file>`` (full JSON blob). We pluck any
-# ``body=…`` assignment regardless of quoting, then read ``--input``
-# files separately and scan a ``body`` JSON field.
-_API_FIELD_BODY_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:-f|-F|--field|--raw-field)\s+body=(['\"])?(.*?)(?(1)\1|(?=\s|$))",
-    re.DOTALL,
-)
-_API_INPUT_FILE_RE: Final[re.Pattern[str]] = re.compile(r"--input[ =]+(\S+)")
-
-# curl carries its payload in ``-d`` / ``--data`` / ``--data-raw`` /
-# ``--data-binary`` / ``--json``. The body is JSON-shaped for the Slack
-# / GitLab / GitHub surfaces this gate cares about — we JSON-decode and
-# scan the ``text``/``message``/``body`` fields.
-_CURL_DATA_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:--data-raw|--data-binary|--data|--json|\s-d)\s+(['\"])(.*?)\1",
-    re.DOTALL,
-)
-# When curl's data flag references a file (``-d @path``) or stdin
-# (``-d @-``) we cannot inspect the body in-process. Fail closed by
-# returning a sentinel payload that trips the HIGH gate.
-_CURL_DATA_FILE_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:--data-raw|--data-binary|--data|--json|\s-d)\s+@(\S+)",
-)
-_CURL_FAIL_CLOSED_SENTINEL: Final[str] = (
-    "the user said: pre-publish quote-scanner could not parse curl data flag — fail closed"
-)
-
-
-def _read_file_arg(path: str) -> str | None:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    The Slack MCP carries the body in tool-specific fields beyond what
+    :class:`ToolInput` enumerates (``document_content``, ``content``,
+    ``name``). The actual hook payload is a wider mapping than the
+    typed view — we read each candidate field by name via :meth:`get`.
+    """
+    if not (tool_name.startswith("mcp__") and "slack" in tool_name.lower()):
         return None
+    suffix = _slack_tool_suffix(tool_name).lower()
+    fields = _SLACK_MCP_WRITE_TOOLS.get(suffix)
+    if fields is None:
+        return None
+    for field_name in fields:
+        value = tool_input.get(field_name)
+        if isinstance(value, str) and value:
+            return value
+    # The tool IS a write surface but no body field was populated — scan
+    # an empty payload (clean by construction) rather than fail-closed.
+    return ""
 
 
 def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
@@ -361,83 +322,20 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     The ``None`` return is the gate's pass-through signal — the
     PreToolUse handler skips its work for any tool call that does not
     intend to publish.
+
+    Bash commands are first normalised against shell-equivalent
+    spellings (line continuations, ANSI-C quoting) so the publish-
+    detection substring matcher sees the same logical command Bash
+    itself would execute (codex round-2 #2 / #3).
     """
     if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        if not _is_publish_command(command):
+        raw_command = tool_input.get("command", "")
+        joined = _normalize_line_continuations(raw_command)
+        if not _is_publish_command(joined):
             return None
-        return _extract_bash_payload(command)
+        return _extract_bash_payload(joined)
 
-    if tool_name.startswith("mcp__") and "slack" in tool_name.lower() and "send" in tool_name.lower():
-        return tool_input.get("text") or tool_input.get("message") or ""
-
-    return None
-
-
-def _extract_bash_payload(command: str) -> str:
-    """Concatenate every body-like fragment the command surface carries.
-
-    A single Bash invocation can carry the body in several forms — an
-    inline ``--body`` quoted arg, a ``-m`` short flag, a heredoc spliced
-    in via ``$(cat <<EOF … EOF)``, or a ``--body-file`` path. The gate
-    scans the union so a payload split across forms still trips.
-    """
-    parts: list[str] = [match.group(2) for match in _FLAG_VALUE_RE.finditer(command)]
-    parts.extend(match.group(2) for match in _SHORT_M_RE.finditer(command))
-    parts.extend(match.group(2) for match in _SHORT_B_RE.finditer(command))
-    parts.extend(match.group(2) for match in _HEREDOC_RE.finditer(command))
-    parts.extend(match.group(2) for match in _API_FIELD_BODY_RE.finditer(command))
-    parts.extend(_extract_curl_payloads(command))
-    for match in (*_FILE_FLAG_RE.finditer(command), *_GIT_SHORT_F_RE.finditer(command)):
-        content = _read_file_arg(match.group(1))
-        if content is not None:
-            parts.append(content)
-    for match in _API_INPUT_FILE_RE.finditer(command):
-        content = _read_file_arg(match.group(1))
-        if content is None:
-            continue
-        parts.append(content)
-        parts.extend(_json_body_fields(content))
-    return "\n".join(parts)
-
-
-def _json_body_fields(blob: str) -> list[str]:
-    """Return ``text``/``message``/``body`` values from a JSON blob, if any."""
-    try:
-        decoded = json.loads(blob)
-    except (ValueError, TypeError):
-        return []
-    if not isinstance(decoded, dict):
-        return []
-    return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
-
-
-def _extract_curl_payloads(command: str) -> list[str]:
-    """Parse curl ``-d``/``--data``/``--data-raw``/``--json`` JSON bodies.
-
-    The body is JSON-decoded and the ``text``/``message``/``body`` fields
-    are extracted. When curl carries a data flag we cannot inspect — a
-    file reference (``@path``), stdin (``@-``), or an unparsable body —
-    the parser appends a fail-closed sentinel that trips the HIGH gate.
-    The sentinel is the explicit ``fail-closed`` behaviour from the
-    Codex CRITICAL #5 finding.
-    """
-    payloads: list[str] = []
-    for match in _CURL_DATA_RE.finditer(command):
-        raw = match.group(2)
-        # Always include the raw text — the scanner's pattern catalogue
-        # can match user-attributed prose even outside JSON shapes.
-        payloads.append(raw)
-        json_fields = _json_body_fields(raw)
-        if json_fields:
-            payloads.extend(json_fields)
-        elif raw.strip().startswith(("{", "[")):
-            # Looked like JSON but did not decode — fail closed.
-            payloads.append(_CURL_FAIL_CLOSED_SENTINEL)
-    # File-/stdin-referenced data flags cannot be inspected in-process.
-    if _CURL_DATA_FILE_RE.search(command):
-        payloads.append(_CURL_FAIL_CLOSED_SENTINEL)
-    return payloads
+    return _extract_slack_mcp_payload(tool_name, tool_input)
 
 
 # ── Override + ledger ──────────────────────────────────────────────
@@ -447,20 +345,30 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     """Return True iff the caller explicitly opted out of the gate.
 
     Two surfaces are accepted. The flag ``--quote-ok`` may appear as a
-    standalone token in a Bash command (``shlex.split`` is used so a
-    substring inside a quoted body cannot fake the flag). The env mapping
-    on the tool input may set ``QUOTE_OK=1`` (the harness exposes the env
-    block separately from the command string).
+    standalone token in the FIRST physical line of a Bash command — a
+    newline-smuggled ``--quote-ok`` (codex round-2 #1) is rejected
+    because a literal newline is itself a shell command separator.
+    The env mapping on the tool input may set ``QUOTE_OK=1`` (the harness
+    exposes the env block separately from the command string).
     """
     if tool_name == "Bash":
         command = tool_input.get("command", "")
+        # Only the FIRST shell command counts — any ``--quote-ok`` that
+        # lives on a separate physical line (outside any quoted region)
+        # is part of a different command and must not bypass the gate
+        # (codex round-2 #1). Line-continuation ``\<NL>`` is joined
+        # first so a legitimately-continued first command is still
+        # treated as one logical line. The split is QUOTE-AWARE so a
+        # newline INSIDE a body string is preserved.
+        joined = _normalize_line_continuations(command)
+        first_segment = _first_shell_command(joined)
         try:
             # ``comments=True`` strips ``# …`` so a smuggled
             # ``# --quote-ok`` after the publish command does not become
-            # a real token (Codex CRITICAL #1).
-            tokens = shlex.split(command, comments=True, posix=True)
+            # a real token (Codex CRITICAL #1, round 1).
+            tokens = shlex.split(first_segment, comments=True, posix=True)
         except ValueError:
-            tokens = command.split()
+            tokens = first_segment.split()
         # The override is valid only when it lives in the FIRST shell
         # segment — i.e. before any metacharacter that would route the
         # remainder to a separate command. ``shlex`` keeps ``;``, ``|``,

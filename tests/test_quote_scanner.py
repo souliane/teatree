@@ -395,6 +395,248 @@ class TestHookHandlerEndToEnd:
         assert "heading-user-ask-verbatim" in out["permissionDecisionReason"]
 
 
+class TestRound2BypassClosures:
+    """Regression tests for the 7 round-2 codex-found bypass paths.
+
+    Each test reproduces a distinct bypass surfaced in the codex
+    re-verdict comment on PR #1251 (re-review of commit ``e8b642cc``).
+    Test names align 1:1 with the round-2 finding numbers.
+    """
+
+    # --- Round-2 #1: newline-separated ``--quote-ok`` override ---
+
+    def test_override_smuggled_after_literal_newline_is_rejected(self) -> None:
+        # ``gh ... --body "leak"\n--quote-ok`` — the override token must
+        # only count as a CLI token in the FIRST shell command, not as
+        # text after a literal newline (which acts as a shell separator
+        # at the command level).
+        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\n--quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_override_smuggled_after_carriage_return_is_rejected(self) -> None:
+        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\r\n--quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_high_match_with_newline_smuggled_override_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # End-to-end: the gate must DENY when the only override token
+        # was smuggled past a literal newline.
+        cmd = 'gh issue comment 1 --body "## User mandate\nbody"\n--quote-ok'
+        blocked = handle_quote_scanner_pretool(_bash(cmd))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+    # --- Round-2 #2: line-continuation `\` in publish command ---
+
+    def test_line_continuation_in_publish_command_still_parses_body(self) -> None:
+        # ``gh issue \\<NL> comment 1 --body "..."`` — bash joins the
+        # continued line into a single command, so the body must still
+        # be extracted.
+        cmd = 'gh issue \\\n  comment 1 --body "## User mandate\nbody"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_line_continuation_does_not_smuggle_override(self) -> None:
+        # Splitting ``--quote-ok`` across a backslash-newline must not
+        # bypass the override check — the joined token is ``--quote-ok``
+        # which IS a legitimate override (this case should fire), but
+        # the FIRST-segment rule still applies. Place the override AFTER
+        # a metacharacter to confirm it is rejected.
+        cmd = 'gh issue comment 1 --body "leak" \\\n  ; echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    # --- Round-2 #3: ANSI-C $'...' quoting ---
+
+    def test_ansi_c_body_quoting_is_decoded_and_scanned(self) -> None:
+        # Bash decodes ``$'\n'`` to a literal newline before passing the
+        # value as a single arg. The scanner must see the decoded body
+        # so a ``## User mandate`` heading inside ``$'...'`` is caught.
+        cmd = r"""gh issue create --title t --body $'## User mandate\nship it'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_ansi_c_hex_escapes_are_decoded_and_scanned(self) -> None:
+        # ``$'\x4c\x65\x61\x6b'`` decodes to ``Leak`` — make sure the
+        # scanner sees the decoded literal so an obfuscation via
+        # hex-escape cannot smuggle a HIGH match past detection.
+        cmd = r"""gh issue create --title t --body $'## User mandate\n\x73\x68\x69\x70 it'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+        assert "ship" in payload
+
+    def test_ansi_c_undecodable_fails_closed(self) -> None:
+        # If a body uses ANSI-C quoting and the value contains a body-
+        # flag flag but the content is opaque, we still pull whatever
+        # shlex extracted so subsequent scans run on the literal payload.
+        cmd = r"""gh issue create --title t --body $'## User mandate'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- Round-2 #4: gh api --input - (stdin) fails closed ---
+
+    def test_gh_api_input_stdin_fails_closed(self) -> None:
+        # ``gh api ... --input -`` reads the payload from stdin which we
+        # cannot inspect from inside the hook. The gate must fail closed.
+        cmd = "gh api repos/x/y/issues/1/comments --input -"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high, f"gh api --input - must fail closed via HIGH-matching sentinel; got payload={payload!r}"
+
+    def test_gh_api_input_missing_file_fails_closed(self) -> None:
+        # When ``--input`` references a path that does not exist we
+        # cannot read the body — fail closed instead of treating it as a
+        # clean publish.
+        cmd = "gh api repos/x/y/issues/1/comments --input /nonexistent/path.json"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+
+    def test_glab_api_input_stdin_fails_closed(self) -> None:
+        cmd = "glab api projects/1/issues/1/notes --input -"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+
+    # --- Round-2 #5: curl --data=value (equals form) ---
+
+    def test_curl_data_equals_form_is_parsed(self) -> None:
+        cmd = 'curl -X POST https://slack.com/api/chat.postMessage --data=\'{"text":"## User mandate\\nship"}\''
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_curl_json_equals_form_is_parsed(self) -> None:
+        cmd = 'curl -X POST https://example.com/api/comments --json=\'{"body":"## User mandate\\nship"}\''
+        from teatree.hooks.quote_scanner import _extract_bash_payload  # noqa: PLC0415
+
+        body = _extract_bash_payload(cmd)
+        assert "User mandate" in body
+
+    def test_curl_data_raw_equals_form_is_parsed(self) -> None:
+        cmd = 'curl -X POST https://slack.com/api/chat.postMessage --data-raw=\'{"text":"## User mandate\\nship"}\''
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_curl_data_equals_at_file_fails_closed(self) -> None:
+        cmd = "curl -X POST https://slack.com/api/chat.postMessage --data=@some-binary"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+
+    # --- Round-2 #6: Slack MCP coverage gaps ---
+
+    @pytest.mark.parametrize(
+        ("tool_name", "field"),
+        [
+            ("mcp__claude_ai_Slack__slack_send_message", "text"),
+            ("mcp__claude_ai_Slack__slack_send_message_draft", "text"),
+            ("mcp__claude_ai_Slack__slack_schedule_message", "text"),
+            ("mcp__claude_ai_Slack__slack_create_canvas", "document_content"),
+            ("mcp__claude_ai_Slack__slack_update_canvas", "document_content"),
+        ],
+    )
+    def test_slack_mcp_write_tool_body_is_scanned(self, tool_name: str, field: str) -> None:
+        # ``ToolInput`` enumerates a subset of keys for static analysis,
+        # but real MCP payloads can carry tool-specific fields like
+        # ``document_content`` — cast to the broader shape that the
+        # extractor actually accepts.
+        from typing import cast  # noqa: PLC0415
+
+        from teatree.hooks.quote_scanner import ToolInput  # noqa: PLC0415
+
+        tool_input = cast("ToolInput", {field: "## User mandate\nship"})
+        payload = extract_publish_payload(tool_name, tool_input)
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_slack_create_canvas_with_content_field_is_scanned(self) -> None:
+        # Some canvas variants use ``content`` instead of
+        # ``document_content``. Both must be picked up.
+        from typing import cast  # noqa: PLC0415
+
+        from teatree.hooks.quote_scanner import ToolInput  # noqa: PLC0415
+
+        tool_input = cast("ToolInput", {"content": "## User mandate\nship"})
+        payload = extract_publish_payload(
+            "mcp__claude_ai_Slack__slack_create_canvas",
+            tool_input,
+        )
+        assert payload is not None
+        assert "User mandate" in payload
+
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "mcp__claude_ai_Slack__slack_read_channel",
+            "mcp__claude_ai_Slack__slack_read_thread",
+            "mcp__claude_ai_Slack__slack_search_public",
+            "mcp__claude_ai_Slack__slack_list_channel_members",
+        ],
+    )
+    def test_slack_mcp_read_only_tools_are_not_publish_surfaces(self, tool_name: str) -> None:
+        # Read-only Slack tools must NOT trigger the gate — they don't
+        # publish anything, and false positives would block legitimate
+        # discovery calls.
+        assert extract_publish_payload(tool_name, {"text": "## User mandate\nship"}) is None
+
+    def test_slack_schedule_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {
+            "tool_name": "mcp__claude_ai_Slack__slack_schedule_message",
+            "tool_input": {"text": "## User mandate\nfoo"},
+        }
+        blocked = handle_quote_scanner_pretool(data)
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+    # --- Round-2 #7: smart-quote (Unicode) variants ---
+
+    def test_smart_double_quotes_in_blockquote_are_blocked(self) -> None:
+        # U+201C / U+201D (left / right double smart quotes) must match
+        # the blockquote-attributed HIGH pattern after normalization.
+        body = "> “Ship it now.”"
+        result = scan_text(body)
+        assert result.has_high, f"smart-quoted blockquote must match HIGH; got {result.findings!r}"
+
+    def test_smart_single_quotes_attributed_are_blocked(self) -> None:
+        # U+2018 / U+2019 — same handling as straight singles in
+        # heading/italic patterns.
+        body = "Per user feedback “ship it now”"
+        result = scan_text(body)
+        assert result.has_high
+
+    def test_low9_and_high_reversed_quotes_are_normalized(self) -> None:
+        # U+201A (single low-9), U+201E (double low-9), U+201F
+        # (high-reversed-9) — common across CJK/EU typography.
+        body = "> „Ship it now.‟"
+        result = scan_text(body)
+        assert result.has_high
+
+    def test_italic_attributed_smart_quote_is_blocked(self) -> None:
+        body = "A direct phrase like _“this is a long enough sentence to trip the gate”_."
+        result = scan_text(body)
+        assert result.has_high
+
+    def test_smart_quote_in_gh_pr_comment_body_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        body = "> “Ship it now.”"
+        cmd = f'gh pr comment 5 -b "{body}"'
+        blocked = handle_quote_scanner_pretool(_bash(cmd))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+
 class TestHookChainRegistration:
     def test_handler_is_wired_before_skill_load(self) -> None:
         chain = router._HANDLERS["PreToolUse"]
