@@ -256,7 +256,15 @@ def _fetch_review_state(api: object, repo: str, iid: int) -> _ReviewState:
 
 
 def _audit_gitlab_mr(url: str) -> ReviewRunResult:
-    """Fetch metadata for a GitLab MR and build the audit result."""
+    """Fetch metadata for a GitLab MR and build the audit result.
+
+    Every GitLab GET is wrapped: backend exceptions (``httpx.HTTPStatusError``
+    for 401/403/404, ``httpx.RequestError`` for connection failures) are
+    normalized into :class:`_ReviewRunAPIError` so the CLI surfaces a
+    structured ``api_unavailable`` payload rather than a raw traceback.
+    """
+    import httpx  # noqa: PLC0415
+
     from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
     from teatree.cli.review import ReviewService  # noqa: PLC0415
     from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
@@ -269,12 +277,16 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     encoded = repo.replace("/", "%2F")
     api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001
 
-    changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")
-    if changes_payload is None:
-        msg = f"GET /changes returned no payload for {repo}!{iid} — token missing or MR inaccessible"
-        raise _ReviewRunAPIError(msg)
-    diff = _diff_stats_from_changes(changes_payload)
-    state = _fetch_review_state(api, repo, iid)
+    try:
+        changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")
+        if changes_payload is None:
+            msg = f"GET /changes returned no payload for {repo}!{iid} — token missing or MR inaccessible"
+            raise _ReviewRunAPIError(msg)
+        diff = _diff_stats_from_changes(changes_payload)
+        state = _fetch_review_state(api, repo, iid)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        msg = f"GitLab backend refused the audit for {repo}!{iid}: {exc}"
+        raise _ReviewRunAPIError(msg) from exc
     complexity = _classify_complexity(files=diff.files, additions=diff.additions, deletions=diff.deletions)
     findings = _gather_findings(complexity=complexity, files=diff.files, touched_paths=diff.touched)
     verdict = "needs_attention" if findings or state.open_discussions else "ready_to_review"
@@ -315,6 +327,9 @@ def run(
     Exit codes:
 
     * ``0`` — audit ran, JSON printed.
+    * ``1`` — URL parsed but the GitLab API refused the audit
+        (``api_unavailable``: missing token, 401/403/404, connection
+        failure, or any other backend error).
     * ``2`` — URL refused before any API call (``unsupported_forge`` for
         GitHub PRs, ``bad_url`` for anything else).
     """
