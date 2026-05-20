@@ -1,6 +1,6 @@
-# Cron Fallback — read when `t3 loop schedule-periodic` is not available
+# Cron Fallback — read when the scanning-news scanner is not yet wired into the main loop
 
-If the teatree main loop has not yet shipped a `schedule-periodic` CLI for skill dispatch, fall back to the same crontab pattern documented by `t3:followup`.
+Until the dedicated `scanning_news` scanner ships (the architectural-review-style scanner that queues a daily Task for this skill), fall back to the same crontab pattern documented by `t3:followup`.
 
 ## Local crontab
 
@@ -27,4 +27,4 @@ TLDR AI lands in US morning. 9am local is a reasonable default for a US-aligned 
 
 ## When to remove this fallback
 
-Once `t3 loop schedule-periodic` (or an equivalent loop-native periodic dispatcher) is available, register the skill via the main-loop API instead of cron, and delete the crontab line. The loop integration gives the scan access to the same observability, retry, and dedupe machinery as other periodic tasks.
+Once the `scanning_news` scanner is wired into the main loop (mirroring `architectural_review`), delete the crontab line. The loop integration gives the scan access to the same observability, retry, and dedupe machinery as other periodic tasks.
