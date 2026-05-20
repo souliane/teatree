@@ -11,9 +11,12 @@ from typer.testing import CliRunner
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_user_token_setup import (
     _USER_TOKEN_RE,
+    BOT_TOKEN_PASS_KEY,
     REQUIRED_USER_SCOPES,
     USER_TOKEN_PASS_KEY,
     TokenScopeError,
+    _derive_app_id_from_bot,
+    _detect_and_backup_xoxb_mis_install,
     _store_and_verify,
     added_scopes,
     fetch_token_scopes,
@@ -166,6 +169,7 @@ class TestCliWalkthrough:
                 "teatree.cli.slack_user_token_setup.fetch_token_scopes",
                 return_value=list(REQUIRED_USER_SCOPES),
             ),
+            patch("teatree.cli.slack_user_token_setup._derive_app_id_from_bot", return_value=""),
             patch("teatree.cli.slack_user_token_setup.webbrowser.open"),
         ):
             result = self._run(["--config", str(config)], inputs="n\n")
@@ -181,6 +185,7 @@ class TestCliWalkthrough:
                 "teatree.cli.slack_user_token_setup.fetch_token_scopes",
                 return_value=list(REQUIRED_USER_SCOPES),
             ),
+            patch("teatree.cli.slack_user_token_setup._derive_app_id_from_bot", return_value=""),
             patch("teatree.cli.slack_user_token_setup.webbrowser.open"),
         ):
             result = self._run(["--config", str(config)], inputs="n\n")
@@ -196,8 +201,186 @@ class TestCliWalkthrough:
             patch("teatree.cli.slack_user_token_setup.read_pass", return_value="xoxp-old"),
             patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True),
             patch("teatree.cli.slack_user_token_setup.fetch_token_scopes", return_value=granted),
+            patch("teatree.cli.slack_user_token_setup._derive_app_id_from_bot", return_value=""),
             patch("teatree.cli.slack_user_token_setup.webbrowser.open"),
         ):
             result = self._run(["--reset", "--config", str(config)], inputs="xoxp-new-token\n")
         assert result.exit_code == 0, result.output
         assert "Aborted" not in result.output
+
+
+class TestDetectAndBackupXoxbMisInstall:
+    def test_xoxb_at_user_token_path_backed_up_when_bot_slot_empty(self) -> None:
+        def fake_read(key: str) -> str:
+            return {USER_TOKEN_PASS_KEY: "xoxb-1-abc", BOT_TOKEN_PASS_KEY: ""}.get(key, "")
+
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True) as write,
+        ):
+            messages: list[str] = []
+            _detect_and_backup_xoxb_mis_install(echo=messages.append)
+        write.assert_called_once_with(BOT_TOKEN_PASS_KEY, "xoxb-1-abc")
+        assert any("bot token mis-install detected" in m for m in messages)
+
+    def test_xoxb_skips_backup_when_bot_slot_already_matches(self) -> None:
+        def fake_read(key: str) -> str:
+            return {USER_TOKEN_PASS_KEY: "xoxb-1-abc", BOT_TOKEN_PASS_KEY: "xoxb-1-abc"}.get(key, "")
+
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True) as write,
+        ):
+            _detect_and_backup_xoxb_mis_install(echo=lambda _msg: None)
+        write.assert_not_called()
+
+    def test_xoxp_at_user_token_path_does_nothing(self) -> None:
+        def fake_read(key: str) -> str:
+            return {USER_TOKEN_PASS_KEY: "xoxp-1-good", BOT_TOKEN_PASS_KEY: ""}.get(key, "")
+
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True) as write,
+        ):
+            _detect_and_backup_xoxb_mis_install(echo=lambda _msg: None)
+        write.assert_not_called()
+
+    def test_xoxb_backup_overwrites_when_bot_slot_holds_different_value(self) -> None:
+        def fake_read(key: str) -> str:
+            return {USER_TOKEN_PASS_KEY: "xoxb-1-new", BOT_TOKEN_PASS_KEY: "xoxb-1-stale"}.get(key, "")
+
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True) as write,
+        ):
+            messages: list[str] = []
+            _detect_and_backup_xoxb_mis_install(echo=messages.append)
+        write.assert_called_once_with(BOT_TOKEN_PASS_KEY, "xoxb-1-new")
+        assert any("bot token mis-install detected" in m for m in messages)
+
+
+def _slack_response(body: dict[str, Any]) -> httpx.Response:
+    return httpx.Response(
+        status_code=200,
+        json=body,
+        request=httpx.Request("POST", "https://slack.com/api/auth.test"),
+    )
+
+
+class TestDeriveAppIdFromBot:
+    def test_returns_app_id_when_auth_test_and_bots_info_succeed(self) -> None:
+        responses = [
+            _slack_response({"ok": True, "bot_id": "B12345"}),
+            _slack_response({"ok": True, "bot": {"app_id": "A99999"}}),
+        ]
+        with patch("teatree.cli.slack_user_token_setup.httpx.post", side_effect=responses):
+            assert _derive_app_id_from_bot("xoxb-anything") == "A99999"
+
+    def test_returns_empty_when_auth_test_fails(self) -> None:
+        response = _slack_response({"ok": False, "error": "invalid_auth"})
+        with patch("teatree.cli.slack_user_token_setup.httpx.post", return_value=response):
+            assert _derive_app_id_from_bot("xoxb-bad") == ""
+
+    def test_returns_empty_when_bots_info_fails(self) -> None:
+        responses = [
+            _slack_response({"ok": True, "bot_id": "B12345"}),
+            _slack_response({"ok": False, "error": "bot_not_found"}),
+        ]
+        with patch("teatree.cli.slack_user_token_setup.httpx.post", side_effect=responses):
+            assert _derive_app_id_from_bot("xoxb-anything") == ""
+
+    def test_returns_empty_when_no_bot_id_in_auth_test(self) -> None:
+        response = _slack_response({"ok": True})
+        with patch("teatree.cli.slack_user_token_setup.httpx.post", return_value=response):
+            assert _derive_app_id_from_bot("xoxb-anything") == ""
+
+    def test_returns_empty_when_no_app_id_in_bots_info(self) -> None:
+        responses = [
+            _slack_response({"ok": True, "bot_id": "B12345"}),
+            _slack_response({"ok": True, "bot": {}}),
+        ]
+        with patch("teatree.cli.slack_user_token_setup.httpx.post", side_effect=responses):
+            assert _derive_app_id_from_bot("xoxb-anything") == ""
+
+    def test_returns_empty_on_http_error(self) -> None:
+        with patch(
+            "teatree.cli.slack_user_token_setup.httpx.post",
+            side_effect=httpx.ConnectError("boom"),
+        ):
+            assert _derive_app_id_from_bot("xoxb-anything") == ""
+
+    def test_returns_empty_when_token_is_blank(self) -> None:
+        assert _derive_app_id_from_bot("") == ""
+
+
+class TestNewIntegrationsInWalkthrough:
+    """Wires the new helpers into the CLI walkthrough."""
+
+    def _run(self, args: list[str], inputs: str) -> Any:
+        runner = CliRunner()
+        return runner.invoke(setup_app, ["slack-user-token", *args], input=inputs)
+
+    def test_xoxb_in_user_token_slot_triggers_backup_before_reinstall(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A0B38QGGF18"\n', encoding="utf-8")
+        granted = list(REQUIRED_USER_SCOPES)
+
+        def fake_read(key: str) -> str:
+            return {USER_TOKEN_PASS_KEY: "xoxb-1-abc", BOT_TOKEN_PASS_KEY: ""}.get(key, "")
+
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", side_effect=fake_read),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True) as write,
+            patch("teatree.cli.slack_user_token_setup.fetch_token_scopes", return_value=granted),
+            patch("teatree.cli.slack_user_token_setup.webbrowser.open"),
+        ):
+            result = self._run(["--reset", "--config", str(config)], inputs="xoxp-new-token\n")
+        assert result.exit_code == 0, result.output
+        assert "bot token mis-install detected" in result.output
+        write.assert_any_call(BOT_TOKEN_PASS_KEY, "xoxb-1-abc")
+
+    def test_app_id_derived_when_config_empty_and_token_present(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        granted = list(REQUIRED_USER_SCOPES)
+        opens: list[str] = []
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", return_value="xoxp-existing"),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_user_token_setup.fetch_token_scopes", return_value=granted),
+            patch("teatree.cli.slack_user_token_setup._derive_app_id_from_bot", return_value="AABCDEF"),
+            patch("teatree.cli.slack_user_token_setup.webbrowser.open", side_effect=opens.append),
+        ):
+            result = self._run(["--reset", "--config", str(config)], inputs="xoxp-new-token\n")
+        assert result.exit_code == 0, result.output
+        assert opens == ["https://api.slack.com/apps/AABCDEF/oauth"]
+
+    def test_app_id_derivation_failure_prints_fallback(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        granted = list(REQUIRED_USER_SCOPES)
+        opens: list[str] = []
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", return_value="xoxp-existing"),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_user_token_setup.fetch_token_scopes", return_value=granted),
+            patch("teatree.cli.slack_user_token_setup._derive_app_id_from_bot", return_value=""),
+            patch("teatree.cli.slack_user_token_setup.webbrowser.open", side_effect=opens.append),
+        ):
+            result = self._run(["--reset", "--config", str(config)], inputs="xoxp-new-token\n")
+        assert result.exit_code == 0, result.output
+        assert "https://api.slack.com/apps" in result.output
+        assert opens == []
+
+    def test_install_url_targets_oauth_section_when_app_id_known(self, tmp_path: Path) -> None:
+        config = tmp_path / "teatree.toml"
+        config.write_text('[overlays.acme]\nslack_app_id = "A0B38QGGF18"\n', encoding="utf-8")
+        granted = list(REQUIRED_USER_SCOPES)
+        opens: list[str] = []
+        with (
+            patch("teatree.cli.slack_user_token_setup.read_pass", return_value=""),
+            patch("teatree.cli.slack_user_token_setup.write_pass", return_value=True),
+            patch("teatree.cli.slack_user_token_setup.fetch_token_scopes", return_value=granted),
+            patch("teatree.cli.slack_user_token_setup.webbrowser.open", side_effect=opens.append),
+        ):
+            result = self._run(["--config", str(config)], inputs="xoxp-new-token\n")
+        assert result.exit_code == 0, result.output
+        assert opens == ["https://api.slack.com/apps/A0B38QGGF18/oauth"]
