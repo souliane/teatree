@@ -134,6 +134,8 @@ This is spec-only — §17.6.1 (anti-relaxation checks) and §17.6.2 (sound tach
 
 #### 17.6.1 Anti-relaxation checks
 
+**SPEC ONLY — not yet implemented.** The seven checks below describe a gate-shape tracked under the issues referenced at the end of §17.6; none are wired into `hook_router.py` today. The shipped enforcement gates from this family are enumerated in §17.6.4.
+
 The gate runs on every PR diff and blocks merge if any of the following are present **beyond the established boilerplate baseline**:
 
 | Check | Trigger |
