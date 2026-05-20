@@ -56,6 +56,11 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
     ready, on DB error, or when no row matches — the renderer treats
     missing entries as "no permalink to surface" and the MR ref renders
     normally without the extra link chunk.
+
+    #1156 (Culprit A): filters out MRs whose :class:`PullRequest` row is
+    in the MERGED state so the renderer never surfaces a permalink to a
+    stale post that would 404 in Slack (the post may have been deleted
+    or the thread archived after the MR merged).
     """
     urls = _mr_urls_from_actions(actions)
     if not urls:
@@ -64,11 +69,19 @@ def build_review_post_permalinks(actions: Iterable[DispatchAction]) -> dict[str,
         from django.apps import apps  # noqa: PLC0415
 
         model = apps.get_model("core", "ReviewRequestPost")
+        pr_model = apps.get_model("core", "PullRequest")
     except Exception:  # noqa: BLE001
         return {}
     result: dict[str, str] = {}
     try:
-        rows = model.objects.filter(mr_url__in=urls).only("mr_url", "slack_channel_id", "slack_thread_ts")
+        merged_urls = set(
+            pr_model.objects.filter(url__in=urls, state="merged").values_list("url", flat=True),
+        )
+        rows = (
+            model.objects.filter(mr_url__in=urls)
+            .exclude(mr_url__in=merged_urls)
+            .only("mr_url", "slack_channel_id", "slack_thread_ts")
+        )
         for row in rows:
             permalink = _slack_permalink(row.slack_channel_id, row.slack_thread_ts)
             if permalink:
