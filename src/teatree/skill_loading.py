@@ -131,6 +131,7 @@ class SkillLoadingPolicy:
         explicit_skills: list[str],
         overlay_active: bool,
         trigger_index: TriggerIndex | None = None,
+        companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         if explicit_phase and explicit_skills:
             msg = "--phase and --skill cannot be used together"
@@ -160,6 +161,7 @@ class SkillLoadingPolicy:
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=overlay_active,
             lifecycle_skill=lifecycle_skill,
+            companion_skills=companion_skills,
         )
         if explicit_skills:
             ordered.extend(explicit_skills)
@@ -182,12 +184,14 @@ class SkillLoadingPolicy:
         loaded_skills: set[str],
         supplementary_skills: list[str] | None = None,
         trigger_index: TriggerIndex | None = None,
+        companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         ordered = self._base_detected_skills(
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=False,
             lifecycle_skill=intent,
+            companion_skills=companion_skills,
         )
         if intent:
             ordered.append(intent)
@@ -204,6 +208,7 @@ class SkillLoadingPolicy:
         phase: str,
         overlay_skill_metadata: OverlaySkillMetadata,
         trigger_index: TriggerIndex | None = None,
+        companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -211,6 +216,7 @@ class SkillLoadingPolicy:
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=True,
             lifecycle_skill=lifecycle_skill,
+            companion_skills=companion_skills,
         )
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
@@ -257,6 +263,7 @@ class SkillLoadingPolicy:
         overlay_skill_metadata: OverlaySkillMetadata,
         overlay_active: bool,
         lifecycle_skill: str,
+        companion_skills: list[str] | None = None,
     ) -> list[str]:
         ordered: list[str] = []
         overlay_skill = self._overlay_skill_for_context(
@@ -268,6 +275,8 @@ class SkillLoadingPolicy:
         if overlay_skill:
             ordered.append(overlay_skill)
         ordered.extend(self.detect_framework_skills(cwd))
+        if companion_skills:
+            ordered.extend(s for s in companion_skills if isinstance(s, str) and s)
         return ordered
 
     @staticmethod
