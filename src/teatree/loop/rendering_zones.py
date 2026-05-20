@@ -11,7 +11,7 @@ import re
 
 from teatree.loop.rendering_classification import _ClassifiedActions, _is_url
 from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
-from teatree.loop.rendering_items import _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
+from teatree.loop.rendering_items import _format_mr_ref, _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
 from teatree.loop.statusline import StatuslineZones, _hyperlink, plain_link
 
 _DISPOSITION_LABELS: dict[str, str] = {
@@ -72,11 +72,10 @@ def _render_pr_group(
         else:
             orphans.append(ref)
 
+    ctx = _LinkCtx(colorize=colorize, link=_link)
+
     def _label(ref: _PRRef) -> str:
-        text = f"!{ref.iid}"
-        if ref.annotation:
-            text += f" ({ref.annotation})"
-        rendered = _link(text, ref.url, colorize=colorize)
+        rendered = _format_mr_ref(ref, ctx)
         # #1113 enhancement: surface the review-channel post permalink so the
         # operator can jump from the statusline straight to the thread.
         if ref.review_permalink:
@@ -88,7 +87,7 @@ def _render_pr_group(
         bucket = " ".join(_label(r) for r in by_ticket[tnum])
         chunks.append(f"#{tnum}: {bucket}")
     if orphans:
-        chunks.append(" · ".join(_label(r) for r in orphans))
+        chunks.append(" ".join(_label(r) for r in orphans))
     return f"{prefix}{' · '.join(chunks)}"
 
 
@@ -211,47 +210,6 @@ def _render_action_line(
     if not parts:
         return ""
     return f"{prefix}{' · '.join(parts)}"
-
-
-def _running_tasks_lines() -> list[str]:
-    """Render the ``[ov] agents: <phase> · <phase>`` row from CLAIMED tasks.
-
-    Skips tasks with a blank ``phase`` (the column is ``blank=True`` and
-    the default is ``""``) so the renderer never produces a phantom
-    ``agents:  · coding`` with a double space the operator can't act on.
-    Dedupes phase names per overlay: two parallel implementers both at
-    ``coding`` collapse to one ``agents: coding`` ref — concurrency is
-    implied by the loop, not by visually repeating the same word.
-    Suppresses the whole row when no claimed task contributes a phase.
-    """
-    from django.apps import apps  # noqa: PLC0415
-
-    from teatree.loop.rendering_classification import _dedup_in_order  # noqa: PLC0415
-
-    try:
-        task_model = apps.get_model("core", "Task")
-        claimed = (
-            task_model.objects.filter(status="claimed")
-            .select_related("ticket")
-            .only("phase", "ticket__overlay", "ticket__issue_url")
-        )
-        by_overlay: dict[str, list[str]] = {}
-        for task in claimed:
-            phase = (task.phase or "").strip()
-            if not phase:
-                continue
-            overlay = task.ticket.overlay or ""
-            by_overlay.setdefault(overlay, []).append(phase)
-    except Exception:  # noqa: BLE001
-        return []
-    lines: list[str] = []
-    for overlay, phases in sorted(by_overlay.items()):
-        unique_phases = _dedup_in_order(phases)
-        if not unique_phases:
-            continue
-        prefix = f"[{overlay}] " if overlay else ""
-        lines.append(f"{prefix}agents: {' · '.join(unique_phases)}")
-    return lines
 
 
 def _populate_overlay_zones(

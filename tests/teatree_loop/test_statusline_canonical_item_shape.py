@@ -120,8 +120,13 @@ class TestAnchorCanonicalShape:
         # Ensure no "()" (empty desc) bug.
         assert "()" not in text, repr(text)
 
-    def test_anchor_emits_canonical_pr_chunk_with_comma(self) -> None:
-        """Multiple MRs claiming a ticket render comma-separated, not space-separated."""
+    def test_anchor_emits_canonical_pr_chunk_space_separated(self) -> None:
+        """Multiple MRs claiming a ticket render space-separated (#1156).
+
+        #1156 swapped the pre-existing comma join for a single space —
+        each MR now carries its own ``(title)`` chunk so a comma would
+        visually collide with the parens.
+        """
         # ``build_ticket_index`` parses ``Closes #N`` from the MR
         # description (nested under ``payload['raw']['description']`` — the
         # signal-payload contract) to bucket MRs under their parent ticket.
@@ -152,14 +157,13 @@ class TestAnchorCanonicalShape:
         anchor = _blob(zones.anchors)
         assert "#44" in anchor, repr(anchor)
         assert "(Tickety tick)" in anchor, repr(anchor)
-        # Canonical comma-separated MR chunk after the description (NO_COLOR
-        # renders each link as ``!N <url>``, so the canonical separator is a
-        # literal ``, `` between the two ``!N`` blocks).
-        assert "!1 " in anchor, repr(anchor)
-        assert ", !2" in anchor, repr(anchor)
+        # Both MRs render, and the comma join is gone.
+        assert "!1" in anchor, repr(anchor)
+        assert "!2" in anchor, repr(anchor)
+        assert ", !2" not in anchor, repr(anchor)
 
     def test_anchor_renders_canonical_shape_under_colorize(self) -> None:
-        """Under OSC8 the MR chunk also uses comma separation."""
+        """Under OSC8 the MR chunk also uses space separation (#1156)."""
         action_active = _active("44", "coded", title="Tickety tick")
         action_pr1 = DispatchAction(
             kind="statusline",
@@ -185,14 +189,10 @@ class TestAnchorCanonicalShape:
         )
         zones = zones_for([action_active, action_pr1, action_pr2], colorize=True)
         anchor = _blob(zones.anchors)
-        # When OSC8-colorized the visible runs are just ``!1`` and ``!2``
-        # so the canonical separator is a literal ``, ``.
-        assert "!1\x1b" in anchor or "!1" in anchor, repr(anchor)
-        # comma separator must be present between the two MR refs.
-        # OSC8 link reset comes between, but the literal ", !2" still appears
-        # as the visible-text sequence.
-        # We pin the comma-then-MR sequence:
-        assert ", " in anchor, repr(anchor)
+        assert "!1" in anchor, repr(anchor)
+        assert "!2" in anchor, repr(anchor)
+        # The comma-joined form must NOT appear.
+        assert ", !2" not in anchor, repr(anchor)
 
 
 class TestCanonicalShapeSurvivesTickSplitMerge:
@@ -206,7 +206,7 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
     behaviours turns this RED.
     """
 
-    def test_full_canonical_shape_with_clickable_numbers_and_comma_mrs(self) -> None:
+    def test_full_canonical_shape_with_clickable_numbers_and_space_mrs(self) -> None:
         import re  # noqa: PLC0415
 
         zones = zones_for(
@@ -245,10 +245,10 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/1\033\\" in anchor, repr(anchor)
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/2\033\\" in anchor, repr(anchor)
         # (3) Strip OSC8 sequences to recover the visible text and pin the
-        #     exact canonical shape: ``#44 (Tickety tick) (!1, !2)`` — the
-        #     description in single parens, MRs comma-joined.
+        #     #1156 canonical shape: ``#44 (Tickety tick) !1 !2`` —
+        #     description in single parens, MRs space-joined (no outer parens).
         visible = re.sub(r"\033]8;;[^\033]*\033\\", "", anchor)
-        assert re.search(r"#44 \(Tickety tick\) \(!1, !2\)", visible), repr(visible)
+        assert re.search(r"#44 \(Tickety tick\) !1 !2", visible), repr(visible)
 
     def test_description_chunk_omitted_when_title_empty(self) -> None:
         import re  # noqa: PLC0415

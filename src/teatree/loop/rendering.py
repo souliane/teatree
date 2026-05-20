@@ -21,12 +21,7 @@ from teatree.loop.pr_ticket_index import build_ticket_index
 from teatree.loop.rendering_classification import _ClassifiedActions, _classify_actions, _issue_ref_from
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
 from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
-from teatree.loop.rendering_zones import (
-    _populate_overlay_zones,
-    _render_action_line,
-    _render_pr_group,
-    _running_tasks_lines,
-)
+from teatree.loop.rendering_zones import _populate_overlay_zones, _render_action_line, _render_pr_group
 from teatree.loop.statusline import StatuslineZones, colorize_enabled
 
 __all__ = [
@@ -64,8 +59,6 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
         zone_list = getattr(zones, zone_name, None)
         if isinstance(zone_list, list):
             zone_list.append(entry)
-
-    zones.in_flight.extend(_running_tasks_lines())
 
     return zones
 
