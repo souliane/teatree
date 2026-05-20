@@ -617,6 +617,58 @@ def test_slack_fetch_dms_includes_thread_replies(monkeypatch: pytest.MonkeyPatch
     assert dms[0]["channel"] == "DXYZ"
 
 
+def test_slack_fetch_channel_history_returns_messages_with_channel_stamped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``fetch_channel_history`` polls ``conversations.history`` and stamps channel (#1255).
+
+    The SlackBroadcastsScanner wiring depends on the messaging backend
+    exposing a per-channel history fetcher. The bot path returns the
+    raw messages list with ``channel`` stamped so downstream consumers
+    don't have to thread the channel argument back in.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        captured["url"] = url
+        captured["params"] = kwargs.get("params")
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "messages": [
+                    {"user": "UA", "text": "MR https://gitlab.example.com/team/p/-/merge_requests/1", "ts": "10.0"},
+                    {"user": "UB", "text": "another", "ts": "20.0"},
+                ],
+            },
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    messages = backend.fetch_channel_history(channel="C0AM3TENT", limit=10)
+
+    assert "conversations.history" in str(captured["url"])
+    assert [m["ts"] for m in messages] == ["10.0", "20.0"]
+    assert all(m["channel"] == "C0AM3TENT" for m in messages)
+
+
+def test_slack_fetch_channel_history_returns_empty_on_non_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json={"ok": False, "error": "channel_not_found"}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.fetch_channel_history(channel="C404") == []
+
+
+def test_slack_fetch_channel_history_returns_empty_without_channel() -> None:
+    backend = SlackBotBackend(bot_token="xoxb-test")
+    assert backend.fetch_channel_history(channel="") == []
+
+
 def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(

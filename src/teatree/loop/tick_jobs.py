@@ -23,19 +23,27 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     ArchitecturalReviewScanner,
     AssignedIssuesScanner,
+    BackendChannelHistoryFetcher,
+    CallCommandMergeKeystone,
+    GhPrApiClient,
     GitLabApprovalsScanner,
+    GlabGhMrStateClassifier,
     IncomingEventsScanner,
     MyPrsScanner,
     NotionViewScanner,
+    NullMergeNotifier,
     OutboundAuditScanner,
     PendingTasksScanner,
+    PrSweepScanner,
     RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
     ScanningNewsScanner,
+    SlackBroadcastsScanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
+    SlackMergeNotifier,
     SlackReviewIntentScanner,
     StaleTicketsScanner,
     TicketCompletionScanner,
@@ -145,6 +153,64 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                 ),
             )
     return jobs
+
+
+def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
+    """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
+
+    The scanner polls the overlay's configured review channel for
+    MR-link broadcasts so a reviewer-role tag in a Slack-Connect review team triggers the same downstream dispatch as a direct ``:eyes:``
+    reaction. Returns ``None`` when the overlay has no Python class
+    (TOML-only), no messaging backend resolved, or no review channel
+    configured — those three combinations make the scanner a no-op.
+    """
+    overlay = backend.overlay
+    if overlay is None or backend.messaging is None:
+        return None
+    _channel_name, channel_id = overlay.config.get_review_channel()
+    if not channel_id:
+        return None
+    glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
+    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    return SlackBroadcastsScanner(
+        backend=backend.messaging,
+        channels=[channel_id],
+        fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
+        classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
+        overlay=backend.name,
+    )
+
+
+def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> PrSweepScanner | None:
+    """Build a per-overlay PR-sweep scanner from the overlay's followup repos (#1257).
+
+    The scanner merges green-and-cleared PRs on the overlay's GitHub repos
+    every tick. Repo list is sourced from
+    ``overlay.metadata.get_followup_repos()`` — the same accessor client-term-redacted
+    and skill-sync already use for "cross-repo work scoped to this
+    overlay". Returns ``None`` when the overlay has no Python class
+    (TOML-only) or no GitHub repos configured; the loop must skip
+    cleanly in those cases.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    repos = tuple(overlay.metadata.get_followup_repos())
+    if not repos:
+        return None
+    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    notifier: SlackMergeNotifier | NullMergeNotifier
+    if backend.messaging is not None and slack_user_id:
+        notifier = SlackMergeNotifier(backend=backend.messaging, user_id=slack_user_id)
+    else:
+        notifier = NullMergeNotifier()
+    return PrSweepScanner(
+        repos=repos,
+        api=GhPrApiClient(token=github_token),
+        keystone=CallCommandMergeKeystone(),
+        notifier=notifier,
+        overlay=backend.name,
+    )
 
 
 def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
@@ -290,6 +356,92 @@ def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
     return global_value
 
 
+def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Build every scanner job that fans out for one overlay backend.
+
+    Split out of :func:`build_default_jobs` to keep the orchestrator
+    under the cyclomatic-complexity gate; the per-overlay shape is:
+    active-or-external tickets, stale tickets, per-host PR/issue
+    scanners, architectural review, PR sweep, slack broadcasts, and
+    the messaging-dependent slack scanners.
+    """
+    jobs: list[_ScannerJob] = []
+    tag = backend.name
+    if backend.external_db is not None:
+        from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
+
+        jobs.append(
+            _ScannerJob(
+                scanner=ExternalTicketsScanner(overlay_name=tag, db_path=backend.external_db),
+                overlay=tag,
+            ),
+        )
+    else:
+        jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
+    jobs.append(
+        _ScannerJob(
+            scanner=StaleTicketsScanner(overlay_name=tag, threshold_days=backend.stale_threshold_days),
+            overlay=tag,
+        ),
+    )
+    # Multi-host: an overlay with both GitHub and GitLab PATs scans both
+    # forges, so PRs on one platform don't drown out PRs on the other
+    # (#976). The single-host path is preserved by iterating
+    # ``backend.hosts`` (which is empty when no token resolved).
+    jobs.extend(_jobs_for_backend_hosts(backend, tag))
+    # #1136 / #1152 Periodic architectural-review scanner. CORE
+    # always-on for every registered overlay; the cadence lives in
+    # teatree-core config since architectural review applies uniformly
+    # to all overlays' worktrees, not as a per-overlay opt-in.
+    arch_scanner = _architectural_review_scanner_for(backend)
+    if arch_scanner is not None:
+        jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
+    # #1257 PR-sweep scanner — auto-merge-green-PRs sibling wired
+    # per-overlay (not per-host). The overlay's followup-repos list
+    # (full ``owner/repo`` slugs) is the sweep target.
+    sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
+    if sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
+    # #1255 Slack broadcast scanner — polls the overlay's review
+    # channel for MR-link broadcasts and dispatches reviewer-role work
+    # to the existing review-intent pipeline.
+    broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
+    if broadcasts_scanner is not None:
+        jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    if backend.messaging is not None:
+        jobs.extend(_messaging_jobs_for_backend(backend, tag))
+    return jobs
+
+
+def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+    """Per-overlay Slack scanners that need a resolved messaging backend.
+
+    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction
+    events into the backend's reactions queue; ``SlackReviewIntentScanner``
+    must run after it so the queue is populated for the same tick.
+    Caller must check ``backend.messaging is not None`` before invoking;
+    a defensive early-return keeps the type narrow without a bare
+    ``assert``.
+    """
+    messaging = backend.messaging
+    if messaging is None:
+        return []
+    return [
+        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
+        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
+        _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #1130 RED CARD detection — user's structural "fix it upstream"
+        # signal. Runs alongside the review-intent scanner because both
+        # drain reactions; this one only cares about ``:red_circle:`` /
+        # ``:no_entry_sign:`` plus the literal phrase in DMs.
+        _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
+        _ScannerJob(
+            scanner=ReviewNagScanner(messaging=messaging, user_slack_id=_user_slack_id_for_overlay(tag)),
+            overlay=tag,
+        ),
+    ]
+
+
 def build_default_jobs(
     *,
     backends: list[OverlayBackends] | None = None,
@@ -319,78 +471,7 @@ def build_default_jobs(
 
     if backends:
         for backend in backends:
-            tag = backend.name
-            if backend.external_db is not None:
-                from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
-
-                jobs.append(
-                    _ScannerJob(
-                        scanner=ExternalTicketsScanner(overlay_name=tag, db_path=backend.external_db),
-                        overlay=tag,
-                    ),
-                )
-            else:
-                jobs.append(_ScannerJob(scanner=ActiveTicketsScanner(overlay_name=tag), overlay=tag))
-            jobs.append(
-                _ScannerJob(
-                    scanner=StaleTicketsScanner(
-                        overlay_name=tag,
-                        threshold_days=backend.stale_threshold_days,
-                    ),
-                    overlay=tag,
-                ),
-            )
-            # Multi-host: an overlay with both GitHub and GitLab PATs scans
-            # both forges, so PRs on one platform don't drown out PRs on the
-            # other (#976). The single-host path is preserved by iterating
-            # ``backend.hosts`` (which is empty when no token resolved).
-            jobs.extend(_jobs_for_backend_hosts(backend, tag))
-            # #1136 / #1152 Periodic architectural-review scanner. CORE
-            # always-on for every registered overlay — the cadence lives
-            # in teatree-core config ([teatree] in ~/.teatree.toml) since
-            # architectural review applies uniformly to all overlays'
-            # worktrees, not as a per-overlay opt-in. Wired here (per
-            # overlay, not per host) because the cadence is over the
-            # overlay's ticket flow, not per-forge. Set
-            # ``architectural_review_disabled = true`` per-overlay or
-            # globally as an escape hatch.
-            arch_scanner = _architectural_review_scanner_for(backend)
-            if arch_scanner is not None:
-                jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
-            if backend.messaging is not None:
-                jobs.extend(
-                    [
-                        # ``SlackMentionsScanner`` owns the JSONL drain and
-                        # fans reaction events into the backend's reactions
-                        # queue; ``SlackReviewIntentScanner`` must run after
-                        # it so the queue is populated for the same tick.
-                        _ScannerJob(scanner=SlackMentionsScanner(backend=backend.messaging), overlay=tag),
-                        _ScannerJob(
-                            scanner=SlackDmInboundScanner(backend=backend.messaging, overlay=tag),
-                            overlay=tag,
-                        ),
-                        _ScannerJob(
-                            scanner=SlackReviewIntentScanner(backend=backend.messaging, overlay=tag),
-                            overlay=tag,
-                        ),
-                        # #1130 RED CARD detection — user's structural "fix it
-                        # upstream" signal. Runs alongside the review-intent
-                        # scanner because both drain reactions; this one only
-                        # cares about ``:red_circle:`` / ``:no_entry_sign:``
-                        # plus the literal phrase in DMs.
-                        _ScannerJob(
-                            scanner=RedCardScanner(backend=backend.messaging, overlay=tag),
-                            overlay=tag,
-                        ),
-                        _ScannerJob(
-                            scanner=ReviewNagScanner(
-                                messaging=backend.messaging,
-                                user_slack_id=_user_slack_id_for_overlay(tag),
-                            ),
-                            overlay=tag,
-                        ),
-                    ],
-                )
+            jobs.extend(_jobs_for_overlay_backend(backend))
     else:
         if host is not None:
             jobs.extend(
