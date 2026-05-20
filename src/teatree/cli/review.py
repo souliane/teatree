@@ -33,6 +33,7 @@ from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
 from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.cli.review_shape_gate import check_review_shape
+from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -153,11 +154,15 @@ class ReviewService:
         if blocked:
             return blocked, 1
         encoded = repo.replace("/", "%2F")
-        shape_error = check_review_shape(
-            api=self._get_api(), encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line)
-        )
+        api = self._get_api()
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line))
         if shape_error:
             return shape_error, 1
+        todo_error = check_todo_anchor(
+            api=api, encoded_repo=encoded, mr=mr, body=note, anchor=InlineAnchor(file=file, line=line)
+        )
+        if todo_error:
+            return todo_error, 1
         return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
 
     def _post_comment_impl(
@@ -232,16 +237,10 @@ class ReviewService:
         line: int = 0,
         live: bool = False,
     ) -> tuple[str, int]:
-        """Post an MR comment — DRAFT by default, ``--live`` requires a Slack-recorded token (#1207).
+        """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
-        Default path routes through :meth:`post_draft_note` so the
-        draft-form on-behalf carve-out applies (under ``DRAFT_OR_ASK``
-        the draft auto-publishes; under ``ASK`` it blocks on a recorded
-        ``post_draft_note`` approval; under ``IMMEDIATE`` it proceeds).
-        ``--live`` is gated on the ``post_comment`` on-behalf action
-        AND a Slack-DM-verified
-        :class:`~teatree.core.models.live_post_approval.LivePostApproval`
-        scoped to ``repo!mr``.
+        Default path routes through :meth:`post_draft_note` (draft-form on-behalf carve-out).
+        ``--live`` requires both a ``post_comment`` on-behalf approval and a LivePostApproval.
         """
         from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
@@ -254,11 +253,15 @@ class ReviewService:
         if blocked:
             return blocked, 1
         encoded = repo.replace("/", "%2F")
-        shape_error = check_review_shape(
-            api=self._get_api(), encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line)
-        )
+        api = self._get_api()
+        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line))
         if shape_error:
             return shape_error, 1
+        todo_error = check_todo_anchor(
+            api=api, encoded_repo=encoded, mr=mr, body=note, anchor=InlineAnchor(file=file, line=line)
+        )
+        if todo_error:
+            return todo_error, 1
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1

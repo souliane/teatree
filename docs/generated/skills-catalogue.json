@@ -5,6 +5,10 @@
       "summary": "Draft a reply to an inbound question, DM the user for approval, post on confirmation"
     },
     {
+      "name": "architecture-design",
+      "summary": "Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass \u2014 BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants \u2014 BEFORE any code is written"
+    },
+    {
       "name": "availability",
       "summary": "24/7 dual question-mode \u2014 switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away)"
     },

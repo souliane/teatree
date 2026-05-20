@@ -1,23 +1,18 @@
-"""Colleague-MR review-shape gate (souliane/teatree#1114).
+"""Colleague-MR review-shape gate (souliane/teatree#1114, loosened in #1159).
 
 When a review is posted on a colleague's MR (the MR's author is NOT the
 current identity), the binding rule from the review skill is **single
-terse INLINE Nit:-prefixed comment** — never an MR-level multi-paragraph
-prose note. The previous safety-net was a memory entry (a guideline an
-agent could forget). The structural gate enforces it deterministically
-before the GitLab API call hits.
+terse INLINE Nit:-prefixed comment** — never a multi-section
+Problem/Fix/Verification dump. The previous safety-net was a memory
+entry (a guideline an agent could forget). The structural gate enforces
+it deterministically before the GitLab API call hits.
 
-Shape rule:
-
-* Inline comment (``file`` and ``line`` both set) — generous cap
-    (``INLINE_NIT_CAP_SENTENCES``): inline findings can legitimately span
-    a few sentences when the diff context warrants it. Tests cover the
-    3-sentence accepted case.
-* MR-level prose (``file == ""`` and ``line == 0``) — tight cap
-    (``COLLEAGUE_MR_PROSE_CAP_SENTENCES = 2``,
-    ``COLLEAGUE_MR_PROSE_CAP_CHARS = 280``): a 4-sentence MR-level note
-    on a colleague MR is the exact shape the RED CARD on !6201 (note
-    3364985032) violated.
+Shape rule (post-#1159): refuse when the body exceeds
+``COLLEAGUE_PROSE_CAP_PARAGRAPHS`` paragraphs (blank-line separated)
+OR ``COLLEAGUE_PROSE_CAP_WORDS`` words. The paragraph+word combination
+still catches the 27-sentence Problem/Fix/Verification abuse shape the
+gate was added to prevent (#1114) without false-rejecting legitimate
+≤3-sentence findings whose clauses are split by commas or semicolons.
 
 Own-MR carve-out: when the MR author **is** the current identity, the
 gate is a no-op — own-MR reviews can be as long-form as needed.
@@ -117,25 +112,96 @@ class TestColleagueMRShapeGate:
             lambda api, encoded_repo, mr: author,
         )
 
-    def test_red_card_rejects_long_mr_level_note_on_colleague_mr(self) -> None:
-        """RED CARD recurrence: 4-sentence MR-level prose on a colleague MR is refused.
+    def test_red_card_rejects_multi_section_mr_level_dump_on_colleague_mr(self) -> None:
+        """RED CARD recurrence: a multi-section Problem/Fix/Verification dump is refused.
 
-        Mirrors the !6201 note 3364985032 shape: author=carol, current=alice,
-        post_comment with file="" line=0 and a 4-sentence body. The gate must
-        refuse (code 1) with no GitLab side effect, and the steering message
-        must name the specific breach (4 sentences) and direct to the inline
-        Nit form.
+        The original shape gate refused on a hard 2-sentence cap, which
+        over-fit on legitimate short nits. The replacement guard refuses
+        on paragraph-count or word-count: a 4+ paragraph dump is the
+        exact abuse shape (per !6201 RED CARD).
         """
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
-        body = "S one is here. S two follows. S three appears. S four closes."
+        body = (
+            "## Problem\n\n"
+            "The handler crashes on empty input.\n\n"
+            "## Fix\n\n"
+            "Guard the empty case before the loop.\n\n"
+            "## Verification\n\n"
+            "Added a regression test."
+        )
 
         msg, code = service.post_comment("org/repo", 7, body)
 
         assert code == 1, f"expected refuse, got code={code} msg={msg!r}"
         assert "Refusing colleague-MR on-behalf post" in msg
-        assert "4-sentence" in msg, f"steering must name the count concretely: {msg!r}"
+        assert "paragraph" in msg, f"steering must name the breach concretely: {msg!r}"
         assert "Nit:" in msg
+        assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
+
+    def test_legitimate_three_sentence_finding_passes(self) -> None:
+        """Issue #1159: a legitimate 3-sentence MR-level finding must pass.
+
+        Per user feedback "it's ok if nits are longer than 2 sentences...
+        you must just not abuse. the 2 sentences hard check is too much".
+        A short, single-paragraph 3-sentence finding with a file:line cite
+        is the canonical case the old 2-sentence cap false-rejected.
+        """
+        self._patch_mr_author(_AUTHOR_CAROL)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
+        body = (
+            "REQUEST-CHANGES on v3: BUSINESS_ENTITY joint-rep search no longer navigates. "
+            "The submit handler swallows the click without firing the router. "
+            "See line 142 in joint-rep-search.component.ts for the regression."
+        )
+
+        msg, code = service.post_comment("org/repo", 7, body)
+
+        assert code == 0, f"3-sentence finding must pass: code={code} msg={msg!r}"
+        assert any(c[0] == "post_json" for c in stub.calls), "API POST must hit on accepted note"
+
+    def test_legitimate_long_single_paragraph_passes(self) -> None:
+        """A 5-sentence single-paragraph finding under the word cap passes.
+
+        The old sentence-counting guard rejected anything past 2 sentences;
+        the new paragraph/word guard allows multi-sentence prose as long
+        as it stays in one paragraph and under the word cap.
+        """
+        self._patch_mr_author(_AUTHOR_CAROL)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
+        body = (
+            "The factory drops a stale row when both writers race. "
+            "First writer reads version=1 and computes the new state. "
+            "Second writer commits first, version is now 2. "
+            "First writer's bare-autocommit write then clobbers the second's commit. "
+            "Wrapping the inner read-modify-write in atomic() with SELECT FOR UPDATE fixes it."
+        )
+
+        msg, code = service.post_comment("org/repo", 7, body)
+
+        assert code == 0, f"5-sentence single-paragraph finding must pass: code={code} msg={msg!r}"
+        assert any(c[0] == "post_json" for c in stub.calls)
+
+    def test_twentyseven_sentence_dump_still_rejected(self) -> None:
+        """The 27-sentence Problem/Fix/Verification abuse shape is still rejected.
+
+        Issue #1159 loosens the gate but preserves its anti-abuse intent.
+        A 27-sentence dump exceeds the word-count cap and must still be
+        refused with the steering message pointing at the inline Nit form.
+        """
+        self._patch_mr_author(_AUTHOR_CAROL)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
+        # 27 sentences, each long enough to push the body past the
+        # word-count cap. Single paragraph so the rejection is keyed
+        # on word count, not paragraph count.
+        sentence = "this sentence has eight words for the count. "
+        body = sentence * 27
+
+        msg, code = service.post_comment("org/repo", 7, body)
+
+        assert code == 1, f"27-sentence dump must be refused: code={code} msg={msg!r}"
+        assert "Refusing colleague-MR on-behalf post" in msg
+        assert "word" in msg, f"steering must name the word-count breach: {msg!r}"
         assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
 
     def test_inline_nit_comment_accepted(self) -> None:
@@ -200,12 +266,12 @@ class TestColleagueMRShapeGate:
         assert code == 0, f"approve on colleague MR must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_status" for c in stub.calls)
 
-    def test_inline_long_finding_accepted_up_to_inline_cap(self) -> None:
-        """Inline carve-out: 3-sentence real finding on a colleague MR — accepted.
+    def test_inline_long_finding_accepted_under_word_cap(self) -> None:
+        """Inline carve-out: a multi-sentence real finding on a colleague MR — accepted.
 
-        The inline-comment cap (``INLINE_NIT_CAP_SENTENCES = 4``) is generous
-        because real findings tied to a specific diff line sometimes need a
-        sentence or two of context. A 3-sentence inline body passes.
+        Per #1159 the gate guards paragraph and word counts rather than
+        sentence counts. A short multi-sentence inline body that fits
+        in one paragraph and stays under the word cap passes.
         """
         self._patch_mr_author(_AUTHOR_CAROL)
         service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
@@ -221,7 +287,7 @@ class TestColleagueMRShapeGate:
 
         msg, code = service.post_comment("org/repo", 7, body, file="x.py", line=10)
 
-        assert code == 0, f"3-sentence inline finding must pass: code={code} msg={msg!r}"
+        assert code == 0, f"multi-sentence inline finding must pass: code={code} msg={msg!r}"
         assert any(c[0] == "post_json" for c in stub.calls)
 
 
@@ -348,12 +414,13 @@ class TestShapeGateFailOpenAndCarveOuts:
 
         assert is_colleague_mr(cast("Any", _EmptyMeAPI()), "org%2Frepo", 7) is False
 
-    def test_inline_note_over_cap_is_refused(self) -> None:
-        """A 5-sentence inline note breaches the inline cap and is refused.
+    def test_inline_note_over_paragraph_cap_is_refused(self) -> None:
+        """A multi-section inline note breaches the paragraph cap and is refused.
 
-        The carve-out for inline reviews is generous (``INLINE_NIT_CAP_SENTENCES = 4``)
-        — but not unlimited. A 5-sentence inline body still gets refused with
-        the ``inline note`` wording so the agent knows to tighten it.
+        The carve-out for inline reviews accepts multi-sentence prose
+        but not multi-section dumps. A 4-paragraph inline body still
+        gets refused with the ``inline note`` wording so the agent
+        knows to tighten it.
         """
         from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
 
@@ -364,7 +431,7 @@ class TestShapeGateFailOpenAndCarveOuts:
             def current_username(self) -> str:
                 return _AUTHOR_ALICE
 
-        body = "S1. S2. S3. S4. S5."
+        body = "P1.\n\nP2.\n\nP3.\n\nP4."
         msg = check_review_shape(
             api=cast("Any", _ColleagueAPI()),
             encoded_repo="org%2Frepo",
@@ -372,15 +439,15 @@ class TestShapeGateFailOpenAndCarveOuts:
             body=body,
             inline=True,
         )
-        assert "5-sentence inline note" in msg
-        assert "4-sentence cap" in msg
+        assert "inline note" in msg
+        assert "paragraph" in msg
 
-    def test_mr_level_note_over_char_cap_is_refused(self) -> None:
-        """A 2-sentence MR-level note over 280 chars is refused.
+    def test_mr_level_note_over_word_cap_is_refused(self) -> None:
+        """An MR-level note over the 200-word cap is refused.
 
-        The MR-level prose rule caps on both sentence count and char count.
-        A 2-sentence body that runs >280 chars is still too much surface for
-        an MR-level on-behalf post on a colleague MR.
+        The MR-level prose rule caps on paragraph count OR word count.
+        A single-paragraph body that exceeds 200 words is still too
+        much surface for an MR-level on-behalf post on a colleague MR.
         """
         from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
 
@@ -391,8 +458,8 @@ class TestShapeGateFailOpenAndCarveOuts:
             def current_username(self) -> str:
                 return _AUTHOR_ALICE
 
-        long_sentence = "A " * 200
-        body = f"{long_sentence}. Brief."
+        # 250 words, all in one paragraph — keyed on the word cap.
+        body = " ".join(["word"] * 250)
         msg = check_review_shape(
             api=cast("Any", _ColleagueAPI()),
             encoded_repo="org%2Frepo",
@@ -401,7 +468,7 @@ class TestShapeGateFailOpenAndCarveOuts:
             inline=False,
         )
         assert "MR-level prose" in msg
-        assert "exceeds the 2-sentence cap" in msg
+        assert "word" in msg
 
     def test_fetch_returns_empty_on_non_dict_response(self) -> None:
         """``api.get_json`` returning ``None`` or a list (not a dict) → empty author."""
@@ -436,16 +503,30 @@ class TestShapeGateFailOpenAndCarveOuts:
         )
         assert msg == ""
 
-    def test_count_sentences_handles_trailing_no_terminator(self) -> None:
-        """Trailing prose without a terminator counts as the final sentence.
+    def test_count_paragraphs_splits_on_blank_lines(self) -> None:
+        """Paragraph count splits on one or more blank lines.
 
-        ``"S1. S2"`` → 2. Otherwise a body that "forgot the period" would
-        slip under the cap.
+        Empty input is zero; single-line non-empty is 1; blank-line
+        separators split into multiple paragraphs.
         """
-        from teatree.cli.review_shape_gate import _count_sentences  # noqa: PLC0415
+        from teatree.cli.review_shape_gate import _count_paragraphs  # noqa: PLC0415
 
-        assert _count_sentences("") == 0
-        assert _count_sentences("   ") == 0
-        assert _count_sentences("S1.") == 1
-        assert _count_sentences("S1. S2") == 2
-        assert _count_sentences("S1! S2? S3") == 3
+        assert _count_paragraphs("") == 0
+        assert _count_paragraphs("   ") == 0
+        assert _count_paragraphs("just one paragraph") == 1
+        assert _count_paragraphs("first\n\nsecond") == 2
+        assert _count_paragraphs("a\n\nb\n\nc") == 3
+        # Multiple blank lines collapse to one separator.
+        assert _count_paragraphs("a\n\n\n\nb") == 2
+        # Leading/trailing blank lines do not introduce extra paragraphs.
+        assert _count_paragraphs("\n\na\n\n") == 1
+
+    def test_count_words_splits_on_whitespace(self) -> None:
+        """Word count uses whitespace splitting (``str.split()``)."""
+        from teatree.cli.review_shape_gate import _count_words  # noqa: PLC0415
+
+        assert _count_words("") == 0
+        assert _count_words("   ") == 0
+        assert _count_words("one") == 1
+        assert _count_words("one two three") == 3
+        assert _count_words("one\ntwo\tthree") == 3
