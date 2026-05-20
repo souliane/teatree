@@ -550,10 +550,15 @@ def assert_merge_preconditions(
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
     if live_sha != authorized_clear.reviewed_sha:
+        # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
+        # silent difference is obvious in the diagnostic (#1162).
+        reviewed_sha = authorized_clear.reviewed_sha
         msg = (
-            f"PR head moved: live={live_sha[:8]} != reviewed={authorized_clear.reviewed_sha[:8]} — "
-            f"the CLEAR is stale (force-push / new commits). Re-escalate; the loop never "
-            f"self-issues a replacement (§17.4.3 step 2)"
+            f"PR head moved: live={live_sha} (length={len(live_sha)}) != "
+            f"reviewed={reviewed_sha} (length={len(reviewed_sha)}) — "
+            f"the CLEAR is stale (force-push / new commits) or was issued with a "
+            f"truncated SHA. Re-escalate; the loop never self-issues a replacement "
+            f"(§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
 

@@ -40,7 +40,7 @@ class LoopSelfImproveCommandTests(TestCase):
             ClearRequest(
                 pr_id=999,
                 slug="souliane/teatree",
-                reviewed_sha="deadbeefcafe1234",
+                reviewed_sha="deadbeefcafe1234" + "0" * 24,
                 reviewer_identity="reviewer@example.com",
                 gh_verify_result="green",
                 blast_class="logic",
@@ -62,7 +62,7 @@ class LoopSelfImproveCommandTests(TestCase):
             ClearRequest(
                 pr_id=1000,
                 slug="souliane/teatree",
-                reviewed_sha="deadbeefcafe5678",
+                reviewed_sha="deadbeefcafe5678" + "0" * 24,
                 reviewer_identity="reviewer@example.com",
                 gh_verify_result="green",
                 blast_class="logic",

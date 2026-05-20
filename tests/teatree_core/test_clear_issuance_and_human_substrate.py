@@ -237,6 +237,37 @@ class TestClearIssuanceSeam(TestCase):
         assert "sha" in result["error"].lower()
         assert MergeClear.objects.count() == 0
 
+    def test_clear_rejects_truncated_sha_with_actionable_diagnostic(self) -> None:
+        """A short hex SHA (#1162) is unmergeable from birth — refuse at issuance.
+
+        The merge-time gate compares ``reviewed_sha`` against the full 40-char
+        ``headRefOid`` from ``gh pr view``. A truncated SHA can never satisfy
+        that equality — the CLEAR would be unusable on day one. The diagnostic
+        must tell the operator what was passed (truncated form + length), what
+        is required (full 40-char SHA), and where to find it.
+        """
+        truncated = "abc1234"
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "1162",
+                "souliane/teatree",
+                truncated,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+            ),
+        )
+        assert not result["issued"]
+        error = cast("str", result["error"])
+        assert truncated in error
+        assert f"length={len(truncated)}" in error
+        assert "40" in error
+        assert "git rev-parse HEAD" in error or "headRefOid" in error
+        assert MergeClear.objects.count() == 0
+
 
 class TestSubstrateStaysHumanMergeOnly(TestCase):
     """The loop never auto-merges substrate; an un-authorised substrate CLEAR holds."""
