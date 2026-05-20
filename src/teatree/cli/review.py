@@ -234,16 +234,22 @@ class ReviewService:
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default, ``--live`` requires a Slack-recorded token (#1207).
 
-        Default-safe: without ``live=True`` this routes through
-        :meth:`_post_draft_note_impl` and DMs the user with the draft
-        link. ``live=True`` falls through to the historical
-        ``/discussions`` path and is gated on a Slack-DM-verified
+        Default path routes through :meth:`post_draft_note` so the
+        draft-form on-behalf carve-out applies (under ``DRAFT_OR_ASK``
+        the draft auto-publishes; under ``ASK`` it blocks on a recorded
+        ``post_draft_note`` approval; under ``IMMEDIATE`` it proceeds).
+        ``--live`` is gated on the ``post_comment`` on-behalf action
+        AND a Slack-DM-verified
         :class:`~teatree.core.models.live_post_approval.LivePostApproval`
-        scoped to ``repo!mr``; the on-behalf gate (#960) still applies
-        to both paths.
+        scoped to ``repo!mr``.
         """
         from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
+        if not live:
+            msg, code = self.post_draft_note(repo, mr, note, file=file, line=line)
+            if code == 0:
+                notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
+            return msg, code
         blocked = check_on_behalf(repo, mr, "post_comment")
         if blocked:
             return blocked, 1
@@ -253,11 +259,6 @@ class ReviewService:
         )
         if shape_error:
             return shape_error, 1
-        if not live:
-            msg, code = self._post_draft_note_impl(repo, mr, note, file=file, line=line)
-            if code == 0:
-                notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
-            return msg, code
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1

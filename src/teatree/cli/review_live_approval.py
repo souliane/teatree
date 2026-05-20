@@ -1,4 +1,4 @@
-"""Slack-DM-verified approval CLI for the ``--live`` post-comment gate (#1207).
+r"""Slack-DM-verified approval CLI for the ``--live`` post-comment gate (#1207).
 
 ``t3 review approve-live-post <mr-url> --slack-ts <ts>`` is the single
 satisfier for the :class:`~teatree.core.live_post_gate.LivePostBlockedError`
@@ -8,9 +8,12 @@ gate. It walks the Slack DM at ``<ts>``, refuses unless:
 * the message is fresh — within
     :data:`~teatree.core.models.live_post_approval.LIVE_POST_APPROVAL_TTL_MINUTES`
     minutes of now,
-* the message body contains an exact, case-insensitive approval phrase
-    (``"post live"`` / ``"submit it"`` / ``"go ahead"``) — single-pattern
-    substring match, no fuzzy NLP.
+* the message body contains a whole-word, case-insensitive approval
+    phrase (``"post live"`` / ``"submit it"`` / ``"go ahead"``) — the
+    matcher uses ``\b``-anchored regex against each phrase, so a
+    negated form such as ``"don't post live"`` does NOT match. Single-
+    pattern matching with no fuzzy NLP; sentence-aware NLP is tracked
+    as a class-C enforcement follow-up.
 
 On success the helper mints a single-use
 :class:`~teatree.core.models.live_post_approval.LivePostApproval` row
@@ -22,6 +25,7 @@ past the OOP/LOC ceiling — mirrors
 :mod:`teatree.cli.review_on_behalf`.
 """
 
+import re
 from typing import TypedDict, cast
 
 import typer
@@ -65,10 +69,54 @@ def _user_channel() -> str:
     return str(teatree_cfg.get("slack_user_channel", ""))
 
 
+_NEGATION_TOKENS: tuple[str, ...] = (
+    "don't",
+    "do not",
+    "not ",
+    "never",
+    "no ",
+    "cannot",
+    "can't",
+    "won't",
+    "shouldn't",
+)
+
+
+def _clause_has_phrase(clause: str, phrase: str) -> bool:
+    r"""True iff *clause* contains *phrase* as a whole-word, unnegated match.
+
+    ``\b`` boundaries reject substring false positives where the phrase
+    is embedded in a longer word. Negation tokens (``don't`` / ``do not``
+    / ``not`` / ``never`` / ...) anywhere in the same clause invalidate
+    the match — the substring matcher's primary failure mode is matching
+    ``"post live"`` inside ``"don't post live"``; a clause-scope negation
+    check catches it without sentence-aware NLP.
+    """
+    lowered = clause.lower()
+    if re.search(r"\b" + re.escape(phrase) + r"\b", lowered) is None:
+        return False
+    return not any(neg in lowered for neg in _NEGATION_TOKENS)
+
+
 def _has_approval_phrase(text: str) -> bool:
-    """True iff the message body contains an exact approval phrase (case-insensitive)."""
-    lowered = text.lower()
-    return any(phrase in lowered for phrase in APPROVAL_PHRASES)
+    r"""True iff the message body contains a whole-word, unnegated approval phrase.
+
+    Splits the body into sentence-like clauses on ``.``/``!``/``?``/``;``
+    /``\n`` boundaries (every clause is checked independently), then
+    requires that some clause contains an approval phrase under
+    :func:`_clause_has_phrase`. This rejects:
+
+    * ``"don't post live"`` (same clause negates the phrase)
+    * ``"do NOT go ahead"`` (same clause negates the phrase)
+    * ``"foopost livebar"`` (phrase is embedded, not whole-word)
+
+    The longer-term fix is sentence-aware NLP (full negation scope,
+    polarity flips, modal qualifiers); the clause-scope negation gate
+    here is the minimal regex-only fix and is tracked as a class-C
+    enforcement follow-up.
+    """
+    clauses = re.split(r"[.!?;\n]+", text)
+    return any(_clause_has_phrase(clause, phrase) for clause in clauses for phrase in APPROVAL_PHRASES)
 
 
 def _is_fresh(slack_ts: str, *, ttl_minutes: int) -> bool:

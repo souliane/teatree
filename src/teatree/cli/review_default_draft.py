@@ -40,10 +40,15 @@ def notify_draft_created(*, repo: str, mr: int, body: str, message: str) -> None
     """DM the user when a default-draft ``post-comment`` lands (#1207).
 
     Fire-and-forget — never raises into the caller. The idempotency key
-    pins the DM to the hash of the result message so a re-post of the
-    same body on the same MR doesn't trigger a second notification
-    within the ``BotPing`` ledger window.
+    pins the DM to a stable cross-process digest of the result message
+    so a re-post of the same body on the same MR doesn't trigger a
+    second notification within the ``BotPing`` ledger window. ``hashlib``
+    (not the builtin ``hash``) is used because the builtin is salted by
+    ``PYTHONHASHSEED`` — two CLI invocations would produce different
+    keys for the same message and bypass the dedupe gate.
     """
+    import hashlib  # noqa: PLC0415
+
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
 
     body_preview = body.strip().splitlines()[0][:200] if body.strip() else ""
@@ -55,8 +60,9 @@ def notify_draft_created(*, repo: str, mr: int, body: str, message: str) -> None
         f"Discard:  `t3 review list-draft-notes {repo} {mr}` then "
         f"`t3 review delete-draft-note {repo} {mr} <id>`"
     )
+    digest = hashlib.sha1(message.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     notify_user(
         text,
         kind=NotifyKind.INFO,
-        idempotency_key=f"post_comment_draft:{repo}!{mr}:{hash(message) & 0xFFFFFFFF:08x}",
+        idempotency_key=f"post_comment_draft:{repo}!{mr}:{digest}",
     )

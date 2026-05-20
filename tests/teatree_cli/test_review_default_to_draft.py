@@ -21,8 +21,10 @@ This suite exercises every leg of the acceptance criteria:
 * an expired token (older than the TTL) is treated as absent;
 * a Slack message authored by anyone other than the configured user
     is refused;
-* the approval-phrase matcher is exact — ``"go ahead"`` matches,
-    ``"thumbs up"`` does NOT.
+* the approval-phrase matcher is whole-word — ``"go ahead"`` matches,
+    ``"thumbs up"`` does NOT, and a negated form (``"do NOT go ahead"``)
+    is refused too. See ``test_review_live_approval_phrase.py`` for the
+    full whole-word/negation matrix.
 """
 
 from datetime import timedelta
