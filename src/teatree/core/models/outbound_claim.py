@@ -42,6 +42,7 @@ class OutboundClaim(models.Model):
         SLACK_REACTION = "slack_reaction", "Slack reaction"
         GITLAB_NOTE = "gitlab_note", "GitLab note"
         GITLAB_APPROVE = "gitlab_approve", "GitLab approve"
+        GITHUB_NOTE = "github_note", "GitHub note"
         NOTION_COMMENT = "notion_comment", "Notion comment"
         NOTION_EDIT = "notion_edit", "Notion edit"
 
