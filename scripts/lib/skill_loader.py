@@ -340,6 +340,24 @@ def read_overlay_skill_metadata() -> dict[str, object]:
     }
 
 
+def read_overlay_companion_skills() -> list[str]:
+    """Return the active overlay's ``companion_skills`` list, or ``[]``.
+
+    Delegates to :func:`teatree.agents.skill_bundle.active_overlay_companion_skills`,
+    which resolves the active overlay (via ``T3_OVERLAY_NAME`` then cwd-based
+    discovery) and reads the ``companion_skills`` field from its config. Safe
+    to call pre-bootstrap or when no overlay is configured — returns ``[]``.
+    """
+    try:
+        from teatree.agents.skill_bundle import active_overlay_companion_skills
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        return active_overlay_companion_skills()
+    except Exception:  # noqa: BLE001
+        return []
+
+
 # ── Supplementary skills (config file) ──────────────────────────────
 
 
@@ -391,6 +409,8 @@ def suggest_skills(data: dict) -> dict:
     loaded = set(data.get("loaded_skills", []))
     search_dirs = [Path(d) for d in data.get("skill_search_dirs", [])]
     supplementary_config = data.get("supplementary_config", "")
+    tool_input = data.get("tool_input", {}) or {}
+    file_path = str(tool_input.get("file_path", "") or "")
 
     # 1. Read the trigger index (cached or built on the fly).
     trigger_index = _read_trigger_index()
@@ -405,16 +425,41 @@ def suggest_skills(data: dict) -> dict:
         loaded_skills=loaded,
     )
 
-    if not intent:
+    # When intent is empty AND no file_path is available the loader has
+    # nothing to detect framework or overlay context against — short-circuit
+    # to keep the legacy "vague prompt → no suggestions" behaviour. With a
+    # file_path (PreToolUse Edit/Write on a teatree .py), run the policy
+    # against the file's directory so framework-skill detection and overlay
+    # companions still surface even without an intent keyword.
+    if not intent and not file_path:
         return {"suggestions": [], "intent": ""}
 
+    detect_cwd = _detect_cwd(file_path, cwd)
     policy = SkillLoadingPolicy()
     selection = policy.select_for_prompt_hook(
-        cwd=Path(cwd) if cwd else Path.cwd(),
+        cwd=detect_cwd,
         intent=intent,
         overlay_skill_metadata=read_overlay_skill_metadata(),
         loaded_skills=loaded,
         supplementary_skills=read_supplementary_skills(supplementary_config, prompt),
         trigger_index=trigger_index,
+        companion_skills=read_overlay_companion_skills(),
     )
     return {"suggestions": selection.skills, "intent": intent}
+
+
+def _detect_cwd(file_path: str, fallback_cwd: str) -> Path:
+    """Return the directory to run framework detection against.
+
+    Prefer ``file_path``'s parent (Edit/Write on a specific file) so the
+    detector walks from that location toward the repo root. Fall back to
+    the hook's reported ``cwd`` and finally to ``Path.cwd()``.
+    """
+    if file_path:
+        candidate = Path(file_path)
+        if candidate.is_dir():
+            return candidate
+        return candidate.parent
+    if fallback_cwd:
+        return Path(fallback_cwd)
+    return Path.cwd()

@@ -114,6 +114,13 @@ class OverlayConfig:
     # workspace-scoped edits on this machine. Outside ``$T3_WORKSPACE_DIR``
     # (e.g. ``~/.zshrc``, ``~/.claude/``, agent memory) the gate is silent.
     plan_gate: bool = False
+    # ``companion_skills`` is a per-overlay list of skill names that must be
+    # loaded alongside the active lifecycle skill — the standing equivalent of
+    # "always load /ac-django and /ac-python when working in this overlay".
+    # Wired through ``SkillLoadingPolicy._base_detected_skills`` so the
+    # existing ``resolve_companions`` resolver handles the dependency chain
+    # without a parallel implementation.
+    companion_skills: list[str]
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance
@@ -125,6 +132,7 @@ class OverlayConfig:
         self.ready_labels = []
         self.exclude_labels = []
         self.identity_aliases = []
+        self.companion_skills = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
