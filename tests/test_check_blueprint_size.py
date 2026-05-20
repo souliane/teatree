@@ -47,9 +47,17 @@ class TestOverride:
         monkeypatch.setenv(gate._OVERRIDE_ENV_VAR, "1")
         assert gate.main() == 0
 
-    def test_empty_env_value_does_not_override(self, fake_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "true"])
+    def test_non_one_env_value_does_not_override(
+        self,
+        fake_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str,
+    ) -> None:
+        # Strict "1" is the only override token — mirrors the sibling
+        # #1128 gate so neither hook silently accepts "0"/"false".
         (fake_repo / "BLUEPRINT.md").write_text("x" * (gate._THRESHOLD_BYTES + 1), encoding="utf-8")
-        monkeypatch.setenv(gate._OVERRIDE_ENV_VAR, "")
+        monkeypatch.setenv(gate._OVERRIDE_ENV_VAR, value)
         assert gate.main() == 1
 
 

@@ -6,10 +6,14 @@ fire when BLUEPRINT.md (or an appendix) is touched in the same commit;
 this #1180 gate is the deterministic hard cap that fires whenever the
 file changes and exceeds 100 KB.
 
-Threshold: 100 KB (100 * 1024 bytes). Escape hatch:
-``T3_BLUEPRINT_SIZE_OVERRIDE=1`` skips the check — use only when a
-planned, reviewed addition deliberately grows the file and the cap
-itself is being raised in the same commit.
+Threshold: 100 KB (100 * 1024 bytes). The hook is scoped to commits
+that touch ``BLUEPRINT.md`` (via ``files:`` in
+``.pre-commit-config.yaml``), so it gates every growth event without
+re-running on unrelated commits. Escape hatch:
+``T3_BLUEPRINT_SIZE_OVERRIDE=1`` (strict ``"1"`` — empty, ``0``,
+``false`` are not accepted) skips the check; use only when a planned,
+reviewed addition deliberately grows the file and the cap itself is
+being raised in the same commit.
 """
 
 import os
@@ -26,7 +30,7 @@ def _repo_root() -> pathlib.Path:
 
 
 def main() -> int:
-    if os.environ.get(_OVERRIDE_ENV_VAR):
+    if os.environ.get(_OVERRIDE_ENV_VAR) == "1":
         return 0
 
     blueprint = _repo_root() / _BLUEPRINT_FILE
