@@ -398,7 +398,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ post-draft-note      Post a draft note on a GitLab MR (inline or general).   │
-│ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
+│ post-comment         Post a comment on a GitLab MR — DRAFT by default,       │
+│                      ``--live`` requires Slack approval.                     │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
@@ -414,6 +415,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
+│ approve-live-post    Mint a Slack-recorded :class:`LivePostApproval` for     │
+│                      ``<mr-url>``.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -460,11 +463,15 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 ```
 Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 
- Post an immediate (non-draft) comment on a GitLab MR.
+ Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack
+ approval.
 
- Useful when `post-draft-note` fails to anchor inline because the file's
- diff is collapsed (large files). This bypasses the draft workflow and
- posts straight to a discussion, where GitLab's anchoring works.
+ Default behaviour (#1207): create a draft note via the same path as
+ ``post-draft-note`` and DM the user the link, so the agent's job
+ ends at the draft and the user submits. Pass ``--live`` to publish
+ the comment directly — gated on a Slack-recorded
+ :class:`~teatree.core.models.live_post_approval.LivePostApproval`
+ for the MR (mint via ``t3 review approve-live-post``).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -476,6 +483,12 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ --file        TEXT     File path for inline comment (omit for general note)  │
 │ --line        INTEGER  Line number in the new file (must be an added line)   │
 │                        [default: 0]                                          │
+│ --live                 Publish a colleague-visible comment directly instead  │
+│                        of creating a draft. Requires a single-use            │
+│                        Slack-recorded approval token minted via `t3 review   │
+│                        approve-live-post <mr-url> --slack-ts <ts>` (#1207).  │
+│                        The default (no flag) creates a DRAFT and DMs the     │
+│                        user the link — safe-by-default.                      │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -697,6 +710,40 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve-live-post`
+
+```
+Usage: t3 review approve-live-post [OPTIONS] MR_URL
+
+ Mint a Slack-recorded :class:`LivePostApproval` for ``<mr-url>``.
+
+ After this command writes the row, the next
+ ``t3 review post-comment <mr-url> ... --live`` invocation
+ publishes (single-use, consumed by that call); any subsequent
+ live post against the same MR requires a fresh approval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  MR reference the live-post approval is scoped to —    │
+│                        accepts the GitLab/GitHub URL (e.g.                   │
+│                        ``https://gitlab.com/org/proj/-/merge_requests/42``)  │
+│                        or the canonical ``<org/proj>!<iid>`` token.          │
+│                        Single-use; consumed by the next matching ``t3 review │
+│                        post-comment <mr-url> ... --live``.                   │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --slack-ts        TEXT  Slack timestamp (e.g. ``1700000000.0001``) of the │
+│                            user's DM authorising the live post. The helper   │
+│                            fetches that message, refuses unless it was       │
+│                            authored by the configured user, is recent        │
+│                            (within the TTL window), and contains an explicit │
+│                            approval phrase (``post live`` / ``submit it`` /  │
+│                            ``go ahead``).                                    │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1122,8 +1169,10 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
-│            via ``pass``.                                                     │
+│ slack-bot         Register or update a per-overlay Slack bot and store its   │
+│                   tokens via ``pass``.                                       │
+│ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
+│                   via ``pass``.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1147,6 +1196,21 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   ~/.teatree.toml).                          │
 │                                   [default: /Users/adrien/.teatree.toml]     │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-user-token`
+
+```
+Usage: t3 setup slack-user-token [OPTIONS]
+
+ Re-authorize the personal Slack xoxp token and store it via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reset               Overwrite the existing token without prompting.        │
+│ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
+│                       [default: /Users/adrien/.teatree.toml]                 │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1358,32 +1422,40 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
-│ status         Show the loop's last-rendered statusline.                     │
-│ dashboard      Render the tabular per-tick dashboard, optionally DM it to    │
-│                the user.                                                     │
-│ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
-│                ``claim-next``).                                              │
-│ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session with the fat loop pre-registered. │
-│ stop           Print the slot id to stop in the Claude Code session.         │
-│ claim          Claim the session-scoped loop-owner slot for this Claude      │
-│                session (#1073).                                              │
-│ owner          Show which session currently owns the loop-owner slot         │
-│                (#1073).                                                      │
-│ release        Release this session's loop-owner claim (#1073).              │
-│ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
-│                emit it.                                                      │
-│ self-improve   Self-improving monitor — scheduled smell detection with a     │
-│                tiered action ladder. Runs in the same loop-owner session as  │
-│                `t3 loop tick` on a separate LoopLease so a long self-improve │
-│                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
-│ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
-│                slot. Runs on a tight cadence (default 20s) in the same       │
-│                loop-owner session as `t3 loop tick`, on a separate LoopLease │
-│                so a long answer cycle never blocks a fast regular tick.      │
-│                Complementary to the inbound prompt-drain, never a            │
-│                double-answer (#1014).                                        │
+│ tick                Run one tick: scan in parallel, dispatch, render         │
+│                     statusline.                                              │
+│ status              Show the loop's last-rendered statusline.                │
+│ pending-spawn       List pending Tasks (read-only probe; legacy — prefer     │
+│                     ``claim-next``).                                         │
+│ spawn-claim         Claim a Task by id (legacy — prefer atomic               │
+│                     ``claim-next``).                                         │
+│ start               Spawn a Claude Code session with the fat loop            │
+│                     pre-registered.                                          │
+│ stop                Print the slot id to stop in the Claude Code session.    │
+│ claim               Claim the session-scoped loop-owner slot for this Claude │
+│                     session (#1073).                                         │
+│ owner               Show which session currently owns the loop-owner slot    │
+│                     (#1073).                                                 │
+│ release             Release this session's loop-owner claim (#1073).         │
+│ claim-next          Atomically claim the oldest pending dispatchable Task,   │
+│                     then emit it.                                            │
+│ spawn-headless      Boot a Claude Code session with the loop pre-registered  │
+│                     (idempotent).                                            │
+│ install-watchdog    Install the macOS LaunchAgent that keeps the loop        │
+│                     session alive.                                           │
+│ uninstall-watchdog  Remove the macOS LaunchAgent installed by                │
+│                     ``install-watchdog``.                                    │
+│ self-improve        Self-improving monitor — scheduled smell detection with  │
+│                     a tiered action ladder. Runs in the same loop-owner      │
+│                     session as `t3 loop tick` on a separate LoopLease so a   │
+│                     long self-improve cycle never blocks a fast regular tick │
+│                     (BLUEPRINT § 5.7).                                       │
+│ slack-answer        Reactive, token-cheap Slack-answer loop — the third      │
+│                     `/loop` slot. Runs on a tight cadence (default 20s) in   │
+│                     the same loop-owner session as `t3 loop tick`, on a      │
+│                     separate LoopLease so a long answer cycle never blocks a │
+│                     fast regular tick. Complementary to the inbound          │
+│                     prompt-drain, never a double-answer (#1014).             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1418,32 +1490,6 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop dashboard`
-
-```
-Usage: t3 loop dashboard [OPTIONS]
-
- Render the tabular per-tick dashboard, optionally DM it to the user.
-
- Default is print-to-stdout for piping or visual inspection. Pass
- ``--send-to-slack`` to additionally route the rendered table via
- :func:`teatree.notify.notify_user` (#963) — the send is idempotent
- per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --send-to-slack               Send the rendered dashboard to the user's      │
-│                               Slack DM via the bot.                          │
-│ --format                TEXT  Output format: 'markdown' (stdout, default) or │
-│                               'slack' (mrkdwn).                              │
-│                               [default: markdown]                            │
-│ --source                PATH  Override the tick-actions sidecar path (test   │
-│                               hook).                                         │
-│ --self-dm-marker              Tag the slack_dm row with '(this DM)' —        │
-│                               matches manual dashboard form.                 │
-│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1515,8 +1561,11 @@ Usage: t3 loop start [OPTIONS]
  claim-next``) and spawning one fresh bounded sub-agent for it. If
  this session dies, the next open session prunes the dead owner,
  becomes tick-owner, and keeps ticking. With no session open the loop
- is paused until the next session start; there is deliberately no
- OS-scheduler/launchd fallback.
+ is paused until the next session start. The optional ``install-watchdog``
+ (#1139) installs a macOS LaunchAgent that re-runs ``spawn-headless`` so
+ a fresh session is started after a crash or after ``/login`` account
+ switches; absent that, the loop remains paused until the user reopens
+ Claude Code.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --print-only          Print the /loop slot definition instead of spawning a  │
@@ -1603,6 +1652,64 @@ Usage: t3 loop claim-next [OPTIONS]
 │ --claimed-by        TEXT  Worker identifier stored on the claim.             │
 │ --json                    Emit the claimed dispatch as JSON.                 │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop spawn-headless`
+
+```
+Usage: t3 loop spawn-headless [OPTIONS]
+
+ Boot a Claude Code session with the loop pre-registered (idempotent).
+
+ Exits 0 without doing anything when a healthy loop session is already
+ running under the currently-active Claude Code account (no respawn
+ needed). Otherwise launches ``claude`` with the ``/loop`` slot
+ pre-registered and pins the spawned session under the active account.
+
+ Designed to be invoked by ``launchd`` (macOS) with ``KeepAlive=true``:
+ the LaunchAgent re-runs this command whenever the spawned ``claude``
+ process exits, so a crash, ``/exit``, or terminal close triggers a
+ respawn.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop install-watchdog`
+
+```
+Usage: t3 loop install-watchdog [OPTIONS]
+
+ Install the macOS LaunchAgent that keeps the loop session alive.
+
+ Writes ``~/Library/LaunchAgents/<label>.plist`` and ``launchctl
+ load``-s it. With ``KeepAlive=true`` and ``RunAtLoad=true``, launchd
+ re-invokes ``t3 loop spawn-headless`` whenever the previous Claude
+ Code session exits — including after a ``/login`` account switch.
+
+ Linux is not yet supported by this command; print a cron suggestion
+ for now.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --label         TEXT  LaunchAgent label (default: com.$USER.teatree-loop).   │
+│ --t3-bin        TEXT  Absolute path to the `t3` binary (default:             │
+│                       autodetect).                                           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop uninstall-watchdog`
+
+```
+Usage: t3 loop uninstall-watchdog [OPTIONS]
+
+ Remove the macOS LaunchAgent installed by ``install-watchdog``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --label        TEXT  LaunchAgent label (default: com.$USER.teatree-loop).    │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1751,6 +1858,8 @@ Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
 │ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
 │         overlays.                                                            │
 │ check   Drain the event queue, ack with 👀, and print new user messages.     │
+│ react   Add *emoji* to ``(channel, ts)`` using the personal user-OAuth       │
+│         token.                                                               │
 │ status  Check if the Socket Mode listener is running.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1785,6 +1894,35 @@ Usage: t3 slack check [OPTIONS]
  Returns exit code 0 when messages were found, 1 when the queue
  was empty. Designed to be called from a fast cron (every 30s).
 
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 slack react`
+
+```
+Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
+
+ Add *emoji* to ``(channel, ts)`` using the personal user-OAuth token.
+
+ The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
+ (provisioned by ``t3 setup slack-user-token``) is the only credential
+ that reliably reaches user DMs and Slack-Connect externally-shared
+ channels for ``reactions.add`` (#1232). Exits 0 on success (including
+ the idempotent ``already_reacted`` case), 1 when the token is missing,
+ 2 on any other Slack-side failure.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
+│                         channel).                                            │
+│                         [required]                                           │
+│ *    ts           TEXT  Message timestamp (e.g. `1700000000.000100`).        │
+│                         [required]                                           │
+│ *    emoji        TEXT  Emoji name without colons (e.g. `eyes`,              │
+│                         `white_check_mark`).                                 │
+│                         [required]                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -2947,6 +3085,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ cancel                Cancel a task by ID.                                   │
 │ claim                 Claim the next available task.                         │
+│ complete              Mark a claimed task COMPLETED for work finished        │
+│                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
 │ list                  List tasks with optional filters.                      │
 │ start                 Claim and run the next interactive task in the current │
@@ -2979,6 +3119,29 @@ Usage: t3 teatree tasks claim [OPTIONS]
 │ --execution-target        TEXT  [default: headless]                          │
 │ --claimed-by              TEXT  [default: worker]                            │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks complete`
+
+```
+Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
+
+ Mark a claimed task COMPLETED for work finished out-of-band (#1031).
+
+ Drives the Task FSM ``claimed → completed`` (releasing the lease and
+ auto-advancing the ticket). Idempotent: completing an already-completed
+ task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
+ (``pending``, ``failed``) with a clear error.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task_id      INTEGER  Task ID (see `task_id` in `tasks list`).          │
+│                            [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --note        TEXT  Audit-trail reason recorded on a TaskAttempt (e.g. 'work │
+│                     landed via !6219').                                      │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

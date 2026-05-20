@@ -15,7 +15,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0027_canonicalize_teatree_overlay"),
+        ("core", "0030_livepostapproval"),
     ]
 
     operations = [

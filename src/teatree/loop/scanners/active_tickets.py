@@ -48,7 +48,10 @@ class ActiveTicketsScanner:
             cached_title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
             cached_title = cached_title if isinstance(cached_title, str) else ""
             title = ticket.short_description or cached_title
-            tracker_404 = bool(extra.get("tracker_404")) if isinstance(extra, dict) else False
+            # ``tracker_404`` is the last-observed-404 marker the tracker
+            # client persists on the ticket extras; the renderer drops the
+            # URL when set so dead permalinks don't surface (#1163, #1156).
+            tracker_404 = bool(extra.get("tracker_404", False)) if isinstance(extra, dict) else False
             issue_url = "" if tracker_404 else ticket.issue_url
             if not ticket.short_description and cached_title:
                 _enqueue_short_describe(ticket)
@@ -62,6 +65,7 @@ class ActiveTicketsScanner:
                         "state": ticket.state,
                         "issue_url": issue_url,
                         "title": title,
+                        "tracker_404": tracker_404,
                     },
                 ),
             )

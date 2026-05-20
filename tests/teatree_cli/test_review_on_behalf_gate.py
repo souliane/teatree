@@ -68,7 +68,10 @@ class _StubAPI:
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
-        return {"id": 1, "notes": [{"type": "DiffNote"}]}
+        # ``line_code`` keeps the draft-notes anchor check happy on the
+        # new default-draft ``post_comment`` path (#1207); the discussions
+        # endpoint ignores it, so the same shape serves both branches.
+        return {"id": 1, "notes": [{"type": "DiffNote"}], "line_code": "abc123_10_10"}
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))
@@ -96,14 +99,23 @@ def _service_with_stub() -> tuple[ReviewService, _StubAPI]:
 
 
 class TestReviewServicePostCommentGated:
+    """``post_comment`` default-draft path: on-behalf gate applies only to ``--live`` (#1207).
+
+    The default (live=False) path routes through ``post_draft_note``, so its
+    draft-form on-behalf carve-out applies — under ``DRAFT_OR_ASK`` the draft
+    auto-publishes; under ``ASK`` it blocks on the ``post_draft_note`` action;
+    under ``IMMEDIATE`` it proceeds. The ``--live`` path stays gated on the
+    ``post_comment`` action.
+    """
+
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
         self.monkeypatch = monkeypatch
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_post_comment_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+    def test_post_comment_default_blocked_under_ask_no_approval(self) -> None:
+        """Under ASK the default draft path is refused without a ``post_draft_note`` approval."""
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm")
@@ -113,19 +125,30 @@ class TestReviewServicePostCommentGated:
         # The HTTP call MUST NOT have happened.
         assert stub.calls == []
 
-    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
-    def test_post_comment_proceeds_with_recorded_approval(self, mode: OnBehalfPostMode) -> None:
-        _gate(self.tmp_path, self.monkeypatch, mode=mode)
-        OnBehalfApproval.record(target="org/repo!7", action="post_comment", approver_id="souliane")
+    def test_post_comment_default_auto_drafts_under_draft_or_ask(self) -> None:
+        """Under DRAFT_OR_ASK the default draft path auto-publishes (the #1207 default flip)."""
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.DRAFT_OR_ASK)
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm")
 
-        assert code == 0
-        assert "OK" in msg
+        assert code == 0, msg
+        # The draft-note publish lands on ``/draft_notes`` (not ``/discussions``).
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any("draft_notes" in ep for ep in post_endpoints), f"expected draft_notes hit, got {post_endpoints!r}"
+
+    def test_post_comment_default_proceeds_under_ask_with_draft_approval(self) -> None:
+        """Recording a ``post_draft_note`` approval satisfies the default path under ASK."""
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
+        OnBehalfApproval.record(target="org/repo!7", action="post_draft_note", approver_id="souliane")
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment("org/repo", 7, "lgtm")
+
+        assert code == 0, msg
         assert any(c[0] == "post_json" for c in stub.calls)
 
-    def test_post_comment_proceeds_under_immediate(self) -> None:
+    def test_post_comment_default_proceeds_under_immediate(self) -> None:
         _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
         service, stub = _service_with_stub()
 
@@ -133,6 +156,72 @@ class TestReviewServicePostCommentGated:
 
         assert code == 0
         assert any(c[0] == "post_json" for c in stub.calls)
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_post_comment_live_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
+        """The ``--live`` branch keeps the ``post_comment`` on-behalf gate."""
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
+
+        assert code == 1
+        assert "approve-on-behalf" in msg
+        # The HTTP publish MUST NOT have happened.
+        assert all(kind != "post_json" for kind, _, _ in stub.calls)
+
+    @pytest.mark.parametrize("mode", _BLOCKING_MODES)
+    def test_post_comment_live_still_needs_live_post_token_with_on_behalf_approval(
+        self, mode: OnBehalfPostMode
+    ) -> None:
+        """A ``post_comment`` on-behalf approval alone does NOT satisfy ``--live``.
+
+        Both gates must be satisfied: the on-behalf approval (#960) AND the
+        Slack-recorded LivePostApproval (#1207). With only the former, the
+        ``--live`` call still refuses with the ``approve-live-post`` message.
+        """
+        _gate(self.tmp_path, self.monkeypatch, mode=mode)
+        OnBehalfApproval.record(target="org/repo!7", action="post_comment", approver_id="souliane")
+        service, _stub = _service_with_stub()
+
+        msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
+
+        assert code == 1
+        assert "approve-live-post" in msg
+
+    def test_post_comment_live_under_immediate_still_needs_live_post_token(self) -> None:
+        """``--live`` is gated on the Slack-recorded LivePostApproval even under IMMEDIATE.
+
+        The on-behalf gate (#960) and the live-post gate (#1207) are
+        independent: IMMEDIATE relaxes only the on-behalf pre-ask, the
+        ``--live`` colleague-visible publish still needs the Slack-DM-
+        verified token.
+        """
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)
+        service, _stub = _service_with_stub()
+
+        msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
+
+        assert code == 1
+        assert "approve-live-post" in msg
+
+    def test_post_comment_live_proceeds_with_both_approvals(self) -> None:
+        """``--live`` publishes when both the on-behalf approval AND the LivePostApproval are recorded."""
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        _gate(self.tmp_path, self.monkeypatch, mode=OnBehalfPostMode.ASK)
+        OnBehalfApproval.record(target="org/repo!7", action="post_comment", approver_id="souliane")
+        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        service, stub = _service_with_stub()
+
+        msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
+
+        assert code == 0, msg
+        # The live publish lands on ``/discussions`` (or ``/notes``), NOT ``/draft_notes``.
+        post_endpoints = [endpoint for kind, endpoint, _ in stub.calls if kind == "post_json"]
+        assert any(("draft_notes" not in ep) and ("notes" in ep) for ep in post_endpoints), (
+            f"expected a live publish to /notes or /discussions, got {post_endpoints!r}"
+        )
 
 
 class TestReviewServicePostDraftNoteGated:
@@ -378,7 +467,8 @@ class TestReviewServiceGateIntegration:
         _gate(tmp_path, monkeypatch, mode=OnBehalfPostMode.IMMEDIATE)  # gate off — irrelevant here
         self.monkeypatch = monkeypatch
 
-    def test_post_comment_calls_require_on_behalf_approval(self) -> None:
+    def test_post_comment_default_calls_require_with_post_draft_note(self) -> None:
+        """The default-draft path routes through ``post_draft_note``'s gate (#1207)."""
         from teatree.core import on_behalf_gate_recorded as gate_mod  # noqa: PLC0415
 
         called: list[tuple[str, str]] = []
@@ -390,7 +480,25 @@ class TestReviewServiceGateIntegration:
             service, _stub = _service_with_stub()
             service.post_comment("org/repo", 7, "lgtm")
 
-        assert called == [("org/repo!7", "post_comment")]
+        # Default path => the on-behalf action recorded is the draft-form
+        # ``post_draft_note``, NOT ``post_comment``. ``post_comment`` is
+        # reserved for the ``--live`` colleague-visible branch.
+        assert called == [("org/repo!7", "post_draft_note")]
+
+    def test_post_comment_live_calls_require_with_post_comment(self) -> None:
+        """The ``--live`` branch still gates on the ``post_comment`` on-behalf action."""
+        from teatree.core import on_behalf_gate_recorded as gate_mod  # noqa: PLC0415
+
+        called: list[tuple[str, str]] = []
+
+        def _fake_require(*, target: str, action: str) -> None:
+            called.append((target, action))
+
+        with patch.object(gate_mod, "require_on_behalf_approval", _fake_require):
+            service, _stub = _service_with_stub()
+            service.post_comment("org/repo", 7, "lgtm", live=True)
+
+        assert ("org/repo!7", "post_comment") in called
 
 
 class TestApproveOnBehalfCommand:
@@ -421,10 +529,15 @@ class TestApproveOnBehalfCommand:
         assert OnBehalfApproval.objects.count() == 0
 
     def test_end_to_end_recorded_approval_satisfies_post_comment(self) -> None:
-        """Record an approval via the CLI; the next ``post_comment`` then proceeds."""
+        """Record an approval via the CLI; the next ``post_comment`` then proceeds.
+
+        After the #1207 default-flip the default-draft path is gated on the
+        ``post_draft_note`` action (not ``post_comment``), so the recorded
+        approval names that action.
+        """
         record = _runner.invoke(
             app,
-            ["review", "approve-on-behalf", "org/repo!7", "post_comment", "--approver", "souliane"],
+            ["review", "approve-on-behalf", "org/repo!7", "post_draft_note", "--approver", "souliane"],
         )
         assert record.exit_code == 0, record.output
 

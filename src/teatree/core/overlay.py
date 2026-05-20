@@ -103,6 +103,32 @@ class OverlayConfig:
     # cross-group reassigns stay visible because they cross human boundaries.
     identity_aliases: list[list[str]]
     dev_env_url: str = ""
+    # When True the PreToolUse plan-gate denies ``Edit``/``Write`` on any file
+    # under ``$T3_WORKSPACE_DIR`` unless either ``/plan`` has been invoked or
+    # the touched file was ``Read`` earlier in the session (see
+    # ``hooks/scripts/hook_router.py::handle_enforce_plan_gate``). The gate is
+    # opt-in per overlay — default ``False`` means agents working on this
+    # overlay's repos are not subject to the gate until the user flips it in
+    # ``[overlays.<name>] plan_gate = true``. The gate consults ALL overlays'
+    # ``plan_gate`` values: if any overlay opts in, the gate is active for
+    # workspace-scoped edits on this machine. Outside ``$T3_WORKSPACE_DIR``
+    # (e.g. ``~/.zshrc``, ``~/.claude/``, agent memory) the gate is silent.
+    plan_gate: bool = False
+    # ``companion_skills`` is a per-overlay list of skill names that must be
+    # loaded alongside the active lifecycle skill — the standing equivalent of
+    # "always load /ac-django and /ac-python when working in this overlay".
+    # Wired through ``SkillLoadingPolicy._base_detected_skills`` so the
+    # existing ``resolve_companions`` resolver handles the dependency chain
+    # without a parallel implementation.
+    companion_skills: list[str]
+    # ``pr_review_companion`` is the single skill injected alongside
+    # ``/t3:review`` whenever a reviewer sub-agent is dispatched
+    # (``phase == "reviewing"``). The global default ``"code-review"`` carries
+    # the project's review-quality bar; an overlay overrides via
+    # ``[overlays.<name>] pr_review_companion = "receiving-code-review"`` (or
+    # any other skill) in ``~/.teatree.toml``. An empty string disables
+    # injection without removing the lifecycle skill (#1135).
+    pr_review_companion: str = "code-review"
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance
@@ -114,6 +140,7 @@ class OverlayConfig:
         self.ready_labels = []
         self.exclude_labels = []
         self.identity_aliases = []
+        self.companion_skills = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:

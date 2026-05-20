@@ -11,12 +11,17 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.config import discover_overlays, load_config
+
+if TYPE_CHECKING:
+    from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
+    ArchitecturalReviewScanner,
     AssignedIssuesScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
@@ -24,9 +29,11 @@ from teatree.loop.scanners import (
     NotionViewScanner,
     OutboundAuditScanner,
     PendingTasksScanner,
+    RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
+    ScanningNewsScanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
@@ -140,6 +147,73 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     return jobs
 
 
+def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
+    """Build a per-overlay architectural-review scanner from teatree-core config.
+
+    #1136 / #1152 re-architecture: the architectural-review cadence is a
+    teatree-core platform behaviour that applies uniformly to every
+    overlay's worktrees, NOT a per-overlay opt-in. The settings live on
+    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
+    ``~/.teatree.toml``, with optional per-overlay overrides via the
+    standard ``[overlays.<name>]`` shape — see
+    ``OVERLAY_OVERRIDABLE_SETTINGS``). The scanner is instantiated once
+    per registered overlay so each overlay's task queue gets its own
+    cadence; a single core ``architectural_review_disabled = true``
+    escape hatch suppresses scanning for the active overlay (and an
+    overlay-scoped override allows pinning the toggle per-overlay).
+
+    Returns ``None`` when the active overlay has
+    ``architectural_review_disabled = true`` (the escape hatch).
+    Unlike the previous wiring, this no longer skips overlays without a
+    Python class — the scanner only needs ``backend.name`` to operate.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.architectural_review_disabled:
+        return None
+    return ArchitecturalReviewScanner(
+        overlay_name=backend.name,
+        skill=settings.architectural_review_skill,
+        cadence_hours=settings.architectural_review_cadence_hours,
+        after_merge_count=settings.architectural_review_after_merge_count,
+    )
+
+
+def _scanning_news_scanner() -> ScanningNewsScanner | None:
+    """Build a global scanning-news scanner from teatree-core config.
+
+    #1191: the news-scan cadence is a teatree-core platform behaviour
+    that runs once per day for the ``teatree`` overlay regardless of
+    which overlays are registered. The settings live on
+    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
+    ``~/.teatree.toml``, with optional per-overlay overrides). Returns
+    ``None`` when ``scanning_news_disabled = true`` (the escape hatch).
+    """
+    settings = load_config().user
+    if settings.scanning_news_disabled:
+        return None
+    return ScanningNewsScanner(
+        skill=settings.scanning_news_skill,
+        cadence_hours=settings.scanning_news_cadence_hours,
+    )
+
+
+def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
+    """Resolve :class:`UserSettings` honouring this overlay's ``[overlays.<name>]`` overrides.
+
+    Mirrors ``get_effective_settings()`` but resolves the active overlay
+    explicitly by name (the scanner-builder loops over every registered
+    overlay, not just the one in ``T3_OVERLAY_NAME``). Falls back to the
+    global ``[teatree]`` values when no per-overlay override is set.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
+    base = load_config().user
+    for entry in discover_overlays():
+        if entry.name == overlay_name and entry.overrides:
+            return replace(base, **entry.overrides)
+    return base
+
+
 def _gitlab_approvals_enabled() -> bool:
     """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
 
@@ -235,6 +309,13 @@ def build_default_jobs(
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
     ]
+    # #1191 Periodic scanning-news scanner — teatree-CORE global (not
+    # per-overlay). Daily cadence is teatree-platform config; the queued
+    # task is anchored on the `teatree` overlay placeholder ticket so
+    # the dispatcher routes through the standard pending-task pipeline.
+    news_scanner = _scanning_news_scanner()
+    if news_scanner is not None:
+        jobs.append(_ScannerJob(scanner=news_scanner, overlay=""))
 
     if backends:
         for backend in backends:
@@ -264,6 +345,18 @@ def build_default_jobs(
             # other (#976). The single-host path is preserved by iterating
             # ``backend.hosts`` (which is empty when no token resolved).
             jobs.extend(_jobs_for_backend_hosts(backend, tag))
+            # #1136 / #1152 Periodic architectural-review scanner. CORE
+            # always-on for every registered overlay — the cadence lives
+            # in teatree-core config ([teatree] in ~/.teatree.toml) since
+            # architectural review applies uniformly to all overlays'
+            # worktrees, not as a per-overlay opt-in. Wired here (per
+            # overlay, not per host) because the cadence is over the
+            # overlay's ticket flow, not per-forge. Set
+            # ``architectural_review_disabled = true`` per-overlay or
+            # globally as an escape hatch.
+            arch_scanner = _architectural_review_scanner_for(backend)
+            if arch_scanner is not None:
+                jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
             if backend.messaging is not None:
                 jobs.extend(
                     [
@@ -278,6 +371,15 @@ def build_default_jobs(
                         ),
                         _ScannerJob(
                             scanner=SlackReviewIntentScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
+                        # #1130 RED CARD detection — user's structural "fix it
+                        # upstream" signal. Runs alongside the review-intent
+                        # scanner because both drain reactions; this one only
+                        # cares about ``:red_circle:`` / ``:no_entry_sign:``
+                        # plus the literal phrase in DMs.
+                        _ScannerJob(
+                            scanner=RedCardScanner(backend=backend.messaging, overlay=tag),
                             overlay=tag,
                         ),
                         _ScannerJob(
@@ -304,6 +406,8 @@ def build_default_jobs(
                     _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
                     _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
                     _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
+                    # #1130 RED CARD detection for the single-overlay path.
+                    _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=""), overlay=""),
                 ]
             )
 

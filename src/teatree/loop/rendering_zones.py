@@ -20,15 +20,15 @@ _DISPOSITION_LABELS: dict[str, str] = {
     "label_removed": "label-removed",
 }
 
-# States that should not surface as anchors: terminal/post-PR states plus
-# ``closed`` which isn't a valid FSM value but turns up in old data.
+# States that should not surface as anchors: only TERMINAL post-PR states.
+# Rich work states (``not_started``, ``in_review``) intentionally surface so
+# the statusline shows the real lifecycle, not just the started/tested/ready
+# slice (#1163).  ``closed`` isn't a valid FSM value but turns up in old data.
 _NOISE_STATES = frozenset(
     {
-        "not_started",
         "merged",
         "delivered",
         "shipped",
-        "in_review",
         "retrospected",
         "closed",
     },

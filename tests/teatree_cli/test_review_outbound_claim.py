@@ -173,7 +173,10 @@ class TestApprovedRecordedReviewRecordsAClaim:
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-        OnBehalfApproval.record(target="org/repo!19", action="post_comment", approver_id="souliane")
+        # After #1207 the default-draft path is gated on ``post_draft_note``
+        # (not ``post_comment``) — that's the action the recorded approval
+        # must name to satisfy the gate on the live, default-draft branch.
+        OnBehalfApproval.record(target="org/repo!19", action="post_draft_note", approver_id="souliane")
 
         service, _ = _service()
         msg, code = service.post_comment("org/repo", 19, "thanks")

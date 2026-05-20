@@ -7,9 +7,9 @@ testing lives here as plain Python.
 Per-concern helpers live in sibling modules to keep this orchestrator
 under the module-health LOC gate. ``tick_jobs`` builds scanner jobs,
 ``tick_recovery`` runs boot/tick recovery and post-dispatch
-side-effects (mechanical handlers, agent dispatch persistence,
-dashboard recording), and ``tick_freshness`` captures the repo-
-freshness snapshot for the ``tick-meta.json`` sidecar.
+side-effects (mechanical handlers, agent dispatch persistence), and
+``tick_freshness`` captures the repo-freshness snapshot for the
+``tick-meta.json`` sidecar.
 
 The names re-exported below are the public surface other modules and
 tests rely on — keep the re-export list in sync with downstream
@@ -52,12 +52,7 @@ from teatree.loop.tick_jobs import (
     build_default_jobs,
     build_default_scanners,
 )
-from teatree.loop.tick_recovery import (
-    _execute_mechanical,
-    _persist_agent_dispatches,
-    _reap_stale_task_claims,
-    _record_dashboard_actions,
-)
+from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches, _reap_stale_task_claims
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 
 logger = logging.getLogger(__name__)
@@ -77,7 +72,6 @@ __all__ = [
     "_jobs_for_backend_hosts",
     "_persist_agent_dispatches",
     "_reap_stale_task_claims",
-    "_record_dashboard_actions",
     "_repo_freshness",
     "_repos_from_toml",
     "_run_job",
@@ -159,7 +153,8 @@ def run_tick(
 
     if not jobs:
         empty_zones = StatuslineZones()
-        _populate_loops_anchor(empty_zones)
+        _populate_live_loops_in_anchors(empty_zones)
+        _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
             target=statusline_path,
@@ -177,37 +172,52 @@ def run_tick(
     report.actions = dispatch(report.signals)
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
-    _record_dashboard_actions(report, started_at)
 
     zones = zones_for(report.actions, colorize=colorize)
     _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
-    _populate_loops_anchor(zones)
+    _populate_loop_owner_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
 
 
-def _populate_loops_anchor(zones: StatuslineZones) -> None:
-    """Populate the anchors zone with one dim line per live loop (#1156).
+def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
+    """Append one anchor line per live LoopLease row (#1156).
 
-    Replaces the pre-#1156 ``_populate_loop_owner_anchor`` which emitted
-    a verbose ``loop-owner=THIS session ✓``/``loop-owner=unclaimed``
-    line. The dim doctrine now surfaces every live :class:`LoopLease`
-    row as ``loop:<short> [<N tasks>]``; the only RED line that
-    survives is the #1073 foreign-hijack warning.
+    Used by the empty-jobs path in :func:`run_tick` so even an idle tick
+    still surfaces the running loops. The non-empty path goes through
+    :func:`teatree.loop.rendering._populate_live_loops_anchor` via
+    :func:`teatree.loop.rendering.zones_for` and must not double-populate.
+
+    Fails open: any import/query error degrades to a no-op.
+    """
+    try:
+        from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        zones.anchors.extend(live_loops_anchor())
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
+    """Append the #1073 foreign-hijack loop-owner RED line.
+
+    The live-loops anchor (one ``loop:<short>`` line per LoopLease row) is
+    populated separately by
+    :func:`teatree.loop.rendering._populate_live_loops_anchor` (#1163, #1184).
+    This function is responsible only for the #1073 foreign-hijack RED line
+    surfaced when a different live session holds ``loop-owner``.
 
     Fails open: any import/query error degrades to a no-op so a broken
-    LoopLease read can never blank the statusline (same contract as
-    :func:`teatree.loop.rendering._populate_availability_anchor`).
+    loop-owner read can never blank the statusline.
     """
     try:
         from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
-        from teatree.loop.statusline import live_loops_anchor, loop_owner_anchor  # noqa: PLC0415
-
-        for line in live_loops_anchor():
-            zones.anchors.append(line)
+        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
         status = LoopLease.objects.ownership_status("loop-owner")
         zone, line = loop_owner_anchor(status, current_session_id())

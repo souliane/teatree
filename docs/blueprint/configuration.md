@@ -16,10 +16,11 @@ loop_cadence_seconds = 720                 # /loop tick interval (default 12 min
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
 require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
 on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960): draft_or_ask (default; draft notes publish autonomously, every other action BLOCKs identical to ask) | ask (every action BLOCKs) | immediate (gate off)
-
-[user]
-claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
-agent_signature = false  # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
+notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
+user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
+statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
+claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
+agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -156,6 +157,7 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 | `known_variants` | `list[str]` | `[]` | Known tenant identifiers for `detect_variant()` |
 | `frontend_repos` | `list[str]` | `[]` | Repos whose changes trigger frontend-flavored CI gates |
 | `dev_env_url` | `str` | `""` | Dev/staging environment URL (used in PR descriptions) |
+| `plan_gate` | `bool` | `False` | Opt this overlay into the PreToolUse plan-gate ([#1133](https://github.com/souliane/teatree/issues/1133)): when ANY overlay has `plan_gate = true` in `~/.teatree.toml`, `hook_router.handle_enforce_plan_gate` denies `Edit`/`Write` on files under `$T3_WORKSPACE_DIR` unless the session has invoked `/plan` (recorded in `<session>.plan-invocations`) or already `Read` the touched file (recorded in `<session>.workspace-reads`). Outside the workspace (e.g. `~/.zshrc`, `~/.claude/`, agent memory) the gate passes through silently. Default OFF — the gate is silent until at least one overlay opts in. |
 
 ### 10.3 Logging
 

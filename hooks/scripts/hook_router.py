@@ -437,6 +437,155 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     return True
 
 
+# ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
+#
+# Denies ``Edit``/``Write`` on files under ``$T3_WORKSPACE_DIR`` when the
+# current session has neither invoked ``/plan`` nor read the touched file.
+# Opt-in per overlay via ``[overlays.<name>] plan_gate = true`` in
+# ``~/.teatree.toml`` — default OFF for backward compat. Outside the
+# workspace root (``~/.zshrc``, ``~/.claude/``, agent memory) the gate
+# never fires.
+#
+# Session state lives in two STATE_DIR files alongside the existing
+# ``<session>.skills`` / ``<session>.reads`` pattern:
+#
+# - ``<session>.plan-invocations`` — records each ``Skill`` tool call
+#   whose ``skill`` field is ``plan`` (or a ``plan*`` variant).
+# - ``<session>.workspace-reads`` — records resolved workspace-relative
+#   file paths that the agent has ``Read`` this session. Reads outside
+#   the workspace are NOT recorded, so an unrelated ``~/.zshrc`` read
+#   cannot authorize a workspace ``Edit``.
+
+
+def _workspace_root() -> Path:
+    """Return the absolute ``$T3_WORKSPACE_DIR``, defaulting to ``~/workspace``."""
+    return Path(os.environ.get("T3_WORKSPACE_DIR", str(Path.home() / "workspace"))).expanduser().resolve()
+
+
+def _is_under_workspace(file_path: str) -> bool:
+    """True when *file_path* resolves to a path under ``$T3_WORKSPACE_DIR``."""
+    if not file_path:
+        return False
+    try:
+        resolved = Path(file_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        resolved.relative_to(_workspace_root())
+    except ValueError:
+        return False
+    return True
+
+
+def _plan_gate_enabled() -> bool:
+    """True iff any overlay in ``~/.teatree.toml`` has ``plan_gate = true``.
+
+    Mirrors :func:`_load_protected_branches`'s toml-read shape — best-effort
+    open, fail closed on parse errors (return ``False`` so the gate stays
+    silent rather than spuriously blocking on a broken config).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(overlay_cfg.get("plan_gate") is True for overlay_cfg in (config.get("overlays") or {}).values())
+
+
+def handle_track_plan_invocation(data: dict) -> None:
+    """PostToolUse: record a ``/plan`` invocation for the current session."""
+    if data.get("tool_name") != "Skill":
+        return
+    skill = data.get("tool_input", {}).get("skill", "")
+    if not skill:
+        return
+    # Accept ``plan``, ``t3:plan``, ``plan-*`` — any variant whose final
+    # path segment starts with ``plan``.
+    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    if not final.startswith("plan"):
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    marker = _state_file(session_id, "plan-invocations")
+    marker.write_text("1", encoding="utf-8")
+
+
+def handle_track_workspace_source_read(data: dict) -> None:
+    """PostToolUse: record a workspace ``Read`` keyed by the resolved file path."""
+    if data.get("tool_name") != "Read":
+        return
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    if not _is_under_workspace(file_path):
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    reads_file = _state_file(session_id, "workspace-reads")
+    try:
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return
+    existing = set(_read_lines(reads_file))
+    if resolved not in existing:
+        _append_line(reads_file, resolved)
+
+
+def _session_satisfies_plan_gate(session_id: str, file_path: str) -> bool:
+    """True iff *session_id* has recorded a plan invocation OR a read of *file_path*."""
+    if _state_file(session_id, "plan-invocations").is_file():
+        return True
+    try:
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = file_path
+    return resolved in set(_read_lines(_state_file(session_id, "workspace-reads")))
+
+
+def handle_enforce_plan_gate(data: dict) -> bool:
+    """Deny ``Edit``/``Write`` under ``$T3_WORKSPACE_DIR`` lacking plan-or-read.
+
+    Returns ``True`` (emits the deny JSON) only when ALL of:
+
+    1. The tool is ``Edit`` or ``Write``.
+    2. The target ``file_path`` lives under ``$T3_WORKSPACE_DIR``.
+    3. At least one overlay has ``plan_gate = true`` in ``~/.teatree.toml``.
+    4. No ``/plan`` invocation has been recorded for this session.
+    5. No source-read of the touched file has been recorded for this session.
+
+    Any condition failing -> the handler returns ``False`` (pass through)
+    so the surrounding handler chain runs normally.
+    """
+    tool_name = data.get("tool_name", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    session_id = data.get("session_id", "")
+    if (
+        tool_name not in {"Edit", "Write"}
+        or not _is_under_workspace(file_path)
+        or not _plan_gate_enabled()
+        or not session_id
+        or _session_satisfies_plan_gate(session_id, file_path)
+    ):
+        return False
+
+    reason = (
+        f"{tool_name} denied on `{file_path}`: file is under $T3_WORKSPACE_DIR "
+        "and no `/plan` invocation or source-read for the touched module is "
+        "recorded in this session. Run `/plan` first, or Read the touched file "
+        "before Edit. (Plan-gate is opt-in per overlay via "
+        "`[overlays.<name>] plan_gate = true`.)"
+    )
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
+
+
 # ── PreToolUse: protect-default-branch ─────────────────────────────
 
 
@@ -3369,6 +3518,222 @@ def _enforce_answered_questions(data: dict) -> bool | None:
     return True
 
 
+# ── Consideration gate (#1129): promote framework-shaped edits ──────
+#
+# Every session that edits personal config the framework should ship
+# (e.g. ``~/.claude/settings.json``, ``~/.claude/hooks.json``, personal
+# ``CLAUDE.md`` behavioural rules) must answer "should this be a teatree
+# feature?" before the turn declares done. Prose-only enforcement loses
+# (see retro skill § 9 "Consolidation over Drift"); this gate makes the
+# scan deterministic.
+#
+# The classifier is path-based and conservative. Three classes:
+#
+#   (P) Promote — personal agent config a teatree installation should
+#       wire automatically. The gate fires unless the assistant turn
+#       references a teatree issue (``souliane/teatree#NNNN`` or bare
+#       ``#NNNN``) OR a later iteration downgrades the path.
+#   (K) Keep    — genuine personal preference (memory entries, shell
+#       rc, terminal config). The gate stays silent.
+#   None        — path lives outside the personal-config corners (or
+#       inside the framework itself). The gate has nothing to say.
+#
+# Class (C) "documented config" is not encoded here yet — overlapping
+# heuristics with (P) make false positives noisy. The retro skill
+# already covers (C) in its consolidation pass; the Stop gate focuses
+# on the loudest signal first.
+
+_TEATREE_ISSUE_REF = re.compile(
+    r"(?:souliane/teatree)?#(\d{2,})\b",
+    flags=re.IGNORECASE,
+)
+
+_PROMOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Agent-harness config files that ship behaviour.
+    re.compile(r"/\.(claude|codex|cursor|copilot)/settings(\.local)?\.json$"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/hooks\.json$"),
+    # Personal behavioural instructions (CLAUDE.md / AGENTS.md at the
+    # harness root, not inside a project repo).
+    re.compile(r"/\.(claude|codex|cursor|copilot)/(CLAUDE|AGENTS)\.md$"),
+)
+
+_KEEP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Memory entries and todos are session state, not framework behaviour.
+    re.compile(r"/\.(claude|codex|cursor|copilot)/projects/.*/memory/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/todos/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/statsig/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/.*\.log$"),
+    # Shell, terminal, vcs user prefs.
+    re.compile(r"/\.(zshrc|bashrc|profile|zprofile|zshenv|bash_profile)$"),
+    re.compile(r"/\.(gitconfig|tmux\.conf|inputrc|vimrc)$"),
+)
+
+
+def classify_session_edit(file_path: str) -> str | None:
+    """Classify an edited path as ``"P"`` (promote), ``"K"`` (keep), or ``None``.
+
+    Conservative path-based heuristic — see the consideration-gate
+    block above for the (P)/(K)/None contract. ``None`` is the silent
+    default: the framework only nags on paths it has explicit signal
+    for.
+    """
+    if not file_path:
+        return None
+    # Keep patterns win over promote when both could match the path —
+    # an edit to ``~/.claude/projects/<p>/memory/MEMORY.md`` is keep,
+    # not promote.
+    for pattern in _KEEP_PATTERNS:
+        if pattern.search(file_path):
+            return "K"
+    for pattern in _PROMOTE_PATTERNS:
+        if pattern.search(file_path):
+            return "P"
+    return None
+
+
+_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
+
+
+def _edit_block_path(block: dict) -> str | None:
+    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
+
+    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
+    ``_block_is_settings_write`` contract).
+    """
+    if block.get("type") != "tool_use":
+        return None
+    name = block.get("name")
+    if name not in _EDIT_TOOL_NAMES:
+        return None
+    tool_input = block.get("input")
+    if not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if isinstance(raw, str) and raw:
+        return raw
+    return None
+
+
+def _current_turn_edits(transcript_path: str) -> list[str]:
+    """File paths edited by the assistant in the most recent turn.
+
+    Walks the transcript newest→oldest; the most recent ``user`` entry
+    is the boundary. Returns the file paths from every ``Edit`` /
+    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
+    boundary, in transcript order. Duplicates kept — the caller
+    classifies + dedupes.
+    """
+    entries = _read_transcript_entries(transcript_path)
+    if not entries:
+        return []
+    edits: list[str] = []
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if not isinstance(block, dict):
+                continue
+            path = _edit_block_path(block)
+            if path is not None:
+                edits.append(path)
+    edits.reverse()
+    return edits
+
+
+def _current_turn_assistant_text(transcript_path: str) -> str:
+    """Concatenated assistant text blocks in the most recent turn.
+
+    Used to detect a teatree-issue reference that clears the gate.
+    """
+    chunks: list[str] = []
+    entries = _read_transcript_entries(transcript_path)
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+    return "\n".join(chunks)
+
+
+def handle_consideration_gate(data: dict) -> bool | None:
+    """Emit a CONSIDERATION GATE reminder when promotable edits land (#1129).
+
+    The gate scans the current turn's ``Edit`` / ``Write`` /
+    ``NotebookEdit`` tool uses, classifies each, and emits an
+    ``additionalContext`` block when one or more land in class (P) AND
+    the assistant's text in the same turn does not already reference a
+    teatree issue.
+
+    Soft block only: never emits ``decision: block``. The next turn
+    sees the nag in system context and is expected to either open a
+    teatree issue or justify the divergence in plain text (which the
+    next gate fire will pick up as a reference).
+    """
+    try:
+        return _consideration_gate(data)
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] consideration-gate skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _consideration_gate(data: dict) -> bool | None:
+    if data.get("stop_hook_active"):
+        return None
+    transcript_path = data.get("transcript_path") or ""
+    if not transcript_path:
+        return None
+    edits = _current_turn_edits(transcript_path)
+    if not edits:
+        return None
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    promotable: list[str] = []
+    for path in edits:
+        if path in seen:
+            continue
+        seen.add(path)
+        if classify_session_edit(path) == "P":
+            promotable.append(path)
+    if not promotable:
+        return None
+    # An issue reference in the assistant's turn text is the spec's
+    # "open a teatree issue" half — gate clears.
+    assistant_text = _current_turn_assistant_text(transcript_path)
+    if _TEATREE_ISSUE_REF.search(assistant_text):
+        return None
+    bullets = "\n".join(f"  - {path}" for path in promotable)
+    body = (
+        f"CONSIDERATION GATE — {len(promotable)} edit(s) this turn landed on personal "
+        "agent config that teatree should arguably ship for every install. "
+        "Before declaring done, decide one of:\n"
+        "  1. Promote — open a teatree issue (link it as `souliane/teatree#NNNN` "
+        "or bare `#NNNN`) so this behaviour ships in the framework.\n"
+        "  2. Justify keep-personal — say in plain text why this edit is genuinely "
+        "user-specific (theme, voice, paths) and not a missing framework feature.\n"
+        "Promotable paths:\n" + bullets
+    )
+    json.dump(
+        {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}},
+        sys.stdout,
+    )
+    # Return True to break the Stop chain — preserves the JSON shape and
+    # preempts the loop self-pump (which would override our soft-block
+    # with a continuation directive).
+    return True
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -3383,6 +3748,7 @@ _HANDLERS: dict[str, list] = {
         handle_allow_classifier_relax_settings_write,
         handle_route_away_mode_question,
         handle_enforce_loop_registration,
+        handle_enforce_plan_gate,
         handle_protect_default_branch,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
@@ -3398,6 +3764,8 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_todos,
+        handle_track_plan_invocation,
+        handle_track_workspace_source_read,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
@@ -3406,7 +3774,12 @@ _HANDLERS: dict[str, list] = {
     # hookSpecificOutput entry for it and discards its output. Recovery
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
-    "Stop": [handle_enforce_structured_question, handle_enforce_answered_questions, handle_loop_self_pump],
+    "Stop": [
+        handle_enforce_structured_question,
+        handle_enforce_answered_questions,
+        handle_consideration_gate,
+        handle_loop_self_pump,
+    ],
 }
 
 

@@ -21,14 +21,15 @@ and the next tick re-dispatches it. Ownership is one Django-free record
 dies, the next open session prunes it, becomes tick-owner, and keeps
 ticking (it does NOT re-spawn anything). With ZERO sessions open the loop
 is DEAD until the next session starts — accepted, not a defect;
-deliberately no OS daemon/launchd workaround.
+the optional ``t3 loop install-watchdog`` (#1139) installs a macOS
+LaunchAgent that bridges that gap by re-running ``spawn-headless`` on
+session exit and after ``/login`` account switches.
 
 The ``tick`` subcommand delegates to the ``loop_tick`` Django management
 command via subprocess — anything that touches the Django ORM must be a
 management command, not a plain typer command with manual ``django.setup()``.
 """
 
-import datetime as dt
 import os
 import shutil
 import sys
@@ -39,6 +40,7 @@ import typer
 from teatree.cli.loop_claim_next import claim_next_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
+from teatree.cli.loop_watchdog import register as register_watchdog
 from teatree.config import cadence_seconds
 from teatree.loop.statusline import default_path
 
@@ -109,66 +111,6 @@ def status_command() -> None:
         typer.echo("No statusline rendered yet — run `t3 loop tick` first.")
         raise typer.Exit(code=1)
     typer.echo(target.read_text(encoding="utf-8"))
-
-
-@loop_app.command("dashboard")
-def dashboard_command(
-    *,
-    send_to_slack: bool = typer.Option(
-        False,
-        "--send-to-slack",
-        help="Send the rendered dashboard to the user's Slack DM via the bot.",
-    ),
-    fmt: str = typer.Option(
-        "markdown",
-        "--format",
-        help="Output format: 'markdown' (stdout, default) or 'slack' (mrkdwn).",
-    ),
-    source: Path = typer.Option(
-        None,
-        "--source",
-        help="Override the tick-actions sidecar path (test hook).",
-    ),
-    self_dm_marker: bool = typer.Option(
-        False,
-        "--self-dm-marker",
-        help="Tag the slack_dm row with '(this DM)' — matches manual dashboard form.",
-    ),
-) -> None:
-    """Render the tabular per-tick dashboard, optionally DM it to the user.
-
-    Default is print-to-stdout for piping or visual inspection. Pass
-    ``--send-to-slack`` to additionally route the rendered table via
-    :func:`teatree.notify.notify_user` (#963) — the send is idempotent
-    per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
-    """
-    from teatree.loop.dashboard import (  # noqa: PLC0415
-        DashboardFormat,
-        default_actions_path,
-        render_dashboard,
-        send_dashboard,
-    )
-
-    try:
-        fmt_value = DashboardFormat(fmt)
-    except ValueError as exc:
-        typer.echo(f"Invalid --format {fmt!r}: {exc}")
-        raise typer.Exit(code=2) from exc
-    path = source or default_actions_path()
-    # Slack mrkdwn for the wire; the local copy in stdout always matches
-    # what the user just received on Slack so the two surfaces don't drift.
-    wire_fmt = DashboardFormat.SLACK if send_to_slack else fmt_value
-    rendered = render_dashboard(fmt=wire_fmt, source_path=path, self_dm_marker=self_dm_marker)
-    typer.echo(rendered)
-    if not send_to_slack:
-        return
-    from teatree.notify import notify_user  # noqa: PLC0415
-
-    now = dt.datetime.now(dt.UTC)
-    ok = send_dashboard(rendered, tick_ts=now, notify_user_fn=notify_user)
-    if not ok:
-        typer.echo("[dashboard] notify_user returned False — bot unconfigured or send failed.")
-        raise typer.Exit(code=1)
 
 
 @loop_app.command("pending-spawn")
@@ -270,8 +212,11 @@ def start_command(
     claim-next``) and spawning one fresh bounded sub-agent for it. If
     this session dies, the next open session prunes the dead owner,
     becomes tick-owner, and keeps ticking. With no session open the loop
-    is paused until the next session start; there is deliberately no
-    OS-scheduler/launchd fallback.
+    is paused until the next session start. The optional ``install-watchdog``
+    (#1139) installs a macOS LaunchAgent that re-runs ``spawn-headless`` so
+    a fresh session is started after a crash or after ``/login`` account
+    switches; absent that, the loop remains paused until the user reopens
+    Claude Code.
     """
     cadence = _cadence_for_loop_slot()
     register_command = (
@@ -432,3 +377,8 @@ loop_app.add_typer(slack_answer_app, name="slack-answer")
 # ``teatree.cli.loop_claim_next`` (split for the same module-health
 # reason). Registered as a flat ``t3 loop claim-next``.
 loop_app.command("claim-next")(claim_next_command)
+
+# #1139 — laptop always-on session: `spawn-headless`, `install-watchdog`,
+# `uninstall-watchdog`. Split off so this file stays under the module-health
+# public-function cap.
+register_watchdog(loop_app)

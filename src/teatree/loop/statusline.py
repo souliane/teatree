@@ -191,6 +191,22 @@ def availability_anchor(mode: str, queued: int) -> str:
     return "mode=away"
 
 
+def _live_loop_names() -> list[tuple[str, str]]:
+    """Return ``(loop_name, session_id)`` for every currently-live LoopLease.
+
+    Isolated as a thin DB-read seam so :func:`live_loops_anchor` stays a
+    pure formatter — tests stub this function rather than constructing
+    LoopLease fixtures, and the renderer keeps a single try/except gate
+    around it for fail-open semantics.
+    """
+    from django.apps import apps  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415
+
+    lease_model = apps.get_model("core", "LoopLease")
+    rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id").order_by("name")
+    return [(row.name, row.session_id) for row in rows]
+
+
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
     """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
@@ -217,7 +233,7 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
 
 
 def live_loops_anchor() -> list[str]:
-    """Return one dim anchor line per live :class:`LoopLease` row (#1156).
+    """Return one dim anchor line per live :class:`LoopLease` row (#1163, #1156).
 
     Five named loops run concurrently (``loop-owner``, ``loop-tick``,
     ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot``); the
@@ -228,25 +244,22 @@ def live_loops_anchor() -> list[str]:
     suppressed when zero or not applicable, so a quiet loop renders as a
     single ``loop:tick`` token.
 
+    The DB read is delegated to :func:`_live_loop_names` so tests can stub
+    a single seam instead of building LoopLease fixtures.
+
     Fails open: any DB / import error degrades to ``[]`` so a broken
     LoopLease read cannot blank the statusline.
     """
     try:
-        from django.apps import apps  # noqa: PLC0415
-        from django.utils import timezone  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return []
-    try:
-        lease_model = apps.get_model("core", "LoopLease")
-        live_rows = (
-            lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id").order_by("name")
-        )
-        live_names = [(row.name, row.session_id) for row in live_rows]
+        live_names = _live_loop_names()
     except Exception:  # noqa: BLE001
         return []
     if not live_names:
         return []
-    task_counts = _claimed_task_counts_by_session(name_session_pairs=live_names)
+    try:
+        task_counts = _claimed_task_counts_by_session(name_session_pairs=live_names)
+    except Exception:  # noqa: BLE001
+        task_counts = {}
     lines: list[str] = []
     for name, session_id in live_names:
         short = name.removeprefix("loop-")

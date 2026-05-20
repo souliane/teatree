@@ -86,16 +86,16 @@ class TestForeignHijackStillRed:
 
 @pytest.mark.django_db
 class TestPopulateLoopsAnchorIntegration:
-    """``_populate_loops_anchor`` emits live-loop dim lines + RED hijack only."""
+    """The rendering layer emits live-loop dim lines for each LoopLease (#1163)."""
 
     def test_emits_dim_line_per_live_loop_and_no_owner_verbose(self) -> None:
-        from teatree.loop.tick import _populate_loops_anchor  # noqa: PLC0415
+        from teatree.loop.rendering import _populate_live_loops_anchor  # noqa: PLC0415
 
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
 
         zones = StatuslineZones()
-        _populate_loops_anchor(zones)
+        _populate_live_loops_anchor(zones)
 
         joined = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
         assert "loop:tick" in joined, repr(joined)

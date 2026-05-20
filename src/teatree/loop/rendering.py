@@ -49,6 +49,7 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
     _populate_availability_anchor(zones)
+    _populate_live_loops_anchor(zones)
     c = _classify_actions(actions)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -79,3 +80,19 @@ def _populate_availability_anchor(zones: StatuslineZones) -> None:
         return
     if line:
         zones.anchors.append(line)
+
+
+def _populate_live_loops_anchor(zones: StatuslineZones) -> None:
+    """Append one anchor line per live :class:`LoopLease` row (#1163).
+
+    Multi-loop visibility: the user runs ``loop-tick``, ``loop-owner``,
+    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot`` in parallel
+    — surfacing each gives the at-a-glance count the prior single
+    ``loop-owner=…`` anchor hid.
+
+    :func:`~teatree.loop.statusline.live_loops_anchor` is itself fail-open,
+    so this wrapper exists only to do the append.
+    """
+    from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
+
+    zones.anchors.extend(live_loops_anchor())
