@@ -140,9 +140,22 @@ class TestPhaseAutoDispatch(TestCase):
         assert "auto mode" in task.execution_reason
 
     def test_shipping_task_completion_advances_to_shipped(self) -> None:
+        # #1284 (codex #1282-2): the task-based shipping path now enforces
+        # ``Session.check_gate_across_ticket("shipping")`` so a happy-path
+        # advance must have ``testing`` and ``reviewing`` recorded. Pre-fix
+        # this test passed even without ``testing`` recorded — exactly the
+        # gate-bypass codex flagged. The fix here is to record the testing
+        # phase visit through the same task path the loop uses, mirroring
+        # the real lifecycle.
         ticket = Ticket.objects.create()
         _attach_shippable_worktree(ticket, self._tmp_path)
         _advance_ticket_to_tested(ticket)
+        # _advance_ticket_to_tested fires the FSM directly (raw test()) so the
+        # testing phase visit is not recorded by the helper. Record it now,
+        # symmetrically with how the loop would have done it when the testing
+        # task completed.
+        testing_session = Session.objects.create(ticket=ticket, agent_id="testing")
+        testing_session.visit_phase("testing", agent_id="testing")
         _complete_phase_task(ticket, "reviewing")
         # reviewing completion → REVIEWED + shipping task (interactive by default)
 

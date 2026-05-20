@@ -635,8 +635,16 @@ class TestReplayOrphanedTransitions(TestCase):
         # The shipping→ship branch: only fires from REVIEWED (the earned
         # state). A REVIEWED ticket whose completed shipping task's
         # ship() was lost to a crash is recovered to SHIPPED.
+        #
+        # #1284 (codex #1282-2): the replay sweep goes through the same
+        # ``_apply_phase_transition`` path the live ``complete()`` chain
+        # uses, so the visited-phases gate applies here too. Record
+        # ``testing``/``reviewing`` to satisfy the gate — a ticket that
+        # legitimately reached REVIEWED would have those attested.
         ticket = Ticket.objects.create(state=Ticket.State.REVIEWED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
+        session.visit_phase("testing", agent_id="a")
+        session.visit_phase("reviewing", agent_id="a")
         Task.objects.create(ticket=ticket, session=session, phase="shipping", status=Task.Status.COMPLETED)
 
         replayed = Task.objects.replay_orphaned_transitions()
