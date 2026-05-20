@@ -161,6 +161,50 @@ class TestReviewRunBadUrl:
         assert payload["error"] == "bad_url"
 
 
+class TestReviewRunHttpError:
+    """A backend HTTP error (401/403/404 from GitLab) maps to ``api_unavailable`` — never raw traceback.
+
+    ``GitLabHTTPClient.get_json()`` calls ``response.raise_for_status()``,
+    so a real inaccessible-repo response raises ``httpx.HTTPStatusError``.
+    The audit must normalize that into the same structured exit-1 shape
+    the null-payload branch uses, so the reviewer sub-agent has exactly
+    one error contract to handle.
+    """
+
+    def test_http_status_error_maps_to_api_unavailable(self) -> None:
+        import httpx  # noqa: PLC0415
+
+        runner = CliRunner()
+
+        class _HttpErrAPI:
+            def get_json(self, endpoint: str) -> object:
+                del endpoint
+                request = httpx.Request("GET", "https://gitlab.example/api/v4/whatever")
+                response = httpx.Response(status_code=403, request=request)
+                msg = "forbidden"
+                raise httpx.HTTPStatusError(msg, request=request, response=response)
+
+            def resolve_project(self, repo: str) -> object:
+                del repo
+                return None
+
+        url = "https://gitlab.com/org/proj/-/merge_requests/55"
+        with (
+            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=_HttpErrAPI()),
+            patch(
+                "teatree.cli.review.ReviewService.get_gitlab_token",
+                return_value="t",
+            ),
+        ):
+            result = runner.invoke(review_app, ["run", url])
+
+        assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["error"] == "api_unavailable"
+        assert payload["url"] == url
+        assert "verdict" not in payload
+
+
 class TestReviewRunApiUnavailable:
     """Missing token / inaccessible repo surfaces as ``api_unavailable`` — never a fake ``ready_to_review``.
 
