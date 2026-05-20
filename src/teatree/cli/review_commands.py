@@ -68,8 +68,16 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     both half-specified-inline and contradictory invocations before any
     GitLab API call is attempted.
     """
+    import sys  # noqa: PLC0415
+
     from teatree.cli.review_drafts import validate_inline_or_general  # noqa: PLC0415
 
+    sys.stderr.write(
+        "DeprecationWarning: `t3 review post-draft-note` is deprecated (#1207). "
+        "`t3 review post-comment` now defaults to creating a draft — use it instead. "
+        "This subcommand routes through the same draft path and will be removed in a "
+        "follow-up.\n"
+    )
     service = _require_token()
     validate_inline_or_general(file=file, line=line, general=general)
     msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0)
@@ -79,21 +87,35 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
 
 
 @review_app.command(name="post-comment")
-def post_comment(
+def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207).
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
     file: str = typer.Option("", help="File path for inline comment (omit for general note)"),
     line: int = typer.Option(0, help="Line number in the new file (must be an added line)"),
+    *,
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help=(
+            "Publish a colleague-visible comment directly instead of creating a draft. "
+            "Requires a single-use Slack-recorded approval token minted via "
+            "`t3 review approve-live-post <mr-url> --slack-ts <ts>` (#1207). The default "
+            "(no flag) creates a DRAFT and DMs the user the link — safe-by-default."
+        ),
+    ),
 ) -> None:
-    """Post an immediate (non-draft) comment on a GitLab MR.
+    """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
-    Useful when `post-draft-note` fails to anchor inline because the file's
-    diff is collapsed (large files). This bypasses the draft workflow and
-    posts straight to a discussion, where GitLab's anchoring works.
+    Default behaviour (#1207): create a draft note via the same path as
+    ``post-draft-note`` and DM the user the link, so the agent's job
+    ends at the draft and the user submits. Pass ``--live`` to publish
+    the comment directly — gated on a Slack-recorded
+    :class:`~teatree.core.models.live_post_approval.LivePostApproval`
+    for the MR (mint via ``t3 review approve-live-post``).
     """
     service = _require_token()
-    msg, code = service.post_comment(repo, mr, note, file=file, line=line)
+    msg, code = service.post_comment(repo, mr, note, file=file, line=line, live=live)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

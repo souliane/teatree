@@ -227,7 +227,7 @@ class ReviewService:
         )
         return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
 
-    def post_comment(
+    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` is the load-bearing #1207 default-flip and must stay a kwarg on this surface.
         self,
         repo: str,
         mr: int,
@@ -235,17 +235,20 @@ class ReviewService:
         *,
         file: str = "",
         line: int = 0,
+        live: bool = False,
     ) -> tuple[str, int]:
-        """Post an immediate (non-draft) MR comment via ``/discussions``.
+        """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
-        Use when ``post_draft_note`` fails because the file diff is collapsed
-        — the discussions endpoint anchors inline notes even on large files,
-        but the comment posts immediately instead of batching with a review.
-
-        Gated by ``on_behalf_post_mode`` (#960, BLOCK under `ask` / `draft_or_ask`): the call is refused
-        without any GitLab side effect when the gate is on and no recorded
-        :class:`OnBehalfApproval` matches ``(<repo>!<mr>, "post_comment")``.
+        Default path routes through :meth:`post_draft_note` (draft-form on-behalf carve-out).
+        ``--live`` requires both a ``post_comment`` on-behalf approval and a LivePostApproval.
         """
+        from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
+
+        if not live:
+            msg, code = self.post_draft_note(repo, mr, note, file=file, line=line)
+            if code == 0:
+                notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
+            return msg, code
         blocked = check_on_behalf(repo, mr, "post_comment")
         if blocked:
             return blocked, 1
@@ -259,6 +262,9 @@ class ReviewService:
         )
         if todo_error:
             return todo_error, 1
+        blocked_live = check_live_post(repo=repo, mr=mr)
+        if blocked_live:
+            return blocked_live, 1
         return self._post_comment_impl(repo, mr, note, file=file, line=line)
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
@@ -557,10 +563,13 @@ class ReviewService:
 # Register sibling-module typer commands. Kept out of this file so the
 # OOP/LOC ceiling (`scripts/hooks/check_module_health.py`) stays
 # satisfied — see `teatree.cli.review_on_behalf`,
-# `teatree.cli.review_drafts`, and `teatree.cli.review_commands`.
+# `teatree.cli.review_drafts`, `teatree.cli.review_live_approval`, and
+# `teatree.cli.review_commands`.
 from teatree.cli import review_commands as _review_commands  # noqa: E402 — registration side-effect
 from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
+from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)
+_register_live_approval(review_app)
 _ = _review_commands  # quiet "unused import" — module load is the side-effect
