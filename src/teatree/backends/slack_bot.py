@@ -46,9 +46,15 @@ from typing import cast
 import httpx
 
 from teatree.backends.slack_token_policy import SlackOp, channel_token
+from teatree.backends.slack_token_validation import (
+    TokenSlotMismatchError,
+    assert_app_token,
+    assert_bot_token,
+    assert_user_token,
+)
 from teatree.types import RawAPIDict
 
-__all__ = ["SlackBotBackend", "SlackOp"]
+__all__ = ["SlackBotBackend", "SlackOp", "TokenSlotMismatchError"]
 
 type SlackPayload = dict[str, object]
 
@@ -86,6 +92,15 @@ class SlackBotBackend:
         user_token: str = "",
         user_id: str = "",
     ) -> None:
+        # Runtime token-prefix validation — codex #1282 item 5, see
+        # ``slack_token_validation``. The capture-time regex in
+        # ``slack_user_token_setup`` is not enough: a swapped token in pass
+        # reaches the slot-based policy in ``slack_token_policy`` which
+        # never inspects the prefix. Validate at the single construction
+        # chokepoint so the loop fails loud-but-early.
+        assert_bot_token(bot_token)
+        assert_user_token(user_token)
+        assert_app_token(app_token)
         self._bot_token = bot_token
         self._app_token = app_token
         self._user_token = user_token
