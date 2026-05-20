@@ -37,6 +37,10 @@ class ActiveTicketsScanner:
         for ticket in qs.only("id", "state", "overlay", "issue_url", "extra"):
             extra = ticket.extra if isinstance(ticket.extra, dict) else {}
             title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
+            # ``tracker_404`` is the last-observed-404 marker the tracker
+            # client persists on the ticket extras; the renderer drops the
+            # URL when set so dead permalinks don't surface (#1163).
+            tracker_404 = bool(extra.get("tracker_404", False)) if isinstance(extra, dict) else False
             signals.append(
                 ScanSignal(
                     kind="ticket.active",
@@ -47,6 +51,7 @@ class ActiveTicketsScanner:
                         "state": ticket.state,
                         "issue_url": ticket.issue_url,
                         "title": title if isinstance(title, str) else "",
+                        "tracker_404": tracker_404,
                     },
                 ),
             )
