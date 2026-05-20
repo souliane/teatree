@@ -26,8 +26,10 @@ even across cycle re-runs. Then a route via the zero-token classifier:
     readback failure leaves the row loop-unreplied for retry.
 - ``NEEDS_WORK`` (or Stage B sentinel / budget-closed) → create ONE
     PENDING ``t3:answerer`` Task (the fat loop's ``claim-next`` spawns
-    the bounded sub-agent — no new spawn path), post an instant ack,
-    ``mark_loop_replied("delegated")``.
+    the bounded sub-agent — no new spawn path), ``mark_loop_replied(
+    "delegated")``. No prose ack is posted (#1155): the :eyes: receipt
+    fired earlier is the only acknowledgement; a second arrival with
+    "On it" prose is pure noise to a Slack-DM-only user.
 
 Per-unit ``try/except`` so one bad unit never blocks the rest. This is a
 management-command body — it never loads the fat skill stack.
@@ -48,7 +50,6 @@ logger = logging.getLogger(__name__)
 _BATCH = 10
 _EYES_EMOJI = "eyes"
 _ACK_EMOJI = "white_check_mark"
-_INSTANT_ACK_TEXT = "On it — investigating, I'll follow up here."
 # Consecutive messages from the same user on the same channel, with no
 # bot reply between them and received within this window, are one logical
 # turn (a message + its quick follow-up). Zero-token: pure DB/time logic.
@@ -211,7 +212,7 @@ def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
 
 
 def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
-    """Create ONE PENDING t3:answerer Task + instant ack for the whole unit.
+    """Create ONE PENDING t3:answerer Task for the whole unit.
 
     The lead's CAS ``mark_loop_replied("delegated")`` is the idempotency
     boundary: the Task is created only by the cycle whose CAS wins, so a
@@ -220,7 +221,14 @@ def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
     atomic ``t3 loop claim-next`` (now routing ``(author, answering)`` →
     ``t3:answerer``) spawns the bounded sub-agent; no new spawn path. The
     sub-agent receives the FULL coalesced question, not a fragment.
+
+    No instant-ack prose is posted (#1155). The :eyes: receipt reaction
+    fired earlier in :func:`_process_unit` is the only acknowledgement —
+    the user reads Slack DMs only, so every thread reply is a phone
+    notification, and a content-free "On it" message is pure noise on
+    top of the :eyes: signal the user already received.
     """
+    _ = backend  # transport still resolved per-unit; no post side effect on delegation
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.DELEGATED):
         return False
     ticket = Ticket.objects.create(
@@ -243,7 +251,6 @@ def _delegate_needs_work(backend: MessagingBackend, unit: _Unit) -> bool:
         execution_target=Task.ExecutionTarget.HEADLESS,
         execution_reason=(f"Answer the user's Slack message at ts={unit.slack_ts}: {unit.text}"),
     )
-    backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=_INSTANT_ACK_TEXT)
     return True
 
 
