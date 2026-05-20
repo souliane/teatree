@@ -57,6 +57,10 @@
       "summary": "Cross-cutting agent safety rules \u2014 clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills"
     },
     {
+      "name": "scanning-news",
+      "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, files a souliane/teatree issue when a concrete t3 improvement is identified, and posts a terse Slack DM summary"
+    },
+    {
       "name": "setup",
       "summary": "Bootstrap and validate teatree for local use \u2014 prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding"
     },

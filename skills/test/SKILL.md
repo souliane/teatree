@@ -6,18 +6,6 @@ requires:
   - workspace
   - rules
   - platforms
-triggers:
-  priority: 20
-  keywords:
-    - '\b(run.*tests?|pytest|lint|sonar|ci fail|pipeline fail|what tests|tests? broke|test runner)\b'
-    - '\bpipeline\b.*(fail|red|broke)'
-search_hints:
-  - test
-  - pytest
-  - lint
-  - ci
-  - pipeline
-  - qa
 metadata:
   version: 0.0.1
   subagent_safe: false

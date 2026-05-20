@@ -4,20 +4,6 @@ description: Backlog prioritization with the GitHub Projects v2 board as single 
 metadata:
   version: 0.0.1
   subagent_safe: false
-triggers:
-  priority: 85
-  keywords:
-    - '\b(plan(ning)?|prioriti[zs]e|backlog|project board|sprint|roadmap)\b'
-    - '\bwhat.s next\b'
-  exclude: '\b(batch mode|bug hunt|unattended|quick wins)\b'
-search_hints:
-  - planning
-  - prioritize
-  - backlog
-  - project board
-  - sprint
-  - roadmap
-  - what's next
 ---
 
 # TeaTree — Backlog Prioritization

@@ -7,10 +7,6 @@ requires:
   - ship
   - rules
   - platforms
-triggers:
-  priority: 95
-  keywords:
-    - '\b(pr.?sweep|sweep (prs?|mrs?)|update (all )?(my )?(open )?(prs?|mrs?)|merge main into (open )?(prs?|mrs?)|refresh (open )?(prs?|mrs?))\b'
 metadata:
   version: 0.0.1
   subagent_safe: false
