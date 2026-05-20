@@ -38,8 +38,19 @@ class CanonicalizeTeatreeOverlayCollisionMigrationTest(TransactionTestCase):
         return executor.loader.project_state([target]).apps
 
     def _restore_head(self) -> None:
-        """Re-apply 0027 so TransactionTestCase teardown flushes the real schema."""
-        self._migrate(self._AFTER)
+        """Re-apply migrations up to the current leaf so TransactionTestCase teardown flushes the real schema.
+
+        Discovered dynamically from the migration graph so a future
+        ``core/`` migration cannot silently leave the test DB stuck at
+        0027 — that would break :mod:`teatree.core.schema_guard` for
+        every subsequent test that reads ``django_migrations``.
+        """
+        executor = MigrationExecutor(connection)
+        leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
+        if leaves:
+            self._migrate(leaves[0])
+        else:
+            self._migrate(self._AFTER)
 
     def test_pending_chat_legacy_row_with_canonical_twin_is_deleted(self) -> None:
         apps = self._migrate(self._BEFORE)

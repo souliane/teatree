@@ -268,5 +268,9 @@ class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
             assert obj.overlay == "", f"{type(obj).__name__} empty-overlay row mutated"
 
         # Restore the schema to the latest state so TransactionTestCase
-        # teardown's flush targets the real (head) table set.
-        self._migrate(("core", "0027_canonicalize_teatree_overlay"))
+        # teardown's flush targets the real (head) table set. Discover
+        # the head dynamically from the migration graph so a future
+        # ``core/`` migration cannot leave the DB stuck behind the leaf.
+        executor = MigrationExecutor(connection)
+        leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
+        self._migrate(leaves[0] if leaves else self._AFTER)
