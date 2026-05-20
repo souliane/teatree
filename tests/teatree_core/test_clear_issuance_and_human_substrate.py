@@ -64,7 +64,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "859",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -89,7 +89,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "861",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="logic",
@@ -114,7 +114,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "862",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="merge-loop",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -135,7 +135,7 @@ class TestClearIssuanceSeam(TestCase):
                         "clear",
                         "863",
                         "souliane/teatree",
-                        _SHA,
+                        reviewed_sha=_SHA,
                         reviewer_identity=maker,
                         gh_verify_result="green",
                         blast_class="docs",
@@ -153,7 +153,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "864",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="enormous",
@@ -171,7 +171,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "868",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -190,7 +190,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "866",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="maybe",
                 blast_class="docs",
@@ -208,7 +208,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "867",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="   ",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -227,7 +227,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "865",
                 "souliane/teatree",
-                "main",
+                reviewed_sha="main",
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -253,7 +253,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "1163",
                 "souliane/teatree",
-                mixed_case,
+                reviewed_sha=mixed_case,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -281,7 +281,7 @@ class TestClearIssuanceSeam(TestCase):
                 "clear",
                 "1162",
                 "souliane/teatree",
-                truncated,
+                reviewed_sha=truncated,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="docs",
@@ -293,6 +293,58 @@ class TestClearIssuanceSeam(TestCase):
         assert f"length={len(truncated)}" in error
         assert "40" in error
         assert "git rev-parse HEAD" in error or "headRefOid" in error
+        assert MergeClear.objects.count() == 0
+
+    def test_clear_accepts_reviewed_sha_as_named_option(self) -> None:
+        """#1231: ``--reviewed-sha`` is the canonical named flag.
+
+        Positional invocation was a footgun — operators sliced the SHA
+        between ``slug`` and the named ``--reviewer-identity`` flag and
+        produced unreadable command lines during keystone clear+merge
+        sessions. The named form makes every CLEAR field a named flag,
+        consistent with the rest of the surface.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "1231",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        assert clear.reviewed_sha == _SHA
+
+    def test_clear_without_reviewed_sha_is_refused_with_actionable_error(self) -> None:
+        """#1231: omitting ``--reviewed-sha`` refuses the CLEAR with a clear message.
+
+        The option needs a default for ``call_command`` to accept it as a
+        kwarg (django-typer requires defaults on ``Annotated`` options),
+        so the runtime check is what makes the flag effectively required
+        — same refusal shape as every other contract violation.
+        """
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "1232",
+                "souliane/teatree",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+            ),
+        )
+        assert not result["issued"]
+        assert "--reviewed-sha is required" in result["error"]
         assert MergeClear.objects.count() == 0
 
 
@@ -327,7 +379,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
                 "clear",
                 "871",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="substrate",
@@ -347,7 +399,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
                 "clear",
                 "872",
                 "souliane/teatree",
-                _SHA,
+                reviewed_sha=_SHA,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="logic",
