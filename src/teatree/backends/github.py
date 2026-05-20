@@ -247,6 +247,67 @@ def fetch_project_items(
     return items
 
 
+def _record_github_note_claim(
+    *,
+    repo: str,
+    target_number: int,
+    comment_id: int,
+    body: str,
+    target_url: str,
+) -> None:
+    """Audit one successful GitHub-comment publish for the drift verifier (#1198).
+
+    Mirrors :func:`teatree.cli.review_audit.record_note_claim` for the
+    GitLab side: best-effort write, never raises into the caller.
+    ``payload_digest`` lets the verifier detect silent body-divergence
+    without storing the full body in the claim row.
+
+    The idempotency key encodes ``repo``, target number (PR or issue —
+    GitHub uses the same ``/issues/<n>/comments`` endpoint for both), and
+    the server-assigned ``comment_id`` so a retried POST that the API
+    collapsed to the same comment no-ops at the ledger layer.
+
+    Best-effort: any exception (Django not booted, DB outage, integrity
+    race) is swallowed. The publish has already succeeded by the time we
+    get here — failing to audit it must not turn that success into a
+    user-visible failure.
+    """
+    import hashlib  # noqa: PLC0415 — stdlib, cheap, used only here
+
+    try:
+        from django.db import (  # noqa: PLC0415 — keep Django out of module-load if bootstrap fails
+            DatabaseError,
+            IntegrityError,
+            transaction,
+        )
+
+        from teatree.core.models import OutboundClaim  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — must never break the publish path
+        return
+
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    idempotency_key = f"github_note:{repo}#{target_number}:{comment_id}"
+    try:
+        with transaction.atomic():
+            OutboundClaim.objects.get_or_create(
+                idempotency_key=idempotency_key,
+                defaults={
+                    "kind": OutboundClaim.Kind.GITHUB_NOTE.value,
+                    "target_url": target_url,
+                    "extra": {
+                        "repo": repo,
+                        "target_number": target_number,
+                        "artifact_id": str(comment_id),
+                        "payload_digest": digest,
+                    },
+                },
+            )
+    except (IntegrityError, DatabaseError):
+        return
+    except Exception:  # noqa: BLE001 — must never break the publish path
+        return
+
+
 class GitHubCodeHost:
     """CodeHost implementation backed by the ``gh`` CLI."""
 
@@ -339,7 +400,17 @@ class GitHubCodeHost:
             {"body": body},
             token=self._token,
         )
-        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        result: RawAPIDict = cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        comment_id = result.get("id")
+        if isinstance(comment_id, int):
+            _record_github_note_claim(
+                repo=repo,
+                target_number=pr_iid,
+                comment_id=comment_id,
+                body=body,
+                target_url=str(result.get("html_url") or ""),
+            )
+        return result
 
     def update_pr_comment(self, *, repo: str, pr_iid: int, comment_id: int, body: str) -> RawAPIDict:
         _ = pr_iid  # GitHub comment IDs are globally unique
@@ -396,12 +467,24 @@ class GitHubCodeHost:
         if match is None:
             return {"error": f"Not a GitHub issue URL: {issue_url}"}
 
+        repo = f"{match['owner']}/{match['repo']}"
+        target_number = int(match["number"])
         data = _gh_api_post(
-            f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}/comments",
+            f"repos/{repo}/issues/{target_number}/comments",
             {"body": body},
             token=self._token,
         )
-        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        result: RawAPIDict = cast("RawAPIDict", data) if isinstance(data, dict) else {}
+        comment_id = result.get("id")
+        if isinstance(comment_id, int):
+            _record_github_note_claim(
+                repo=repo,
+                target_number=target_number,
+                comment_id=comment_id,
+                body=body,
+                target_url=str(result.get("html_url") or ""),
+            )
+        return result
 
     @staticmethod
     def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:
