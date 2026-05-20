@@ -85,6 +85,8 @@ _BOT_SCOPES = [
 # scopes would silently revoke those on reinstall.
 _USER_SCOPES = [
     "chat:write",
+    "chat:write.customize",
+    "chat:write.public",
     "reactions:read",
     "reactions:write",
     "users:read",

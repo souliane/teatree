@@ -11,6 +11,7 @@ If the entire `src/` and `tests/` tree were deleted, this document — plus the 
 - Statusline file is the only persistent UI surface (HTML dashboard, ttyd, ASGI/uvicorn, platform autostart helpers removed)
 - Code-host + messaging Protocols unified: `SlackBotBackend`/`NoopMessagingBackend` selectable via overlay config
 - `t3 setup slack-bot --overlay <name>` walks through Slack app registration, or updates an existing app's manifest in place when one is recorded (`--update` to force it)
+- `t3 setup slack-user-token [--reset]` re-authorizes the personal xoxp token (`pass slack/user-oauth-token`) against a refreshed user-scope set, verifies the granted scopes via `auth.test`, and stores via `pass insert` (#1210)
 - Fat loop + 10 scanners + dispatcher wired through `t3 loop tick` (review-channel scanning folded into dispatcher's PR-URL detection; `ReviewNagScanner` adds fibonacci-cadence thread-reply nags at +1/+2/+3/+5d on unreviewed MRs posted to the review channel — #1038)
 - Headless executor is a deliberately slim `claude -p` swap point for a future Anthropic SDK runtime
 - No-overlay-leak grep gate keeps the platform tenant-agnostic
