@@ -437,6 +437,155 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     return True
 
 
+# ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
+#
+# Denies ``Edit``/``Write`` on files under ``$T3_WORKSPACE_DIR`` when the
+# current session has neither invoked ``/plan`` nor read the touched file.
+# Opt-in per overlay via ``[overlays.<name>] plan_gate = true`` in
+# ``~/.teatree.toml`` — default OFF for backward compat. Outside the
+# workspace root (``~/.zshrc``, ``~/.claude/``, agent memory) the gate
+# never fires.
+#
+# Session state lives in two STATE_DIR files alongside the existing
+# ``<session>.skills`` / ``<session>.reads`` pattern:
+#
+# - ``<session>.plan-invocations`` — records each ``Skill`` tool call
+#   whose ``skill`` field is ``plan`` (or a ``plan*`` variant).
+# - ``<session>.workspace-reads`` — records resolved workspace-relative
+#   file paths that the agent has ``Read`` this session. Reads outside
+#   the workspace are NOT recorded, so an unrelated ``~/.zshrc`` read
+#   cannot authorize a workspace ``Edit``.
+
+
+def _workspace_root() -> Path:
+    """Return the absolute ``$T3_WORKSPACE_DIR``, defaulting to ``~/workspace``."""
+    return Path(os.environ.get("T3_WORKSPACE_DIR", str(Path.home() / "workspace"))).expanduser().resolve()
+
+
+def _is_under_workspace(file_path: str) -> bool:
+    """True when *file_path* resolves to a path under ``$T3_WORKSPACE_DIR``."""
+    if not file_path:
+        return False
+    try:
+        resolved = Path(file_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        resolved.relative_to(_workspace_root())
+    except ValueError:
+        return False
+    return True
+
+
+def _plan_gate_enabled() -> bool:
+    """True iff any overlay in ``~/.teatree.toml`` has ``plan_gate = true``.
+
+    Mirrors :func:`_load_protected_branches`'s toml-read shape — best-effort
+    open, fail closed on parse errors (return ``False`` so the gate stays
+    silent rather than spuriously blocking on a broken config).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(overlay_cfg.get("plan_gate") is True for overlay_cfg in (config.get("overlays") or {}).values())
+
+
+def handle_track_plan_invocation(data: dict) -> None:
+    """PostToolUse: record a ``/plan`` invocation for the current session."""
+    if data.get("tool_name") != "Skill":
+        return
+    skill = data.get("tool_input", {}).get("skill", "")
+    if not skill:
+        return
+    # Accept ``plan``, ``t3:plan``, ``plan-*`` — any variant whose final
+    # path segment starts with ``plan``.
+    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    if not final.startswith("plan"):
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    marker = _state_file(session_id, "plan-invocations")
+    marker.write_text("1", encoding="utf-8")
+
+
+def handle_track_workspace_source_read(data: dict) -> None:
+    """PostToolUse: record a workspace ``Read`` keyed by the resolved file path."""
+    if data.get("tool_name") != "Read":
+        return
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    if not _is_under_workspace(file_path):
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+    _ensure_state_dir()
+    reads_file = _state_file(session_id, "workspace-reads")
+    try:
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return
+    existing = set(_read_lines(reads_file))
+    if resolved not in existing:
+        _append_line(reads_file, resolved)
+
+
+def _session_satisfies_plan_gate(session_id: str, file_path: str) -> bool:
+    """True iff *session_id* has recorded a plan invocation OR a read of *file_path*."""
+    if _state_file(session_id, "plan-invocations").is_file():
+        return True
+    try:
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = file_path
+    return resolved in set(_read_lines(_state_file(session_id, "workspace-reads")))
+
+
+def handle_enforce_plan_gate(data: dict) -> bool:
+    """Deny ``Edit``/``Write`` under ``$T3_WORKSPACE_DIR`` lacking plan-or-read.
+
+    Returns ``True`` (emits the deny JSON) only when ALL of:
+
+    1. The tool is ``Edit`` or ``Write``.
+    2. The target ``file_path`` lives under ``$T3_WORKSPACE_DIR``.
+    3. At least one overlay has ``plan_gate = true`` in ``~/.teatree.toml``.
+    4. No ``/plan`` invocation has been recorded for this session.
+    5. No source-read of the touched file has been recorded for this session.
+
+    Any condition failing -> the handler returns ``False`` (pass through)
+    so the surrounding handler chain runs normally.
+    """
+    tool_name = data.get("tool_name", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    session_id = data.get("session_id", "")
+    if (
+        tool_name not in {"Edit", "Write"}
+        or not _is_under_workspace(file_path)
+        or not _plan_gate_enabled()
+        or not session_id
+        or _session_satisfies_plan_gate(session_id, file_path)
+    ):
+        return False
+
+    reason = (
+        f"{tool_name} denied on `{file_path}`: file is under $T3_WORKSPACE_DIR "
+        "and no `/plan` invocation or source-read for the touched module is "
+        "recorded in this session. Run `/plan` first, or Read the touched file "
+        "before Edit. (Plan-gate is opt-in per overlay via "
+        "`[overlays.<name>] plan_gate = true`.)"
+    )
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
+
+
 # ── PreToolUse: protect-default-branch ─────────────────────────────
 
 
@@ -3383,6 +3532,7 @@ _HANDLERS: dict[str, list] = {
         handle_allow_classifier_relax_settings_write,
         handle_route_away_mode_question,
         handle_enforce_loop_registration,
+        handle_enforce_plan_gate,
         handle_protect_default_branch,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
@@ -3398,6 +3548,8 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_todos,
+        handle_track_plan_invocation,
+        handle_track_workspace_source_read,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
