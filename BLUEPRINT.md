@@ -381,6 +381,12 @@ Implementation details that previously lived in nine prose-of-code appendices (`
 
 ---
 
+## Maintenance
+
+A pre-commit gate (`scripts/hooks/check_blueprint_size.py`, [#1180](https://github.com/souliane/teatree/issues/1180)) hard-fails any commit that touches this file when it exceeds 100 KB. The cap forces a per-commit acknowledgement that further growth is architectural, not implementation prose. To raise the cap for a planned, reviewed bump in the same commit, set `T3_BLUEPRINT_SIZE_OVERRIDE=1` in the environment.
+
+---
+
 ## Module Dependency Graph
 
 <!-- tach-dependency-graph:start -->
