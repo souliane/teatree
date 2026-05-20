@@ -37,7 +37,7 @@ def _discover_overlay_apps() -> list[str]:
     return apps
 
 
-SECRET_KEY = "teatree-dev-insecure"  # noqa: S105
+SECRET_KEY = "teatree-dev-insecure"  # noqa: S105 — local-dev CLI, never deployed
 DEBUG = True
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 INTERNAL_IPS = ["127.0.0.1"]
@@ -147,7 +147,7 @@ TEATREE_TIMEOUTS = {
     "provision_step": 120,
     "pre_run_step": 60,
 }
-TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108
+TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 — fixed agent-controlled path, not user input
 
 TASKS = {
     "default": {

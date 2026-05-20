@@ -140,5 +140,5 @@ def repair_dep_drift(repo: Path) -> bool:
     # Re-exec the *running* t3, not whatever `t3` happens to be first on PATH
     # (that may be a different shim/env than the one we just repaired).
     t3_bin = sys.argv[0] or shutil.which("t3") or "t3"
-    os.execv(t3_bin, [t3_bin, *sys.argv[1:]])  # noqa: S606
+    os.execv(t3_bin, [t3_bin, *sys.argv[1:]])  # noqa: S606 — argv from sys.argv, no shell
     return True  # unreachable — execv replaces the process; here for the type-checker
