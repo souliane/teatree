@@ -33,7 +33,12 @@ from teatree.core.models.ticket import Ticket
 NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
-_MIN_SHA_LEN = 7
+# A CLEAR binds to the exact reviewed tree (§17.4.2). An abbreviated SHA is
+# ambiguous AND cannot satisfy the merge-time equality gate, which compares the
+# stored ``reviewed_sha`` against the full 40-char ``headRefOid`` returned by
+# ``gh pr view`` (#1162). A truncated SHA therefore produces an unmergeable
+# CLEAR — refuse it at issuance.
+SHA_FULL_LEN = 40
 
 
 def is_non_reviewer_role(identity: str) -> bool:
@@ -43,9 +48,16 @@ def is_non_reviewer_role(identity: str) -> bool:
 
 
 def is_commit_sha(value: str) -> bool:
-    """True iff ``value`` looks like a hex commit id, not a branch ref (§17.4.2)."""
+    """True iff ``value`` is a full 40-char hex commit SHA (§17.4.2, #1162).
+
+    A CLEAR must bind to the exact reviewed tree, and the merge-time gate
+    compares ``reviewed_sha`` against the full 40-char ``headRefOid`` from
+    ``gh pr view``. Accepting an abbreviated SHA produces a CLEAR that can
+    never satisfy the equality gate — the row is unmergeable from birth.
+    Only the full 40-char SHA-1 is accepted (git's current default).
+    """
     candidate = value.strip().lower()
-    return len(candidate) >= _MIN_SHA_LEN and all(char in _SHA_ALPHABET for char in candidate)
+    return len(candidate) == SHA_FULL_LEN and all(char in _SHA_ALPHABET for char in candidate)
 
 
 class ClearIssuanceError(ValueError):
@@ -169,9 +181,14 @@ class MergeClear(models.Model):
             raise ClearIssuanceError(msg)
 
         if not is_commit_sha(request.reviewed_sha):
+            candidate = request.reviewed_sha.strip()
             msg = (
-                f"reviewed_sha {request.reviewed_sha!r} is not a hex commit SHA — a CLEAR binds to "
-                f"the exact reviewed tree, never a branch ref (§17.4.2)"
+                f"reviewed_sha {request.reviewed_sha!r} (length={len(candidate)}) is not a full "
+                f"{SHA_FULL_LEN}-char hex commit SHA — a CLEAR binds to the exact reviewed tree, "
+                f"never a branch ref or abbreviated SHA (§17.4.2, #1162). The merge-time gate "
+                f"compares against GitHub's full ``headRefOid`` returned by ``gh pr view``; a "
+                f"truncated SHA can never match. Pass the full 40-char SHA — e.g. the output "
+                f"of ``git rev-parse HEAD`` or ``gh pr view <id> --json headRefOid``"
             )
             raise ClearIssuanceError(msg)
 
@@ -183,12 +200,17 @@ class MergeClear(models.Model):
             )
             raise ClearIssuanceError(msg)
 
+        # Store the canonical lowercase hex form so the merge-time
+        # equality gate against GitHub's lowercase ``headRefOid`` cannot
+        # silently fail on a mixed-case input (#1162). ``is_commit_sha``
+        # already lowercases for validation; persist the same form.
+        normalized_sha = request.reviewed_sha.strip().lower()
         with transaction.atomic():
             return cls.objects.create(
                 ticket=request.ticket,
                 pr_id=request.pr_id,
                 slug=request.slug.strip(),
-                reviewed_sha=request.reviewed_sha.strip(),
+                reviewed_sha=normalized_sha,
                 reviewer_identity=reviewer,
                 gh_verify_result=normalized_verify,
                 blast_class=normalized_blast,

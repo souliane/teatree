@@ -15,7 +15,7 @@ def _issue_clear(
     *,
     pr_id: int = 100,
     slug: str = "souliane/teatree",
-    reviewed_sha: str = "deadbeef0123456789",
+    reviewed_sha: str = "deadbeef0123456789abcdef0123456789abcdef",
     reviewer_identity: str = "reviewer@example.com",
     blast_class: str = "logic",
 ) -> MergeClear:
@@ -89,4 +89,4 @@ class ForgottenMergeDetectorTests(TestCase):
         report = ForgottenMergeDetector().detect()[0]
         assert report.payload["pr_id"] == 205
         assert report.payload["slug"] == "souliane/teatree"
-        assert report.payload["reviewed_sha"] == "deadbeef0123456789"
+        assert report.payload["reviewed_sha"] == "deadbeef0123456789abcdef0123456789abcdef"
