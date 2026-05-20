@@ -213,6 +213,13 @@ class TestFetchProjectItems:
 
 class TestGitHubCodeHost:
     def test_create_pr(self) -> None:
+        """#1222: GitHub backend returns the canonical ``web_url`` field.
+
+        Cross-host code paths (notably ``ShipExecutor``) read ``web_url`` —
+        GitLab's API native key. Returning ``url`` here silently produced
+        empty PR rows on the ticket and tricked downstream gates into
+        thinking the PR was missing.
+        """
         with patch.object(github_mod, "_run_gh") as mock_run:
             mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1\n")
             host = GitHubCodeHost(token="tok")
@@ -224,7 +231,33 @@ class TestGitHubCodeHost:
                     description="Description",
                 ),
             )
-        assert result == {"url": "https://github.com/org/repo/pull/1"}
+        assert result == {"web_url": "https://github.com/org/repo/pull/1"}
+
+    def test_create_pr_raises_when_gh_returns_no_url(self) -> None:
+        """#1226: an empty/non-URL ``gh pr create`` stdout must surface as a failure.
+
+        ``gh pr create`` can exit 0 while printing a non-URL line (e.g. the
+        "no commits between" pre-push race). The backend MUST refuse to claim
+        success with an empty URL; the ship runner relies on this invariant
+        to flip ``ok=False`` instead of advancing the FSM with an empty
+        ``pr_urls`` entry.
+        """
+        import pytest  # noqa: PLC0415
+
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="\n")
+            host = GitHubCodeHost(token="tok")
+            with pytest.raises(CommandFailedError):
+                host.create_pr(
+                    PullRequestSpec(
+                        repo="org/repo",
+                        branch="feature",
+                        title="Add feature",
+                        description="Description",
+                    ),
+                )
 
     def test_create_pr_resolves_local_path_to_owner_repo_slug(self, tmp_path: object) -> None:
         """``gh pr create --repo`` requires ``owner/repo`` — local paths must be resolved first."""
