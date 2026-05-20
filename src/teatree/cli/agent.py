@@ -91,7 +91,7 @@ def _launch_claude(
         cmd.extend(["-p", task])
 
     typer.echo(f"Launching Claude Code in {project_root}...")
-    os.execvp(claude_bin, cmd)  # noqa: S606
+    os.execvp(claude_bin, cmd)  # noqa: S606 — argv list, no shell
 
 
 def agent(
