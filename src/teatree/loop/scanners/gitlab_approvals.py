@@ -31,9 +31,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
+import httpx
+
 import teatree.core.overlay_loader as _overlay_loader
 from teatree.backends.protocols import ApprovalState, CodeHostBackend
-from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -133,16 +135,36 @@ class GitLabApprovalsScanner:
         return signal
 
     def _fetch_approvals(self, repo_slug: str, iid: int) -> ApprovalState | None:
-        """Fetch approvals; return ``None`` on backend skip or transient error.
+        """Fetch approvals; return ``None`` on backend skip, raise on auth failure.
 
-        Splitting this off keeps :py:meth:`_scan_one` readable and the
-        two error paths (NotImplementedError → GitHub silent skip,
-        anything else → logged exception) explicit.
+        Three outcomes. ``NotImplementedError`` becomes ``None`` (GitHub
+        stubs ``get_mr_approvals``; the URL filter usually drops these
+        before the call, this is the belt-and-braces case). An
+        ``httpx.HTTPStatusError`` or any other ``httpx.HTTPError`` is
+        translated into ``ScannerError`` so the dispatcher records the
+        error and DMs the user (#1287) — the previous ``return None``
+        silently converted a 401 into "not approved yet". Anything else
+        is logged and returned as ``None`` so a transient defect on one
+        MR does not break the scan for the others.
         """
         try:
             return self.host.get_mr_approvals(repo=repo_slug, pr_iid=iid)
         except NotImplementedError:
             return None
+        except ScannerError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise ScannerError(
+                scanner="gitlab_approvals",
+                error_class=_classify_http_status(exc.response.status_code),
+                detail=f"GitLab {repo_slug} !{iid}: HTTP {exc.response.status_code}",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ScannerError(
+                scanner="gitlab_approvals",
+                error_class=ScannerErrorClass.NETWORK,
+                detail=f"GitLab {repo_slug} !{iid}: {type(exc).__name__}",
+            ) from exc
         except Exception:
             logger.exception("GitLabApprovalsScanner: get_mr_approvals failed for %s !%d", repo_slug, iid)
             return None
@@ -199,6 +221,28 @@ def _signal_for(
         summary=f"merge blocked on {target_ref or url}: {guard.reason}",
         payload={**base_payload, "reason": guard.reason},
     )
+
+
+_HTTP_UNAUTHORIZED = 401
+_HTTP_FORBIDDEN = 403
+_HTTP_TOO_MANY_REQUESTS = 429
+
+
+def _classify_http_status(status_code: int) -> ScannerErrorClass:
+    """Classify an upstream HTTP error code into a :class:`ScannerErrorClass` (#1287).
+
+    GitLab returns 401 for missing / expired tokens, 403 for
+    insufficient scope, and 429 for rate limit. Everything else falls
+    through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
+    surfaces the failure to the user.
+    """
+    if status_code == _HTTP_UNAUTHORIZED:
+        return ScannerErrorClass.AUTH
+    if status_code == _HTTP_FORBIDDEN:
+        return ScannerErrorClass.MISSING_SCOPE
+    if status_code == _HTTP_TOO_MANY_REQUESTS:
+        return ScannerErrorClass.RATE_LIMIT
+    return ScannerErrorClass.UNKNOWN
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
