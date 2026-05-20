@@ -3620,7 +3620,7 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 ##### `t3 teatree ticket clear`
 
 ```
-Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG REVIEWED_SHA
+Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 
  Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT
  §17.4.2).
@@ -3647,11 +3647,11 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG REVIEWED_SHA
  merge), with the human approval durably on the CLEAR.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    pr_id             INTEGER  [required]                                   │
-│ *    slug              TEXT     [required]                                   │
-│ *    reviewed_sha      TEXT     [required]                                   │
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reviewed-sha                   TEXT     Hex commit id (§17.4.2).           │
 │ --reviewer-identity              TEXT     Independent cold reviewer identity │
 │                                           (NOT a maker/coding-agent/loop     │
 │                                           role — §17.8 clause 3).            │
