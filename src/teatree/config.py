@@ -192,6 +192,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_skill": str,
     "architectural_review_cadence_hours": int,
     "architectural_review_after_merge_count": int,
+    "scanning_news_disabled": bool,
+    "scanning_news_skill": str,
+    "scanning_news_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -335,6 +338,15 @@ class UserSettings:
     architectural_review_skill: str = "ac-reviewing-codebase"
     architectural_review_cadence_hours: int = 168
     architectural_review_after_merge_count: int = 25
+    # #1191 Periodic scanning-news scanner — CORE always-on with a daily
+    # cadence (24h). Companion to the `scanning-news` skill (#1190): the
+    # loop fires a `scanning_news` task daily so the news-scan workflow
+    # runs without depending on an external cron. Set
+    # ``scanning_news_disabled = true`` in ``[teatree]`` (or per-overlay)
+    # as the escape hatch.
+    scanning_news_disabled: bool = False
+    scanning_news_skill: str = "scanning-news"
+    scanning_news_cadence_hours: int = 24
 
 
 @dataclass
@@ -391,6 +403,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
         architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
         architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
+        scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
+        scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
+        scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
