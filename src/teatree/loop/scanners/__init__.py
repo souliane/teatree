@@ -10,6 +10,7 @@ invoke Claude — that is the dispatcher's job.
 """
 
 from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
+from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanner
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
@@ -29,6 +30,7 @@ from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
 
 __all__ = [
     "ActiveTicketsScanner",
+    "ArchitecturalReviewScanner",
     "AssignedIssuesScanner",
     "GitLabApprovalsScanner",
     "IncomingEventsScanner",

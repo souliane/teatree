@@ -19,7 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config import _write_update_cache, check_for_updates
+from teatree.config import check_for_updates
+from teatree.update_check import _write_update_cache
 
 from ._shared import _write_toml
 
@@ -50,7 +51,7 @@ class TestCheckForUpdates:
             json.dumps({"ts": time.time(), "message": "teatree v9.9 available"}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         assert check_for_updates(force=False) == "teatree v9.9 available"
 
@@ -69,7 +70,7 @@ class TestCheckForUpdates:
             json.dumps({"ts": time.time(), "message": ""}),
             encoding="utf-8",
         )
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         assert check_for_updates(force=False) is None
 
@@ -85,7 +86,7 @@ class TestCheckForUpdates:
         data_dir.mkdir()
         cache_path = data_dir / "update-check.json"
         cache_path.write_text("NOT VALID JSON {{{", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         mock_result = MagicMock(stdout="v1.0.0\n")
         with (
@@ -100,7 +101,7 @@ class TestCheckForUpdates:
         _write_check_updates_toml(config_file, enabled=True)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         mock_result = MagicMock(stdout="\n")
         with (
@@ -119,7 +120,7 @@ class TestCheckForUpdates:
         _write_check_updates_toml(config_file, enabled=True)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("gh", 10)):
             assert check_for_updates(force=True) is None
@@ -134,7 +135,7 @@ class TestCheckForUpdates:
         _write_check_updates_toml(config_file, enabled=True)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         with patch("subprocess.run", side_effect=FileNotFoundError):
             assert check_for_updates(force=True) is None
@@ -149,7 +150,7 @@ class TestCheckForUpdates:
         _write_check_updates_toml(config_file, enabled=True)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         mock_result = MagicMock(stdout="v2.0.0\n")
         with (
@@ -178,7 +179,7 @@ class TestCheckForUpdates:
         _write_check_updates_toml(config_file, enabled=True)
         data_dir = tmp_path / "data"
         data_dir.mkdir()
-        monkeypatch.setattr("teatree.config.DATA_DIR", data_dir)
+        monkeypatch.setattr("teatree.update_check.DATA_DIR", data_dir)
 
         mock_result = MagicMock(stdout="v1.0.0\n")
         with (
