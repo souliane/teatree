@@ -448,3 +448,85 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         for call in post_calls:
             headers = cast("dict[str, str]", call["headers"])
             assert headers["Authorization"] == "Bearer xoxp-user"
+
+
+class TestFetchChannelHistoryRoutedAsTheBroadcastPost:
+    """``fetch_channel_history`` reads under the token its reaction post will use.
+
+    The broadcast scanner reads a Slack-Connect review channel to find MR
+    URLs and then reacts on those messages. A bot-token history read on a
+    Connect channel returns empty (``mcp_externally_shared_channel_restricted``)
+    and silently drops every broadcast — so ``fetch_channel_history`` must
+    consult the same WRITE-class token resolution ``post_message`` /
+    ``react`` does. read-token == post-token is the load-bearing
+    invariant from #1084 carried into the #1255 history-read path.
+    """
+
+    def test_history_on_ext_shared_channel_uses_user_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: list[dict[str, object]] = []
+        fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.fetch_channel_history(channel=_EXT_SHARED, limit=10)
+
+        assert _auth_header_for(captured, url_suffix="/conversations.history") == "Bearer xoxp-user"
+
+    def test_history_on_info_failed_channel_uses_user_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ambiguous membership (bot can't see the Connect channel) -> xoxp.
+
+        Realistic Slack-Connect deployment failure mode: the bot has no
+        access to the Connect channel at all, so its
+        ``conversations.info`` call also fails. Routing under WRITE
+        semantics makes the ambiguous branch fall toward xoxp — the only
+        token that can reach the channel — so the broadcast scanner
+        actually reads messages instead of silently seeing an empty
+        history every tick.
+        """
+        captured: list[dict[str, object]] = []
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            captured.append({"method": "GET", "url": url, **kwargs})
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "channel_not_found"},
+                request=httpx.Request("GET", url),
+            )
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.fetch_channel_history(channel=_EXT_SHARED, limit=10)
+
+        assert _auth_header_for(captured, url_suffix="/conversations.history") == "Bearer xoxp-user"
+
+    def test_history_on_internal_channel_uses_bot_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A confirmed-internal channel history read stays on bot.
+
+        Regression pin: the policy must not over-route to xoxp on
+        ordinary internal channels just because we lifted READ -> WRITE
+        for the history path.
+        """
+        captured: list[dict[str, object]] = []
+        fake_post, fake_get = _router(captured, ext_shared_channels=set())
+        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+
+        backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
+        backend.fetch_channel_history(channel=_INTERNAL, limit=10)
+
+        assert _auth_header_for(captured, url_suffix="/conversations.history") == "Bearer xoxb-bot"

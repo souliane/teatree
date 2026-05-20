@@ -55,6 +55,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from django.db import OperationalError, ProgrammingError
+
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.loop.scanners.base import ScanSignal
@@ -63,6 +65,29 @@ from teatree.types import RawAPIDict
 logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
+_GITLAB_MR_URL_RE = re.compile(
+    r"^https://[^/]+/(?P<project>[^?#]+?)/-/merge_requests/(?P<iid>\d+)/?$",
+)
+
+
+def _parse_gitlab_mr_url(url: str) -> tuple[str, str] | None:
+    """Split a GitLab MR URL into ``(project_path, iid)`` for ``glab -R <project> <iid>``.
+
+    GitLab MR URLs are ``https://<host>/<group>/<project>/-/merge_requests/<iid>``
+    (the project path can include nested subgroups: ``team/sub/api``). Outside
+    a repo cwd, ``glab mr view <full-url>`` silently early-exits because
+    glab refuses to resolve the host from a URL alone — the scanner
+    process has no git remote to anchor against. Splitting on ``/-/``
+    isolates the project path glab needs for its ``-R`` flag, and the
+    numeric IID is the positional argument that pairs with it. Returns
+    ``None`` when the URL doesn't match the GitLab shape (e.g. a GitHub
+    URL or a malformed link), so the classifier safely falls through to
+    the "couldn't confirm" default.
+    """
+    match = _GITLAB_MR_URL_RE.match(url)
+    if match is None:
+        return None
+    return match.group("project"), match.group("iid")
 
 
 class ConnectChannelBotRestrictedError(RuntimeError):
@@ -169,8 +194,25 @@ class SlackBroadcastsScanner:
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
-        for channel in self.channels:
-            signals.extend(self._scan_channel(channel))
+        try:
+            for channel in self.channels:
+                signals.extend(self._scan_channel(channel))
+        except (OperationalError, ProgrammingError):
+            # ``ScannedBroadcast`` lives in core migration 0028; an
+            # install that hasn't run migrations yet raises "no such
+            # table" (sqlite ``OperationalError``) or "relation does
+            # not exist" (Postgres ``ProgrammingError``) the first
+            # time we hit ``ScannedBroadcast.record``. Skipping
+            # silently here keeps the rest of the scanner registry
+            # running on a pre-migration install instead of spamming
+            # a per-tick traceback. Sibling pattern lives in
+            # :class:`IncomingEventsScanner`. Transient OperationalError
+            # (lock timeout, connection drop) and any other DatabaseError
+            # keep propagating to ``tick._run_job``.
+            logger.info(
+                "SlackBroadcastsScanner: teatree_scanned_broadcast unavailable (DB not migrated yet) — skipping",
+            )
+            return []
         return signals
 
     def _scan_channel(self, channel: str) -> list[ScanSignal]:
@@ -294,10 +336,24 @@ class GlabGhMrStateClassifier:
     def _classify_gitlab(self, url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
 
+        parsed = _parse_gitlab_mr_url(url)
+        if parsed is None:
+            return MrState(url=url, merged=False, approved=False)
+        project, iid = parsed
         glab = shutil.which("glab") or "glab"
         env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
         try:
-            result = run_allowed_to_fail([glab, "mr", "view", url, "-F", "json"], expected_codes=None, env=env)
+            # ``-R <project>`` makes glab resolve the MR against an explicit
+            # project path instead of the current cwd's git remote — the
+            # scanner runs from the loop process which has no repo cwd, so
+            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
+            # every broadcast is dropped. With ``-R`` + numeric IID glab
+            # routes the API call directly.
+            result = run_allowed_to_fail(
+                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
+                expected_codes=None,
+                env=env,
+            )
         except FileNotFoundError:
             return MrState(url=url, merged=False, approved=False)
         if result.returncode != 0 or not result.stdout.strip():

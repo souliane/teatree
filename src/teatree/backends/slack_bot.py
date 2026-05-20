@@ -366,16 +366,27 @@ class SlackBotBackend:
         """Return the most recent *limit* messages in *channel* (#1255).
 
         Used by :class:`SlackBroadcastsScanner` to poll review-broadcast
-        channels for MR URLs. Reads through ``_channel_token`` so a
-        Slack-Connect channel uses the user ``xoxp`` token when the bot
-        is restricted; falls back to ``[]`` on any non-ok response so
-        one slow channel never breaks the scan loop. ``channel`` is
-        stamped on each message so downstream consumers don't have to
-        thread it back in.
+        channels for MR URLs. This is a "read taken as the post" — the
+        scanner will later react on these messages — so it routes
+        through ``_channel_token`` with :attr:`SlackOp.WRITE`. On a
+        Slack-Connect channel the bot token is rejected for *both*
+        history reads and reactions with
+        ``mcp_externally_shared_channel_restricted``; the WRITE op
+        falls toward the user ``xoxp`` token in the ambiguous case
+        (``conversations.info`` itself fails because the bot has no
+        access to the Connect channel) and uses ``xoxp`` for confirmed
+        ext-shared channels, matching the token ``post_message`` /
+        ``react`` will go out under. A bot-token history read on a
+        Connect channel returns empty, which would silently drop every
+        broadcast — using the WRITE op keeps read-token == post-token,
+        the load-bearing invariant from #1084. Falls back to ``[]`` on
+        any non-ok response so one slow channel never breaks the scan
+        loop. ``channel`` is stamped on each message so downstream
+        consumers don't have to thread it back in.
         """
         if not channel:
             return []
-        token = self._channel_token(channel, op=SlackOp.READ)
+        token = self._channel_token(channel, op=SlackOp.WRITE)
         data = self._get(
             "conversations.history",
             {"channel": channel, "limit": max(1, min(limit, 200))},
