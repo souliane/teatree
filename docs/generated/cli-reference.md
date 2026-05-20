@@ -404,6 +404,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      draft).                                                 │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
 │ unapprove            Revoke your approval on a GitLab MR.                    │
+│ run                  Run the review-shape audit for an MR and print a JSON   │
+│                      summary.                                                │
 │ approve-on-behalf    Record an :class:`OnBehalfApproval` that satisfies the  │
 │                      on-behalf gate.                                         │
 │ delete-draft-note    Delete a draft note from a GitLab MR.                   │
@@ -555,6 +557,34 @@ Usage: t3 review unapprove [OPTIONS] REPO MR
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
 │ *    mr        INTEGER  Merge request IID [required]                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review run`
+
+```
+Usage: t3 review run [OPTIONS] URL
+
+ Run the review-shape audit for an MR and print a JSON summary.
+
+ Read-only: this command never posts to GitLab or GitHub. It fetches
+ diff metadata, existing-review state (discussions + draft notes +
+ approvals), classifies complexity, and emits a small findings
+ catalog. The reviewer sub-agent consumes the JSON and decides what
+ to do next via ``t3 review post-draft-note`` / ``post-comment``.
+
+ Exit codes:
+
+ * ``0`` — audit ran, JSON printed.
+ * ``2`` — URL refused before any API call (``unsupported_forge`` for
+     GitHub PRs, ``bad_url`` for anything else).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    url      TEXT  GitLab MR URL (GitHub PR URLs return unsupported_forge). │
+│                     [required]                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
