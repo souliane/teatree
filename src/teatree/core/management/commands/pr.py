@@ -240,9 +240,21 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
         # are legitimately scattered across the ticket lifecycle.
         session.check_gate_across_ticket("shipping")
     except QualityGateError as exc:
+        # #1118: normalize the aggregated visited list before computing the
+        # ``missing`` report — ``_check_phases`` itself normalizes at the
+        # comparison boundary (#782), so a legacy raw spelling (``"review"``
+        # vs canonical ``"reviewing"``) satisfies the gate's PRESENCE check
+        # but a naive ``p not in visited`` here would still claim
+        # ``reviewing`` is missing. The error report would then contradict
+        # the gate's own decision (it raised, but on a DIFFERENT missing
+        # phase). Normalize on the read side so the report names the
+        # actually-missing canonical phases.
+        from teatree.core.phases import normalize_phase  # noqa: PLC0415
+
         visited, _ = ticket.aggregate_phase_records()
+        canonical_visited = {normalize_phase(phase) for phase in visited}
         required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
-        missing = [p for p in required if p not in visited]
+        missing = [p for p in required if p not in canonical_visited]
         return ShippingGateFailure(
             allowed=False,
             error=f"Gate check failed: {exc}",
@@ -501,6 +513,7 @@ class Command(TyperCommand):
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
         """Check whether session gates allow a phase transition."""
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+        from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
         ticket = Ticket.objects.get(pk=ticket_id)
         # #801 SSOT: canonical earliest selection, read-only (no create).
@@ -510,9 +523,14 @@ class Command(TyperCommand):
         try:
             session.check_gate(target_phase)
         except QualityGateError:
+            # #1118: normalize visited before the membership check — the
+            # gate (``_check_phases``) normalizes both sides, so a legacy
+            # raw spelling satisfies the gate but a naive comparison here
+            # would falsely report it as missing.
             visited = session.visited_phases or []
+            canonical_visited = {normalize_phase(phase) for phase in visited}
             required = session._REQUIRED_PHASES.get(target_phase, [])  # noqa: SLF001
-            missing = [p for p in required if p not in visited]
+            missing = [p for p in required if p not in canonical_visited]
             return {"allowed": False, "missing": missing, "reason": f"{target_phase} requires: {', '.join(missing)}"}
         except (ValueError, KeyError) as exc:
             return {"allowed": False, "reason": str(exc), "missing": []}

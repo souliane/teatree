@@ -216,7 +216,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         target=State.REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808).
+        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808, #1118).
 
         EVERY non-terminal state reconciles to ``REVIEWED`` — the source
         set is *derived* from ``_RECONCILE_SOURCE_STATES`` (all states
@@ -245,7 +245,16 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         non-recoverable: SHIPPED/MERGED/DELIVERED are genuine post-ship
         success; IGNORED is abandoned — none should reconcile backward to a
         shippable state.
+
+        #1118: consume pending reviewing tasks just like ``review()`` does.
+        A ticket reconciled directly from a mid-FSM state would otherwise
+        leave a PENDING reviewing task behind as a zombie (the loop's
+        orphan sweep then picks it up after we have already moved past
+        reviewing). Reconciling the FSM should also reconcile the task
+        ledger so the gate's "phase done" attestation matches the task
+        manager's view.
         """
+        self._consume_pending_phase_tasks("reviewing")
 
     def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
         """Union the phase records across all of this ticket's sessions (#694).
