@@ -4,6 +4,7 @@ description: Ticket intake and kickoff — from zero to ready-to-code. Use when 
 compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - workspace
+  - architecture-design
 companions:
   - writing-plans
 triggers:

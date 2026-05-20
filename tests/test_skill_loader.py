@@ -84,10 +84,12 @@ class TestBuildTriggerIndex:
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
         index = build_trigger_index([SKILLS_DIR])
-        # At minimum, t3:ship (priority 10) should be first
-        assert len(index) > 0
-        assert index[0]["skill"] == "ship"
-        assert index[0]["priority"] == 10
+        # After #1189 phase 2 only the 6 retained skills carry triggers with
+        # keywords/urls. ``debug`` (priority 50) is the lowest of those.
+        triggerable = [e for e in index if e.get("keywords") or e.get("urls")]
+        assert len(triggerable) > 0
+        assert triggerable[0]["skill"] == "debug"
+        assert triggerable[0]["priority"] == 50
 
     def test_sorted_by_priority(self):
         if not SKILLS_DIR.is_dir():
@@ -249,7 +251,13 @@ class TestDetectIntent:
 
 
 class TestDetectIntentIntegration:
-    """Test intent detection against real SKILL.md trigger patterns."""
+    """Test intent detection against real SKILL.md trigger patterns.
+
+    After #1189 phase 2 only the 6 retained skills (``debug``, ``retro``,
+    ``ticket``, ``teatree``, ``teatree-dogfood``, ``workspace``) carry
+    ``triggers:``. Assertions for the dropped 16 class-(a) skills have been
+    removed; phases 3-4 will rework these for prose-scan loading.
+    """
 
     @pytest.fixture
     def real_index(self):
@@ -257,38 +265,17 @@ class TestDetectIntentIntegration:
             pytest.skip("skills directory not found")
         return build_trigger_index([SKILLS_DIR])
 
-    def test_ship(self, real_index):
-        assert detect_intent("commit and push", trigger_index=real_index) == "ship"
-
-    def test_ship_blocked_by_review(self, real_index):
-        assert detect_intent("review the commit", trigger_index=real_index) == "review"
-
-    def test_test(self, real_index):
-        assert detect_intent("run the tests", trigger_index=real_index) == "test"
-
-    def test_review(self, real_index):
-        assert detect_intent("review these MRs", trigger_index=real_index) == "review"
-
     def test_debug(self, real_index):
         assert detect_intent("the app is broken", trigger_index=real_index) == "debug"
 
     def test_ticket(self, real_index):
         assert detect_intent("start working on PROJ-123", trigger_index=real_index) == "ticket"
 
-    def test_code(self, real_index):
-        assert detect_intent("implement the login feature", trigger_index=real_index) == "code"
-
-    def test_code_imperative(self, real_index):
-        assert detect_intent("fix the login bug", trigger_index=real_index) == "code"
-
     def test_workspace(self, real_index):
         assert detect_intent("start the backend", trigger_index=real_index) == "workspace"
 
     def test_retro(self, real_index):
         assert detect_intent("let's do a retro", trigger_index=real_index) == "retro"
-
-    def test_followup(self, real_index):
-        assert detect_intent("check ticket status", trigger_index=real_index) == "followup"
 
     def test_gitlab_url(self, real_index):
         assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=real_index) == "ticket"

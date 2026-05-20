@@ -398,7 +398,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ post-draft-note      Post a draft note on a GitLab MR (inline or general).   │
-│ post-comment         Post an immediate (non-draft) comment on a GitLab MR.   │
+│ post-comment         Post a comment on a GitLab MR — DRAFT by default,       │
+│                      ``--live`` requires Slack approval.                     │
 │ reply-to-discussion  Reply to a GitLab MR discussion thread (immediate, not  │
 │                      draft).                                                 │
 │ approve              Approve a GitLab MR — only after you have reviewed it.  │
@@ -414,6 +415,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
+│ approve-live-post    Mint a Slack-recorded :class:`LivePostApproval` for     │
+│                      ``<mr-url>``.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -460,11 +463,15 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 ```
 Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 
- Post an immediate (non-draft) comment on a GitLab MR.
+ Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack
+ approval.
 
- Useful when `post-draft-note` fails to anchor inline because the file's
- diff is collapsed (large files). This bypasses the draft workflow and
- posts straight to a discussion, where GitLab's anchoring works.
+ Default behaviour (#1207): create a draft note via the same path as
+ ``post-draft-note`` and DM the user the link, so the agent's job
+ ends at the draft and the user submits. Pass ``--live`` to publish
+ the comment directly — gated on a Slack-recorded
+ :class:`~teatree.core.models.live_post_approval.LivePostApproval`
+ for the MR (mint via ``t3 review approve-live-post``).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
@@ -476,6 +483,12 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ --file        TEXT     File path for inline comment (omit for general note)  │
 │ --line        INTEGER  Line number in the new file (must be an added line)   │
 │                        [default: 0]                                          │
+│ --live                 Publish a colleague-visible comment directly instead  │
+│                        of creating a draft. Requires a single-use            │
+│                        Slack-recorded approval token minted via `t3 review   │
+│                        approve-live-post <mr-url> --slack-ts <ts>` (#1207).  │
+│                        The default (no flag) creates a DRAFT and DMs the     │
+│                        user the link — safe-by-default.                      │
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -697,6 +710,40 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 │ --resolved    --no-resolved      Mark resolved (default) or re-open.         │
 │                                  [default: resolved]                         │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review approve-live-post`
+
+```
+Usage: t3 review approve-live-post [OPTIONS] MR_URL
+
+ Mint a Slack-recorded :class:`LivePostApproval` for ``<mr-url>``.
+
+ After this command writes the row, the next
+ ``t3 review post-comment <mr-url> ... --live`` invocation
+ publishes (single-use, consumed by that call); any subsequent
+ live post against the same MR requires a fresh approval.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  MR reference the live-post approval is scoped to —    │
+│                        accepts the GitLab/GitHub URL (e.g.                   │
+│                        ``https://gitlab.com/org/proj/-/merge_requests/42``)  │
+│                        or the canonical ``<org/proj>!<iid>`` token.          │
+│                        Single-use; consumed by the next matching ``t3 review │
+│                        post-comment <mr-url> ... --live``.                   │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --slack-ts        TEXT  Slack timestamp (e.g. ``1700000000.0001``) of the │
+│                            user's DM authorising the live post. The helper   │
+│                            fetches that message, refuses unless it was       │
+│                            authored by the configured user, is recent        │
+│                            (within the TTL window), and contains an explicit │
+│                            approval phrase (``post live`` / ``submit it`` /  │
+│                            ``go ahead``).                                    │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1122,8 +1169,10 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
-│            via ``pass``.                                                     │
+│ slack-bot         Register or update a per-overlay Slack bot and store its   │
+│                   tokens via ``pass``.                                       │
+│ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
+│                   via ``pass``.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1147,6 +1196,21 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   ~/.teatree.toml).                          │
 │                                   [default: /Users/adrien/.teatree.toml]     │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-user-token`
+
+```
+Usage: t3 setup slack-user-token [OPTIONS]
+
+ Re-authorize the personal Slack xoxp token and store it via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reset               Overwrite the existing token without prompting.        │
+│ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
+│                       [default: /Users/adrien/.teatree.toml]                 │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1360,8 +1424,6 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
-│ dashboard      Render the tabular per-tick dashboard, optionally DM it to    │
-│                the user.                                                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
@@ -1418,32 +1480,6 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop dashboard`
-
-```
-Usage: t3 loop dashboard [OPTIONS]
-
- Render the tabular per-tick dashboard, optionally DM it to the user.
-
- Default is print-to-stdout for piping or visual inspection. Pass
- ``--send-to-slack`` to additionally route the rendered table via
- :func:`teatree.notify.notify_user` (#963) — the send is idempotent
- per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --send-to-slack               Send the rendered dashboard to the user's      │
-│                               Slack DM via the bot.                          │
-│ --format                TEXT  Output format: 'markdown' (stdout, default) or │
-│                               'slack' (mrkdwn).                              │
-│                               [default: markdown]                            │
-│ --source                PATH  Override the tick-actions sidecar path (test   │
-│                               hook).                                         │
-│ --self-dm-marker              Tag the slack_dm row with '(this DM)' —        │
-│                               matches manual dashboard form.                 │
-│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
