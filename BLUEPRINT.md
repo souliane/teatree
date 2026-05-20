@@ -109,11 +109,7 @@ Management commands (django-typer), global CLI commands (`t3`), overlay subcomma
 
 ## 11. Skills & Plugin Architecture
 
-Skills, sub-agent architecture, distribution, and Bash permissions (§11.4 — cited by `cli/recommended_authorizations.py`, `skills/setup/SKILL.md`, `skills/setup/references/*`) live in [docs/blueprint/skills-testing-gates.md](docs/blueprint/skills-testing-gates.md).
-
-### 11.5 Architecture-design gate
-
-The `architecture-design` companion skill (`skills/architecture-design/SKILL.md`) is the structural form of the "design before code" rule. Implementation skills (`code`, `ticket`, `retro`) declare `requires: [architecture-design]` so it loads transitively whenever those skills are selected by the trigger index. The companion delegates generic planning methodology to `obra/superpowers/writing-plans` (declared as a `companions:` entry) and adds the teatree-specific seven-check pass — BLUEPRINT § alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, and the #1192 resilience invariants. The implementer's artifact is an `ARCHITECTURE.md` snippet in the worktree root, filled in BEFORE touching `src/`; the PR review surfaces a missing or empty snippet as a review gap. This is invariant 2 ("flywheel produces a gate, not a prose rule") applied to the design step itself — the prose vigilance of "remember to design first" is replaced by a loaded skill plus an in-worktree artifact the reviewer can see.
+Skills, sub-agent architecture, distribution, Bash permissions (§11.4 — cited by `cli/recommended_authorizations.py`, `skills/setup/SKILL.md`, `skills/setup/references/*`), and the architecture-design gate (§11.5) live in [docs/blueprint/skills-testing-gates.md](docs/blueprint/skills-testing-gates.md).
 
 ---
 
@@ -212,7 +208,7 @@ Detail moved out of this top-level file to keep it digestible. Each appendix pre
 | [backends-and-sync.md](docs/blueprint/backends-and-sync.md) | §7 Backend Protocols, §9 Code Host Sync |
 | [command-tiers.md](docs/blueprint/command-tiers.md) | §8 Command Tiers (incl. §8.1–§8.6) |
 | [configuration.md](docs/blueprint/configuration.md) | §10 Configuration (incl. §10.1 ~/.teatree.toml, §10.1.1 per-overlay overrides, §10.2/§10.2.1 Django settings, §10.3 logging, §10.4 data storage, §10.5 state placement rule) |
-| [skills-testing-gates.md](docs/blueprint/skills-testing-gates.md) | §11 Skills & Plugin Architecture (incl. §11.4 Bash permissions), §12 Testing, §13 Quality Gates |
+| [skills-testing-gates.md](docs/blueprint/skills-testing-gates.md) | §11 Skills & Plugin Architecture (incl. §11.4 Bash permissions, §11.5 Architecture-design gate), §12 Testing, §13 Quality Gates |
 | [django-workflows.md](docs/blueprint/django-workflows.md) | §14 Django Project Workflows (incl. §14.1–§14.11) |
 | [dependencies-and-conventions.md](docs/blueprint/dependencies-and-conventions.md) | §15 Dependencies, §16 Key Conventions |
 | [factory-architecture.md](docs/blueprint/factory-architecture.md) | §17.2 The flywheel, §17.3 Components (C1–C3), §17.4 Orchestrator-decides / loop-executes topology (incl. §17.4.1–§17.4.4), §17.5 TODO-consolidation quick-wins triage, §17.6 Enforcement gate (incl. §17.6.1–§17.6.4), §17.7 Enforcement-over-prose audit, §17.8 Orchestrator-as-keystone contract |

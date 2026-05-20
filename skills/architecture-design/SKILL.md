@@ -4,15 +4,6 @@ description: Architecture pre-check companion. Loaded transitively by implementa
 compatibility: macOS/Linux, any teatree-managed repo.
 companions:
   - writing-plans
-triggers:
-  priority: 90
-  keywords:
-    - '\b(architecture|design|extend|extension point|overlay base|scanner|hook surface|fsm|phase boundary|module boundary|dependency direction)\b'
-search_hints:
-  - architecture
-  - design
-  - extension point
-  - boundary
 metadata:
   version: 0.0.1
   subagent_safe: true
