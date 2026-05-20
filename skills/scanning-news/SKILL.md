@@ -6,10 +6,6 @@ requires:
   - workspace
   - rules
   - platforms
-triggers:
-  priority: 90
-  keywords:
-    - '\b(scan(ning)? (the )?(ai )?news|ai newsletter scan|improvement scan|tldr scan|scan tldr|scan rundown)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -104,7 +100,9 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 ## Scheduling via the teatree main loop
 
-The teatree main loop owns periodic dispatch. Register `t3:scanning-news` as a daily task by adding it to the loop's periodic-task table. Until a dedicated CLI command lands for this, follow the fallback path documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).
+The teatree main loop owns periodic dispatch. Register `t3:scanning-news` as a daily task by adding it to the loop's periodic-task table (the CLI surface for periodic scheduling is still being finalized — see the cron fallback below).
+
+If a CLI scheduler is not yet available on the local install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).
 
 ## Rules
 
