@@ -874,6 +874,90 @@ def handle_block_ai_signature(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
+
+
+def handle_quote_scanner_pretool(data: dict) -> bool:
+    """Refuse a publish whose body carries a verbatim user-quote pattern.
+
+    Promotes the prose-only "never quote user verbatim" rule
+    (``feedback_redcard_never_quote_user_on_public_repos.md``) to a
+    deterministic pre-publish gate. Surfaces covered include Bash calls
+    that publish to GitHub/GitLab/Slack/git itself (``gh issue create``,
+    ``glab mr update``, ``git commit -m``, ``curl … chat.postMessage``
+    and siblings), the per-overlay t3 publish family (``review
+    post-comment``, ``review post-draft-note``, ``notify send``,
+    ``ticket create-issue``, ``t3 slack react``), and the Slack MCP
+    ``send_message`` tools.
+
+    HIGH match ⇒ refuse via ``permissionDecision: deny`` + a reason that
+    names the matched patterns and points at the ``--quote-ok`` /
+    ``QUOTE_OK=1`` override. MEDIUM-only ⇒ stderr warning, publish
+    proceeds. Every decision (including overrides) lands in the
+    quote-scanner JSONL ledger so cold review can audit what the gate
+    saw.
+    """
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import quote_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("quote_scanner.ToolInput", raw_input)
+
+    payload = quote_scanner.extract_publish_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    override = quote_scanner.has_quote_ok_override(tool_name, tool_input)
+    result = quote_scanner.scan_text(payload)
+
+    if override:
+        quote_scanner.log_decision(
+            tool_name=tool_name,
+            decision="allow-override",
+            result=result,
+            override=True,
+        )
+        return False
+
+    if result.has_high:
+        quote_scanner.log_decision(
+            tool_name=tool_name,
+            decision="deny",
+            result=result,
+            override=False,
+        )
+        json.dump(
+            {
+                "permissionDecision": "deny",
+                "permissionDecisionReason": quote_scanner.format_block_message(result),
+            },
+            sys.stdout,
+        )
+        return True
+
+    if result.has_medium:
+        sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
+        quote_scanner.log_decision(
+            tool_name=tool_name,
+            decision="warn",
+            result=result,
+            override=False,
+        )
+        return False
+
+    quote_scanner.log_decision(
+        tool_name=tool_name,
+        decision="allow",
+        result=result,
+        override=False,
+    )
+    return False
+
+
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
 #
 # Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -3750,6 +3834,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_loop_registration,
         handle_enforce_plan_gate,
         handle_protect_default_branch,
+        handle_quote_scanner_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
