@@ -163,10 +163,10 @@ class ShipExecutor(RunnerBase):
         """
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
-        if not url:
+        if not url.startswith(("http://", "https://")):
             return RunnerResult(
                 ok=False,
-                detail=f"host.create_pr returned no PR url (payload keys={sorted(pr.keys())!r})",
+                detail=(f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(pr.keys())!r})"),
             )
         self._record_pr_url(ticket, extra, url)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)

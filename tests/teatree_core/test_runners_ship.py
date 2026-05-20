@@ -175,7 +175,7 @@ class TestShipExecutor(TestCase):
     def test_description_is_just_subject_when_body_empty(self) -> None:
         ticket = self._ticket_with_worktree()
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "u"}
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
         host.current_user.return_value = "dev"
 
         with (
@@ -192,7 +192,7 @@ class TestShipExecutor(TestCase):
     def test_assignee_falls_back_to_git_user_name_when_host_returns_empty(self) -> None:
         ticket = self._ticket_with_worktree()
         host = MagicMock()
-        host.create_pr.return_value = {"web_url": "u"}
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/u"}
         host.current_user.return_value = ""
 
         with (
