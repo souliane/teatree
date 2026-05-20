@@ -8,7 +8,8 @@ load-bearing assertions:
 - ACK_ONLY posts a reaction, NO thread reply, stamps ``answer_kind=ack``.
 - SIMPLE Stage A posts a thread reply with no LLM and stamps ``simple``.
 - NEEDS_WORK creates **exactly one** PENDING ``t3:answerer`` Task and
-    stamps ``delegated`` + posts an instant ack.
+    stamps ``delegated``. NO thread reply (#1155): the :eyes: receipt
+    is the only acknowledgement on the delegated path.
 - A post/readback failure leaves the row unanswered (retry next cycle).
 - One bad row never blocks the others.
 """
@@ -170,9 +171,9 @@ class TestNeedsWorkDelegation:
         task = tasks.get()
         assert task.ticket.role == Ticket.Role.AUTHOR
         assert "1.0" in task.execution_reason
-        # Instant ack posted in-thread.
-        assert len(backend.replies) == 1
-        assert backend.replies[0][:2] == ("C1", "1.0")
+        # NO thread reply on the delegated path (#1155). The :eyes: react
+        # fired earlier in the cycle is the only acknowledgement.
+        assert backend.replies == []
         row.refresh_from_db()
         assert row.answer_kind == "delegated"
         assert report.delegated == 1
