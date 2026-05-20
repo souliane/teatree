@@ -4,7 +4,7 @@ The scanner polls one or more configured Slack channels, extracts MR URLs
 from each message, classifies the set via an injected classifier, and:
 
 * reacts ``:white_check_mark:`` and skips dispatch when every MR is merged +
-    approved (the user mandate from #1131 comment 2);
+    approved;
 * reacts ``:eyes:`` and emits one ``slack.review_intent`` signal per open
     MR in the open subset for mixed and all-pending broadcasts;
 * persists one :class:`ScannedBroadcast` row per ``(channel, slack_ts)``

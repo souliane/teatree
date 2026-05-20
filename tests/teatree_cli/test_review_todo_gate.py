@@ -7,10 +7,9 @@ author has already documented the work is deferred ("not in this MR" /
 "follow-up" / "deferred" / "implement later" / "out of scope"); re-asking
 them to implement it makes the reviewer look unable to read code.
 
-This is the structural fix for the !6192 RED CARD (2026-05-20): two
-blocker comments were posted anchored to `// TODO: Navigate to the
-results page` and `// TODO: Load user data from CRM`. The user deleted
-the comments and approved the MR.
+This is the structural fix for #1186: blocker comments were posted
+anchored to author-marked `// TODO:` lines documenting deferred work.
+The fix gates publishing so the same shape cannot recur.
 
 The gate is independent of the colleague-MR shape gate and the on-behalf
 gate; all three run on every publishing method.
