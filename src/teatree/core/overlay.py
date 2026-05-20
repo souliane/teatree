@@ -103,17 +103,6 @@ class OverlayConfig:
     # cross-group reassigns stay visible because they cross human boundaries.
     identity_aliases: list[list[str]]
     dev_env_url: str = ""
-    # #1136 Periodic architectural-review scanner — OFF by default.
-    # When True, the loop's :class:`ArchitecturalReviewScanner` queues
-    # one ``architectural_review`` task per overlay either on a time
-    # cadence (``architectural_review_cadence_hours``, default 7 days) OR
-    # after ``architectural_review_after_merge_count`` ticket merges
-    # since the last review (default 25). The dispatched task invokes
-    # the skill named by ``architectural_review_skill``.
-    architectural_review_enabled: bool = False
-    architectural_review_skill: str = "ac-reviewing-codebase"
-    architectural_review_cadence_hours: int = 168
-    architectural_review_after_merge_count: int = 25
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance

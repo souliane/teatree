@@ -1,18 +1,24 @@
-"""Periodic architectural-review scanner — #1136.
+"""Periodic architectural-review scanner — #1136 / #1152.
 
 The fat loop has long wanted a recurring "step back and review the
 codebase" cadence that fires on either a time-based interval (default 7
 days) or a merge-count interval (default 25 merges since last review).
-Both must be configurable per overlay and both are OFF by default — the
-overlay opts in via :class:`OverlayConfig` fields:
+The architectural review is a teatree-CORE platform behaviour — it
+applies uniformly to every overlay's worktrees, not as a per-overlay
+opt-in. The cadence + skill name live in teatree-core config (the
+``[teatree]`` table in ``~/.teatree.toml`` via
+:class:`teatree.config.UserSettings`), with optional per-overlay
+overrides in ``[overlays.<name>]`` for environments that need to tune
+one overlay differently from the rest:
 
-* ``architectural_review_enabled: bool`` — gate the whole feature (default False).
 * ``architectural_review_skill: str`` — which review skill to dispatch
     (default ``"ac-reviewing-codebase"``).
 * ``architectural_review_cadence_hours: int`` — minimum age of the last
     review before re-firing (default 168 = 7 days).
 * ``architectural_review_after_merge_count: int`` — fire after this many
     ticket merges since the last review (default 25).
+* ``architectural_review_disabled: bool`` — escape hatch; when True the
+    wiring layer skips scanner instantiation for the affected overlay.
 
 The scanner is a pure observer that creates one :class:`Task` row of
 ``phase="architectural_review"`` when either trigger condition holds and
@@ -73,24 +79,26 @@ _IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
 
 @dataclass(slots=True)
 class ArchitecturalReviewScanner:
-    """Queue a periodic ``architectural_review`` task per opted-in overlay.
+    """Queue a periodic ``architectural_review`` task per overlay.
 
-    The scanner runs per overlay; the loop's job builder fans it out from
-    each :class:`OverlayBackends`. All four configuration fields are
-    passed explicitly (rather than read from a global at scan time) so
-    test setup is deterministic and the wiring layer is the single place
-    that resolves ``OverlayConfig`` to scanner kwargs.
+    The scanner runs per overlay; the loop's job builder fans it out
+    from each :class:`OverlayBackends`. Configuration fields are passed
+    explicitly (rather than read from a global at scan time) so test
+    setup is deterministic and the wiring layer is the single place
+    that resolves :class:`teatree.config.UserSettings` to scanner
+    kwargs. The on/off decision lives at the wiring layer
+    (``architectural_review_disabled`` in core config); the scanner
+    itself always scans when invoked.
     """
 
     overlay_name: str
-    enabled: bool = False
     skill: str = "ac-reviewing-codebase"
     cadence_hours: int = 168
     after_merge_count: int = 25
     name: str = "architectural_review"
 
     def scan(self) -> list[ScanSignal]:
-        if not self.enabled or not self.overlay_name:
+        if not self.overlay_name:
             return []
         if self._in_flight_review_exists():
             return []

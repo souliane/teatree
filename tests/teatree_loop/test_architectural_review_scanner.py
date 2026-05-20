@@ -1,11 +1,15 @@
-"""DB-backed tests for ``ArchitecturalReviewScanner`` (#1136).
+"""DB-backed tests for ``ArchitecturalReviewScanner`` (#1136 / #1152).
 
 The scanner periodically queues an ``architectural_review`` ``Task`` row for
-each enabled overlay, using two independent triggers: a cadence (last review
-older than ``architectural_review_cadence_hours``) and a merge-count
-(``architectural_review_after_merge_count`` ticket merges since the last
-queued review). Both default OFF — the overlay must opt in by setting
-``architectural_review_enabled = True``.
+each registered overlay using two independent triggers: a cadence (last
+review older than ``architectural_review_cadence_hours``) and a
+merge-count (``architectural_review_after_merge_count`` ticket merges
+since the last queued review). The architectural review is a teatree-CORE
+platform behaviour — it always applies uniformly to every overlay; the
+only opt-out is the ``architectural_review_disabled`` escape hatch in
+teatree-core config (``[teatree]`` in ``~/.teatree.toml``, per-overlay
+overridable). The on/off decision lives at the wiring layer; the scanner
+itself always scans when invoked.
 
 Integration-style with real Django ORM rows. Times are backdated with
 ``QuerySet.update()`` so we avoid an extra dep on a time-travel library
@@ -13,10 +17,12 @@ Integration-style with real Django ORM rows. Times are backdated with
 """
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import UserSettings
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
@@ -28,14 +34,12 @@ OVERLAY = "acme"
 
 def _scanner(
     *,
-    enabled: bool = True,
     skill: str = "ac-reviewing-codebase",
     cadence_hours: int = 168,
     after_merge_count: int = 25,
 ) -> ArchitecturalReviewScanner:
     return ArchitecturalReviewScanner(
         overlay_name=OVERLAY,
-        enabled=enabled,
         skill=skill,
         cadence_hours=cadence_hours,
         after_merge_count=after_merge_count,
@@ -89,19 +93,22 @@ def _make_merge_after(overlay: str, *, after_hours: int) -> Ticket:
 
 
 class ArchitecturalReviewScannerTests(TestCase):
-    def test_disabled_overlay_queues_nothing(self) -> None:
-        """Default-off: with ``enabled=False`` no task is queued regardless of cadence."""
-        # Cadence trivially elapsed (no prior review), but disabled wins.
-        signals = _scanner(enabled=False, cadence_hours=1).scan()
+    def test_no_overlay_name_queues_nothing(self) -> None:
+        """Defensive: an empty overlay_name short-circuits to no-op.
+
+        The wiring layer never passes an empty name, but the scanner is
+        defensive so a misconstructed instance does not poison the DB.
+        """
+        signals = ArchitecturalReviewScanner(overlay_name="", cadence_hours=1).scan()
         assert signals == []
         assert _last_review_task() is None
 
-    def test_enabled_no_prior_review_queues_task(self) -> None:
-        """First-ever run on an enabled overlay queues exactly one task.
+    def test_no_prior_review_queues_task(self) -> None:
+        """First-ever run on an overlay queues exactly one task.
 
-        The fail-safe assertion (#1136 RED CARD): when enabled and no prior
-        review task exists, the cadence is trivially elapsed → a task MUST
-        be queued. Absence is the bug.
+        Fail-safe (#1136 RED CARD): when invoked and no prior review
+        task exists, the cadence is trivially elapsed → a task MUST be
+        queued. Absence is the bug.
         """
         signals = _scanner().scan()
 
@@ -270,48 +277,90 @@ class ArchitecturalReviewScannerTests(TestCase):
 
 
 class ArchitecturalReviewWiringTests(TestCase):
-    """Confirm the tick-job builder honours ``OverlayConfig`` opt-in (#1136)."""
+    """Confirm the tick-job builder reads core config (#1136 / #1152).
 
-    def test_disabled_overlay_skips_wiring(self) -> None:
-        """An overlay with the default OFF setting registers no scanner."""
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+    The architectural-review scanner is always-on for every registered
+    overlay — the cadence + skill are teatree-core platform config, NOT
+    a per-overlay opt-in. The only escape hatch is the
+    ``architectural_review_disabled`` flag in core config.
+    """
 
-        class _StubOverlay:
-            class config:  # noqa: N801
-                architectural_review_enabled = False
-                architectural_review_skill = "ac-reviewing-codebase"
-                architectural_review_cadence_hours = 168
-                architectural_review_after_merge_count = 25
+    def _patched_settings(self, **overrides: object) -> UserSettings:
+        """Build a UserSettings with the given overrides on top of defaults."""
+        return UserSettings(**overrides)
 
-        backend = OverlayBackends(name="acme", overlay=_StubOverlay())
-        assert _architectural_review_scanner_for(backend) is None
+    def test_default_core_config_builds_scanner(self) -> None:
+        """Default core config (disabled=False) → wiring produces a scanner.
 
-    def test_enabled_overlay_propagates_config(self) -> None:
-        """Enabled overlay → scanner is built with the configured kwargs."""
-        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
-
-        class _StubOverlay:
-            class config:  # noqa: N801
-                architectural_review_enabled = True
-                architectural_review_skill = "ac-custom"
-                architectural_review_cadence_hours = 72
-                architectural_review_after_merge_count = 10
-
-        backend = OverlayBackends(name="acme", overlay=_StubOverlay())
-        scanner = _architectural_review_scanner_for(backend)
-        assert scanner is not None
-        assert scanner.overlay_name == "acme"
-        assert scanner.enabled is True
-        assert scanner.skill == "ac-custom"
-        assert scanner.cadence_hours == 72
-        assert scanner.after_merge_count == 10
-
-    def test_no_overlay_instance_skips(self) -> None:
-        """TOML-only overlay (no Python class) is silently skipped."""
+        Anti-vacuousness: this used to require an explicit per-overlay
+        opt-in on OverlayConfig. With the core re-architecture (#1152)
+        the default core config alone suffices — no per-overlay opt-in
+        needed.
+        """
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
         from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
-        assert _architectural_review_scanner_for(backend) is None
+        with patch(
+            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            return_value=self._patched_settings(),
+        ):
+            scanner = _architectural_review_scanner_for(backend)
+        assert scanner is not None
+        assert scanner.overlay_name == "acme"
+        assert scanner.skill == "ac-reviewing-codebase"
+        assert scanner.cadence_hours == 168
+        assert scanner.after_merge_count == 25
+
+    def test_disabled_in_core_config_skips_wiring(self) -> None:
+        """Escape hatch: ``architectural_review_disabled = True`` → no scanner."""
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+
+        backend = OverlayBackends(name="acme", overlay=None)
+        with patch(
+            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            return_value=self._patched_settings(architectural_review_disabled=True),
+        ):
+            scanner = _architectural_review_scanner_for(backend)
+        assert scanner is None
+
+    def test_core_config_propagates_to_scanner_kwargs(self) -> None:
+        """Tuned core config flows through to the scanner kwargs."""
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+
+        backend = OverlayBackends(name="acme", overlay=None)
+        with patch(
+            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            return_value=self._patched_settings(
+                architectural_review_skill="ac-custom",
+                architectural_review_cadence_hours=72,
+                architectural_review_after_merge_count=10,
+            ),
+        ):
+            scanner = _architectural_review_scanner_for(backend)
+        assert scanner is not None
+        assert scanner.overlay_name == "acme"
+        assert scanner.skill == "ac-custom"
+        assert scanner.cadence_hours == 72
+        assert scanner.after_merge_count == 10
+
+    def test_overlay_without_python_class_still_wires(self) -> None:
+        """TOML-only overlay (no Python class) gets a scanner now.
+
+        The previous wiring skipped overlays with ``backend.overlay is
+        None`` because it had to read OverlayConfig. With core-config
+        sourcing, the scanner only needs ``backend.name`` — TOML-only
+        overlays participate in the core platform cadence too.
+        """
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+
+        backend = OverlayBackends(name="acme", overlay=None)
+        with patch(
+            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            return_value=self._patched_settings(),
+        ):
+            scanner = _architectural_review_scanner_for(backend)
+        assert scanner is not None
