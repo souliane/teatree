@@ -362,6 +362,39 @@ class SlackBotBackend:
         first = messages[0]
         return cast("RawAPIDict", first) if isinstance(first, dict) else {}
 
+    def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]:
+        """Return the most recent *limit* messages in *channel* (#1255).
+
+        Used by :class:`SlackBroadcastsScanner` to poll review-broadcast
+        channels for MR URLs. Reads through ``_channel_token`` so a
+        Slack-Connect channel uses the user ``xoxp`` token when the bot
+        is restricted; falls back to ``[]`` on any non-ok response so
+        one slow channel never breaks the scan loop. ``channel`` is
+        stamped on each message so downstream consumers don't have to
+        thread it back in.
+        """
+        if not channel:
+            return []
+        token = self._channel_token(channel, op=SlackOp.READ)
+        data = self._get(
+            "conversations.history",
+            {"channel": channel, "limit": max(1, min(limit, 200))},
+            token=token,
+        )
+        if not data.get("ok"):
+            return []
+        messages = data.get("messages")
+        if not isinstance(messages, list):
+            return []
+        out: list[RawAPIDict] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            entry = cast("RawAPIDict", msg)
+            entry.setdefault("channel", channel)
+            out.append(entry)
+        return out
+
     def _resolve_bot_id(self) -> str:
         if self._cached_bot_id is None:
             data = self._post("auth.test", {})

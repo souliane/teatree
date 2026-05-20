@@ -32,6 +32,11 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def fetch_channel_history(*, channel: str, limit: int = 50) -> list[RawAPIDict]:
+        _ = channel, limit
+        return []
+
+    @staticmethod
     def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = channel, text, thread_ts
         return {}
