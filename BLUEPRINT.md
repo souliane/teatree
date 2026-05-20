@@ -74,7 +74,7 @@ TeaTree drives the day from a single long-lived Claude Code session running a fa
 
 **Subsumed issues (WS5 — documented, not closed here).** [#789](https://github.com/souliane/teatree/issues/789) (a non-owner session still arming the tick cron) is **subsumed**: under the WS1 claim/lease a non-owner tick simply finds nothing to claim, so the concern dissolves rather than needing a separate fix — #789 was closed-as-completed when WS3 landed and is **not** reopened. Board task #50 (the per-agent TODO-consolidation loop) is **subsumed by invariant 3 / WS4**; #50 is a project-board card, **not** a repository issue, so it is documented as subsumed here and tracked on the board — there is no repo issue to close. WS5 itself carries no GitHub closing keyword on the #786 umbrella; only an explicitly-authorized epic-completion step does.
 
-**Deep mechanics live in the appendix.** The DB-lease singleton, the session-scoped loop-owner claim, the #1107 three-prong defenses, the per-agent self-pump, the Stop-gate family (structured-question / answered-question), the `SessionStart` tick-owner record, the post-compaction snapshot recovery, the three-stage tick (scan → dispatch → render), the 12 scanners (including the [#1131](https://github.com/souliane/teatree/issues/1131) `slack_broadcasts` channel-poll review-broadcast scanner with `:white_check_mark:` / `:eyes:` reaction classification, the [#1136](https://github.com/souliane/teatree/issues/1136) / [#1152](https://github.com/souliane/teatree/issues/1152) periodic `architectural_review` cadence-and-merge-count scanner — a teatree-CORE always-on platform behaviour applied uniformly to every registered overlay, configured via the `[teatree]` table in `~/.teatree.toml` with an `architectural_review_disabled` escape hatch — and the [#1130](https://github.com/souliane/teatree/issues/1130) `red_card` scanner that detects user corrective-action signals and dispatches the upstream-fix workflow), the multi-overlay / multi-host / multi-identity scanning, and the auto-start / dispositions / completion phases — all live in [docs/blueprint/loop-topology.md](docs/blueprint/loop-topology.md), which also carries §5.6.1 Statusline rendering, §5.6.2 Mode + training-wheel, and §5.6.3 Availability (24/7 dual question-mode).
+**Deep mechanics live in the appendix.** The DB-lease singleton, the session-scoped loop-owner claim, the #1107 three-prong defenses, the per-agent self-pump, the Stop-gate family (structured-question / answered-question), the `SessionStart` tick-owner record, the post-compaction snapshot recovery, the three-stage tick (scan → dispatch → render), the 13 scanners (including the [#1131](https://github.com/souliane/teatree/issues/1131) `slack_broadcasts` channel-poll review-broadcast scanner with `:white_check_mark:` / `:eyes:` reaction classification, the [#1136](https://github.com/souliane/teatree/issues/1136) / [#1152](https://github.com/souliane/teatree/issues/1152) periodic `architectural_review` cadence-and-merge-count scanner — a teatree-CORE always-on platform behaviour applied uniformly to every registered overlay, configured via the `[teatree]` table in `~/.teatree.toml` with an `architectural_review_disabled` escape hatch — and the [#1130](https://github.com/souliane/teatree/issues/1130) `red_card` scanner that detects user corrective-action signals and dispatches the upstream-fix workflow), the multi-overlay / multi-host / multi-identity scanning, the auto-start / dispositions / completion phases, and the [#1163](https://github.com/souliane/teatree/issues/1163) statusline refinements (cross-overlay dedup, rich-state coverage, 404-link suppression, multi-loop anchors via `live_loops_anchor`) — all live in [docs/blueprint/loop-topology.md](docs/blueprint/loop-topology.md), which also carries §5.6.1 Statusline rendering, §5.6.2 Mode + training-wheel, and §5.6.3 Availability (24/7 dual question-mode).
 
 ---
 
@@ -110,7 +110,7 @@ Management commands (django-typer), global CLI commands (`t3`), overlay subcomma
 
 ## 11. Skills & Plugin Architecture
 
-Skills, sub-agent architecture, distribution, and Bash permissions (§11.4 — cited by `cli/recommended_authorizations.py`, `skills/setup/SKILL.md`, `skills/setup/references/*`) live in [docs/blueprint/skills-testing-gates.md](docs/blueprint/skills-testing-gates.md).
+Skills, sub-agent architecture, distribution, Bash permissions (§11.4 — cited by `cli/recommended_authorizations.py`, `skills/setup/SKILL.md`, `skills/setup/references/*`), and the architecture-design gate (§11.5) live in [docs/blueprint/skills-testing-gates.md](docs/blueprint/skills-testing-gates.md).
 
 ---
 
@@ -209,7 +209,7 @@ Detail moved out of this top-level file to keep it digestible. Each appendix pre
 | [backends-and-sync.md](docs/blueprint/backends-and-sync.md) | §7 Backend Protocols, §9 Code Host Sync |
 | [command-tiers.md](docs/blueprint/command-tiers.md) | §8 Command Tiers (incl. §8.1–§8.6) |
 | [configuration.md](docs/blueprint/configuration.md) | §10 Configuration (incl. §10.1 ~/.teatree.toml, §10.1.1 per-overlay overrides, §10.2/§10.2.1 Django settings, §10.3 logging, §10.4 data storage, §10.5 state placement rule) |
-| [skills-testing-gates.md](docs/blueprint/skills-testing-gates.md) | §11 Skills & Plugin Architecture (incl. §11.4 Bash permissions), §12 Testing, §13 Quality Gates |
+| [skills-testing-gates.md](docs/blueprint/skills-testing-gates.md) | §11 Skills & Plugin Architecture (incl. §11.4 Bash permissions, §11.5 Architecture-design gate), §12 Testing, §13 Quality Gates |
 | [django-workflows.md](docs/blueprint/django-workflows.md) | §14 Django Project Workflows (incl. §14.1–§14.11) |
 | [dependencies-and-conventions.md](docs/blueprint/dependencies-and-conventions.md) | §15 Dependencies, §16 Key Conventions |
 | [factory-architecture.md](docs/blueprint/factory-architecture.md) | §17.2 The flywheel, §17.3 Components (C1–C3), §17.4 Orchestrator-decides / loop-executes topology (incl. §17.4.1–§17.4.4), §17.5 TODO-consolidation quick-wins triage, §17.6 Enforcement gate (incl. §17.6.1–§17.6.4), §17.7 Enforcement-over-prose audit, §17.8 Orchestrator-as-keystone contract |
@@ -272,7 +272,6 @@ graph TD
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
-    teatree.cli --> teatree.notify
     teatree.cli --> teatree.utils
     teatree.cli --> teatree.repo_mode
     teatree.cli --> teatree.triage

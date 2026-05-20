@@ -3,18 +3,14 @@
 Split out of ``tick.py`` to keep the orchestrator under the module-
 health LOC gate. These helpers run on either side of the dispatch
 step: ``_reap_stale_task_claims`` before scanners fan out (recovering
-orphaned ticket state), and the dashboard/agent/mechanical helpers
-after dispatch produces actions.
+orphaned ticket state), and the agent/mechanical helpers after dispatch
+produces actions.
 """
 
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import load_config
-
 if TYPE_CHECKING:
-    import datetime as dt
-
     from teatree.loop.tick import TickReport
 
 logger = logging.getLogger(__name__)
@@ -49,26 +45,6 @@ def _reap_stale_task_claims() -> None:
         Task.objects.replay_orphaned_transitions()
         Task.objects.reclaim_orphaned_claims()
         Task.objects.reap_stale_claims()
-
-
-def _record_dashboard_actions(report: "TickReport", started_at: "dt.datetime") -> None:
-    """Append one ``tick-actions.jsonl`` line per dispatched action.
-
-    The sidecar is the input the ``t3 loop dashboard`` command reads to
-    render the tabular DM. Recording happens here (not in the dashboard
-    CLI) so each tick produces ground truth even when the dashboard is
-    never displayed — observability is decoupled from rendering.
-    """
-    from teatree.loop.dashboard import record_actions  # noqa: PLC0415
-
-    try:
-        identities = tuple(load_config().user.user_identity_aliases)
-    except Exception:  # noqa: BLE001 — config read must never break a tick
-        identities = ()
-    try:
-        record_actions(report.actions, now=started_at, identities=identities)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Recording dashboard actions failed: %s", exc)
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:
