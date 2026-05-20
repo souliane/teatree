@@ -5,7 +5,7 @@ on :class:`teatree.cli.review.ReviewService` anchored to (or within ±3
 lines of) an author-marked TODO/FIXME/XXX/HACK marker on an added line,
 the gate refuses the post. The author has explicitly documented the work
 is deferred via the marker; re-asking them to implement it makes the
-reviewer look unable to read code (RED CARD !6192, 2026-05-20).
+reviewer look unable to read code (see #1186).
 
 Sibling gates on the same publishing flow:
 
@@ -27,14 +27,14 @@ Design choices:
     ``has to``, ``needs to``, ``required``, ``cannot merge``, etc.). The
     list intentionally errs on the side of refusing — a false-positive
     on a borderline body is a harmless downgrade to "rephrase the
-    comment"; a false-negative is the !6192 failure mode recurring.
+    comment"; a false-negative is the #1186 failure mode recurring.
 * **Fail-open.** Any failure to fetch the diff (network, missing token,
     test stub without the relevant endpoints) returns ``""`` — the gate
     is an additional safety net, never a hard block on the existing
     happy path.
 * **Window size ±3.** The marker can sit slightly above or below the
     diff line the reviewer chose to anchor on. A 7-line window
-    (anchor + 3 above + 3 below) covers the !6192 shape (anchor on the
+    (anchor + 3 above + 3 below) covers the #1186 shape (anchor on the
     TODO itself) and the common "anchor on the function body, TODO on
     the same line or the function header" variant.
 """
@@ -61,7 +61,7 @@ _TODO_MARKER_RE = re.compile(
 )
 
 # Blocker-shaped language in the COMMENT BODY (not in the code). Matches
-# the !6192 shape — "must be done", "this is blocking", "has to be
+# the #1186 shape — "must be done", "this is blocking", "has to be
 # implemented", "required before merge", etc. Anchored on word
 # boundaries so an incidental "blockchain" or "mustard" does not trip.
 _BLOCKER_BODY_RE = re.compile(
@@ -90,7 +90,7 @@ def looks_like_blocker(body: str) -> bool:
     True when the body contains any of the canonical blocker phrases
     (``must``, ``blocking``, ``cannot merge``, ``required before merge``,
     etc.). The list is biased to refuse — a false-positive on a borderline
-    body costs one rephrase; a false-negative recurs !6192.
+    body costs one rephrase; a false-negative recurs #1186.
     """
     if not body:
         return False
@@ -212,7 +212,7 @@ def _refusal(file: str, anchor_line: int, marker_line: int, marker_text: str) ->
         f"Refusing TODO-anchored blocker post: {file}:{anchor_line} — the diff line "
         f"{at_anchor} reads {truncated!r}, which is the AUTHOR explicitly documenting "
         "this work is deferred (not in this MR). Re-asking them to implement it makes "
-        "the reviewer look unable to read code (RED CARD !6192).\n"
+        "the reviewer look unable to read code (see #1186).\n"
         "Remediation: downgrade to a non-blocker comment (e.g. `Nit: tracked at #NNN`), "
         "or skip the comment entirely. If you genuinely believe the TODO must be "
         "addressed in THIS MR, STOP and surface to the user — do NOT post on their "
