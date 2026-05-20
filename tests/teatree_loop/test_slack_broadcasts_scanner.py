@@ -13,13 +13,22 @@ from each message, classifies the set via an injected classifier, and:
     bot-restricted channels until the dual-token write path (#1209) lands.
 """
 
+import subprocess
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import ScannedBroadcast
-from teatree.loop.scanners.slack_broadcasts import ConnectChannelBotRestrictedError, MrState, SlackBroadcastsScanner
+from teatree.loop.scanners.slack_broadcasts import (
+    ConnectChannelBotRestrictedError,
+    GlabGhMrStateClassifier,
+    MrState,
+    SlackBroadcastsScanner,
+    _parse_gitlab_mr_url,
+)
 from teatree.types import RawAPIDict
 
 CHANNEL = "C0AM3TENTLK"
@@ -264,3 +273,122 @@ class TestNoiseHandling(TestCase):
         assert signals[0].payload["mr_url"] == MR_OPEN
         assert backend.react_calls == [(CHANNEL, TS_B, "eyes")]
         assert ScannedBroadcast.objects.count() == 1
+
+
+class TestParseGitlabMrUrl:
+    """``_parse_gitlab_mr_url`` splits a GitLab MR URL into ``(project, iid)``.
+
+    Drives the ``glab -R <project> <iid>`` form the classifier needs to
+    work outside a repo cwd. The scanner runs from the loop process with
+    no git remote, so ``glab mr view <url>`` (URL-only) silently exits
+    non-zero and every broadcast is dropped — the fix is parsing the
+    project path out of the URL and passing it to ``-R``.
+    """
+
+    def test_simple_group_and_project(self) -> None:
+        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/project/-/merge_requests/7446") == (
+            "team/project",
+            "7446",
+        )
+
+    def test_nested_subgroups(self) -> None:
+        # GitLab allows arbitrary subgroup nesting; the project path
+        # everything before ``/-/merge_requests/`` is the project.
+        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/sub/api/-/merge_requests/123") == (
+            "team/sub/api",
+            "123",
+        )
+
+    def test_trailing_slash(self) -> None:
+        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/project/-/merge_requests/1/") == (
+            "team/project",
+            "1",
+        )
+
+    def test_non_gitlab_url_returns_none(self) -> None:
+        assert _parse_gitlab_mr_url("https://github.com/owner/repo/pull/42") is None
+
+    def test_malformed_returns_none(self) -> None:
+        assert _parse_gitlab_mr_url("not-a-url") is None
+
+
+class TestGlabGhMrStateClassifierUsesRepoFlag:
+    """``GlabGhMrStateClassifier`` calls ``glab mr view -R <project> <iid>``.
+
+    Outside a repo cwd ``glab mr view <full-url>`` silently early-exits
+    because glab refuses to resolve the host from a URL alone — the
+    scanner process has no git remote to anchor against. With
+    ``-R <project>`` plus the numeric IID glab routes the API call
+    directly. This pin makes a bare-URL invocation a hard test failure.
+    """
+
+    def test_gitlab_classifier_invokes_repo_flagged_form(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *, expected_codes=None, env=None):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"state": "merged", "upvotes": 2}',
+                stderr="",
+            )
+
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
+        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
+
+        classifier = GlabGhMrStateClassifier(glab_token="glpat-fake")
+        states = classifier([url])
+
+        assert len(states) == 1
+        assert states[0].merged is True
+        assert states[0].approved is True
+        assert len(captured) == 1
+        cmd = captured[0]
+        # The repo-flagged form: ``glab mr view -R <project> <iid> -F json``.
+        # ``-R`` is what tells glab the project to query against; passing
+        # the full URL as the positional arg is the buggy form being pinned out.
+        assert "-R" in cmd
+        r_idx = cmd.index("-R")
+        assert cmd[r_idx + 1] == "team/project"
+        assert "7446" in cmd
+        assert url not in cmd  # the full URL must NOT be passed as a positional
+
+
+class TestScannerSkipsOnMissingMigration(TestCase):
+    """Scanner skips gracefully when core migration 0028 hasn't been run (#1260).
+
+    Without the ``teatree_scanned_broadcast`` table the first
+    ``ScannedBroadcast.record`` raises a missing-relation error
+    (sqlite ``OperationalError``, Postgres ``ProgrammingError``).
+    Sibling pattern lives in :class:`IncomingEventsScanner` — both
+    detect that class and degrade to a quiet info log so the rest of
+    the scanner registry keeps running.
+    """
+
+    def test_scanner_returns_empty_when_scannedbroadcast_table_missing(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+        )
+
+        with patch.object(
+            ScannedBroadcast,
+            "record",
+            side_effect=OperationalError("no such table: teatree_scanned_broadcast"),
+        ):
+            signals = scanner.scan()
+
+        # Graceful skip: no signals, no crash, no react attempt (DB write
+        # fails before any side effect lands).
+        assert signals == []
+        assert backend.react_calls == []

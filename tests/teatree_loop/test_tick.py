@@ -1116,3 +1116,102 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             # Must not raise — fail-open like _populate_availability_anchor.
             run_tick(TickRequest(scanners=[]), statusline_path=sl)
             assert sl.exists()
+
+
+def _backend_with_overlay(
+    *,
+    name: str,
+    repos: list[str],
+    review_channel: tuple[str, str] = ("", ""),
+    with_messaging: bool = False,
+):
+    """Build an :class:`OverlayBackends` with a stub ``OverlayBase`` for wiring tests.
+
+    Returns the backend so the per-overlay scanner builders (#1255,
+    #1257) can be exercised through ``build_default_jobs`` without
+    spinning up a real overlay package.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata  # noqa: PLC0415
+
+    config = MagicMock(spec=OverlayConfig)
+    config.get_review_channel = lambda: review_channel
+    config.get_gitlab_token = lambda: ""
+    config.get_github_token = lambda: ""
+    config.identity_aliases = []
+    metadata = MagicMock(spec=OverlayMetadata)
+    metadata.get_followup_repos = lambda: list(repos)
+    overlay = MagicMock(spec=OverlayBase)
+    overlay.config = config
+    overlay.metadata = metadata
+    return OverlayBackends(
+        name=name,
+        hosts=(MagicMock(spec=CodeHostBackend),),
+        messaging=MagicMock(spec=MessagingBackend) if with_messaging else None,
+        ready_labels=(),
+        overlay=overlay,
+    )
+
+
+def test_build_default_jobs_wires_pr_sweep_per_overlay() -> None:
+    """#1257: every overlay with followup repos gets a ``pr_sweep`` job."""
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
+    jobs = build_default_jobs(backends=[backend])
+    sweep_jobs = [j for j in jobs if j.scanner.name == "pr_sweep"]
+    assert len(sweep_jobs) == 1
+    assert sweep_jobs[0].overlay == "teatree"
+    assert sweep_jobs[0].scanner.repos == ("souliane/teatree",)
+
+
+def test_build_default_jobs_skips_pr_sweep_when_overlay_has_no_repos() -> None:
+    """#1257: an overlay whose ``get_followup_repos`` is empty gets no sweep job."""
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    backend = _backend_with_overlay(name="empty", repos=[])
+    jobs = build_default_jobs(backends=[backend])
+    assert not [j for j in jobs if j.scanner.name == "pr_sweep"]
+
+
+def test_build_default_jobs_wires_slack_broadcasts_per_overlay() -> None:
+    """#1255: an overlay with messaging + review channel gets one broadcast job."""
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    backend = _backend_with_overlay(
+        name="teatree",
+        repos=["souliane/teatree"],
+        review_channel=("the-review-crew", "C0AM3TENTLK"),
+        with_messaging=True,
+    )
+    jobs = build_default_jobs(backends=[backend])
+    broadcasts = [j for j in jobs if j.scanner.name == "slack_broadcasts"]
+    assert len(broadcasts) == 1
+    assert broadcasts[0].overlay == "teatree"
+    assert list(broadcasts[0].scanner.channels) == ["C0AM3TENTLK"]
+
+
+def test_build_default_jobs_skips_slack_broadcasts_without_review_channel() -> None:
+    """#1255: an overlay without a review channel id gets no broadcast job."""
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"], with_messaging=True)
+    jobs = build_default_jobs(backends=[backend])
+    assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
+
+
+def test_build_default_jobs_skips_slack_broadcasts_without_messaging() -> None:
+    """#1255: an overlay without messaging gets no broadcast job even when channel is set."""
+    from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
+
+    backend = _backend_with_overlay(
+        name="teatree",
+        repos=["souliane/teatree"],
+        review_channel=("the-review-crew", "C0AM3TENTLK"),
+        with_messaging=False,
+    )
+    jobs = build_default_jobs(backends=[backend])
+    assert not [j for j in jobs if j.scanner.name == "slack_broadcasts"]
