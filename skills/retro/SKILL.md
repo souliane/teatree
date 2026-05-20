@@ -4,6 +4,7 @@ description: Conversation retrospective and skill improvement. Use when user say
 requires:
   - rules
   - workspace
+  - architecture-design
 compatibility: macOS/Linux, any project with teatree skills.
 triggers:
   priority: 100
