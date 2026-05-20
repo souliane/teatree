@@ -81,6 +81,12 @@ _ALLOWED_TRANSITIONS = {
     # #1077: reviewer concludes an external review with no postable/
     # approvable action — terminal disposition for the reviewing task.
     "mark_review_no_action",
+    # #1118: phase-driven catch-up to REVIEWED. The FSM exposes it via
+    # ``get_available_FIELD_transitions`` from every non-terminal state
+    # (#808); the CLI must mirror the FSM-table surface so a ticket
+    # stranded at ``in_review`` after a failed ship can be reconciled
+    # without a code-level workaround.
+    "reconcile_reviewed",
 }
 
 

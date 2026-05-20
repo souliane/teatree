@@ -436,3 +436,211 @@ class TestLoopPathRecordsVisitedPhase(TestCase):
 
         session.refresh_from_db()
         assert session.visited_phases == []
+
+
+class TestShippingGateHonorsVisitedPhasesAcrossSessions(TestCase):
+    """#1118: ``visited_phases`` containing reviewing must NOT yield ``missing: [reviewing]``."""
+
+    def test_visited_phases_present_out_of_canonical_order_gate_passes(self) -> None:
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
+        session.visited_phases = ["reviewing", "testing"]
+        session.phase_visits = {
+            "reviewing": {"agent_id": "cold-reviewer", "timestamp": "t1"},
+            "testing": {"agent_id": "cold-reviewer", "timestamp": "t2"},
+        }
+        session.save(update_fields=["visited_phases", "phase_visits"])
+
+        assert _check_shipping_gate(ticket) is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+    def test_legacy_raw_spellings_satisfy_gate_and_error_report_is_canonical(self) -> None:
+        # Legacy rows from pre-#782 paths (or any path that bypassed
+        # visit_phase) store raw short verbs. _check_phases normalizes
+        # so the gate passes when reviewing is present in legacy form.
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket, agent_id="legacy")
+        session.visited_phases = ["review", "test"]  # raw, non-canonical
+        session.phase_visits = {}
+        session.save(update_fields=["visited_phases", "phase_visits"])
+
+        assert _check_shipping_gate(ticket) is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+    def test_legacy_raw_testing_only_error_names_canonical_reviewing(self) -> None:
+        # ONLY raw 'test' present — reviewing is genuinely missing.
+        # The error report must use canonical spellings on BOTH sides:
+        # otherwise an empty visited (after raw comparison) would report
+        # BOTH testing AND reviewing as missing, contradicting the gate
+        # check (which normalizes and only flags reviewing).
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket, agent_id="legacy")
+        session.visited_phases = ["test"]  # raw spelling, canonical = testing
+        session.phase_visits = {}
+        session.save(update_fields=["visited_phases", "phase_visits"])
+
+        result = _check_shipping_gate(ticket)
+
+        assert result is not None
+        assert result["allowed"] is False
+        # The gate's own message names only `reviewing` (the genuinely
+        # missing phase). The `missing` list MUST match — pre-#1118 it
+        # claimed `[testing, reviewing]` because the comparison was
+        # unnormalized.
+        assert result["missing"] == ["reviewing"], (
+            f"Error report must normalize phases before computing missing — got {result['missing']}"
+        )
+
+    def test_phases_split_across_sessions_with_in_review_state_gate_passes(self) -> None:
+        # The production repro: an earliest blank session (the loop's
+        # canonical phase-visit session) + later sessions with the
+        # attestations recorded by lifecycle visit-phase. State sat at
+        # IN_REVIEW (auto-transition cascade rolled back the FSM).
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        Session.objects.create(ticket=ticket, agent_id="loop")
+        s_maker = Session.objects.create(ticket=ticket, agent_id="maker")
+        s_maker.visit_phase("testing", agent_id="maker")
+        s_reviewer = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
+        s_reviewer.visit_phase("reviewing", agent_id="cold-reviewer")
+
+        assert _check_shipping_gate(ticket) is None
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+
+class TestReconcileReviewedExposedViaCli(TestCase):
+    """#1118 symptom B: ``reconcile_reviewed`` FSM-listed but CLI-rejected."""
+
+    def test_reconcile_reviewed_is_an_allowed_cli_transition(self) -> None:
+        # Use an in_review ticket so the transition would actually fire.
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", str(ticket.pk), "reconcile_reviewed"),
+        )
+        assert "error" not in result or "Unknown transition" not in str(result.get("error", "")), (
+            f"reconcile_reviewed must be exposed via the CLI (was: {result})"
+        )
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
+
+class TestShippingGateConsumesPendingReviewingTasks(TestCase):
+    """#1118: the gate-verified ship path drains any orphan reviewing task.
+
+    Consumption lives on the verified path (``_check_shipping_gate``
+    after the phase-presence gate passes), NOT inside
+    ``reconcile_reviewed`` itself. Calling ``reconcile_reviewed``
+    directly via the CLI or via ``--skip-validation`` must NOT silently
+    complete an active review task — those paths skip the per-task
+    attestation contract.
+    """
+
+    def test_gate_verified_path_completes_pending_reviewing_task(self) -> None:
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="cold review",
+        )
+        assert task.status == Task.Status.PENDING
+
+        assert _check_shipping_gate(ticket) is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_ungated_reconcile_reviewed_leaves_task_pending(self) -> None:
+        # Direct call bypasses the gate — the task ledger must NOT be drained.
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="cold review",
+        )
+
+        ticket.reconcile_reviewed()
+        ticket.save()
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING, (
+            "Direct reconcile_reviewed (CLI / --skip-validation) MUST NOT "
+            "complete active reviewing tasks — that would bypass the "
+            "per-task attestation contract."
+        )
+
+    def test_already_reviewed_state_still_drains_pending_task_on_gate_verified_path(self) -> None:
+        # The composite scenario: prior ungated path (direct CLI call,
+        # --skip-validation) leaves state=REVIEWED with the reviewing task
+        # still PENDING. A subsequent `pr create` passes the gate but the
+        # FSM walk is a no-op (already at REVIEWED). The task drain MUST
+        # still fire — otherwise the loop's orphan sweep re-spawns the
+        # task after the ship.
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="cold review",
+        )
+
+        assert _check_shipping_gate(ticket) is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED, (
+            "Gate-verified ship MUST drain the reviewing task even when "
+            "the FSM is already at REVIEWED — a prior ungated reconcile "
+            "could have left the task pending."
+        )
+
+
+class TestCheckGatesUsesCrossSessionAggregation(TestCase):
+    """#1118: ``pr check-gates`` matches the actual shipping gate.
+
+    Pre-#1118, ``check-gates`` evaluated ``session.check_gate`` against
+    the earliest single session, while ``pr create`` evaluated
+    ``session.check_gate_across_ticket`` against the union. A
+    legitimately-split ticket (testing on the maker session, reviewing
+    on a cold-reviewer session) passed ``pr create`` but tripped
+    ``check-gates``. Agents are instructed to run ``check-gates``
+    before ``pr create`` (``agents/prompt.py``), so the false block
+    forced unnecessary re-review.
+    """
+
+    def test_check_gates_passes_when_phases_scattered_across_sessions(self) -> None:
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        # Earliest session — blank (the canonical phase-visit session for
+        # the read-only gate). The phases are on later sessions.
+        Session.objects.create(ticket=ticket, agent_id="loop")
+        s_maker = Session.objects.create(ticket=ticket, agent_id="maker")
+        s_maker.visit_phase("testing", agent_id="maker")
+        s_reviewer = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
+        s_reviewer.visit_phase("reviewing", agent_id="cold-reviewer")
+
+        result = cast(
+            "dict[str, object]",
+            call_command("pr", "check-gates", str(ticket.pk)),
+        )
+
+        assert result["allowed"] is True, (
+            f"check-gates falsely blocked a split-session ticket: {result}. "
+            "It must use the same cross-session aggregation as pr create."
+        )
