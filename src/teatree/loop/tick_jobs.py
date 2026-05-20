@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import discover_overlays, load_config
+from teatree.config import discover_active_overlay, discover_overlays, load_config
 
 if TYPE_CHECKING:
     from teatree.config import UserSettings
@@ -244,20 +244,37 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     )
 
 
+#: Canonical fallback overlay anchor (#1267 / migration 0027). The
+#: bundled teatree overlay registers via the ``teatree.overlays`` entry
+#: point under this name; ``discover_active_overlay()`` resolves it in
+#: ordinary installations. The literal here is a defensive default for
+#: machines with no overlay registered — it is not consulted by the
+#: scanner itself, which only ever sees the resolved string.
+_CANONICAL_CORE_OVERLAY = "t3-teatree"
+
+
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
     #1191: the news-scan cadence is a teatree-core platform behaviour
-    that runs once per day for the ``teatree`` overlay regardless of
-    which overlays are registered. The settings live on
-    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
-    ``~/.teatree.toml``, with optional per-overlay overrides). Returns
-    ``None`` when ``scanning_news_disabled = true`` (the escape hatch).
+    that runs once per day regardless of which overlays are registered.
+    The settings live on :class:`teatree.config.UserSettings` (the
+    ``[teatree]`` table in ``~/.teatree.toml``, with optional per-overlay
+    overrides). Returns ``None`` when ``scanning_news_disabled = true``
+    (the escape hatch).
+
+    #1267: the overlay-anchor identity is resolved via
+    :func:`teatree.config.discover_active_overlay` rather than baked
+    into the scanner module. Falls back to the canonical post-0027
+    overlay name (``t3-teatree``) when no overlay is registered.
     """
     settings = load_config().user
     if settings.scanning_news_disabled:
         return None
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
     return ScanningNewsScanner(
+        overlay_name=overlay_name,
         skill=settings.scanning_news_skill,
         cadence_hours=settings.scanning_news_cadence_hours,
     )
