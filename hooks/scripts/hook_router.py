@@ -3518,6 +3518,222 @@ def _enforce_answered_questions(data: dict) -> bool | None:
     return True
 
 
+# ── Consideration gate (#1129): promote framework-shaped edits ──────
+#
+# Every session that edits personal config the framework should ship
+# (e.g. ``~/.claude/settings.json``, ``~/.claude/hooks.json``, personal
+# ``CLAUDE.md`` behavioural rules) must answer "should this be a teatree
+# feature?" before the turn declares done. Prose-only enforcement loses
+# (see retro skill § 9 "Consolidation over Drift"); this gate makes the
+# scan deterministic.
+#
+# The classifier is path-based and conservative. Three classes:
+#
+#   (P) Promote — personal agent config a teatree installation should
+#       wire automatically. The gate fires unless the assistant turn
+#       references a teatree issue (``souliane/teatree#NNNN`` or bare
+#       ``#NNNN``) OR a later iteration downgrades the path.
+#   (K) Keep    — genuine personal preference (memory entries, shell
+#       rc, terminal config). The gate stays silent.
+#   None        — path lives outside the personal-config corners (or
+#       inside the framework itself). The gate has nothing to say.
+#
+# Class (C) "documented config" is not encoded here yet — overlapping
+# heuristics with (P) make false positives noisy. The retro skill
+# already covers (C) in its consolidation pass; the Stop gate focuses
+# on the loudest signal first.
+
+_TEATREE_ISSUE_REF = re.compile(
+    r"(?:souliane/teatree)?#(\d{2,})\b",
+    flags=re.IGNORECASE,
+)
+
+_PROMOTE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Agent-harness config files that ship behaviour.
+    re.compile(r"/\.(claude|codex|cursor|copilot)/settings(\.local)?\.json$"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/hooks\.json$"),
+    # Personal behavioural instructions (CLAUDE.md / AGENTS.md at the
+    # harness root, not inside a project repo).
+    re.compile(r"/\.(claude|codex|cursor|copilot)/(CLAUDE|AGENTS)\.md$"),
+)
+
+_KEEP_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Memory entries and todos are session state, not framework behaviour.
+    re.compile(r"/\.(claude|codex|cursor|copilot)/projects/.*/memory/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/todos/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/statsig/"),
+    re.compile(r"/\.(claude|codex|cursor|copilot)/.*\.log$"),
+    # Shell, terminal, vcs user prefs.
+    re.compile(r"/\.(zshrc|bashrc|profile|zprofile|zshenv|bash_profile)$"),
+    re.compile(r"/\.(gitconfig|tmux\.conf|inputrc|vimrc)$"),
+)
+
+
+def classify_session_edit(file_path: str) -> str | None:
+    """Classify an edited path as ``"P"`` (promote), ``"K"`` (keep), or ``None``.
+
+    Conservative path-based heuristic — see the consideration-gate
+    block above for the (P)/(K)/None contract. ``None`` is the silent
+    default: the framework only nags on paths it has explicit signal
+    for.
+    """
+    if not file_path:
+        return None
+    # Keep patterns win over promote when both could match the path —
+    # an edit to ``~/.claude/projects/<p>/memory/MEMORY.md`` is keep,
+    # not promote.
+    for pattern in _KEEP_PATTERNS:
+        if pattern.search(file_path):
+            return "K"
+    for pattern in _PROMOTE_PATTERNS:
+        if pattern.search(file_path):
+            return "P"
+    return None
+
+
+_EDIT_TOOL_NAMES = frozenset({"Edit", "Write", "NotebookEdit"})
+
+
+def _edit_block_path(block: dict) -> str | None:
+    """File path for an ``Edit``/``Write``/``NotebookEdit`` tool_use block.
+
+    Caller pre-filters with ``isinstance(block, dict)`` (mirrors the
+    ``_block_is_settings_write`` contract).
+    """
+    if block.get("type") != "tool_use":
+        return None
+    name = block.get("name")
+    if name not in _EDIT_TOOL_NAMES:
+        return None
+    tool_input = block.get("input")
+    if not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if isinstance(raw, str) and raw:
+        return raw
+    return None
+
+
+def _current_turn_edits(transcript_path: str) -> list[str]:
+    """File paths edited by the assistant in the most recent turn.
+
+    Walks the transcript newest→oldest; the most recent ``user`` entry
+    is the boundary. Returns the file paths from every ``Edit`` /
+    ``Write`` / ``NotebookEdit`` ``tool_use`` block after that
+    boundary, in transcript order. Duplicates kept — the caller
+    classifies + dedupes.
+    """
+    entries = _read_transcript_entries(transcript_path)
+    if not entries:
+        return []
+    edits: list[str] = []
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if not isinstance(block, dict):
+                continue
+            path = _edit_block_path(block)
+            if path is not None:
+                edits.append(path)
+    edits.reverse()
+    return edits
+
+
+def _current_turn_assistant_text(transcript_path: str) -> str:
+    """Concatenated assistant text blocks in the most recent turn.
+
+    Used to detect a teatree-issue reference that clears the gate.
+    """
+    chunks: list[str] = []
+    entries = _read_transcript_entries(transcript_path)
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+    return "\n".join(chunks)
+
+
+def handle_consideration_gate(data: dict) -> bool | None:
+    """Emit a CONSIDERATION GATE reminder when promotable edits land (#1129).
+
+    The gate scans the current turn's ``Edit`` / ``Write`` /
+    ``NotebookEdit`` tool uses, classifies each, and emits an
+    ``additionalContext`` block when one or more land in class (P) AND
+    the assistant's text in the same turn does not already reference a
+    teatree issue.
+
+    Soft block only: never emits ``decision: block``. The next turn
+    sees the nag in system context and is expected to either open a
+    teatree issue or justify the divergence in plain text (which the
+    next gate fire will pick up as a reference).
+    """
+    try:
+        return _consideration_gate(data)
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] consideration-gate skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _consideration_gate(data: dict) -> bool | None:
+    if data.get("stop_hook_active"):
+        return None
+    transcript_path = data.get("transcript_path") or ""
+    if not transcript_path:
+        return None
+    edits = _current_turn_edits(transcript_path)
+    if not edits:
+        return None
+    # Dedupe while preserving order.
+    seen: set[str] = set()
+    promotable: list[str] = []
+    for path in edits:
+        if path in seen:
+            continue
+        seen.add(path)
+        if classify_session_edit(path) == "P":
+            promotable.append(path)
+    if not promotable:
+        return None
+    # An issue reference in the assistant's turn text is the spec's
+    # "open a teatree issue" half — gate clears.
+    assistant_text = _current_turn_assistant_text(transcript_path)
+    if _TEATREE_ISSUE_REF.search(assistant_text):
+        return None
+    bullets = "\n".join(f"  - {path}" for path in promotable)
+    body = (
+        f"CONSIDERATION GATE — {len(promotable)} edit(s) this turn landed on personal "
+        "agent config that teatree should arguably ship for every install. "
+        "Before declaring done, decide one of:\n"
+        "  1. Promote — open a teatree issue (link it as `souliane/teatree#NNNN` "
+        "or bare `#NNNN`) so this behaviour ships in the framework.\n"
+        "  2. Justify keep-personal — say in plain text why this edit is genuinely "
+        "user-specific (theme, voice, paths) and not a missing framework feature.\n"
+        "Promotable paths:\n" + bullets
+    )
+    json.dump(
+        {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}},
+        sys.stdout,
+    )
+    # Return True to break the Stop chain — preserves the JSON shape and
+    # preempts the loop self-pump (which would override our soft-block
+    # with a continuation directive).
+    return True
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
@@ -3558,7 +3774,12 @@ _HANDLERS: dict[str, list] = {
     # hookSpecificOutput entry for it and discards its output. Recovery
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
-    "Stop": [handle_enforce_structured_question, handle_enforce_answered_questions, handle_loop_self_pump],
+    "Stop": [
+        handle_enforce_structured_question,
+        handle_enforce_answered_questions,
+        handle_consideration_gate,
+        handle_loop_self_pump,
+    ],
 }
 
 
