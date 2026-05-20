@@ -191,6 +191,42 @@ def availability_anchor(mode: str, queued: int) -> str:
     return "mode=away"
 
 
+def _live_loop_names() -> list[tuple[str, str]]:
+    """Return ``(loop_name, session_id)`` for every currently-live LoopLease.
+
+    Isolated as a thin DB-read seam so :func:`live_loops_anchor` stays a
+    pure formatter — tests stub this function rather than constructing
+    LoopLease fixtures, and the renderer keeps a single try/except gate
+    around it for fail-open semantics.
+    """
+    from django.apps import apps  # noqa: PLC0415
+    from django.utils import timezone  # noqa: PLC0415
+
+    lease_model = apps.get_model("core", "LoopLease")
+    rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id").order_by("name")
+    return [(row.name, row.session_id) for row in rows]
+
+
+def live_loops_anchor() -> list[str]:
+    """Return one dim anchor line per live :class:`LoopLease` row (#1163).
+
+    Five named loops can run concurrently (``loop-tick``, ``loop-owner``,
+    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot``); the
+    anchors zone surfaces each LIVE row as a single ``loop:<short>`` token
+    so the user sees every running loop at a glance — the prior single
+    ``loop-owner=THIS session ✓`` row hid the multi-loop topology.
+    ``<short>`` strips the ``loop-`` prefix for compactness.
+
+    Fails open: any import or query error degrades to ``[]`` so a broken
+    LoopLease read can never blank the statusline.
+    """
+    try:
+        rows = _live_loop_names()
+    except Exception:  # noqa: BLE001
+        return []
+    return [f"loop:{name.removeprefix('loop-')}" for name, _session_id in rows]
+
+
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
     """Return ``(zone, line)`` for the loop-owner statusline segment (#1073).
 
@@ -246,6 +282,7 @@ __all__ = [
     "StatuslineZones",
     "availability_anchor",
     "default_path",
+    "live_loops_anchor",
     "loop_owner_anchor",
     "render",
     "statusline_for_slack",

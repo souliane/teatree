@@ -29,9 +29,11 @@ from teatree.loop.scanners import (
     NotionViewScanner,
     OutboundAuditScanner,
     PendingTasksScanner,
+    RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
+    ScanningNewsScanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
@@ -176,6 +178,25 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     )
 
 
+def _scanning_news_scanner() -> ScanningNewsScanner | None:
+    """Build a global scanning-news scanner from teatree-core config.
+
+    #1191: the news-scan cadence is a teatree-core platform behaviour
+    that runs once per day for the ``teatree`` overlay regardless of
+    which overlays are registered. The settings live on
+    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
+    ``~/.teatree.toml``, with optional per-overlay overrides). Returns
+    ``None`` when ``scanning_news_disabled = true`` (the escape hatch).
+    """
+    settings = load_config().user
+    if settings.scanning_news_disabled:
+        return None
+    return ScanningNewsScanner(
+        skill=settings.scanning_news_skill,
+        cadence_hours=settings.scanning_news_cadence_hours,
+    )
+
+
 def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
     """Resolve :class:`UserSettings` honouring this overlay's ``[overlays.<name>]`` overrides.
 
@@ -288,6 +309,13 @@ def build_default_jobs(
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
     ]
+    # #1191 Periodic scanning-news scanner — teatree-CORE global (not
+    # per-overlay). Daily cadence is teatree-platform config; the queued
+    # task is anchored on the `teatree` overlay placeholder ticket so
+    # the dispatcher routes through the standard pending-task pipeline.
+    news_scanner = _scanning_news_scanner()
+    if news_scanner is not None:
+        jobs.append(_ScannerJob(scanner=news_scanner, overlay=""))
 
     if backends:
         for backend in backends:
@@ -345,6 +373,15 @@ def build_default_jobs(
                             scanner=SlackReviewIntentScanner(backend=backend.messaging, overlay=tag),
                             overlay=tag,
                         ),
+                        # #1130 RED CARD detection — user's structural "fix it
+                        # upstream" signal. Runs alongside the review-intent
+                        # scanner because both drain reactions; this one only
+                        # cares about ``:red_circle:`` / ``:no_entry_sign:``
+                        # plus the literal phrase in DMs.
+                        _ScannerJob(
+                            scanner=RedCardScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
                         _ScannerJob(
                             scanner=ReviewNagScanner(
                                 messaging=backend.messaging,
@@ -369,6 +406,8 @@ def build_default_jobs(
                     _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
                     _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
                     _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
+                    # #1130 RED CARD detection for the single-overlay path.
+                    _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=""), overlay=""),
                 ]
             )
 

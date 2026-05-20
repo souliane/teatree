@@ -28,6 +28,12 @@ _SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     (Ticket.Role.REVIEWER, "reviewing"): "t3:reviewer",
     (Ticket.Role.AUTHOR, "coding"): "t3:orchestrator",
     (Ticket.Role.AUTHOR, "answering"): "t3:answerer",
+    # #1191 scanning-news scanner queues author+scanning_news tasks; the
+    # dispatcher routes them to the t3:scanning-news skill subagent. The
+    # sibling architectural_review phase is intentionally NOT registered
+    # here — it ships its own headless executor — but scanning-news has
+    # no dedicated executor and uses the standard pending-task pipeline.
+    (Ticket.Role.AUTHOR, "scanning_news"): "t3:scanning-news",
 }
 
 

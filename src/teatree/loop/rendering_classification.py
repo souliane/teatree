@@ -142,6 +142,26 @@ def _str_list_field(payload: Payload, key: str) -> tuple[str, ...]:
     return tuple(item for item in value if isinstance(item, str))
 
 
+def _active_ticket_tuple(
+    *,
+    ticket_number: str,
+    state: str,
+    payload: Payload,
+) -> tuple[str, str, str, str]:
+    """Build the canonical ``(ticket_number, state, issue_url, title)`` row.
+
+    #1163 refinement 4: when the scanner observed the tracker URL last
+    returned a 404, drop the URL so the renderer prints a bare ``#N``
+    token instead of a clickable dead permalink. Extracting this keeps
+    :func:`_classify_actions` within the module's complexity budget.
+    """
+    issue_url = _str_field(payload, "issue_url")
+    title = _str_field(payload, "title")
+    if payload.get("tracker_404") is True:
+        issue_url = ""
+    return (ticket_number, state, issue_url, title)
+
+
 def _classify_disposition(c: _ClassifiedActions, overlay: str, payload: Payload, reason: str) -> None:
     """Route a ``reason``-bearing action into reassign or generic disposition buckets."""
     ref = _issue_ref_from(
@@ -173,9 +193,9 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
         state = payload.get("state")
         ticket_number = payload.get("ticket_number")
         if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
-            issue_url = _str_field(payload, "issue_url")
-            title = _str_field(payload, "title")
-            c.active_tickets.setdefault(overlay, []).append((ticket_number, state, issue_url, title))
+            c.active_tickets.setdefault(overlay, []).append(
+                _active_ticket_tuple(ticket_number=ticket_number, state=state, payload=payload),
+            )
             continue
         if payload.get("stale") is True:
             c.stale_refs.setdefault(overlay, []).append(
@@ -238,6 +258,37 @@ def _dedup_in_order[T](items: list[T]) -> list[T]:
     return out
 
 
+def _dedup_active_tickets_across_overlays(
+    by_overlay: dict[str, list[tuple[str, str, str, str]]],
+) -> dict[str, list[tuple[str, str, str, str]]]:
+    """Drop duplicate ticket rows that surface under more than one overlay.
+
+    A single underlying tracker row (same ``issue_url``) can be claimed by
+    multiple overlays both watching the same upstream issue; without
+    cross-overlay dedup the statusline shows the same ``#N`` row twice —
+    once per overlay prefix — which is exactly the visual repetition the
+    user pinned in #1163.
+
+    First-occurrence-wins ordering: the earlier overlay (by sorted key)
+    keeps the row, later overlays drop it. ``issue_url == ""`` is treated
+    as unkeyable and never dedup'd — a missing URL (404 or never-set) is
+    not a reliable identity, so we err on the side of showing the row.
+    """
+    seen_urls: set[str] = set()
+    out: dict[str, list[tuple[str, str, str, str]]] = {}
+    for overlay in sorted(by_overlay):
+        kept: list[tuple[str, str, str, str]] = []
+        for ticket in by_overlay[overlay]:
+            _, _, issue_url, _ = ticket
+            if issue_url and issue_url in seen_urls:
+                continue
+            if issue_url:
+                seen_urls.add(issue_url)
+            kept.append(ticket)
+        out[overlay] = kept
+    return out
+
+
 def _dedup_classified(c: _ClassifiedActions) -> None:
     """Collapse duplicate refs in every per-overlay bucket.
 
@@ -248,6 +299,11 @@ def _dedup_classified(c: _ClassifiedActions) -> None:
     """
     for overlay, tickets in list(c.active_tickets.items()):
         c.active_tickets[overlay] = _dedup_in_order(tickets)
+    # #1163 refinement 1: cross-overlay dedup on issue_url. The earlier
+    # per-overlay pass collapses within-overlay duplicates; this pass
+    # collapses across overlays so the same tracker row never surfaces N
+    # times when N overlays watch it.
+    c.active_tickets = _dedup_active_tickets_across_overlays(c.active_tickets)
     for overlay, refs in list(c.stale_refs.items()):
         c.stale_refs[overlay] = _dedup_in_order(refs)
     for overlay, refs in list(c.ready_refs.items()):
