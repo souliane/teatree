@@ -62,7 +62,10 @@ class _StubAPI:
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
-        return {"id": 1, "notes": [{"type": "DiffNote"}]}
+        # ``line_code`` keeps the draft-notes anchor check happy on the
+        # new default-draft ``post_comment`` path (#1207); the discussions
+        # endpoint ignores it, so the same shape serves both branches.
+        return {"id": 1, "notes": [{"type": "DiffNote"}], "line_code": "abc123_10_10"}
 
     def post_status(self, endpoint: str) -> int:
         self.calls.append(("post_status", endpoint, None))

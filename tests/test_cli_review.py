@@ -242,21 +242,25 @@ class TestReviewService:
             assert "no diff_refs" in result.output
 
 
-# -- post-comment (immediate, non-draft) ---------------------------------------
+# -- post-comment (DRAFT by default — #1207 — and --live opt-in) ----------------
 
 
 class TestPostComment:
-    def test_general_comment(self, monkeypatch):
+    def test_general_comment_defaults_to_draft(self, monkeypatch):
+        """Default ``post-comment`` (no ``--live``) creates a draft (#1207)."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.post_json.return_value = {"id": 555}
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "post-comment", "org/repo", "1", "general body"])
             assert result.exit_code == 0
-            assert "OK note_id=555" in result.output
+            assert "draft_note_id=555" in result.output
 
-    def test_inline_diff_note(self, monkeypatch):
-        """post-comment anchors inline by posting via /discussions and verifying DiffNote."""
+    def test_inline_diff_note_with_live_flag(self, monkeypatch):
+        """``post-comment --live`` (with a recorded approval) posts the inline DiffNote."""
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        LivePostApproval.record(mr_url="org/repo!1", slack_ts="1700000000.0001", slack_user_id="U-OP")
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         diff = "@@ -0,0 +5,1 @@\n+added\n"
         mock_api = _inline_api(
@@ -266,14 +270,30 @@ class TestPostComment:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
             )
             assert result.exit_code == 0
             assert "discussion_id=disc-abc" in result.output
             assert "inline DiffNote" in result.output
 
+    def test_inline_live_post_refused_without_approval(self, monkeypatch):
+        """``post-comment --live`` without a recorded approval refuses (#1207)."""
+        monkeypatch.setenv("GITLAB_TOKEN", "test-token")
+        diff = "@@ -0,0 +5,1 @@\n+added\n"
+        mock_api = _inline_api(diff)
+        with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
+            result = runner.invoke(
+                app,
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
+            )
+            assert result.exit_code == 1
+            assert "approve-live-post" in result.output
+
     def test_inline_anchor_falls_back_to_discussion_note(self, monkeypatch):
-        """If GitLab posts a non-DiffNote (anchor lost), the command reports failure."""
+        """If GitLab posts a non-DiffNote on the ``--live`` path, the command reports failure."""
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        LivePostApproval.record(mr_url="org/repo!1", slack_ts="1700000000.0001", slack_user_id="U-OP")
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         diff = "@@ -0,0 +5,1 @@\n+added\n"
         mock_api = _inline_api(
@@ -283,7 +303,7 @@ class TestPostComment:
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(
                 app,
-                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5"],
+                ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
             )
             assert result.exit_code == 1
             assert "not anchored inline" in result.output

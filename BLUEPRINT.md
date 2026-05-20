@@ -99,6 +99,8 @@ Management commands (django-typer), global CLI commands (`t3`), overlay subcomma
 
 `sync_followup()` flow, state inference, review-thread classification, and draft comments detection — see [docs/blueprint/backends-and-sync.md](docs/blueprint/backends-and-sync.md) §9.
 
+Posting discipline (#1207): `t3 review post-comment` defaults to creating a DRAFT and DMs the user the link; the colleague-visible `--live` path is gated on a single-use, MR-URL-scoped `LivePostApproval` minted by `t3 review approve-live-post <mr-url> --slack-ts <ts>` after the Slack DM at that timestamp is verified (from the user, recent within 15 min, contains an explicit approval phrase). The historical immediate-post default is retired; CLI enforces draft-by-default rather than relying on prose discipline.
+
 ---
 
 ## 10. Configuration

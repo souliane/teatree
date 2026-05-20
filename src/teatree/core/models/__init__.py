@@ -5,6 +5,12 @@ from teatree.core.models.deferred_question import DeferredQuestion, DeferredQues
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.live_post_approval import (
+    LIVE_POST_APPROVAL_TTL_MINUTES,
+    LivePostApproval,
+    LivePostApprovalError,
+    canonical_mr_scope,
+)
 from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
@@ -23,6 +29,7 @@ from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validat
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
+    "LIVE_POST_APPROVAL_TTL_MINUTES",
     "BotPing",
     "ClearIssuanceError",
     "ClearRequest",
@@ -38,6 +45,8 @@ __all__ = [
     "IncomingEvent",
     "IntentClassification",
     "InvalidTransitionError",
+    "LivePostApproval",
+    "LivePostApprovalError",
     "LoopLease",
     "MergeAudit",
     "MergeClear",
@@ -63,5 +72,6 @@ __all__ = [
     "Worktree",
     "WorktreeEnvOverride",
     "WorktreeExtra",
+    "canonical_mr_scope",
     "validated_ticket_extra",
 ]
