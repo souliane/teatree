@@ -566,6 +566,43 @@ class TestPostedReviewRequestPermalink:
         assert "slack.com/archives/C9" in blob, repr(blob)
 
 
+@pytest.mark.django_db
+class TestNoAgentsLineInInFlight:
+    """The ``[ov] agents: …`` row is gone post-#1156.
+
+    The line summarising CLAIMED-task phases per overlay duplicated state
+    already visible in the active-tickets anchor and consumed a row of
+    vertical space. Removed to make room for the per-loop dim anchors.
+    """
+
+    def test_no_agents_line_in_in_flight(self) -> None:
+        from teatree.core.models import Task  # noqa: PLC0415
+        from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="teatree",
+            issue_url="https://example.com/issues/777",
+            state=Ticket.State.STARTED,
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+        task.claim(claimed_by="coding-worker")
+
+        zones = zones_for([], colorize=False)
+        blob = "\n".join(
+            item if isinstance(item, str) else item.text
+            for zone in (zones.anchors, zones.action_needed, zones.in_flight)
+            for item in zone
+        )
+        assert "agents:" not in blob, repr(blob)
+
+
 def test_canonical_item_renders_review_permalink_chunk() -> None:
     """Canonical item appends a ``(review)`` chunk per child MR with a permalink.
 

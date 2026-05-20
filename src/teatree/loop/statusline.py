@@ -207,48 +207,96 @@ def _live_loop_names() -> list[tuple[str, str]]:
     return [(row.name, row.session_id) for row in rows]
 
 
-def live_loops_anchor() -> list[str]:
-    """Return one dim anchor line per live :class:`LoopLease` row (#1163).
-
-    Five named loops can run concurrently (``loop-tick``, ``loop-owner``,
-    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot``); the
-    anchors zone surfaces each LIVE row as a single ``loop:<short>`` token
-    so the user sees every running loop at a glance — the prior single
-    ``loop-owner=THIS session ✓`` row hid the multi-loop topology.
-    ``<short>`` strips the ``loop-`` prefix for compactness.
-
-    Fails open: any import or query error degrades to ``[]`` so a broken
-    LoopLease read can never blank the statusline.
-    """
-    try:
-        rows = _live_loop_names()
-    except Exception:  # noqa: BLE001
-        return []
-    return [f"loop:{name.removeprefix('loop-')}" for name, _session_id in rows]
-
-
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
-    """Return ``(zone, line)`` for the loop-owner statusline segment (#1073).
+    """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
-    ``zone`` is the :class:`StatuslineZones` field to append to.
-
-    This session owns it → ``("anchors", "loop-owner=THIS session ✓")``
-    (dim, like :func:`availability_anchor` — reassuring, low-noise).
+    #1156 narrowed this to only the foreign-hijack RED case. The dim
+    ``loop-owner=THIS session ✓`` and ``loop-owner=unclaimed`` lines were
+    replaced by :func:`live_loops_anchor`, which renders one line per
+    live :class:`teatree.core.models.LoopLease` row.
 
     A *different* live session owns it → ``("action_needed",
     "loop-owner=session <short8> (NOT this session)")`` — RED, because a
     foreign owner is exactly the #1073 hijack the user must see.
 
-    No live owner → ``("anchors", "loop-owner=unclaimed")`` (dim).
+    Anything else (this session owns it, or no live owner) → ``("anchors",
+    "")``. Callers suppress empty lines.
 
     ``short8`` is the first 8 chars of the owner session id.
     """
     if not status.is_live:
-        return "anchors", "loop-owner=unclaimed"
+        return "anchors", ""
     if this_session and status.owner_session == this_session:
-        return "anchors", "loop-owner=THIS session ✓"
+        return "anchors", ""
     short8 = status.owner_session[:8]
     return "action_needed", f"loop-owner=session {short8} (NOT this session)"
+
+
+def live_loops_anchor() -> list[str]:
+    """Return one dim anchor line per live :class:`LoopLease` row (#1163, #1156).
+
+    Five named loops run concurrently (``loop-owner``, ``loop-tick``,
+    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot``); the
+    statusline anchors zone surfaces each LIVE row as ``loop:<short>
+    [<N tasks>]`` where ``<short>`` strips the ``loop-`` prefix and
+    ``<N tasks>`` is the count of CLAIMED ``Task`` rows for loops that
+    dispatch tasks (``tick``, ``self-improve``). The task-count chunk is
+    suppressed when zero or not applicable, so a quiet loop renders as a
+    single ``loop:tick`` token.
+
+    The DB read is delegated to :func:`_live_loop_names` so tests can stub
+    a single seam instead of building LoopLease fixtures.
+
+    Fails open: any DB / import error degrades to ``[]`` so a broken
+    LoopLease read cannot blank the statusline.
+    """
+    try:
+        live_names = _live_loop_names()
+    except Exception:  # noqa: BLE001
+        return []
+    if not live_names:
+        return []
+    try:
+        task_counts = _claimed_task_counts_by_session(name_session_pairs=live_names)
+    except Exception:  # noqa: BLE001
+        task_counts = {}
+    lines: list[str] = []
+    for name, session_id in live_names:
+        short = name.removeprefix("loop-")
+        line = f"loop:{short}"
+        count = task_counts.get(session_id, 0) if name in _LOOPS_WITH_TASKS else 0
+        if count:
+            line += f" [{count} tasks]"
+        lines.append(line)
+    return lines
+
+
+# Loops that dispatch ``Task`` rows. Only these surface a ``[N tasks]``
+# chunk on the anchor line — the others don't own a queue.
+_LOOPS_WITH_TASKS: frozenset[str] = frozenset({"loop-tick", "loop-self-improve"})
+
+
+def _claimed_task_counts_by_session(*, name_session_pairs: list[tuple[str, str]]) -> dict[str, int]:
+    """Return ``{session_id: claimed_task_count}`` for sessions owning a relevant loop.
+
+    The dispatching loops (``loop-tick``, ``loop-self-improve``) share a
+    global pool of CLAIMED tasks — Sessions are scoped to tickets, not to
+    the loop that dispatched them. The count surfaced on the anchor line
+    is therefore the same global CLAIMED count for every dispatching
+    loop, computed once. Fails open (``{}``) on import or DB error so a
+    broken Task read doesn't blank the anchor line.
+    """
+    relevant_sessions = {session_id for name, session_id in name_session_pairs if name in _LOOPS_WITH_TASKS}
+    if not relevant_sessions:
+        return {}
+    try:
+        from django.apps import apps  # noqa: PLC0415
+
+        task_model = apps.get_model("core", "Task")
+        total = task_model.objects.filter(status="claimed").count()
+    except Exception:  # noqa: BLE001
+        return {}
+    return dict.fromkeys(relevant_sessions, total)
 
 
 def statusline_for_slack(*, path: Path | None = None) -> str:

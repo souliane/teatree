@@ -229,19 +229,28 @@ class TestStatuslineForSlack:
 
 
 class TestLoopOwnerAnchor:
-    """``loop_owner_anchor`` zone+text mapping (#1073)."""
+    """``loop_owner_anchor`` zone+text mapping (#1073, #1156).
+
+    #1156 narrowed this helper to only emit the foreign-hijack RED
+    line. The dim ``loop-owner=THIS session ✓`` /
+    ``loop-owner=unclaimed`` lines were replaced by
+    :func:`live_loops_anchor` which renders one line per live
+    :class:`LoopLease` row.
+    """
 
     def _status(self, *, owner: str, is_live: bool):
         from teatree.core.managers import OwnershipStatus  # noqa: PLC0415
 
         return OwnershipStatus(owner_session=owner, expires_at=None, is_live=is_live)
 
-    def test_this_session_owns_is_dim_anchor(self) -> None:
+    def test_this_session_owns_returns_blank(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
         zone, line = loop_owner_anchor(self._status(owner="sess-A", is_live=True), "sess-A")
         assert zone == "anchors"
-        assert line == "loop-owner=THIS session ✓"
+        # No verbose ``THIS session ✓`` line — :func:`live_loops_anchor` owns
+        # the dim line now.
+        assert line == ""
 
     def test_different_live_owner_is_red_action_needed(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
@@ -250,12 +259,13 @@ class TestLoopOwnerAnchor:
         assert zone == "action_needed"
         assert line == "loop-owner=session abcdef01 (NOT this session)"
 
-    def test_no_live_owner_is_unclaimed_anchor(self) -> None:
+    def test_no_live_owner_returns_blank(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
         zone, line = loop_owner_anchor(self._status(owner="", is_live=False), "sess-A")
         assert zone == "anchors"
-        assert line == "loop-owner=unclaimed"
+        # No verbose ``unclaimed`` line — absent lease ≡ no live-loop row.
+        assert line == ""
 
     def test_anonymous_session_with_live_owner_is_red(self) -> None:
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
