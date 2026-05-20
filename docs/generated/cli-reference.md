@@ -2983,6 +2983,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ cancel                Cancel a task by ID.                                   │
 │ claim                 Claim the next available task.                         │
+│ complete              Mark a claimed task COMPLETED for work finished        │
+│                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
 │ list                  List tasks with optional filters.                      │
 │ start                 Claim and run the next interactive task in the current │
@@ -3015,6 +3017,29 @@ Usage: t3 teatree tasks claim [OPTIONS]
 │ --execution-target        TEXT  [default: headless]                          │
 │ --claimed-by              TEXT  [default: worker]                            │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree tasks complete`
+
+```
+Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
+
+ Mark a claimed task COMPLETED for work finished out-of-band (#1031).
+
+ Drives the Task FSM ``claimed → completed`` (releasing the lease and
+ auto-advancing the ticket). Idempotent: completing an already-completed
+ task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
+ (``pending``, ``failed``) with a clear error.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    task_id      INTEGER  Task ID (see `task_id` in `tasks list`).          │
+│                            [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --note        TEXT  Audit-trail reason recorded on a TaskAttempt (e.g. 'work │
+│                     landed via !6219').                                      │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
