@@ -1,0 +1,475 @@
+r"""Bash command surface parsing for the quote-scanner gate (#1213).
+
+Extracted from :mod:`teatree.hooks.quote_scanner` to keep that module
+under the project's per-file LOC ceiling. The public quote-scanner API
+(scan_text, format_*, log_decision, extract_publish_payload,
+has_quote_ok_override) lives in ``quote_scanner.py`` and delegates the
+shell-grammar work to the helpers here.
+
+The parser walks a Bash command string in two passes:
+
+1. :mod:`teatree.hooks._shell_lexer` produces a token stream where bash
+    shell grammar is honoured (``\<NL>`` removed token-internally,
+    ``;``/``|``/``&``/``&&``/``||`` emitted as standalone metachars
+    regardless of whitespace, ANSI-C ``$'...'`` decoded properly per
+    the bash man-page).
+2. Per-command argument walkers iterate over the WORD tokens of each
+    command segment and pull out body-flag values, heredoc-style content,
+    and attached short-option payloads (``-d'{...}'``).
+
+Indirect body sources we cannot inspect (``gh api --input -``, missing
+files, opaque ``-d @file`` references) fail closed via a sentinel
+string that downstream scanning treats as a HIGH match.
+"""
+
+import json
+import re
+from pathlib import Path
+from typing import Final
+
+from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands, tokenize
+
+# ── Publish-surface substring catalogues ────────────────────────────
+
+# Bash commands that publish to an external surface. The substring match
+# is sufficient — Bash strings come from the LLM, not from a shell, so
+# we don't have to worry about ``echo "gh issue create" | grep``-style
+# embedding.
+_BASH_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "gh issue create",
+    "gh issue edit",
+    "gh issue comment",
+    "gh pr create",
+    "gh pr edit",
+    "gh pr comment",
+    "gh pr review",
+    "glab issue create",
+    "glab issue update",
+    "glab issue note create",
+    # ``glab issue note <id>`` (no ``create`` segment) is the real
+    # comment subcommand — trailing space pins the substring to the
+    # subcommand boundary so ``glab issue notebook`` would not match.
+    "glab issue note ",
+    "glab mr create",
+    "glab mr update",
+    "glab mr note create",
+    "glab mr note ",
+    "git commit -m",
+    "git commit --message",
+    "git commit -F",
+    "git commit --file",
+    "git tag --message",
+    # ``gh api`` / ``glab api`` POST/PATCH calls land on REST endpoints
+    # that publish issue/PR/MR comments. The payload is carried via
+    # ``-f``/``-F``/``--raw-field``/``--field``/``--input`` and parsed
+    # by :func:`extract_bash_payload`.
+    "gh api ",
+    "glab api ",
+    "chat.postMessage",
+)
+
+# t3 sub-commands that publish on the user's behalf. The overlay segment
+# between ``t3`` and the verb is arbitrary (one of the registered
+# overlays), so we match the verb-segment substring directly — e.g.
+# ``review post-comment`` matches both ``t3 teatree review post-comment``
+# and the equivalent per-overlay variant.
+_T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "notify send",
+    "review post-comment",
+    "review post-draft-note",
+    "ticket create-issue",
+    "t3 slack react",
+)
+
+
+# Sentinel string that downstream scanning treats as a HIGH match. Any
+# indirect or undecodable body source surfaces this so the gate fails
+# closed (codex CRITICAL #5 round 1, codex round-2 #4).
+FAIL_CLOSED_SENTINEL: Final[str] = (
+    "the user said: pre-publish quote-scanner could not parse a body source — fail closed"
+)
+
+
+def normalize_for_substring_match(command: str) -> str:
+    r"""Return a publish-detection-friendly string for ``command``.
+
+    Re-emits the lexed token stream as space-separated WORD tokens, with
+    one space between command segments. This collapses ``\<NL>`` (both
+    token-internal and between-token) and ANSI-C decoding so the
+    publish-substring matcher sees the same logical command bash would
+    execute.
+    """
+    tokens = tokenize(command)
+    out: list[str] = []
+    for tok in tokens:
+        if is_command_separator(tok):
+            out.append(" ")
+        else:
+            out.extend((tok.value, " "))
+    return "".join(out)
+
+
+def _is_t3_publish_invocation(joined: str) -> bool:
+    if not joined.lstrip().startswith("t3 "):
+        return False
+    return any(needle in joined for needle in _T3_PUBLISH_SUBSTRINGS)
+
+
+def is_publish_command(command: str) -> bool:
+    """Return True iff the Bash command would publish to an external surface."""
+    joined = normalize_for_substring_match(command)
+    if any(needle in joined for needle in _BASH_PUBLISH_SUBSTRINGS):
+        return True
+    return _is_t3_publish_invocation(joined)
+
+
+# ── Body-flag and curl regexes (heredoc only — flag args are token-aware) ─
+
+_HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    re.DOTALL,
+)
+
+# Per-command argument-walker dispatch tables --------------------------
+
+# Body-bearing long options (value follows the flag as next token or
+# attached via ``=``). The catalogue is shared by all publishing
+# commands — gh, glab, git, curl all use the same long-option grammar.
+_BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(
+    {"--body", "--description", "--message", "--title"},
+)
+
+# Long options that point at a FILE whose content we should read. If the
+# file is missing or unreadable the parser appends the fail-closed
+# sentinel.
+_BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset(
+    {"--body-file", "--description-file", "--file"},
+)
+
+# Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
+_BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
+
+# Long options for ``gh api`` / ``glab api`` field assignments.
+_API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
+_API_FIELD_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-f", "-F"})
+
+# Curl long-option data flags — payload is JSON-or-text.
+_CURL_DATA_LONG_FLAGS: Final[frozenset[str]] = frozenset(
+    {"--data", "--data-raw", "--data-binary", "--data-urlencode", "--json"},
+)
+
+
+def _read_file_arg(path: str) -> str | None:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _json_body_fields(blob: str) -> list[str]:
+    """Return ``text``/``message``/``body`` values from a JSON blob, if any."""
+    try:
+        decoded = json.loads(blob)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(decoded, dict):
+        return []
+    return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
+
+
+def _attached_value(token: str, prefix: str) -> str | None:
+    """Return the attached value of ``-X<value>`` / ``-X=<value>``, if any.
+
+    Returns the substring AFTER ``prefix`` when ``token`` starts with the
+    prefix and is strictly longer than it. ``-X=value`` strips the
+    leading ``=`` so callers see the bare payload.
+    """
+    if token.startswith(prefix) and len(token) > len(prefix):
+        return token[len(prefix) :].removeprefix("=")
+    return None
+
+
+def _scan_curl_payload(raw: str, payloads: list[str]) -> None:
+    """Append ``raw`` plus its JSON ``text``/``message``/``body`` fields.
+
+    A non-JSON-decodable body that LOOKS like JSON (starts with ``{`` or
+    ``[``) fails closed because we cannot be sure the gate's pattern
+    catalogue covers the obfuscation.
+    """
+    payloads.append(raw)
+    json_fields = _json_body_fields(raw)
+    if json_fields:
+        payloads.extend(json_fields)
+    elif raw.strip().startswith(("{", "[")):
+        payloads.append(FAIL_CLOSED_SENTINEL)
+
+
+def _record_curl_value(value: str, payloads: list[str]) -> None:
+    """Route a single curl data value to the payload list.
+
+    ``@file`` references fail closed (we cannot read arbitrary files);
+    everything else gets the standard JSON-aware scan.
+    """
+    if value.startswith("@"):
+        payloads.append(FAIL_CLOSED_SENTINEL)
+    else:
+        _scan_curl_payload(value, payloads)
+
+
+def _curl_long_flag_attached(word: str) -> str | None:
+    """Return the value of ``--data=VALUE`` / ``--json=VALUE`` if attached."""
+    for flag in _CURL_DATA_LONG_FLAGS:
+        attached = _attached_value(word, flag + "=")
+        if attached is not None:
+            return attached
+    return None
+
+
+def _curl_short_d_attached(word: str) -> str | None:
+    """Return the value of ``-dVALUE`` attached short option, if applicable.
+
+    Excludes the long ``--data*`` / ``--json`` family — those start with
+    ``--`` and are handled by :func:`_curl_long_flag_attached`.
+    """
+    if word.startswith(("--data", "--json")):
+        return None
+    return _attached_value(word, "-d")
+
+
+def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
+    """Extract curl ``-d``/``--data*``/``--json`` payloads from a command.
+
+    Supports:
+    - ``-d value`` (next token)
+    - ``-dvalue`` (attached short option, POSIX)
+    - ``-d=value`` (equals form)
+    - ``--data value`` / ``--data=value``
+    - ``-d@file`` / ``--data @file`` (fail closed — we cannot read the file)
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word == "-d" and i + 1 < n:
+            _record_curl_value(words[i + 1], payloads)
+            i += 2
+            continue
+        if word in _CURL_DATA_LONG_FLAGS and i + 1 < n:
+            _record_curl_value(words[i + 1], payloads)
+            i += 2
+            continue
+        attached_short = _curl_short_d_attached(word)
+        if attached_short is not None:
+            _record_curl_value(attached_short, payloads)
+            i += 1
+            continue
+        attached_long = _curl_long_flag_attached(word)
+        if attached_long is not None:
+            _record_curl_value(attached_long, payloads)
+        i += 1
+
+
+def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
+    """Extract ``--body``/``-m``/``-b`` style payloads from a command.
+
+    Handles both space-separated (``--body "x"``) and equals-separated
+    (``--body=x``) forms.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in _BODY_FLAG_NAMES and i + 1 < n:
+            payloads.append(words[i + 1])
+            i += 2
+            continue
+        for flag in _BODY_FLAG_NAMES:
+            attached = _attached_value(word, flag + "=")
+            if attached is not None:
+                payloads.append(attached)
+                break
+        if word in _BODY_SHORT_FLAGS and i + 1 < n:
+            payloads.append(words[i + 1])
+            i += 2
+            continue
+        i += 1
+
+
+def _walk_body_file_flags(words: list[str], payloads: list[str], *, is_git: bool) -> None:
+    """Extract ``--body-file``/``--file``/``-F`` style file payloads.
+
+    The git-style ``-F <path>`` form is a file reference ONLY for the
+    ``git`` command (codex round-3 #6 — ``gh api -F body=x`` is a field
+    assignment, NOT a file reference). The ``is_git`` flag scopes the
+    short-form ``-F`` reader.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
+            _append_file_payload(words[i + 1], payloads)
+            i += 2
+            continue
+        attached: str | None = None
+        for flag in _BODY_FILE_FLAG_NAMES:
+            attached = _attached_value(word, flag + "=")
+            if attached is not None:
+                _append_file_payload(attached, payloads)
+                break
+        if attached is not None:
+            i += 1
+            continue
+        if is_git and word == "-F" and i + 1 < n:
+            _append_file_payload(words[i + 1], payloads)
+            i += 2
+            continue
+        if is_git:
+            attached = _attached_value(word, "-F")
+            if attached is not None:
+                _append_file_payload(attached, payloads)
+                i += 1
+                continue
+        i += 1
+
+
+def _append_file_payload(path: str, payloads: list[str]) -> None:
+    content = _read_file_arg(path)
+    if content is None:
+        payloads.append(FAIL_CLOSED_SENTINEL)
+    else:
+        payloads.append(content)
+
+
+def _handle_api_input(arg: str, payloads: list[str]) -> None:
+    """Read a ``--input`` argument: stdin or missing file → fail closed."""
+    if arg == "-":
+        payloads.append(FAIL_CLOSED_SENTINEL)
+        return
+    content = _read_file_arg(arg)
+    if content is None:
+        payloads.append(FAIL_CLOSED_SENTINEL)
+        return
+    payloads.append(content)
+    payloads.extend(_json_body_fields(content))
+
+
+def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
+    """Extract ``-f``/``-F``/``--field``/``--raw-field`` ``body=`` assignments.
+
+    Also handles ``--input <file>`` / ``--input -`` (stdin → fail closed)
+    and ``--input <missing>`` (fail closed). Field assignments other than
+    ``body=`` are ignored.
+    """
+    field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in field_flags and i + 1 < n:
+            _handle_field_assignment(words[i + 1], payloads)
+            i += 2
+            continue
+        if word == "--input" and i + 1 < n:
+            _handle_api_input(words[i + 1], payloads)
+            i += 2
+            continue
+        attached = _attached_value(word, "--input=")
+        if attached is not None:
+            _handle_api_input(attached, payloads)
+        i += 1
+
+
+def _handle_field_assignment(arg: str, payloads: list[str]) -> None:
+    """Parse a ``-F body=value`` style argument and append the value.
+
+    The ``body=`` prefix is required — other field names (``title=``,
+    etc.) are not body-bearing and are ignored.
+    """
+    if "=" not in arg:
+        return
+    name, _, value = arg.partition("=")
+    if name == "body":
+        payloads.append(value)
+
+
+# ── Command-segment walking ─────────────────────────────────────────
+
+
+def _first_two_words(segment: list[Token]) -> tuple[str, str]:
+    """Return up to the first two WORD values of a command segment.
+
+    Empty positions are returned as ``""``. Tokens that look like
+    environment-variable assignments (``KEY=val``) appearing before the
+    command name are skipped.
+    """
+    words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+    # Skip leading ENV=value assignments.
+    while words and re.fullmatch(r"[A-Z_][A-Z0-9_]*=.*", words[0]):
+        words = words[1:]
+    first = words[0] if words else ""
+    second = words[1] if len(words) > 1 else ""
+    return first, second
+
+
+def _walk_command_segment(segment: list[Token], payloads: list[str]) -> None:
+    """Route a single command segment to the right argument walkers."""
+    words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+    if not words:
+        return
+    first, _ = _first_two_words(segment)
+    # All segments get the generic body-flag walker since gh, glab, git,
+    # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
+    _walk_body_flags(words, payloads)
+    _walk_body_file_flags(words, payloads, is_git=(first == "git"))
+    # ``gh api`` / ``glab api`` field assignments.
+    if first in {"gh", "glab"}:
+        _walk_api_fields(words, payloads)
+    if first == "curl":
+        _walk_curl_args(words, payloads)
+
+
+# ── Body extraction ─────────────────────────────────────────────────
+
+
+def extract_bash_payload(command: str) -> str:
+    r"""Concatenate every body-like fragment the command surface carries.
+
+    The command is tokenized once via :mod:`teatree.hooks._shell_lexer`
+    so shell-equivalent spellings (line continuations both token-
+    internal and between-token, ANSI-C ``$'...'`` quoting, unspaced
+    metacharacters) collapse to the same logical token stream bash
+    itself would execute. Then each command segment is routed to the
+    right per-command argument walker.
+
+    Indirect body sources (``gh api --input -``, missing files, opaque
+    ``-d @file`` references) fail closed via the sentinel.
+    """
+    parts: list[str] = []
+    tokens = tokenize(command)
+    for segment in split_commands(tokens):
+        _walk_command_segment(segment, parts)
+    # Heredocs still need to be parsed against the raw command — the
+    # lexer treats them as regular content since heredoc bodies live on
+    # subsequent physical lines. The regex below tolerates that shape.
+    parts.extend(match.group(2) for match in _HEREDOC_RE.finditer(command))
+    return "\n".join(parts)
+
+
+# ── Quote-OK override detection ─────────────────────────────────────
+
+
+def first_segment_words(command: str) -> list[str]:
+    """Return the WORD-value list of the FIRST command segment.
+
+    Used by the override-detection: a ``--quote-ok`` token is only
+    honoured when it appears as a CLI token in the first segment of the
+    bash command. Anything after the first command-separator operator
+    is a separate command and must not bypass the gate (codex round-2
+    #1, round-3 #2).
+    """
+    tokens = tokenize(command)
+    segments = split_commands(tokens)
+    if not segments:
+        return []
+    return [tok.value for tok in segments[0] if tok.kind is TokenKind.WORD]

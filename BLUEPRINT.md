@@ -479,6 +479,7 @@ graph TD
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
+    teatree.hooks
     teatree.skill_schema
     teatree.slack_mrkdwn
     teatree.skill_deps

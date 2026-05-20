@@ -41,6 +41,10 @@ path = "teatree.utils"
 depends_on = ["teatree.paths"]
 
 [[modules]]
+path = "teatree.hooks"
+depends_on = []
+
+[[modules]]
 path = "teatree.timeouts"
 depends_on = ["teatree.config"]
 
