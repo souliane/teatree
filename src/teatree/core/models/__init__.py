@@ -11,6 +11,7 @@ from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApp
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
@@ -49,6 +50,8 @@ __all__ = [
     "Ports",
     "PullRequest",
     "QualityGateError",
+    "RedCardIntent",
+    "RedCardSignal",
     "ReplyDispatch",
     "ReviewAssignment",
     "ReviewIntent",
