@@ -582,6 +582,35 @@ class TestShippingGateConsumesPendingReviewingTasks(TestCase):
             "per-task attestation contract."
         )
 
+    def test_already_reviewed_state_still_drains_pending_task_on_gate_verified_path(self) -> None:
+        # The composite scenario: prior ungated path (direct CLI call,
+        # --skip-validation) leaves state=REVIEWED with the reviewing task
+        # still PENDING. A subsequent `pr create` passes the gate but the
+        # FSM walk is a no-op (already at REVIEWED). The task drain MUST
+        # still fire — otherwise the loop's orphan sweep re-spawns the
+        # task after the ship.
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.REVIEWED)
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="cold review",
+        )
+
+        assert _check_shipping_gate(ticket) is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED, (
+            "Gate-verified ship MUST drain the reviewing task even when "
+            "the FSM is already at REVIEWED — a prior ungated reconcile "
+            "could have left the task pending."
+        )
+
 
 class TestCheckGatesUsesCrossSessionAggregation(TestCase):
     """#1118: ``pr check-gates`` matches the actual shipping gate.

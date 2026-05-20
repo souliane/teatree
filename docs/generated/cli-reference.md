@@ -2985,16 +2985,7 @@ Usage: t3 teatree pr ensure-pr [OPTIONS]
 ```
 Usage: t3 teatree pr check-gates [OPTIONS] TICKET_ID
 
- Check whether session gates allow a phase transition.
-
- #1118: use the same ``check_gate_across_ticket`` aggregation the
- actual shipping gate uses (``_check_shipping_gate``). The earlier
- single-session ``check_gate`` diverged from the real gate: a
- legitimate split-session ticket (testing recorded on the maker
- session, reviewing on a cold-reviewer session) passed ``pr
- create`` but still tripped ``check-gates`` — agents are told to
- run ``check-gates`` BEFORE ``pr create`` (see ``agents/prompt.py``)
- so the false block forced unnecessary re-review.
+ Check whether session gates allow a phase transition (#1118: cross-session).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │

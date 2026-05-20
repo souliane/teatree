@@ -36,30 +36,33 @@ _SHIP_RECONCILE_NOOP_STATES = frozenset(
 
 
 def reconcile_fsm_for_ship(ticket: Ticket, *, consume_reviewing_tasks: bool = False) -> None:
-    """Walk the FSM to REVIEWED so ``ship()`` is legal (#694, #748).
+    """Walk the FSM to REVIEWED so ``ship()`` is legal (#694, #748, #1118).
 
     Called after a passing gate AND on the ``--skip-validation`` path
     (the user-authorized attestation substitute, so the FSM follows the
-    authorization — /t3:ship §5 #2). No-op at/beyond REVIEWED: those
-    states are not legal ``reconcile_reviewed`` sources, so a post-ship
-    re-entry (flaky-push retry / second bootstrap) would raise raw
-    ``TransitionNotAllowed``. The ``suppress`` is defence-in-depth so a
-    future source-set change still degrades to the caller's structured
-    failure, never a raw raise. Rationale: BLUEPRINT §4.3 + the
-    ``reconcile_reviewed`` FSM-table row.
+    authorization — /t3:ship §5 #2). At/beyond REVIEWED the FSM walk
+    is a no-op (those states are not legal ``reconcile_reviewed``
+    sources, so a post-ship re-entry would raise raw
+    ``TransitionNotAllowed``). The ``suppress`` is defence-in-depth so
+    a future source-set change still degrades to the caller's
+    structured failure, never a raw raise. Rationale: BLUEPRINT §4.3 +
+    the ``reconcile_reviewed`` FSM-table row.
 
     #1118: when called from the gate-verified path
     (``_check_shipping_gate``), pass ``consume_reviewing_tasks=True``
     so the orphan PENDING/CLAIMED reviewing task is drained — same
-    side effect as ``review()``. The skip-validation path leaves it
-    ``False`` (the user's authorization substitutes for the gate but
-    not for the per-task attestation contract; the loop's orphan
-    sweep handles those tasks on its own clock).
+    side effect as ``review()``. The drain runs even when the FSM walk
+    is a no-op (already at REVIEWED), because a prior ungated path
+    (``ticket transition reconcile_reviewed``, ``--skip-validation``)
+    could have left the FSM at REVIEWED with the reviewing task still
+    PENDING. The skip-validation path leaves it ``False`` (the user's
+    authorization substitutes for the gate but not for the per-task
+    attestation contract; the loop's orphan sweep handles those tasks
+    on its own clock).
     """
-    if ticket.state in _SHIP_RECONCILE_NOOP_STATES:
-        return
     with transaction.atomic(), contextlib.suppress(TransitionNotAllowed):
-        ticket.reconcile_reviewed()
-        ticket.save()
+        if ticket.state not in _SHIP_RECONCILE_NOOP_STATES:
+            ticket.reconcile_reviewed()
+            ticket.save()
         if consume_reviewing_tasks:
             ticket._consume_pending_phase_tasks("reviewing")  # noqa: SLF001
