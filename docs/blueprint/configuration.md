@@ -87,7 +87,8 @@ The active overlay is resolved via (in order): `T3_OVERLAY_NAME` env var
 single installed overlay.
 
 Overridable keys live in `OVERLAY_OVERRIDABLE_SETTINGS` in
-`src/teatree/config.py`:
+`src/teatree/config.py`. The registry is the single source of truth — the table
+below mirrors it; consult the dataclass for type signatures and defaults.
 
 | Key | Why overridable |
 |-----|------------------|
@@ -96,6 +97,21 @@ Overridable keys live in `OVERLAY_OVERRIDABLE_SETTINGS` in
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |
+| `loop_cadence_seconds` | Per-overlay tick cadence (e.g. tighter on a hot overlay, looser on a maintenance one) |
+| `require_human_approval_to_merge` | Training-wheel: auto-mode overlay can publish autonomously, merge stays gated |
+| `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
+| `ask_before_post_on_behalf` | Legacy boolean pre-gate over on-behalf posts (kept for back-compat — prefer `on_behalf_post_mode`) |
+| `on_behalf_post_mode` | Tri-state pre-gate (#960): `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate` |
+| `notify_user_via_bot` | Whether agent-on-behalf notifications use the overlay's Slack bot vs the user's xoxp token |
+| `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
+| `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
+| `architectural_review_disabled` | Escape hatch for the periodic architectural-review scanner on a given overlay |
+| `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
+| `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
+| `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
+| `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) on a given overlay |
+| `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) |
+| `scanning_news_cadence_hours` | Per-overlay cadence floor for the news-scanning scanner |
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into
