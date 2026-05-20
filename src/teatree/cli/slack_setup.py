@@ -84,12 +84,26 @@ _BOT_SCOPES = [
 # ``users:read`` (handle/id resolution). Listing only the two reaction
 # scopes would silently revoke those on reinstall.
 _USER_SCOPES = [
+    "canvases:read",
+    "canvases:write",
+    "channels:history",
     "chat:write",
     "chat:write.customize",
     "chat:write.public",
+    "files:read",
+    "groups:history",
+    "im:history",
+    "mpim:history",
     "reactions:read",
     "reactions:write",
+    "search:read.files",
+    "search:read.im",
+    "search:read.mpim",
+    "search:read.private",
+    "search:read.public",
+    "search:read.users",
     "users:read",
+    "users:read.email",
 ]
 _BOT_EVENTS = ["app_mention", "message.im"]
 

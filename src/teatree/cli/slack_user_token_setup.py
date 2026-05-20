@@ -32,30 +32,13 @@ from teatree.utils.secrets import read_pass, write_pass
 
 USER_TOKEN_PASS_KEY = "slack/user-oauth-token"  # noqa: S105 — pass key name, not a secret
 
-REQUIRED_USER_SCOPES: list[str] = sorted(
-    set(_USER_SCOPES)
-    | {
-        "reactions:write",
-        "chat:write",
-        "chat:write.public",
-        "chat:write.customize",
-        "users:read",
-        "users:read.email",
-        "channels:history",
-        "groups:history",
-        "im:history",
-        "mpim:history",
-        "files:read",
-        "canvases:read",
-        "canvases:write",
-        "search:read.public",
-        "search:read.private",
-        "search:read.mpim",
-        "search:read.im",
-        "search:read.files",
-        "search:read.users",
-    }
-)
+# Single source of truth: the manifest's _USER_SCOPES in slack_setup.py
+# declares what Slack will grant on reinstall, and this command verifies the
+# returned token carries exactly that set. Drift between the two would either
+# (a) trip the missing-scope check on every run (manifest narrower than
+# REQUIRED), or (b) silently approve under-scoped tokens (REQUIRED narrower
+# than manifest). Deriving REQUIRED from the manifest constant prevents both.
+REQUIRED_USER_SCOPES: list[str] = sorted(_USER_SCOPES)
 
 _USER_TOKEN_RE = re.compile(r"^xoxp-[A-Za-z0-9-]+$")
 
@@ -183,13 +166,13 @@ def slack_user_token_setup(
     ),
 ) -> None:
     """Re-authorize the personal Slack xoxp token and store it via ``pass``."""
-    if not _confirm_overwrite(reset=reset):
-        typer.echo("Aborted — existing token left in place.")
-        raise typer.Exit(code=1)
-
     previous_scopes = _read_existing_scopes()
     overlay_app_id = _resolve_overlay_app_id(config_path)
     _print_reauthorize_instructions(overlay_app_id)
+
+    if not _confirm_overwrite(reset=reset):
+        typer.echo("Aborted — existing token left in place.")
+        raise typer.Exit(code=1)
 
     typer.echo("Step 2/3 — Paste the freshly-authorized xoxp token.")
     token = _prompt_user_token()
