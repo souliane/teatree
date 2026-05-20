@@ -16,10 +16,11 @@ loop_cadence_seconds = 720                 # /loop tick interval (default 12 min
 require_human_approval_to_merge = true     # training-wheel for `auto` overlays: push + PR create autonomous, merge stays gated
 require_human_approval_to_answer = true    # training-wheel: t3:answerer drafts + DMs for approval, posts only on confirm
 on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960): draft_or_ask (default; draft notes publish autonomously, every other action BLOCKs identical to ask) | ask (every action BLOCKs) | immediate (gate off)
-
-[user]
-claude_chrome = true   # spawn `claude` with --chrome so sessions can drive the browser
-agent_signature = false  # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
+notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
+user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
+statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
+claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
+agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 
 [overlays.myproject]
 path = "~/workspace/myproject"
