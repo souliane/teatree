@@ -19,7 +19,6 @@ manages the manifest + bot/app tokens; this command focuses on the personal
 xoxp token capture and scope verification step.
 """
 
-import re
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
@@ -27,6 +26,13 @@ from pathlib import Path
 import httpx
 import typer
 
+# Re-export under the local underscored name for backward-compat with prior
+# imports inside this module. Source of truth lives in
+# ``teatree.backends.slack_token_validation`` so the runtime gate at
+# backend construction (#1285) and the capture-time gate here agree on
+# the exact regex — drift between the two would let a token shape pass
+# capture but fail at construction, or vice versa.
+from teatree.backends.slack_token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
 from teatree.cli.slack_setup import _USER_SCOPES
 from teatree.config import CONFIG_PATH
 from teatree.utils.secrets import read_pass, write_pass
@@ -47,8 +53,6 @@ def app_oauth_url(app_id: str) -> str:
 # REQUIRED), or (b) silently approve under-scoped tokens (REQUIRED narrower
 # than manifest). Deriving REQUIRED from the manifest constant prevents both.
 REQUIRED_USER_SCOPES: list[str] = sorted(_USER_SCOPES)
-
-_USER_TOKEN_RE = re.compile(r"^xoxp-[A-Za-z0-9-]+$")
 
 
 class TokenScopeError(RuntimeError):

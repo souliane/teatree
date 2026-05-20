@@ -167,7 +167,7 @@ class TestMessagingFromToml:
         cfg = {"messaging_backend": "slack", "slack_token_ref": "ref", "slack_user_id": "U1"}
 
         def fake_read(key: str) -> str:
-            return {"ref-bot": "bot-tok", "ref-app": "app-tok"}.get(key, "")
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
 
         with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
             backend = backend_factory._messaging_from_toml(cfg)
@@ -187,7 +187,7 @@ class TestMessagingFromToml:
             "user_token_ref": "slack/user-oauth",
             "slack_user_id": "U1",
         }
-        pass_lookups = {"ref-bot": "bot-tok", "ref-app": "app-tok", "slack/user-oauth": "xoxp-tok"}
+        pass_lookups = {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok", "slack/user-oauth": "xoxp-tok"}
         with patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookups.get(k, "")):
             backend = backend_factory._messaging_from_toml(cfg)
         assert isinstance(backend, SlackBotBackend)
@@ -197,7 +197,7 @@ class TestMessagingFromToml:
         cfg = {"messaging_backend": "slack", "slack_token_ref": "ref"}
 
         def fake_read(key: str) -> str:
-            return {"ref-bot": "bot-tok", "ref-app": "app-tok"}.get(key, "")
+            return {"ref-bot": "xoxb-bot-tok", "ref-app": "xapp-app-tok"}.get(key, "")
 
         with patch("teatree.utils.secrets.read_pass", side_effect=fake_read):
             backend = backend_factory._messaging_from_toml(cfg)

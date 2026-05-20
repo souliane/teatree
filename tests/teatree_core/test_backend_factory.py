@@ -158,8 +158,8 @@ class TestMessagingFromOverlayTomlFallback:
         def fake_read(key: str) -> str:
             seen.append(key)
             return {
-                "teatree/private-x/slack-bot": "x-bot-tok",
-                "teatree/private-x/slack-app": "x-app-tok",
+                "teatree/private-x/slack-bot": "xoxb-bot-tok",
+                "teatree/private-x/slack-app": "xapp-app-tok",
             }.get(key, "")
 
         with (
@@ -192,10 +192,10 @@ class TestMessagingFromOverlayTomlFallback:
         def fake_read(key: str) -> str:
             seen.append(key)
             return {
-                "teatree/private-x/slack-bot": "x-bot",
-                "teatree/private-x/slack-app": "x-app",
-                "teatree/teatree/slack-bot": "teatree-bot",
-                "teatree/teatree/slack-app": "teatree-app",
+                "teatree/private-x/slack-bot": "xoxb-x-bot",
+                "teatree/private-x/slack-app": "xapp-x-app",
+                "teatree/teatree/slack-bot": "xoxb-teatree-bot",
+                "teatree/teatree/slack-app": "xapp-teatree-app",
             }.get(key, "")
 
         with (
@@ -222,7 +222,7 @@ class TestMessagingFromOverlayTomlFallback:
         )
 
         def fake_read(key: str) -> str:
-            return "x-bot" if key == "teatree/private-x/slack-bot" else ""
+            return "xoxb-x-bot" if key == "teatree/private-x/slack-bot" else ""
 
         with (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value={}),
@@ -252,8 +252,8 @@ class TestMessagingFromOverlayTomlFallback:
 
         def fake_read(key: str) -> str:
             return {
-                "ref-x-bot": "x-bot",
-                "ref-tt-bot": "tt-bot",
+                "ref-x-bot": "xoxb-x-bot",
+                "ref-tt-bot": "xoxb-tt-bot",
             }.get(key, "")
 
         with (
