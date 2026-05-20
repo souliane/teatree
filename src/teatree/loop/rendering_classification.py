@@ -64,6 +64,7 @@ def _pr_ref(action: DispatchAction) -> _PRRef | None:
     payload = action.payload if isinstance(action.payload, dict) else {}
     url = payload.get("url", "")
     iid = payload.get("iid")
+    title = _str_field(payload, "title")
     if not isinstance(iid, int) or iid == 0:
         # Reviewer-pr signals don't ship `iid` in the payload but the MR URL
         # ends with the numeric ref — derive it so the row renders as `!N`
@@ -75,15 +76,15 @@ def _pr_ref(action: DispatchAction) -> _PRRef | None:
         if isinstance(url, str) and action.detail.startswith(_REVIEWER_SUMMARY_PREFIXES):
             tail = _ticket_number_from_url(url)
             if tail.isdigit():
-                return _PRRef(iid=int(tail), url=url, annotation="review")
+                return _PRRef(iid=int(tail), url=url, annotation="review", title=title)
         return None
     draft_count = payload.get("draft_count")
     status = payload.get("status", "")
     if isinstance(draft_count, int) and draft_count > 0:
-        return _PRRef(iid=iid, url=url, annotation=f"{draft_count} notes")
+        return _PRRef(iid=iid, url=url, annotation=f"{draft_count} notes", title=title)
     if status in {"failed", "failure", "error"}:
-        return _PRRef(iid=iid, url=url, annotation=f"pipeline {status}")
-    return _PRRef(iid=iid, url=url, annotation="")
+        return _PRRef(iid=iid, url=url, annotation=f"pipeline {status}", title=title)
+    return _PRRef(iid=iid, url=url, annotation="", title=title)
 
 
 @dataclass(slots=True)

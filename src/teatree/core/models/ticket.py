@@ -85,6 +85,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.AUTHOR)
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
+    short_description = models.CharField(max_length=80, blank=True, default="")
     redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
 
     objects = TicketManager()

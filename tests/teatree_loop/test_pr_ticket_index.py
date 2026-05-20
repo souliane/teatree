@@ -391,7 +391,10 @@ class TestZonesForGroupsByParentTicket(TestCase):
         zones = zones_for(actions)
         text = zones.action_needed[0] if isinstance(zones.action_needed[0], str) else zones.action_needed[0].text
         assert "#855:" in text
-        assert "!370 (3 notes)" in text
+        # #1156: NO_COLOR renders the MR ref with the URL between iid and
+        # the annotation chunk — assert each piece separately.
+        assert "!370" in text
+        assert "(3 notes)" in text
 
     def test_orphan_pr_renders_under_overlay_without_ticket_prefix(self) -> None:
         from teatree.loop.rendering import zones_for  # noqa: PLC0415

@@ -53,6 +53,10 @@ class _PRRef:
     # the operator can jump from the statusline straight to the review
     # thread. Empty string when no post recorded — the chunk is omitted.
     review_permalink: str = ""
+    # #1156: the MR's tracker title (``my_prs`` scanner payload). The
+    # renderer surfaces it as ``!N (title)`` so the operator can scan
+    # which MR is which without hovering for the OSC-8 link target.
+    title: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,12 +116,13 @@ def _render_canonical_item(
     child_refs: list[_PRRef],
     ctx: _LinkCtx,
 ) -> str:
-    """Render one item in the canonical statusline shape (#1015).
+    """Render one item in the canonical statusline shape (#1015, #1156).
 
-    ``#N (short desc) (!M1, !M2)`` — every number is a hyperlink, the
-    description is omitted when empty, the MR chunk is omitted when there
-    are no child refs, and the MR refs are joined with ``, `` (not space)
-    so the eye can pick out distinct MRs at a glance.
+    ``#N (short desc) !M1 (MR1 title) !M2 (MR2 title)`` — every number
+    is a hyperlink, the description is omitted when empty, each MR
+    carries its title (#1156), and MRs are space-separated. The MRs are
+    no longer wrapped in an outer ``(…)`` group — the per-MR title chunk
+    is already parenthesised, so an outer group would double-bracket.
 
     *ctx* bundles the renderer-side link formatter (OSC-8 vs.
     ``text <url>`` fallback) with the ``colorize`` flag, so this module
@@ -128,8 +133,7 @@ def _render_canonical_item(
     if desc:
         text += f" ({desc})"
     if child_refs:
-        pr_parts = [ctx.link(f"!{r.iid}", r.url, colorize=ctx.colorize) for r in child_refs]
-        text += f" ({', '.join(pr_parts)})"
+        text += " " + " ".join(_format_mr_ref(r, ctx) for r in child_refs)
     # #1113 enhancement: append a clickable Slack permalink chunk per child
     # MR whose ``ReviewRequestPost`` row recorded a thread post, so the
     # operator can jump from the statusline straight to the review thread.
@@ -141,3 +145,22 @@ def _render_canonical_item(
     if review_links:
         text += f" ({', '.join(review_links)})"
     return text
+
+
+def _format_mr_ref(ref: _PRRef, ctx: _LinkCtx) -> str:
+    """Render one MR ref in the ``!N (title)`` shape (#1156).
+
+    The ``(title)`` chunk is appended *outside* the clickable ``!N`` so the
+    hyperlink target stays small and the title is readable when ANSI
+    sequences are stripped. ``title`` is truncated to the canonical 40-char
+    budget via :func:`_short_desc`. The legacy annotation (``draft_count``,
+    ``pipeline status``) survives as a separate ``(annotation)`` chunk so a
+    titled draft renders as ``!N (title) (1 notes)``.
+    """
+    rendered = ctx.link(f"!{ref.iid}", ref.url, colorize=ctx.colorize)
+    title = _short_desc(ref.title)
+    if title:
+        rendered += f" ({title})"
+    if ref.annotation:
+        rendered += f" ({ref.annotation})"
+    return rendered

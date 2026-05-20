@@ -234,29 +234,23 @@ class TestInflightPrRows:
     def test_in_flight_pr_failed_annotation_renders_once(self) -> None:
         zones = zones_for([_my_pr(456, zone="action_needed", status="failed")], colorize=False)
         text = _blob(zones.action_needed)
-        assert "!456 (pipeline failed)" in text, repr(text)
+        # #1156: NO_COLOR renders ``!N <url>`` plus the annotation chunk.
+        assert "!456" in text, repr(text)
+        assert "(pipeline failed)" in text, repr(text)
+        assert text.count("(pipeline failed)") == 1, repr(text)
 
 
-class TestRunningTasksLines(django.test.TestCase):
-    """The DB-backed ``agents:`` row in ``zones.in_flight``.
+class TestNoRunningTasksLine(django.test.TestCase):
+    """The DB-backed ``agents:`` row is gone post-#1156.
 
-    The function under test reads ``Task`` rows with ``status='claimed'``
-    and renders one ``[ov] agents: <phase> · <phase>`` row per overlay.
+    Pre-#1156 the renderer surfaced one ``[ov] agents: <phase>`` line
+    per overlay summarising CLAIMED-task phases. That row duplicated
+    state already visible in the active-tickets anchor and consumed a
+    line of vertical space; it was removed to make room for the
+    per-loop dim anchors.
     """
 
-    def test_no_claimed_tasks_renders_no_agents_row(self) -> None:
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/1", state="started")
-        session = Session.objects.create(ticket=ticket, agent_id="a", overlay="acme")
-        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
-        Task.objects.create(ticket=ticket, session=session, phase="reviewing", status=Task.Status.COMPLETED)
-
-        zones = zones_for([], colorize=False)
-        text = _blob(zones.in_flight)
-        assert "agents:" not in text, repr(text)
-
-    def test_one_claimed_task_renders_one_agents_row(self) -> None:
+    def test_claimed_task_renders_no_agents_row(self) -> None:
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/2", state="started")
@@ -265,53 +259,4 @@ class TestRunningTasksLines(django.test.TestCase):
 
         zones = zones_for([], colorize=False)
         text = _blob(zones.in_flight)
-        assert "[acme] agents: coding" in text, repr(text)
-
-    def test_running_tasks_dedupes_phase_names(self) -> None:
-        """Two claimed tasks at the same phase render the phase once.
-
-        Two ``coding`` tasks (two worktrees, two parallel implementers)
-        produce ``agents: coding · coding`` today — visually noisy and
-        ambiguous. The row should collapse repeated phase names so the
-        reader sees ``agents: coding`` and infers concurrency from the
-        absence of duplication.
-        """
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/3", state="started")
-        session = Session.objects.create(ticket=ticket, agent_id="a", overlay="acme")
-        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
-        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
-
-        zones = zones_for([], colorize=False)
-        text = _blob(zones.in_flight)
-        # One occurrence of "coding" — duplicate phases must collapse.
-        assert text.count("coding") == 1, repr(text)
-
-    def test_running_tasks_drops_blank_phase(self) -> None:
-        """A claimed task with no ``phase`` must not produce a stray ``· ``.
-
-        ``Task.phase`` is ``blank=True`` and the model default is ``""``.
-        Today the renderer joins phases with ``" · "`` regardless, so a
-        single blank-phase task renders ``[acme] agents: `` (trailing
-        space) and two blank phases render ``[acme] agents:  · `` — the
-        operator sees a phantom row and can't act on it.
-        """
-        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
-
-        ticket = Ticket.objects.create(overlay="acme", issue_url="https://x/4", state="started")
-        session = Session.objects.create(ticket=ticket, agent_id="a", overlay="acme")
-        Task.objects.create(ticket=ticket, session=session, phase="", status=Task.Status.CLAIMED)
-        Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
-
-        zones = zones_for([], colorize=False)
-        text = _blob(zones.in_flight)
-        # The legitimate phase still renders.
-        assert "coding" in text, repr(text)
-        # The blank phase must not leave a stray double-space or a
-        # trailing/leading separator. Today the join produces
-        # ``agents:  · coding`` (two spaces after the colon) because the
-        # empty phase string is joined like any other phase name — the
-        # operator reads a phantom entry that can't be resolved.
-        assert "agents:  " not in text, repr(text)
-        assert " · " not in text or all(part.strip() for part in text.split("·")), repr(text)
+        assert "agents:" not in text, repr(text)

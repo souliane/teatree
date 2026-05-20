@@ -159,7 +159,7 @@ def run_tick(
 
     if not jobs:
         empty_zones = StatuslineZones()
-        _populate_loop_owner_anchor(empty_zones)
+        _populate_loops_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
             target=statusline_path,
@@ -183,25 +183,35 @@ def run_tick(
     _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
-    _populate_loop_owner_anchor(zones)
+    _populate_loops_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
 
 
-def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
-    """Append the #1073 loop-owner segment to the right zone.
+def _populate_loops_anchor(zones: StatuslineZones) -> None:
+    """Populate the anchors zone with one dim line per live loop (#1156).
+
+    Replaces the pre-#1156 ``_populate_loop_owner_anchor`` which emitted
+    a verbose ``loop-owner=THIS session ✓``/``loop-owner=unclaimed``
+    line. The dim doctrine now surfaces every live :class:`LoopLease`
+    row as ``loop:<short> [<N tasks>]``; the only RED line that
+    survives is the #1073 foreign-hijack warning.
 
     Fails open: any import/query error degrades to a no-op so a broken
-    loop-owner read can never blank the statusline (same contract as
+    LoopLease read can never blank the statusline (same contract as
     :func:`teatree.loop.rendering._populate_availability_anchor`).
     """
     try:
         from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
-        from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
+        from teatree.loop.statusline import live_loops_anchor, loop_owner_anchor  # noqa: PLC0415
+
+        for line in live_loops_anchor():
+            zones.anchors.append(line)
 
         status = LoopLease.objects.ownership_status("loop-owner")
         zone, line = loop_owner_anchor(status, current_session_id())
     except Exception:  # noqa: BLE001
         return
-    getattr(zones, zone).append(line)
+    if line:
+        getattr(zones, zone).append(line)
