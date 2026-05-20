@@ -22,6 +22,7 @@ from teatree.loop.scanners.pending_tasks import PendingTasksScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
+from teatree.loop.scanners.slack_broadcasts import SlackBroadcastsScanner
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
 from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
@@ -44,6 +45,7 @@ __all__ = [
     "ReviewerPrsScanner",
     "ScanSignal",
     "Scanner",
+    "SlackBroadcastsScanner",
     "SlackDmInboundScanner",
     "SlackMentionsScanner",
     "SlackReviewIntentScanner",

@@ -1122,8 +1122,10 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
-│            via ``pass``.                                                     │
+│ slack-bot         Register or update a per-overlay Slack bot and store its   │
+│                   tokens via ``pass``.                                       │
+│ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
+│                   via ``pass``.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1147,6 +1149,21 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   ~/.teatree.toml).                          │
 │                                   [default: /Users/adrien/.teatree.toml]     │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-user-token`
+
+```
+Usage: t3 setup slack-user-token [OPTIONS]
+
+ Re-authorize the personal Slack xoxp token and store it via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reset               Overwrite the existing token without prompting.        │
+│ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
+│                       [default: /Users/adrien/.teatree.toml]                 │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

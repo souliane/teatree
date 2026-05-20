@@ -4,17 +4,6 @@ description: Self-QA variant of batch mode — dogfood the teatree loop and stat
 metadata:
   version: 0.0.1
   subagent_safe: false
-triggers:
-  priority: 85
-  keywords:
-    - '\b(bug hunt|bug[- ]hunt|self[- ]qa|hunt (for )?bugs|find and fix bugs)\b'
-    - '\bdogfood the loop\b'
-search_hints:
-  - bug hunt
-  - self-qa
-  - dogfood loop
-  - hunt bugs
-  - find and fix
 ---
 
 # TeaTree — Bug Hunt Mode (Self-QA on the Loop and Statusline)

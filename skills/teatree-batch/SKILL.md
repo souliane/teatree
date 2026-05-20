@@ -4,16 +4,6 @@ description: Unattended batch ticket processing — work through a prioritized b
 metadata:
   version: 0.0.1
   subagent_safe: false
-triggers:
-  priority: 85
-  keywords:
-    - '\b(batch mode|work unattended|tackle tickets|quick wins)\b'
-search_hints:
-  - batch mode
-  - unattended
-  - quick wins
-  - tackle tickets
-  - sequential delivery
 ---
 
 # TeaTree — Batch Mode (Unattended Ticket Processing)

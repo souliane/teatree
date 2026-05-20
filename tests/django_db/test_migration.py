@@ -270,9 +270,9 @@ class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
         # Restore the schema to the latest state so TransactionTestCase
         # teardown's flush targets the real (head) table set and downstream
         # tests (e.g. ``test_schema_guard``) see a clean ledger. Resolve the
-        # current leaf dynamically so a new migration appended to ``core``
-        # doesn't leave the DB stuck at an intermediate point.
+        # leaf from the live graph so new migrations don't leave 0028+
+        # unrecorded for the rest of the session.
         executor = MigrationExecutor(connection)
-        core_leaves = [leaf for leaf in executor.loader.graph.leaf_nodes() if leaf[0] == "core"]
-        for leaf in core_leaves:
-            self._migrate(leaf)
+        executor.loader.build_graph()
+        core_leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
+        executor.migrate(core_leaves)
