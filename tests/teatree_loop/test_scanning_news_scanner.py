@@ -1,16 +1,17 @@
-"""DB-backed tests for ``ScanningNewsScanner`` (#1191).
+"""DB-backed tests for ``ScanningNewsScanner`` (#1191, #1267).
 
 The scanner periodically queues a ``scanning_news`` ``Task`` row for the
-teatree overlay on a single trigger: cadence
+active core overlay on a single trigger: cadence
 (``scanning_news_cadence_hours``, default 24h). Unlike the architectural-
 review scanner, there is no after-merge backstop — news scanning is a
 once-a-day platform behaviour, not coupled to delivery velocity.
 
-The scanner is teatree-CORE and overlay-agnostic in its placement: the
-wiring layer attaches it as a global scanner (``overlay=""``) alongside
-:class:`PendingTasksScanner` / :class:`IncomingEventsScanner`. The
-queued :class:`Task` itself is anchored at a fixed placeholder Ticket
-with ``overlay="teatree"`` so the dispatcher routes through the standard
+The scanner is teatree-CORE and overlay-agnostic in its module: the
+overlay-anchor identity is injected at construction time by the wiring
+layer (``loop.tick_jobs._scanning_news_scanner``), which resolves
+:func:`teatree.config.discover_active_overlay`. The queued
+:class:`Task` is anchored at a placeholder Ticket carrying that
+resolved overlay name so the dispatcher routes through the standard
 pending-task pipeline.
 
 Integration-style with real Django ORM rows. Times are backdated with
@@ -27,21 +28,27 @@ from django.utils import timezone
 from teatree.config import UserSettings
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.loop.scanners.scanning_news import SCANNING_NEWS_OVERLAY, SCANNING_NEWS_PHASE, ScanningNewsScanner
+from teatree.loop.scanners.scanning_news import SCANNING_NEWS_PHASE, ScanningNewsScanner
+
+#: Test overlay anchor — a non-legacy name distinct from any literal the
+#: scanner could plausibly hardcode, so a regression that re-bakes a
+#: specific overlay name will fail loudly.
+TEST_OVERLAY_NAME = "t3-teatree"
 
 
 def _scanner(
     *,
+    overlay_name: str = TEST_OVERLAY_NAME,
     skill: str = "scanning-news",
     cadence_hours: int = 24,
 ) -> ScanningNewsScanner:
-    return ScanningNewsScanner(skill=skill, cadence_hours=cadence_hours)
+    return ScanningNewsScanner(overlay_name=overlay_name, skill=skill, cadence_hours=cadence_hours)
 
 
-def _last_news_task() -> Task | None:
+def _last_news_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
     return (
         Task.objects.filter(
-            ticket__overlay=SCANNING_NEWS_OVERLAY,
+            ticket__overlay=overlay_name,
             phase=SCANNING_NEWS_PHASE,
         )
         .order_by("-id")
@@ -69,7 +76,7 @@ class ScanningNewsScannerTests(TestCase):
         assert len(signals) == 1
         signal = signals[0]
         assert signal.kind == "scanning_news.queued"
-        assert signal.payload["overlay"] == SCANNING_NEWS_OVERLAY
+        assert signal.payload["overlay"] == TEST_OVERLAY_NAME
         assert signal.payload["skill"] == "scanning-news"
         assert signal.payload["phase"] == SCANNING_NEWS_PHASE
         assert signal.payload["trigger"] == "bootstrap"
@@ -78,7 +85,7 @@ class ScanningNewsScannerTests(TestCase):
         assert task is not None
         assert task.phase == SCANNING_NEWS_PHASE
         assert task.status == Task.Status.PENDING
-        assert task.ticket.overlay == SCANNING_NEWS_OVERLAY
+        assert task.ticket.overlay == TEST_OVERLAY_NAME
 
     def test_cadence_elapsed_queues_new_task(self) -> None:
         """A prior run older than cadence_hours triggers a new task."""
@@ -156,7 +163,33 @@ class ScanningNewsScannerTests(TestCase):
         """Statusline-friendly: one-line summary mentioning the overlay anchor."""
         signals = _scanner().scan()
         assert len(signals) == 1
-        assert SCANNING_NEWS_OVERLAY in signals[0].summary
+        assert TEST_OVERLAY_NAME in signals[0].summary
+
+    def test_scanner_does_not_hardcode_legacy_teatree_overlay(self) -> None:
+        """Regression #1267 — scanner uses the injected overlay, not the literal "teatree".
+
+        Pre-fix the scanner module hardcoded ``SCANNING_NEWS_OVERLAY = "teatree"``
+        and wrote that legacy value into every queued task. With an arbitrary
+        non-legacy ``overlay_name`` injected at construction time, no row,
+        signal payload, or summary may reference the bare literal "teatree".
+        """
+        custom_overlay = "fictional-core-overlay"
+        signals = _scanner(overlay_name=custom_overlay).scan()
+
+        assert len(signals) == 1
+        signal = signals[0]
+        assert signal.payload["overlay"] == custom_overlay
+        assert custom_overlay in signal.summary
+        # The legacy bare literal must not appear anywhere — neither in
+        # the signal payload nor in the persisted Task/Ticket/Session rows.
+        assert signal.payload["overlay"] != "teatree"
+        assert "teatree" not in signal.summary or custom_overlay in signal.summary
+        task = _last_news_task(overlay_name=custom_overlay)
+        assert task is not None
+        assert task.ticket.overlay == custom_overlay
+        assert task.session.overlay == custom_overlay
+        # And no stale "teatree"-anchored ticket was created as a side effect.
+        assert not Task.objects.filter(ticket__overlay="teatree", phase=SCANNING_NEWS_PHASE).exists()
 
 
 class ScanningNewsWiringTests(TestCase):
@@ -219,3 +252,42 @@ class ScanningNewsWiringTests(TestCase):
         assert scanner is not None
         assert scanner.skill == "custom-news"
         assert scanner.cadence_hours == 12
+
+    def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
+        """#1267 — wiring layer reads overlay name from ``discover_active_overlay``."""
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+
+        discovered = OverlayEntry(name="t3-teatree", overlay_class="")
+        with (
+            patch(
+                "teatree.loop.tick_jobs.load_config",
+                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            ),
+            patch(
+                "teatree.loop.tick_jobs.discover_active_overlay",
+                return_value=discovered,
+            ),
+        ):
+            scanner = _scanning_news_scanner()
+        assert scanner is not None
+        assert scanner.overlay_name == "t3-teatree"
+
+    def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
+        """Defensive default — no installed overlay still queues against the canonical name."""
+        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+
+        with (
+            patch(
+                "teatree.loop.tick_jobs.load_config",
+                return_value=type("Cfg", (), {"user": self._patched_settings()})(),
+            ),
+            patch(
+                "teatree.loop.tick_jobs.discover_active_overlay",
+                return_value=None,
+            ),
+        ):
+            scanner = _scanning_news_scanner()
+        assert scanner is not None
+        # Canonical post-0027 fallback — no bare legacy "teatree".
+        assert scanner.overlay_name == "t3-teatree"
