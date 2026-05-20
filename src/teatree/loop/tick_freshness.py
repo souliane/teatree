@@ -77,12 +77,16 @@ def _canonical_overlay_names() -> dict[str, str]:
     longer needs this remap — it registers and reads its TOML under its
     canonical entry-point name (souliane/teatree#1108) — but the generic
     mapping stays for arbitrary operator aliases.
+
+    The matching rule lives in ``teatree.config._match_canonical_ep``
+    (souliane/teatree#1138) — a single home shared with config-time discovery.
     """
     try:
+        from teatree.config import _match_canonical_ep  # noqa: PLC0415
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return {}
-    canonical = list(get_all_overlays().keys())
+    canonical = set(get_all_overlays().keys())
     toml_path = Path.home() / ".teatree.toml"
     if not toml_path.is_file():
         return {}
@@ -94,10 +98,9 @@ def _canonical_overlay_names() -> dict[str, str]:
     for raw_key in data.get("overlays") or {}:
         if raw_key in canonical:
             continue
-        for cname in canonical:
-            if cname == raw_key or cname.endswith((f"-{raw_key}", raw_key)):
-                mapping[raw_key] = cname
-                break
+        cname = _match_canonical_ep(raw_key, canonical)
+        if cname is not None:
+            mapping[raw_key] = cname
     return mapping
 
 

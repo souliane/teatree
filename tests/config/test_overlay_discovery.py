@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config import _canonical_ep_name, _resolve_ep_project_path, discover_active_overlay, discover_overlays
+from teatree.config import _match_canonical_ep, _resolve_ep_project_path, discover_active_overlay, discover_overlays
 
 from ._shared import _write_manage_py, _write_toml
 
@@ -343,14 +343,14 @@ def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(tmp_path: Path
 
 
 def test_canonical_ep_name_exact_match() -> None:
-    assert _canonical_ep_name("t3-acme", {"t3-acme", "t3-teatree"}) == "t3-acme"
+    assert _match_canonical_ep("t3-acme", {"t3-acme", "t3-teatree"}) == "t3-acme"
 
 
 def test_canonical_ep_name_suffix_match_skipping_nonmatch() -> None:
     # Only the suffix-matching ep qualifies; the other is skipped
     # (covers the loop-continue branch and the suffix rule).
-    assert _canonical_ep_name("teatree", {"unrelated-ep", "t3-teatree"}) == "t3-teatree"
+    assert _match_canonical_ep("teatree", {"unrelated-ep", "t3-teatree"}) == "t3-teatree"
 
 
 def test_canonical_ep_name_no_match_returns_none() -> None:
-    assert _canonical_ep_name("ghost", {"t3-acme", "t3-teatree"}) is None
+    assert _match_canonical_ep("ghost", {"t3-acme", "t3-teatree"}) is None
