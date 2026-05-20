@@ -121,6 +121,14 @@ class OverlayConfig:
     # existing ``resolve_companions`` resolver handles the dependency chain
     # without a parallel implementation.
     companion_skills: list[str]
+    # ``pr_review_companion`` is the single skill injected alongside
+    # ``/t3:review`` whenever a reviewer sub-agent is dispatched
+    # (``phase == "reviewing"``). The global default ``"code-review"`` carries
+    # the project's review-quality bar; an overlay overrides via
+    # ``[overlays.<name>] pr_review_companion = "receiving-code-review"`` (or
+    # any other skill) in ``~/.teatree.toml``. An empty string disables
+    # injection without removing the lifecycle skill (#1135).
+    pr_review_companion: str = "code-review"
 
     def __init__(self, settings_module: str = "", overlay_name: str = "") -> None:
         # Initialize mutable defaults per-instance

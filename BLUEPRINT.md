@@ -105,7 +105,7 @@ The agent layer is `teatree.agents` (headless executor + prompt + skill bundle +
 
 **Structured result schema (`agents/result_schema.py`).** Agents return JSON: `summary`, `files_modified`, `tests_run`, `tests_passed`, `tests_failed`, `decisions`, `needs_user_input`, `user_input_reason`, `next_steps`, `commands_executed`. `additionalProperties: false`. Validated without the `jsonschema` library to keep the dep tree small.
 
-**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development + verification-before-completion`), plus topo-sorted `requires:` resolution, plus per-overlay `companion_skills` (#1132).
+**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development + verification-before-completion`), plus topo-sorted `requires:` resolution, plus per-overlay `companion_skills` (#1132). Reviewer-dispatch gains a dedicated per-overlay `pr_review_companion` field (#1135, default `code-review`): when a sub-agent runs in the `reviewing` phase, the companion's SKILL.md is inlined into the dispatched prompt alongside `/t3:review` so the reviewer gets the project's review-quality bar without needing to know to load it (sub-agents do not auto-load skills).
 
 **Model tiering.** `agents/model_tiering.resolve_phase_model(phase)` downgrades mechanical phases (`reviewing`/`testing`/`shipping` → sonnet, `retrospecting` → haiku) by default; reasoning phases (`coding`, `debugging`) inherit the user's default. Per-phase overrides via `[agent] phase_models` in `~/.teatree.toml`.
 

@@ -201,7 +201,7 @@ class SkillLoadingPolicy:
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         return SkillSelectionResult(skills=suggestions, lifecycle_skill=intent)
 
-    def select_for_runtime_phase(
+    def select_for_runtime_phase(  # noqa: PLR0913
         self,
         *,
         cwd: Path,
@@ -209,6 +209,7 @@ class SkillLoadingPolicy:
         overlay_skill_metadata: OverlaySkillMetadata,
         trigger_index: TriggerIndex | None = None,
         companion_skills: list[str] | None = None,
+        pr_review_companion: str = "",
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -220,6 +221,14 @@ class SkillLoadingPolicy:
         )
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
+        # #1135: a reviewer sub-agent dispatch (phase resolving to the
+        # ``review`` lifecycle skill) also loads the project's review-quality
+        # companion. Sub-agents do not auto-load skills, so the caller
+        # (``run_headless`` via ``resolve_skill_bundle``) inlines the
+        # companion's SKILL.md content into the dispatched prompt via
+        # ``_read_skill_contents_scoped``.
+        if lifecycle_skill == "review" and pr_review_companion:
+            ordered.append(pr_review_companion)
         resolved = self._resolve_with_companions(ordered, trigger_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),
