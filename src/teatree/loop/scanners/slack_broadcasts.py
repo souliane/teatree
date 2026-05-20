@@ -46,11 +46,16 @@ the overlay extension point ``get_review_broadcast_channels()`` is
 designed and merged.
 """
 
+import json
 import logging
+import os
 import re
+import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from django.db import OperationalError, ProgrammingError
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
@@ -60,6 +65,29 @@ from teatree.types import RawAPIDict
 logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
+_GITLAB_MR_URL_RE = re.compile(
+    r"^https://[^/]+/(?P<project>[^?#]+?)/-/merge_requests/(?P<iid>\d+)/?$",
+)
+
+
+def _parse_gitlab_mr_url(url: str) -> tuple[str, str] | None:
+    """Split a GitLab MR URL into ``(project_path, iid)`` for ``glab -R <project> <iid>``.
+
+    GitLab MR URLs are ``https://<host>/<group>/<project>/-/merge_requests/<iid>``
+    (the project path can include nested subgroups: ``team/sub/api``). Outside
+    a repo cwd, ``glab mr view <full-url>`` silently early-exits because
+    glab refuses to resolve the host from a URL alone — the scanner
+    process has no git remote to anchor against. Splitting on ``/-/``
+    isolates the project path glab needs for its ``-R`` flag, and the
+    numeric IID is the positional argument that pairs with it. Returns
+    ``None`` when the URL doesn't match the GitLab shape (e.g. a GitHub
+    URL or a malformed link), so the classifier safely falls through to
+    the "couldn't confirm" default.
+    """
+    match = _GITLAB_MR_URL_RE.match(url)
+    if match is None:
+        return None
+    return match.group("project"), match.group("iid")
 
 
 class ConnectChannelBotRestrictedError(RuntimeError):
@@ -166,8 +194,25 @@ class SlackBroadcastsScanner:
 
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
-        for channel in self.channels:
-            signals.extend(self._scan_channel(channel))
+        try:
+            for channel in self.channels:
+                signals.extend(self._scan_channel(channel))
+        except (OperationalError, ProgrammingError):
+            # ``ScannedBroadcast`` lives in core migration 0028; an
+            # install that hasn't run migrations yet raises "no such
+            # table" (sqlite ``OperationalError``) or "relation does
+            # not exist" (Postgres ``ProgrammingError``) the first
+            # time we hit ``ScannedBroadcast.record``. Skipping
+            # silently here keeps the rest of the scanner registry
+            # running on a pre-migration install instead of spamming
+            # a per-tick traceback. Sibling pattern lives in
+            # :class:`IncomingEventsScanner`. Transient OperationalError
+            # (lock timeout, connection drop) and any other DatabaseError
+            # keep propagating to ``tick._run_job``.
+            logger.info(
+                "SlackBroadcastsScanner: teatree_scanned_broadcast unavailable (DB not migrated yet) — skipping",
+            )
+            return []
         return signals
 
     def _scan_channel(self, channel: str) -> list[ScanSignal]:
@@ -237,6 +282,120 @@ def _looks_like_connect_restriction(exc: BaseException) -> bool:
     """
     message = str(exc)
     return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))
+
+
+@dataclass(slots=True)
+class BackendChannelHistoryFetcher:
+    """Production :class:`ChannelHistoryFetcher` — delegates to the messaging backend.
+
+    Wraps :meth:`MessagingBackend.fetch_channel_history` so the scanner
+    stays overlay-agnostic and tests can keep injecting a plain
+    dict-based fetcher. Returned messages are passed through unchanged
+    (the backend already stamps ``channel`` on each entry).
+    """
+
+    backend: MessagingBackend
+    limit: int = 50
+
+    def __call__(self, *, channel: str) -> list[RawAPIDict]:
+        return self.backend.fetch_channel_history(channel=channel, limit=self.limit)
+
+
+@dataclass(slots=True)
+class GlabGhMrStateClassifier:
+    """Production :class:`MrStateClassifier` — shells out to ``glab`` / ``gh``.
+
+    Each URL is dispatched by host: ``glab mr view <url> -F json`` for
+    GitLab merge requests, ``gh pr view <url> --json …`` for GitHub
+    pulls. The classifier reads ``state`` (merged-or-not) and a coarse
+    approval flag (GitLab ``upvotes > 0``, GitHub
+    ``reviewDecision == APPROVED``). Any URL that fails to parse or
+    whose subprocess returns non-zero is treated as
+    ``merged=False, approved=False`` so the scanner falls through to
+    "open MR — please review" — the safe default for a broadcast we
+    couldn't confirm.
+
+    Tokens are optional: when set they're exported as ``GITLAB_TOKEN`` /
+    ``GH_TOKEN`` for each subprocess so a private-repo overlay can
+    classify on behalf of its own PAT.
+    """
+
+    glab_token: str = ""
+    github_token: str = ""
+
+    def __call__(self, urls: Sequence[str]) -> list[MrState]:
+        return [self._classify_one(url) for url in urls]
+
+    def _classify_one(self, url: str) -> MrState:
+        if "/merge_requests/" in url:
+            return self._classify_gitlab(url)
+        if "/pull/" in url or "/pulls/" in url:
+            return self._classify_github(url)
+        return MrState(url=url, merged=False, approved=False)
+
+    def _classify_gitlab(self, url: str) -> MrState:
+        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+        parsed = _parse_gitlab_mr_url(url)
+        if parsed is None:
+            return MrState(url=url, merged=False, approved=False)
+        project, iid = parsed
+        glab = shutil.which("glab") or "glab"
+        env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
+        try:
+            # ``-R <project>`` makes glab resolve the MR against an explicit
+            # project path instead of the current cwd's git remote — the
+            # scanner runs from the loop process which has no repo cwd, so
+            # ``glab mr view <url>`` (URL-only) silently exits non-zero and
+            # every broadcast is dropped. With ``-R`` + numeric IID glab
+            # routes the API call directly.
+            result = run_allowed_to_fail(
+                [glab, "mr", "view", "-R", project, iid, "-F", "json"],
+                expected_codes=None,
+                env=env,
+            )
+        except FileNotFoundError:
+            return MrState(url=url, merged=False, approved=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return MrState(url=url, merged=False, approved=False)
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return MrState(url=url, merged=False, approved=False)
+        if not isinstance(data, dict):
+            return MrState(url=url, merged=False, approved=False)
+        state = str(data.get("state", "")).lower()
+        merged = state in {"merged", "closed_as_merged"}
+        upvotes = int(data.get("upvotes", 0) or 0)
+        approved = upvotes > 0 or merged
+        return MrState(url=url, merged=merged, approved=approved)
+
+    def _classify_github(self, url: str) -> MrState:
+        from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+        gh = shutil.which("gh") or "gh"
+        env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
+        try:
+            result = run_allowed_to_fail(
+                [gh, "pr", "view", url, "--json", "state,reviewDecision"],
+                expected_codes=None,
+                env=env,
+            )
+        except FileNotFoundError:
+            return MrState(url=url, merged=False, approved=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return MrState(url=url, merged=False, approved=False)
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return MrState(url=url, merged=False, approved=False)
+        if not isinstance(data, dict):
+            return MrState(url=url, merged=False, approved=False)
+        state = str(data.get("state", "")).upper()
+        review_decision = str(data.get("reviewDecision", "")).upper()
+        merged = state == "MERGED"
+        approved = review_decision == "APPROVED" or merged
+        return MrState(url=url, merged=merged, approved=approved)
 
 
 def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
