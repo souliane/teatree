@@ -19,6 +19,7 @@ on_behalf_post_mode = "draft_or_ask"       # tri-state pre-gate (#960): draft_or
 notify_on_post_on_behalf = true            # DM the user after every on-behalf post (#949)
 user_identity_aliases = []                 # cross-platform handles for the same human (#975/#976); consumed by TicketDispositionScanner + multi-identity scanning
 statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones
+repo_mode = ""                             # solo/collaborative working mode (#550 item 4); "" = auto-detect from git shortlog history
 claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
 agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
 
@@ -77,7 +78,7 @@ The env var `T3_MODE` overrides the toml setting. Unknown values raise
 A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
-1. `T3_*` env var (currently only `T3_MODE` is wired as a one-off).
+1. `T3_*` env var (wired one-offs declared in `ENV_SETTING_OVERRIDES`; currently `T3_MODE` and `T3_ON_BEHALF_POST_MODE`).
 2. Active overlay's override from `[overlays.<name>]`.
 3. Global `[teatree]` value.
 4. `UserSettings` dataclass default.
@@ -102,16 +103,16 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `require_human_approval_to_answer` | Training-wheel for `t3:answerer`: drafts + DMs, posts only on confirm |
 | `ask_before_post_on_behalf` | Legacy boolean pre-gate over on-behalf posts (kept for back-compat — prefer `on_behalf_post_mode`) |
 | `on_behalf_post_mode` | Tri-state pre-gate (#960): `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate` |
-| `notify_user_via_bot` | Whether agent-on-behalf notifications use the overlay's Slack bot vs the user's xoxp token |
+| `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see config.py for the boundary) |
 | `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
 | `architectural_review_disabled` | Escape hatch for the periodic architectural-review scanner on a given overlay |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
 | `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
-| `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) on a given overlay |
-| `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) |
-| `scanning_news_cadence_hours` | Per-overlay cadence floor for the news-scanning scanner |
+| `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — registered as overridable, but the live scanner reads the global `[teatree]` value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay overrides are accepted in the registry but not yet consumed by `_scanning_news_scanner` in `loop/tick_jobs.py`) |
+| `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as `scanning_news_disabled` above |
+| `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as `scanning_news_disabled` above |
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into
