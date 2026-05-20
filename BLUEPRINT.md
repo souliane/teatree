@@ -79,7 +79,7 @@ TeaTree drives the day from a single long-lived Claude Code session running a fa
 
 ## 6. Overlay System
 
-Overlay thinness principle, `OverlayBase` ABC, supporting TypedDicts, Docker base-image sharing, `t3 startoverlay` scaffold, discovery & loading — all in [docs/blueprint/overlay-system.md](docs/blueprint/overlay-system.md).
+Overlay thinness principle, `OverlayBase` ABC, supporting TypedDicts, per-overlay `companion_skills` ([#1132](https://github.com/souliane/teatree/issues/1132)), Docker base-image sharing, `t3 startoverlay` scaffold, discovery & loading — all in [docs/blueprint/overlay-system.md](docs/blueprint/overlay-system.md).
 
 ---
 
