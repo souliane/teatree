@@ -21,16 +21,24 @@ xoxp token capture and scope verification step.
 
 import re
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
 import typer
 
-from teatree.cli.slack_setup import _USER_SCOPES, app_install_url
+from teatree.cli.slack_setup import _USER_SCOPES
 from teatree.config import CONFIG_PATH
 from teatree.utils.secrets import read_pass, write_pass
 
 USER_TOKEN_PASS_KEY = "slack/user-oauth-token"  # noqa: S105 — pass key name, not a secret
+BOT_TOKEN_PASS_KEY = "slack/bot-token"  # noqa: S105 — pass key name, not a secret
+
+
+def app_oauth_url(app_id: str) -> str:
+    """Deep link to the app's OAuth & Permissions page — the User OAuth Token lives there."""
+    return f"https://api.slack.com/apps/{app_id}/oauth"
+
 
 # Single source of truth: the manifest's _USER_SCOPES in slack_setup.py
 # declares what Slack will grant on reinstall, and this command verifies the
@@ -102,18 +110,18 @@ def _confirm_overwrite(*, reset: bool) -> bool:
 
 
 def _print_reauthorize_instructions(overlay_app_id: str) -> None:
-    install_url = app_install_url(overlay_app_id) if overlay_app_id else ""
+    oauth_url = app_oauth_url(overlay_app_id) if overlay_app_id else ""
     typer.echo("Step 1/3 — Reinstall the Slack app to re-prompt OAuth consent.")
     typer.echo("")
     typer.echo(f"      Requested user scopes ({len(REQUIRED_USER_SCOPES)}):")
     for scope in REQUIRED_USER_SCOPES:
         typer.echo(f"        - {scope}")
     typer.echo("")
-    if install_url:
-        typer.echo(f"      Opening the install page: {install_url}")
-        webbrowser.open(install_url)
+    if oauth_url:
+        typer.echo(f"      Opening the OAuth & Permissions page: {oauth_url}")
+        webbrowser.open(oauth_url)
     else:
-        typer.echo("      No slack_app_id recorded — open your Slack app's install page manually:")
+        typer.echo("      No slack_app_id recorded or derivable — open your Slack app manually:")
         typer.echo("        https://api.slack.com/apps")
     typer.echo("")
     typer.echo("      Before reinstalling, make sure the app's manifest declares ALL the scopes")
@@ -156,6 +164,64 @@ def _resolve_overlay_app_id(config_path: Path) -> str:
     return ""
 
 
+def _detect_and_backup_xoxb_mis_install(*, echo: Callable[[str], None]) -> None:
+    """Back up a bot token mis-installed at the user-token pass key.
+
+    If the manifest was installed before user scopes were added, Slack returned
+    a bot (``xoxb-…``) token where the user (``xoxp-…``) token belongs. Preserve
+    it under ``slack/bot-token`` (for the read-only scanner) before the reinstall
+    flow overwrites the user-token slot.
+    """
+    current = read_pass(USER_TOKEN_PASS_KEY)
+    if not current.startswith("xoxb-"):
+        return
+    existing_bot = read_pass(BOT_TOKEN_PASS_KEY)
+    echo(
+        "      bot token mis-install detected at pass "
+        f"{USER_TOKEN_PASS_KEY} — backing up to {BOT_TOKEN_PASS_KEY} before reinstall."
+    )
+    if existing_bot == current:
+        return
+    write_pass(BOT_TOKEN_PASS_KEY, current)
+
+
+def _derive_app_id_from_bot(token: str) -> str:
+    """Derive the Slack app_id from any bot or user token via ``auth.test`` + ``bots.info``.
+
+    Returns the empty string when derivation fails for any reason — callers
+    fall back to the manual "open https://api.slack.com/apps" message.
+    """
+    if not token:
+        return ""
+    try:
+        auth = httpx.post(
+            "https://slack.com/api/auth.test",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=30,
+        )
+        auth.raise_for_status()
+        auth_body = auth.json()
+        if not auth_body.get("ok"):
+            return ""
+        bot_id = auth_body.get("bot_id")
+        if not bot_id:
+            return ""
+        info = httpx.post(
+            "https://slack.com/api/bots.info",
+            headers={"Authorization": f"Bearer {token}"},
+            data={"bot": bot_id},
+            timeout=30,
+        )
+        info.raise_for_status()
+        info_body = info.json()
+        if not info_body.get("ok"):
+            return ""
+        app_id = (info_body.get("bot") or {}).get("app_id")
+        return str(app_id) if app_id else ""
+    except httpx.HTTPError:
+        return ""
+
+
 def slack_user_token_setup(
     *,
     reset: bool = typer.Option(False, "--reset", help="Overwrite the existing token without prompting."),
@@ -166,8 +232,11 @@ def slack_user_token_setup(
     ),
 ) -> None:
     """Re-authorize the personal Slack xoxp token and store it via ``pass``."""
+    _detect_and_backup_xoxb_mis_install(echo=typer.echo)
     previous_scopes = _read_existing_scopes()
     overlay_app_id = _resolve_overlay_app_id(config_path)
+    if not overlay_app_id:
+        overlay_app_id = _derive_app_id_from_bot(read_pass(USER_TOKEN_PASS_KEY) or read_pass(BOT_TOKEN_PASS_KEY))
     _print_reauthorize_instructions(overlay_app_id)
 
     if not _confirm_overwrite(reset=reset):
