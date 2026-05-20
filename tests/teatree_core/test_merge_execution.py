@@ -120,6 +120,44 @@ class TestMergeKeystonePreconditions(TestCase):
         with pytest.raises(MergePreconditionError, match="independent"):
             _run(clear, _GhStub(), identity="merge-loop")
 
+    def test_non_reviewer_role_clear_is_refused_at_merge_time(self) -> None:
+        # codex #1282 finding 1 / #1283: ``MergeClear.issue()`` rejects a
+        # maker/coding-agent/loop reviewer_identity at issue time, but a row
+        # written directly via ``.objects.create()`` (fixture, migration,
+        # ORM bypass) skips that guard. ``_assert_clear_authorized`` must
+        # therefore re-check the same role classification at merge time —
+        # an equality check against the executing loop alone is not enough.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket, reviewer_identity="coding-agent")
+        with pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"):
+            _run(clear, _GhStub(), identity="merge-loop")
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+
+    def test_every_non_reviewer_role_prefix_is_refused_at_merge_time(self) -> None:
+        # Every prefix in ``NON_REVIEWER_AGENT_PREFIXES`` (the shared role
+        # list at ``merge_clear.py``) must be rejected. The merge-time
+        # guard reads the same helper as the issue-time guard so the two
+        # gates cannot drift apart (§17.8 clause 3).
+        non_reviewer_identities = [
+            "maker:agent-7",
+            "maker-bot-3",
+            "coding-agent",
+            "coding-agent-9",
+            "coding",
+            "loop",
+            "loop-merge",
+        ]
+        for identity in non_reviewer_identities:
+            ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+            clear = _clear(ticket, reviewer_identity=identity)
+            with pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"):
+                _run(clear, _GhStub(), identity="merge-loop")
+            clear.refresh_from_db()
+            assert clear.consumed_at is None, f"non-reviewer {identity!r} must not consume the CLEAR"
+
     def test_human_authorized_on_non_substrate_clear_is_refused(self) -> None:
         # The recorded-human-approval path is substrate-only — presenting
         # --human-authorized against a logic/docs CLEAR is refused so it
