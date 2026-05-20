@@ -62,7 +62,10 @@ class TestOrchestrationActionAllowList:
         assert _is_orchestration_action({"tool_name": "AskUserQuestion", "tool_input": {}}) is True
 
     def test_t3_bash_is_orchestration(self):
-        data = {"tool_name": "Bash", "tool_input": {"command": "t3 teatree ticket clear 5 slug abc123"}}
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "t3 teatree ticket clear 5 slug --reviewed-sha abc123"},
+        }
         assert _is_orchestration_action(data) is True
 
     def test_gh_pr_view_is_orchestration(self):
@@ -263,7 +266,7 @@ class TestSanctionedReadOnlyBashStillAllowed942:
     def test_t3_ticket_clear_is_allowed(self, tmp_path):
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": "t3 teatree ticket clear 5 slug abc123 --reviewer-identity x"},
+            "tool_input": {"command": "t3 teatree ticket clear 5 slug --reviewed-sha abc123 --reviewer-identity x"},
             "transcript_path": _transcript(tmp_path, sidechain=False),
         }
         assert handle_enforce_orchestrator_boundary(data) is False

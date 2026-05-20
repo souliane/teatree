@@ -534,7 +534,7 @@ class Command(TyperCommand):
         error = (
             f"`t3 <overlay> pr merge` is removed: FSM-incoherent post-#863 (no MergeClear "
             f"validation / SHA-binding / audit / mark_merged). Use the sanctioned keystone: "
-            f"`t3 <overlay> ticket clear {pr} {slug} <reviewed_sha> --reviewer-identity "
+            f"`t3 <overlay> ticket clear {pr} {slug} --reviewed-sha <sha> --reviewer-identity "
             f"<independent-reviewer> --blast-class <substrate|logic|docs>` then `t3 <overlay> "
             f"ticket merge <clear_id>` (substrate adds `--human-authorized <id>`). §17.1 inv 8 / §17.4."
         )
