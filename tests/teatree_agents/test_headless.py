@@ -48,7 +48,17 @@ class TestRunHeadless(TestCase):
         cls.ticket = Ticket.objects.create()
 
     def test_captures_structured_result(self) -> None:
-        result_json = json.dumps({"summary": "Done", "tests_passed": 5, "tests_failed": 0})
+        # #1284: ``coding`` phase requires ``files_modified`` evidence — the
+        # agent's claim that it shipped code must back the claim with an
+        # actual file change record.
+        result_json = json.dumps(
+            {
+                "summary": "Done",
+                "files_modified": [{"path": "src/x.py", "action": "modified"}],
+                "tests_passed": 5,
+                "tests_failed": 0,
+            },
+        )
         with _fake_claude(stdout=f"Progress...\n{result_json}\n"):
             session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -85,7 +95,29 @@ class TestRunHeadless(TestCase):
         assert "not installed" in attempt.error
         assert task.status == Task.Status.FAILED
 
-    def test_fails_when_no_json_in_successful_exit(self) -> None:
+    def test_summary_fallback_on_no_json_for_phase_without_evidence_requirement(self) -> None:
+        # #1284: when the agent emits no JSON, the fallback ``summary``
+        # capture path still completes the task IF the phase has no
+        # evidence requirement (``scoping``/``retro``). The "coding" case
+        # — where evidence IS required — is covered by
+        # ``test_no_json_fails_phase_with_evidence_requirement``.
+        with _fake_claude(stdout="no structured output\n"):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+
+            attempt = run_headless(task, phase="scoping", overlay_skill_metadata={})
+
+        task.refresh_from_db()
+        assert attempt.exit_code == 0
+        assert "no structured output" in attempt.result["summary"]
+        assert task.status == Task.Status.COMPLETED
+
+    def test_no_json_fails_phase_with_evidence_requirement(self) -> None:
+        # #1284 (codex #1282-6): the no-JSON fallback produces only a
+        # ``summary`` blob. On a phase that requires concrete evidence
+        # (``coding`` → ``files_modified``), that summary is not enough —
+        # the attempt must be recorded as failed so the agent retries
+        # with real evidence rather than silently advancing the FSM.
         with _fake_claude(stdout="no structured output\n"):
             session = Session.objects.create(ticket=self.ticket)
             task = Task.objects.create(ticket=self.ticket, session=session)
@@ -94,8 +126,8 @@ class TestRunHeadless(TestCase):
 
         task.refresh_from_db()
         assert attempt.exit_code == 0
-        assert "no structured output" in attempt.result["summary"]
-        assert task.status == Task.Status.COMPLETED
+        assert "files_modified" in attempt.error
+        assert task.status == Task.Status.FAILED
 
     def test_fails_when_result_violates_schema(self) -> None:
         bad_json = json.dumps({"summary": "OK", "rogue_field": True})
@@ -143,7 +175,12 @@ class TestRunHeadless(TestCase):
 
     def test_parses_cli_envelope_with_session_id(self) -> None:
         """When the CLI returns a JSON envelope, session_id is extracted and stored."""
-        result_json = json.dumps({"summary": "Work done"})
+        result_json = json.dumps(
+            {
+                "summary": "Work done",
+                "files_modified": [{"path": "src/x.py", "action": "modified"}],
+            },
+        )
         cli_envelope = json.dumps({"session_id": "sess-abc-123", "result": result_json})
 
         with _fake_claude(stdout=cli_envelope):
@@ -662,7 +699,12 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         spent = Task.objects.create(ticket=self.ticket, session=self.session)
         TaskAttempt.objects.create(task=spent, cost_usd=1.0)
         task = Task.objects.create(ticket=self.ticket, session=self.session)
-        result_json = json.dumps({"summary": "Done"})
+        result_json = json.dumps(
+            {
+                "summary": "Done",
+                "files_modified": [{"path": "src/x.py", "action": "modified"}],
+            },
+        )
 
         with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}), _fake_claude(stdout=f"{result_json}\n"):
             attempt = run_headless(task, phase="coding", overlay_skill_metadata={})

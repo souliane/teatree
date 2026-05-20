@@ -24,6 +24,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_headless_task_auto_executes_on_creation(self) -> None:
+        import json as _json  # noqa: PLC0415
         import shlex  # noqa: PLC0415
 
         import teatree.agents.headless as headless_mod  # noqa: PLC0415
@@ -31,12 +32,19 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
 
+        # #1284: ``coding`` phase requires ``files_modified`` evidence.
+        result_blob = _json.dumps(
+            {
+                "summary": "OK",
+                "files_modified": [{"path": "src/x.py", "action": "modified"}],
+            },
+        )
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
                 headless_mod,
                 "_build_headless_command",
-                return_value=["sh", "-c", f"printf %s {shlex.quote('{"summary": "OK"}')}"],
+                return_value=["sh", "-c", f"printf %s {shlex.quote(result_blob)}"],
             ),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
@@ -107,6 +115,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
     @override_settings(**IMMEDIATE_BACKEND)
     def test_route_to_headless_triggers_enqueue(self) -> None:
         """Re-routing an interactive task to headless triggers auto-enqueue."""
+        import json as _json  # noqa: PLC0415
         import shlex  # noqa: PLC0415
 
         import teatree.agents.headless as headless_mod  # noqa: PLC0415
@@ -122,12 +131,19 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         )
         assert task.status == Task.Status.PENDING
 
+        # #1284: ``coding`` phase requires ``files_modified`` evidence.
+        result_blob = _json.dumps(
+            {
+                "summary": "OK",
+                "files_modified": [{"path": "src/x.py", "action": "modified"}],
+            },
+        )
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
                 headless_mod,
                 "_build_headless_command",
-                return_value=["sh", "-c", f"printf %s {shlex.quote('{"summary": "OK"}')}"],
+                return_value=["sh", "-c", f"printf %s {shlex.quote(result_blob)}"],
             ),
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
         ):
