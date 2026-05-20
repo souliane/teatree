@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0028_scannedbroadcast"),
+        ("core", "0029_redcardsignal"),
     ]
 
     operations = [
