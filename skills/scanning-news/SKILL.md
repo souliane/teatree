@@ -106,11 +106,7 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 The teatree main loop owns periodic dispatch. Register `t3:scanning-news` as a daily task by adding it to the loop's periodic-task table. The intended invocation is:
 
-```bash
-t3 loop schedule-periodic --skill t3:scanning-news --cron "0 9 * * *" --args "--periodic"
-```
-
-If `t3 loop schedule-periodic` does not yet exist on the local install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).
+The periodic-scheduling hook is not yet wired into `t3 loop`; until it lands, follow `references/cron-fallback.md` (same shape as `t3:followup`'s cron block) to schedule the skill via an OS cron.
 
 ## Rules
 
