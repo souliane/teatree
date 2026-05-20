@@ -6,6 +6,7 @@ orchestrator under the module-health LOC gate; the orchestrator
 delegates to ``build_default_jobs`` and ``build_default_scanners``.
 """
 
+import datetime as _dt
 import logging
 import os
 import tomllib
@@ -49,9 +50,10 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
 )
-from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
+from teatree.notify import NotifyKind, notify_user
 
 logger = logging.getLogger(__name__)
 
@@ -322,10 +324,46 @@ def _run_job(job: _ScannerJob) -> tuple[str, list[ScanSignal], str]:
                 )
                 for s in signals
             ]
+    except ScannerError as exc:
+        # Auth / rate-limit / missing-scope / network: surface as a
+        # structured error and DM the user once per day per
+        # ``(scanner, error_class)`` so a sustained failure does not
+        # spam the channel (#1287). The dispatcher continues with the
+        # other scanners — only THIS scanner is skipped for one tick.
+        logger.warning("Scanner %s recoverable error: %s", label, exc)
+        _notify_scanner_error(label=label, exc=exc, overlay=job.overlay)
+        return label, [], f"ScannerError[{exc.error_class.value}]: {exc.detail or exc}"
     except Exception as exc:
         logger.exception("Scanner %s raised", label)
         return label, [], f"{type(exc).__name__}: {exc}"
     return label, signals, ""
+
+
+def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> None:
+    """DM the user that a scanner is degraded — once per day per class (#1287).
+
+    Idempotency key is ``scanner_error:<scanner>:<error_class>:<utc-date>``
+    so :func:`teatree.notify.notify_user`'s ``BotPing`` ledger dedups
+    repeat ticks of the same failure inside one UTC day. The next day
+    re-notifies — if the issue is still there, the user wants the
+    reminder; if it cleared, no DM goes out.
+
+    Best-effort: any failure inside the notify path is logged and
+    swallowed so a notify failure never reverberates into the tick.
+    """
+    today = _dt.datetime.now(_dt.UTC).date().isoformat()
+    key = f"scanner_error:{exc.scanner}:{exc.error_class.value}:{today}"
+    overlay_tag = f" [overlay={overlay}]" if overlay else ""
+    text = (
+        f":warning: scanner *{exc.scanner}* hit *{exc.error_class.value}*"
+        f"{overlay_tag} — this scanner is skipped for one tick."
+    )
+    if exc.detail:
+        text = f"{text}\n_{exc.detail}_"
+    try:
+        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+    except Exception:
+        logger.exception("Scanner-error notify_user failed for %s", label)
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:

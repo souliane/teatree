@@ -52,9 +52,29 @@ from teatree.backends.slack_token_validation import (
     assert_bot_token,
     assert_user_token,
 )
-from teatree.types import RawAPIDict
+from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
 
 __all__ = ["SlackBotBackend", "SlackOp", "TokenSlotMismatchError"]
+
+
+# Slack ``ok:false`` error codes that indicate the bot/user TOKEN is
+# globally broken (auth, missing scope, rate limit, deactivated). For
+# these the scanner must raise — silent fall-through to ``[]`` masks the
+# entire workspace integration (#1287). Channel-scoped failures
+# (``channel_not_found``, ``not_in_channel``, ``is_archived``) are NOT in
+# this set: those legitimately degrade to "one channel unreachable" and
+# keep the rest of the scan running.
+_GLOBAL_TOKEN_FAILURES: dict[str, ScannerErrorClass] = {
+    "invalid_auth": ScannerErrorClass.AUTH,
+    "not_authed": ScannerErrorClass.AUTH,
+    "token_expired": ScannerErrorClass.AUTH,
+    "token_revoked": ScannerErrorClass.AUTH,
+    "account_inactive": ScannerErrorClass.AUTH,
+    "missing_scope": ScannerErrorClass.MISSING_SCOPE,
+    "no_permission": ScannerErrorClass.MISSING_SCOPE,
+    "ratelimited": ScannerErrorClass.RATE_LIMIT,
+    "rate_limited": ScannerErrorClass.RATE_LIMIT,
+}
 
 type SlackPayload = dict[str, object]
 
@@ -408,6 +428,19 @@ class SlackBotBackend:
             token=token,
         )
         if not data.get("ok"):
+            error_code = str(data.get("error", ""))
+            # Global token failures (auth / missing scope / rate limit /
+            # deactivated) suppress every Slack scan — raise so the
+            # dispatcher records the error and DMs the user (#1287).
+            # Channel-scoped failures (``channel_not_found``,
+            # ``not_in_channel``, ``is_archived``) stay quiet per the
+            # #1255 "one slow channel never breaks the scan loop" design.
+            if error_code in _GLOBAL_TOKEN_FAILURES:
+                raise ScannerError(
+                    scanner="slack_broadcasts",
+                    error_class=_GLOBAL_TOKEN_FAILURES[error_code],
+                    detail=f"conversations.history on {channel}: {error_code}",
+                )
             return []
         messages = data.get("messages")
         if not isinstance(messages, list):

@@ -4,12 +4,65 @@ These types have no Django dependencies and no imports from ``teatree.core``,
 so they can be used by any layer without introducing cycles.
 """
 
+import enum
 import hashlib
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TypedDict
+
+
+class ScannerErrorClass(enum.StrEnum):
+    """Classes of recoverable scanner failure surfaced to the dispatcher (#1287).
+
+    Lives in :mod:`teatree.types` (no deps) so the messaging backend
+    layer can raise it without creating a ``teatree.backends →
+    teatree.loop`` import cycle. The :mod:`teatree.loop.scanners.base`
+    module re-exports it for callers that already import from the
+    scanner-protocol module.
+    """
+
+    AUTH = "auth"
+    RATE_LIMIT = "rate_limit"
+    MISSING_SCOPE = "missing_scope"
+    NETWORK = "network"
+    UNKNOWN = "unknown"
+
+
+class ScannerError(RuntimeError):
+    """A scanner failed with a recoverable upstream error (#1287).
+
+    Raised by a scanner (or by a backend method a scanner calls) when an
+    auth / rate-limit / missing-scope / network failure prevents it from
+    returning a meaningful signal list this tick. The dispatcher
+    (:func:`teatree.loop.tick_jobs._run_job`) catches it, records the
+    error on the tick report, DMs the user once per day per
+    ``(scanner, error_class)``, and skips THAT scanner for one tick —
+    the rest of the tick continues. The next tick re-tries the failing
+    scanner cleanly.
+
+    The empty-return convention is preserved for the case it was meant
+    for: genuinely empty data (no PRs, no approvals, no broadcasts).
+    The bug this exception class fixes is the conflation of the two
+    cases — previously a scanner that hit a 401 would return ``[]`` and
+    the dispatcher would read that as "nothing to do".
+    """
+
+    def __init__(
+        self,
+        *,
+        scanner: str,
+        error_class: ScannerErrorClass,
+        detail: str = "",
+    ) -> None:
+        self.scanner = scanner
+        self.error_class = error_class
+        self.detail = detail
+        message = f"{scanner}: {error_class.value}"
+        if detail:
+            message = f"{message} ({detail})"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
