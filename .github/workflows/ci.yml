@@ -43,6 +43,13 @@ jobs:
       - run: uv run mkdocs build --strict
 
   uv-audit:
+    # Job name preserved for compatibility with the PR-sweep scanner's
+    # ``--fallback-uv-audit`` escape hatch (see
+    # ``src/teatree/loop/scanners/pr_sweep.py`` ``UV_AUDIT_CHECK_NAME``).
+    # The inner command is ``pip-audit`` because ``uv audit`` is still
+    # a preview feature and astral-sh/uv#19492 (OSV parser regression)
+    # turned every PR red. ``pip-audit`` uses the same OSV backend and
+    # is production-stable. See souliane/teatree#1264.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -53,7 +60,8 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - run: uv audit --preview-features audit
+      - run: uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt
+      - run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt
 
   sbom:
     runs-on: ubuntu-latest

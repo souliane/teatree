@@ -254,13 +254,18 @@ repos:
         pass_filenames: false
         always_run: true
 
-  # Phase 8 - Slow (uv audit + SBOM, manual-only — CI runs them on every PR)
+  # Phase 8 - Slow (dependency audit + SBOM, manual-only — CI runs them on every PR)
   - repo: local
     hooks:
+      # Hook ``id`` kept as ``uv-audit`` so the PR-sweep scanner
+      # (``src/teatree/loop/scanners/pr_sweep.py``, ``UV_AUDIT_CHECK_NAME``)
+      # and ``SKIP=uv-audit`` references in CI keep working. Inner tool is
+      # ``pip-audit`` because ``uv audit`` is still preview and broke on
+      # astral-sh/uv#19492 — see souliane/teatree#1264.
       - id: uv-audit
-        name: uv audit
+        name: pip audit
         language: system
-        entry: uv audit --preview-features audit
+        entry: bash -c 'uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt && uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt; rc=$?; rm -f requirements.audit.txt; exit $rc'
         pass_filenames: false
         files: ^(pyproject\.toml|uv\.lock)$
         stages: [manual]
