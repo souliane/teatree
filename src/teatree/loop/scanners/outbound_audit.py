@@ -256,8 +256,34 @@ def _gitlab_note_verifier() -> Verifier | None:
     return _verify
 
 
+def _resolve_github_token() -> str:
+    """Resolve a GitHub PAT from env, falling back to the ``pass`` store.
+
+    Mirrors :func:`teatree.backends.gitlab_api._resolve_token` so the
+    GitHub-note verifier has the same credential pipeline the GitLab
+    verifier already relies on. An empty result means the verifier
+    factory will return ``None`` (no production verifier) and the
+    scanner skips ``github_note`` rows silently — never spam drift on a
+    credential gap (which on private repos would otherwise surface as a
+    404 indistinguishable from a missing comment).
+    """
+    import os  # noqa: PLC0415
+
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
+    if token:
+        return token
+    try:
+        from teatree.utils.secrets import read_pass  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return ""
+    try:
+        return read_pass("github/token") or read_pass("github/pat") or ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _github_note_verifier() -> Verifier | None:
-    """Build a GitHub-note verifier from the overlay's GitHub credentials (#1198).
+    """Build a GitHub-note verifier with the overlay's GitHub credentials (#1198).
 
     Confirms via ``GET repos/<repo>/issues/comments/<id>`` that the
     comment claimed in ``extra`` still exists and that its body hash
@@ -269,16 +295,21 @@ def _github_note_verifier() -> Verifier | None:
     (the comment is genuinely missing); any other transport-level error
     is re-raised so the scanner can skip the row silently rather than
     spamming DMs on a temporary GitHub-API outage.
+
+    Token-aware (#1198 codex finding): the verifier resolves the
+    posting token via :func:`_resolve_github_token` and passes it into
+    ``_gh_api_get``. Without an explicit token, ``gh api`` against a
+    private repo can return a 404 that is really "no auth", which the
+    verifier would otherwise mis-classify as drift. Empty-token →
+    return ``None`` and the scanner skips ``github_note`` rows silently.
     """
     try:
-        from teatree.backends.github import GitHubCodeHost, _gh_api_get  # noqa: PLC0415
+        from teatree.backends.github import _gh_api_get  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return None
-    try:
-        host = GitHubCodeHost()
-    except Exception:  # noqa: BLE001
+    token = _resolve_github_token()
+    if not token:
         return None
-    _ = host  # held only to surface auth/import errors uniformly with the GitLab verifier
 
     def _verify(claim: "OutboundClaimModel") -> VerifyResult:
         repo = str(claim.extra.get("repo", ""))
@@ -287,7 +318,7 @@ def _github_note_verifier() -> Verifier | None:
         if not (repo and artifact_id and artifact_id.isdigit()):
             return VerifyResult.ok()
         try:
-            data = _gh_api_get(f"repos/{repo}/issues/comments/{artifact_id}")
+            data = _gh_api_get(f"repos/{repo}/issues/comments/{artifact_id}", token=token)
         except Exception as exc:
             if _is_github_not_found(exc):
                 return VerifyResult.drift(
@@ -316,6 +347,11 @@ def _is_github_not_found(exc: BaseException) -> bool:
     to stderr (the exact phrasing has been stable since ``gh`` 2.x). We
     detect by substring match — looser than a strict regex but robust to
     the small wording variations ``gh`` has shipped over the years.
+
+    NOTE: an *unauthenticated* call to a private repo also surfaces as
+    404 to mask resource existence; that's why the factory rejects an
+    empty token up front rather than running with no auth. Once the
+    token is established, a 404 is meaningfully a missing-comment signal.
     """
     stderr = getattr(exc, "stderr", "") or ""
     return "HTTP 404" in stderr or "404 Not Found" in stderr

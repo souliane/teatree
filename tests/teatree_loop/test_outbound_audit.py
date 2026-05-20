@@ -744,7 +744,12 @@ class GitHubNoteVerifierTests(TestCase):
 
     Mirrors :class:`GitLabNoteVerifierTests` — proves each branch of the
     factory's error doctrine so the resilience contract is anti-vacuous.
+
+    Every test stubs :func:`_resolve_github_token` to "tok-test" so the
+    factory does not block on the codex-found credential check.
     """
+
+    _RESOLVE_PATH = "teatree.loop.scanners.outbound_audit._resolve_github_token"
 
     def test_returns_none_when_github_module_unimportable(self) -> None:
         import sys  # noqa: PLC0415
@@ -759,14 +764,18 @@ class GitHubNoteVerifierTests(TestCase):
             else:
                 sys.modules.pop("teatree.backends.github", None)
 
-    def test_returns_none_when_host_constructor_raises(self) -> None:
-        with patch("teatree.backends.github.GitHubCodeHost", side_effect=RuntimeError("no token")):
+    def test_returns_none_when_no_github_token_resolves(self) -> None:
+        """Codex-found gap: with no token a private-repo 404 is auth, not drift."""
+        with patch(self._RESOLVE_PATH, return_value=""):
             assert _github_note_verifier() is None
 
     def test_404_returns_drift(self) -> None:
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            side_effect=_gh_cmd_failed("HTTP 404: Not Found"),
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                side_effect=_gh_cmd_failed("HTTP 404: Not Found"),
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -781,9 +790,12 @@ class GitHubNoteVerifierTests(TestCase):
         assert "not found" in result.drift_reason
 
     def test_500_re_raises_so_scan_skips(self) -> None:
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -805,9 +817,12 @@ class GitHubNoteVerifierTests(TestCase):
             payload_digest=_hash_body("lgtm"),
         )
         notify = MagicMock()
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -820,9 +835,12 @@ class GitHubNoteVerifierTests(TestCase):
         notify.assert_not_called()
 
     def test_body_digest_mismatch_returns_drift(self) -> None:
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            return_value={"id": 42, "body": "tampered"},
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                return_value={"id": 42, "body": "tampered"},
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -840,9 +858,12 @@ class GitHubNoteVerifierTests(TestCase):
         assert "digest mismatch" in result.drift_reason
 
     def test_body_digest_match_returns_ok(self) -> None:
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            return_value={"id": 42, "body": "lgtm"},
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                return_value={"id": 42, "body": "lgtm"},
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -858,8 +879,35 @@ class GitHubNoteVerifierTests(TestCase):
             result = verifier(claim)
         assert result.verified is True
 
+    def test_verifier_forwards_resolved_token_to_gh_api_get(self) -> None:
+        """Codex-found gap: token must reach _gh_api_get or private 404s look like drift."""
+        captured: dict[str, str] = {}
+
+        def _fake_get(endpoint: str, *, token: str = "") -> dict[str, object]:
+            captured["endpoint"] = endpoint
+            captured["token"] = token
+            return {"id": 42, "body": "lgtm"}
+
+        with (
+            patch(self._RESOLVE_PATH, return_value="pat_abc"),
+            patch("teatree.backends.github._gh_api_get", side_effect=_fake_get),
+        ):
+            verifier = _github_note_verifier()
+            assert verifier is not None
+            claim = OutboundClaim(
+                kind=OutboundClaim.Kind.GITHUB_NOTE,
+                idempotency_key="github_note:org/repo#5:42",
+                extra={"repo": "org/repo", "artifact_id": "42", "payload_digest": _hash_body("lgtm")},
+            )
+            verifier(claim)
+        assert captured["token"] == "pat_abc"
+        assert captured["endpoint"] == "repos/org/repo/issues/comments/42"
+
     def test_returns_ok_when_extra_missing_required_fields(self) -> None:
-        with patch("teatree.backends.github._gh_api_get") as mock_get:
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch("teatree.backends.github._gh_api_get") as mock_get,
+        ):
             verifier = _github_note_verifier()
             assert verifier is not None
             claim = OutboundClaim(
@@ -872,7 +920,10 @@ class GitHubNoteVerifierTests(TestCase):
         mock_get.assert_not_called()
 
     def test_returns_ok_when_artifact_id_is_non_numeric(self) -> None:
-        with patch("teatree.backends.github._gh_api_get") as mock_get:
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch("teatree.backends.github._gh_api_get") as mock_get,
+        ):
             verifier = _github_note_verifier()
             assert verifier is not None
             claim = OutboundClaim(
@@ -884,7 +935,10 @@ class GitHubNoteVerifierTests(TestCase):
         mock_get.assert_not_called()
 
     def test_non_dict_payload_returns_drift(self) -> None:
-        with patch("teatree.backends.github._gh_api_get", return_value=[]):
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch("teatree.backends.github._gh_api_get", return_value=[]),
+        ):
             verifier = _github_note_verifier()
             assert verifier is not None
             claim = OutboundClaim(
@@ -898,9 +952,12 @@ class GitHubNoteVerifierTests(TestCase):
 
     def test_empty_payload_digest_skips_body_check(self) -> None:
         """Claims with no digest (legacy / extra-stripped) still verify on existence."""
-        with patch(
-            "teatree.backends.github._gh_api_get",
-            return_value={"id": 42, "body": "anything"},
+        with (
+            patch(self._RESOLVE_PATH, return_value="tok-test"),
+            patch(
+                "teatree.backends.github._gh_api_get",
+                return_value={"id": 42, "body": "anything"},
+            ),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -911,6 +968,42 @@ class GitHubNoteVerifierTests(TestCase):
             )
             result = verifier(claim)
         assert result.verified is True
+
+
+class ResolveGithubTokenTests(TestCase):
+    """:func:`_resolve_github_token` reads env → pass in order, defaulting to ''."""
+
+    def test_returns_gh_token_env_when_set(self) -> None:
+        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+
+        with patch.dict("os.environ", {"GH_TOKEN": "from-env"}, clear=False):
+            assert _resolve_github_token() == "from-env"
+
+    def test_falls_back_to_github_token_env(self) -> None:
+        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+
+        env = {"GITHUB_TOKEN": "alt-env"}
+        # ensure GH_TOKEN absent
+        with patch.dict("os.environ", env, clear=True):
+            assert _resolve_github_token() == "alt-env"
+
+    def test_falls_back_to_pass_when_env_empty(self) -> None:
+        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.utils.secrets.read_pass", return_value="from-pass"),
+        ):
+            assert _resolve_github_token() == "from-pass"
+
+    def test_returns_empty_when_pass_lookup_raises(self) -> None:
+        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("teatree.utils.secrets.read_pass", side_effect=RuntimeError("no pass")),
+        ):
+            assert _resolve_github_token() == ""
 
 
 class GitHubNoteSettlingWindowTests(TestCase):
