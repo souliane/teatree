@@ -134,11 +134,10 @@ class TestExtractPublishPayloadBash:
     def test_curl_chat_post_message_is_a_publish_surface(self) -> None:
         cmd = 'curl -X POST https://slack.com/api/chat.postMessage -d \'{"text":"the user said: ship it now"}\''
         payload = extract_publish_payload("Bash", {"command": cmd})
-        # The body is JSON inside a single-quoted arg — no --body flag,
-        # no heredoc — so the parser legitimately captures nothing.
-        # The publish-surface predicate still fires so the gate runs;
-        # an empty payload simply produces no findings.
+        # The curl ``-d`` flag is parsed by :func:`_extract_curl_payloads`
+        # so the JSON ``text`` field is included in the scan payload.
         assert payload is not None
+        assert "the user said" in payload
 
 
 class TestT3PublishCommands:
@@ -178,6 +177,132 @@ class TestQuoteOkOverride:
         # its own, so the override does not fire.
         cmd = 'gh pr create --title t --body "discussion of --quote-ok semantics"'
         assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_quote_ok_smuggled_after_shell_comment_is_rejected(self) -> None:
+        # Codex CRITICAL #1: ``# --quote-ok`` after a publish command must
+        # NOT bypass the gate. ``shlex.split`` must strip comments.
+        cmd = 'gh issue comment 1 --body "leak" # --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_quote_ok_smuggled_after_metacharacter_is_rejected(self) -> None:
+        # Override must not fire when it lives after a shell metacharacter
+        # — even if it parses as a token, it is not part of the publish
+        # invocation we are gating.
+        for metachar in (";", "|", "&&"):
+            cmd = f'gh issue comment 1 --body "leak" {metachar} echo --quote-ok'
+            assert has_quote_ok_override("Bash", {"command": cmd}) is False, (
+                f"override smuggled after {metachar!r} must be rejected"
+            )
+
+
+class TestBypassClosures:
+    """Regression tests for codex-found bypass paths (#1213 review)."""
+
+    # --- CRITICAL #2: glab note without 'create' segment ---
+
+    def test_glab_mr_note_no_create_is_a_publish_surface(self) -> None:
+        cmd = 'glab mr note 42 -m "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_glab_issue_note_no_create_is_a_publish_surface(self) -> None:
+        cmd = 'glab issue note 17 -m "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- CRITICAL #3: gh short -b body flag ---
+
+    def test_gh_pr_comment_short_b_body_is_parsed(self) -> None:
+        cmd = 'gh pr comment 5 -b "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_gh_issue_comment_short_b_body_is_parsed(self) -> None:
+        cmd = 'gh issue comment 5 -b "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- CRITICAL #4: gh api / glab api comment POSTs ---
+
+    def test_gh_api_is_a_publish_surface_with_field_body(self) -> None:
+        cmd = 'gh api repos/x/y/issues/1/comments -f body="## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_gh_api_uppercase_f_field_body_is_parsed(self) -> None:
+        cmd = 'gh api repos/x/y/issues/1/comments -F body="## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_gh_api_raw_field_body_is_parsed(self) -> None:
+        cmd = 'gh api repos/x/y/issues/1/comments --raw-field body="## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_glab_api_is_a_publish_surface_with_field_body(self) -> None:
+        cmd = 'glab api projects/1/issues/1/notes -f body="## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_gh_api_input_file_payload_is_read(self, tmp_path: Path) -> None:
+        body_path = tmp_path / "comment.json"
+        body_path.write_text('{"body": "## User mandate\\nship it"}', encoding="utf-8")
+        cmd = f"gh api repos/x/y/issues/1/comments --input {body_path}"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- CRITICAL #5: curl data-flag JSON parsing ---
+
+    def test_curl_data_flag_json_text_field_is_parsed(self) -> None:
+        cmd = 'curl -X POST https://slack.com/api/chat.postMessage -d \'{"text":"## User mandate\\nplease ship"}\''
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_curl_data_raw_flag_json_message_field_is_parsed(self) -> None:
+        cmd = (
+            "curl -X POST https://slack.com/api/chat.postMessage "
+            '--data-raw \'{"message":"## User mandate\\nplease ship"}\''
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_curl_json_flag_body_field_is_parsed(self) -> None:
+        cmd = 'curl -X POST https://example.com/api/comments --json \'{"body":"## User mandate\\nplease ship"}\''
+        # The --json curl flag is publish-shaped here only if the URL
+        # matches an external publish surface — but for this test the
+        # parser shouldn't care about the URL, it just needs to extract
+        # the body. We assert via _extract_bash_payload directly.
+        from teatree.hooks.quote_scanner import _extract_bash_payload  # noqa: PLC0415
+
+        body = _extract_bash_payload(cmd)
+        assert "User mandate" in body
+
+    def test_curl_data_flag_unparseable_json_fails_closed(self) -> None:
+        # Fail-closed: when curl carries a data flag we cannot parse,
+        # the payload must contain a sentinel string that will trip the
+        # HIGH gate (we use the well-known HIGH pattern so the test does
+        # not depend on a new pattern). Specifically: a `the user said:`
+        # marker so any reviewer sees the gate blocked.
+        cmd = "curl -X POST https://slack.com/api/chat.postMessage -d @some-binary-file"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        # The fail-closed sentinel deliberately matches a HIGH pattern so
+        # downstream ``scan_text`` produces a deny decision.
+        scan = scan_text(payload)
+        assert scan.has_high, (
+            f"unparsable curl data must fail closed via a HIGH-matching sentinel; got payload={payload!r}"
+        )
 
 
 class TestHookHandlerEndToEnd:

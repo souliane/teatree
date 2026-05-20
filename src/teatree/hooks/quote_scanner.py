@@ -244,14 +244,25 @@ _BASH_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "glab issue create",
     "glab issue update",
     "glab issue note create",
+    # ``glab issue note <id>`` (no ``create`` segment) is the real
+    # comment subcommand — trailing space pins the substring to the
+    # subcommand boundary so ``glab issue notebook`` would not match.
+    "glab issue note ",
     "glab mr create",
     "glab mr update",
     "glab mr note create",
+    "glab mr note ",
     "git commit -m",
     "git commit --message",
     "git commit -F",
     "git commit --file",
     "git tag --message",
+    # ``gh api`` / ``glab api`` POST/PATCH calls land on REST endpoints
+    # that publish issue/PR/MR comments. The payload is carried via
+    # ``-f``/``-F``/``--raw-field``/``--field``/``--input`` and parsed
+    # by :func:`_extract_bash_payload`.
+    "gh api ",
+    "glab api ",
     "chat.postMessage",
 )
 
@@ -293,6 +304,11 @@ _FLAG_VALUE_RE: Final[re.Pattern[str]] = re.compile(
     re.DOTALL,
 )
 _SHORT_M_RE: Final[re.Pattern[str]] = re.compile(r"\s-m\s+(['\"])(.*?)\1", re.DOTALL)
+# ``gh pr comment`` / ``gh issue comment`` use ``-b`` for the body. We
+# only ever invoke the short-flag parser from inside a publish surface
+# (``_is_publish_command`` already gated us), so a global ``-b`` shape
+# match is safe.
+_SHORT_B_RE: Final[re.Pattern[str]] = re.compile(r"\s-b\s+(['\"])(.*?)\1", re.DOTALL)
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
     r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
     re.DOTALL,
@@ -301,6 +317,35 @@ _FILE_FLAG_RE: Final[re.Pattern[str]] = re.compile(
     r"(?:--body-file|--description-file|--file)[ =]+(\S+)",
 )
 _GIT_SHORT_F_RE: Final[re.Pattern[str]] = re.compile(r"\s-F[ =]?(\S+)")
+
+# ``gh api`` / ``glab api`` carry their JSON payload in ``-f key=value``
+# (string), ``-F key=value`` / ``--field`` (typed), ``--raw-field`` (raw
+# string), or ``--input <file>`` (full JSON blob). We pluck any
+# ``body=…`` assignment regardless of quoting, then read ``--input``
+# files separately and scan a ``body`` JSON field.
+_API_FIELD_BODY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:-f|-F|--field|--raw-field)\s+body=(['\"])?(.*?)(?(1)\1|(?=\s|$))",
+    re.DOTALL,
+)
+_API_INPUT_FILE_RE: Final[re.Pattern[str]] = re.compile(r"--input[ =]+(\S+)")
+
+# curl carries its payload in ``-d`` / ``--data`` / ``--data-raw`` /
+# ``--data-binary`` / ``--json``. The body is JSON-shaped for the Slack
+# / GitLab / GitHub surfaces this gate cares about — we JSON-decode and
+# scan the ``text``/``message``/``body`` fields.
+_CURL_DATA_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:--data-raw|--data-binary|--data|--json|\s-d)\s+(['\"])(.*?)\1",
+    re.DOTALL,
+)
+# When curl's data flag references a file (``-d @path``) or stdin
+# (``-d @-``) we cannot inspect the body in-process. Fail closed by
+# returning a sentinel payload that trips the HIGH gate.
+_CURL_DATA_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:--data-raw|--data-binary|--data|--json|\s-d)\s+@(\S+)",
+)
+_CURL_FAIL_CLOSED_SENTINEL: Final[str] = (
+    "the user said: pre-publish quote-scanner could not parse curl data flag — fail closed"
+)
 
 
 def _read_file_arg(path: str) -> str | None:
@@ -339,12 +384,60 @@ def _extract_bash_payload(command: str) -> str:
     """
     parts: list[str] = [match.group(2) for match in _FLAG_VALUE_RE.finditer(command)]
     parts.extend(match.group(2) for match in _SHORT_M_RE.finditer(command))
+    parts.extend(match.group(2) for match in _SHORT_B_RE.finditer(command))
     parts.extend(match.group(2) for match in _HEREDOC_RE.finditer(command))
+    parts.extend(match.group(2) for match in _API_FIELD_BODY_RE.finditer(command))
+    parts.extend(_extract_curl_payloads(command))
     for match in (*_FILE_FLAG_RE.finditer(command), *_GIT_SHORT_F_RE.finditer(command)):
         content = _read_file_arg(match.group(1))
         if content is not None:
             parts.append(content)
+    for match in _API_INPUT_FILE_RE.finditer(command):
+        content = _read_file_arg(match.group(1))
+        if content is None:
+            continue
+        parts.append(content)
+        parts.extend(_json_body_fields(content))
     return "\n".join(parts)
+
+
+def _json_body_fields(blob: str) -> list[str]:
+    """Return ``text``/``message``/``body`` values from a JSON blob, if any."""
+    try:
+        decoded = json.loads(blob)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(decoded, dict):
+        return []
+    return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
+
+
+def _extract_curl_payloads(command: str) -> list[str]:
+    """Parse curl ``-d``/``--data``/``--data-raw``/``--json`` JSON bodies.
+
+    The body is JSON-decoded and the ``text``/``message``/``body`` fields
+    are extracted. When curl carries a data flag we cannot inspect — a
+    file reference (``@path``), stdin (``@-``), or an unparsable body —
+    the parser appends a fail-closed sentinel that trips the HIGH gate.
+    The sentinel is the explicit ``fail-closed`` behaviour from the
+    Codex CRITICAL #5 finding.
+    """
+    payloads: list[str] = []
+    for match in _CURL_DATA_RE.finditer(command):
+        raw = match.group(2)
+        # Always include the raw text — the scanner's pattern catalogue
+        # can match user-attributed prose even outside JSON shapes.
+        payloads.append(raw)
+        json_fields = _json_body_fields(raw)
+        if json_fields:
+            payloads.extend(json_fields)
+        elif raw.strip().startswith(("{", "[")):
+            # Looked like JSON but did not decode — fail closed.
+            payloads.append(_CURL_FAIL_CLOSED_SENTINEL)
+    # File-/stdin-referenced data flags cannot be inspected in-process.
+    if _CURL_DATA_FILE_RE.search(command):
+        payloads.append(_CURL_FAIL_CLOSED_SENTINEL)
+    return payloads
 
 
 # ── Override + ledger ──────────────────────────────────────────────
@@ -362,11 +455,23 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         try:
-            tokens = shlex.split(command, comments=False, posix=True)
+            # ``comments=True`` strips ``# …`` so a smuggled
+            # ``# --quote-ok`` after the publish command does not become
+            # a real token (Codex CRITICAL #1).
+            tokens = shlex.split(command, comments=True, posix=True)
         except ValueError:
             tokens = command.split()
-        if "--quote-ok" in tokens:
-            return True
+        # The override is valid only when it lives in the FIRST shell
+        # segment — i.e. before any metacharacter that would route the
+        # remainder to a separate command. ``shlex`` keeps ``;``, ``|``,
+        # ``&``, ``&&`` and ``||`` as standalone tokens, so we just look
+        # for ``--quote-ok`` strictly before the first such token.
+        meta_tokens = {";", "|", "&", "&&", "||"}
+        for entry in tokens:
+            if entry in meta_tokens:
+                break
+            if entry == "--quote-ok":
+                return True
     env = tool_input.get("env") or {}
     return env.get("QUOTE_OK", "").strip() == "1"
 
