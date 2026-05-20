@@ -1,0 +1,207 @@
+"""Periodic scanning-news scanner — #1191.
+
+Companion to the ``scanning-news`` skill (#1190): the loop should fire a
+daily ``scanning_news`` task that runs the news-scan / improvement-ideas
+workflow without depending on an external cron. The scanner mirrors the
+shape of :mod:`teatree.loop.scanners.architectural_review` but is
+deliberately simpler:
+
+* **Single trigger.** Only a cadence (``scanning_news_cadence_hours``,
+    default 24h). There is no after-merge backstop — news scanning is a
+    fixed-rate platform behaviour, not coupled to delivery velocity.
+* **Single overlay anchor.** The task is always anchored to the
+    ``teatree`` overlay (the skill belongs to teatree-core); the wiring
+    layer attaches the scanner globally, not per-overlay.
+* **Same dedup contract.** A pending or claimed ``scanning_news`` task
+    acts as the lock — completion (or failure) unlocks the next cadence
+    window. No new model fields; the ``Session.started_at`` of the most
+    recent task is the "last run" timestamp (same trick as
+    ``architectural_review``).
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+
+from django.apps import apps
+from django.db import transaction
+from django.db.models import Max
+from django.utils import timezone
+
+from teatree.loop.scanners.base import ScanSignal
+
+if TYPE_CHECKING:
+    from teatree.core.models import Session as _Session
+    from teatree.core.models import Task as _Task
+    from teatree.core.models import Ticket as _Ticket
+
+logger = logging.getLogger(__name__)
+
+#: Canonical phase token written to ``Task.phase`` for scanning-news tasks.
+SCANNING_NEWS_PHASE = "scanning_news"
+
+#: The scanning-news skill is teatree-core; tasks are always anchored on
+#: the ``teatree`` overlay placeholder ticket.
+SCANNING_NEWS_OVERLAY = "teatree"
+
+#: States that mean a news task is still in-flight (cannot queue a dupe).
+_IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
+
+
+@dataclass(slots=True)
+class ScanningNewsScanner:
+    """Queue a periodic ``scanning_news`` task for the teatree overlay.
+
+    Configuration fields are passed explicitly (rather than read from a
+    global at scan time) so test setup is deterministic and the wiring
+    layer is the single place that resolves
+    :class:`teatree.config.UserSettings` to scanner kwargs. The on/off
+    decision lives at the wiring layer (``scanning_news_disabled`` in
+    core config); the scanner itself always scans when invoked.
+    """
+
+    skill: str = "scanning-news"
+    cadence_hours: int = 24
+    name: str = "scanning_news"
+
+    def scan(self) -> list[ScanSignal]:
+        if self._in_flight_task_exists():
+            return []
+
+        now = timezone.now()
+        last_run_at = self._last_run_at()
+        trigger = self._evaluate_trigger(now=now, last_run_at=last_run_at)
+        if trigger is None:
+            return []
+
+        task = self._queue_task(trigger=trigger)
+        if task is None:
+            return []
+        return [
+            ScanSignal(
+                kind="scanning_news.queued",
+                summary=f"scanning-news queued for {SCANNING_NEWS_OVERLAY} (trigger: {trigger})",
+                payload={
+                    "overlay": SCANNING_NEWS_OVERLAY,
+                    "skill": self.skill,
+                    "phase": SCANNING_NEWS_PHASE,
+                    "task_id": task.pk,
+                    "trigger": trigger,
+                },
+            ),
+        ]
+
+    @staticmethod
+    def _in_flight_task_exists() -> bool:
+        """True iff a pending/claimed scanning-news task already exists."""
+        task_model = _task_model()
+        if task_model is None:
+            return False
+        return task_model.objects.filter(
+            ticket__overlay=SCANNING_NEWS_OVERLAY,
+            phase=SCANNING_NEWS_PHASE,
+            status__in=_IN_FLIGHT_TASK_STATES,
+        ).exists()
+
+    @staticmethod
+    def _last_run_at() -> object:
+        """Return the most recent task's Session.started_at, or None.
+
+        ``None`` when no prior scanning-news task has been recorded — the
+        bootstrap case where the cadence is trivially elapsed.
+        """
+        task_model = _task_model()
+        if task_model is None:
+            return None
+        aggregate = task_model.objects.filter(
+            ticket__overlay=SCANNING_NEWS_OVERLAY,
+            phase=SCANNING_NEWS_PHASE,
+        ).aggregate(ts=Max("session__started_at"))
+        return aggregate["ts"]
+
+    def _evaluate_trigger(self, *, now: object, last_run_at: object) -> str | None:
+        """Return the trigger name (``bootstrap`` / ``cadence``) or None."""
+        if last_run_at is None:
+            return "bootstrap"
+        # ``now`` and ``last_run_at`` are ``datetime``s in practice;
+        # typed as ``object`` here to stay decoupled from ``Max()``'s
+        # return shape on the type checker. The subtraction is what
+        # matters, not the static type.
+        elapsed_hours = (now - last_run_at).total_seconds() / 3600.0  # type: ignore[operator]
+        if elapsed_hours >= self.cadence_hours:
+            return "cadence"
+        return None
+
+    def _queue_task(self, *, trigger: str) -> "_Task | None":
+        """Create a Task + Session row anchored at the teatree placeholder ticket.
+
+        Wrapped in ``transaction.atomic()`` so a concurrent scanner on a
+        second loop process can't double-queue: the in-flight check and
+        the insert run under one DB transaction. A DB error is logged
+        but never raised — losing one tick's news queue is acceptable;
+        crashing the tick is not.
+        """
+        ticket_model = _ticket_model()
+        task_model = _task_model()
+        session_model = _session_model()
+        if ticket_model is None or task_model is None or session_model is None:
+            return None
+        try:
+            with transaction.atomic():
+                ticket, _created = ticket_model.objects.get_or_create(
+                    issue_url=_placeholder_issue_url(),
+                    defaults={"overlay": SCANNING_NEWS_OVERLAY, "role": "author"},
+                )
+                # Keep the overlay tag canonical even if the placeholder
+                # ticket pre-dates the scanning-news rollout.
+                if ticket.overlay != SCANNING_NEWS_OVERLAY:
+                    ticket.overlay = SCANNING_NEWS_OVERLAY
+                    ticket.save(update_fields=["overlay"])
+                session = session_model.objects.create(
+                    overlay=SCANNING_NEWS_OVERLAY,
+                    ticket=ticket,
+                    agent_id=f"scanning-news-{SCANNING_NEWS_OVERLAY}",
+                )
+                return task_model.objects.create(
+                    ticket=ticket,
+                    session=session,
+                    phase=SCANNING_NEWS_PHASE,
+                    execution_target=task_model.ExecutionTarget.HEADLESS,
+                    execution_reason=f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}",
+                )
+        except Exception:
+            logger.exception("ScanningNewsScanner: failed to queue scanning-news task")
+            return None
+
+
+def _placeholder_issue_url() -> str:
+    """Stable synthetic URL for the teatree-overlay placeholder ticket."""
+    return f"scanning-news://{SCANNING_NEWS_OVERLAY}"
+
+
+def _ticket_model() -> "type[_Ticket] | None":
+    try:
+        return cast("type[_Ticket]", apps.get_model("core", "Ticket"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _task_model() -> "type[_Task] | None":
+    try:
+        return cast("type[_Task]", apps.get_model("core", "Task"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _session_model() -> "type[_Session] | None":
+    try:
+        return cast("type[_Session]", apps.get_model("core", "Session"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+__all__ = [
+    "SCANNING_NEWS_OVERLAY",
+    "SCANNING_NEWS_PHASE",
+    "ScanningNewsScanner",
+]

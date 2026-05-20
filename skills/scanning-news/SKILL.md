@@ -104,9 +104,18 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 ## Scheduling via the teatree main loop
 
-The teatree main loop owns periodic dispatch via scanners. A dedicated `scanning_news` scanner (mirroring `architectural_review`) queues a `phase=scanning_news` Task once per `scanning_news_cadence_hours` (default 24); the loop dispatches that Task to this skill.
+The teatree main loop owns periodic dispatch. The `ScanningNewsScanner` (in `teatree.loop.scanners.scanning_news`) fires once every 24 hours by default and queues a `scanning_news` Task; the dispatcher then routes it to this skill via the `_SUBAGENT_BY_PHASE` table in `loop_dispatch.py`.
 
-Until that scanner ships, the cron fallback in `references/cron-fallback.md` runs the skill daily with the same `--periodic` shape used by `t3:followup`.
+Tune the cadence or disable the scanner via `[teatree]` in `~/.teatree.toml`:
+
+```toml
+[teatree]
+scanning_news_disabled = false
+scanning_news_skill = "scanning-news"
+scanning_news_cadence_hours = 24
+```
+
+If the loop scanner is not yet wired on an older install, the fallback path is documented in `references/cron-fallback.md` (same shape as `t3:followup`'s cron block).
 
 ## Rules
 
