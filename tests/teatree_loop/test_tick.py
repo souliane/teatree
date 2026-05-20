@@ -130,7 +130,11 @@ def test_tick_meta_includes_freshness(tmp_path: Path, monkeypatch: pytest.Monkey
 
 def test_build_default_scanners_starts_with_pending_tasks_incoming_events_outbound_audit() -> None:
     scanners: list[Scanner] = build_default_scanners(host=None, messaging=None)
-    assert [s.name for s in scanners] == ["pending_tasks", "incoming_events", "outbound_audit"]
+    # #1191 added scanning_news as a fourth always-on global scanner; the
+    # previous three must remain at the head of the list so existing
+    # ordering contracts (FIFO write to the statusline buffer) hold.
+    assert [s.name for s in scanners[:3]] == ["pending_tasks", "incoming_events", "outbound_audit"]
+    assert "scanning_news" in {s.name for s in scanners}
 
 
 def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
