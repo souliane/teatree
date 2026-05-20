@@ -17,6 +17,7 @@ from teatree.config import discover_overlays, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
+    ArchitecturalReviewScanner,
     AssignedIssuesScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
@@ -138,6 +139,30 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                 ),
             )
     return jobs
+
+
+def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
+    """Build a per-overlay architectural-review scanner from the overlay config.
+
+    Returns ``None`` for overlays with no Python class (TOML-only) or with
+    the feature disabled — the four settings live on
+    :class:`teatree.core.overlay.OverlayConfig` and can't be resolved
+    without an overlay instance. The on/off gate is duplicated inside the
+    scanner so even a manually-constructed scanner respects ``enabled``.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    cfg = overlay.config
+    if not getattr(cfg, "architectural_review_enabled", False):
+        return None
+    return ArchitecturalReviewScanner(
+        overlay_name=backend.name,
+        enabled=True,
+        skill=str(getattr(cfg, "architectural_review_skill", "ac-reviewing-codebase")),
+        cadence_hours=int(getattr(cfg, "architectural_review_cadence_hours", 168)),
+        after_merge_count=int(getattr(cfg, "architectural_review_after_merge_count", 25)),
+    )
 
 
 def _gitlab_approvals_enabled() -> bool:
@@ -264,6 +289,13 @@ def build_default_jobs(
             # other (#976). The single-host path is preserved by iterating
             # ``backend.hosts`` (which is empty when no token resolved).
             jobs.extend(_jobs_for_backend_hosts(backend, tag))
+            # #1136 Periodic architectural-review scanner. Opt-in per overlay
+            # via ``architectural_review_enabled``; off by default. Wired
+            # here (per overlay, not per host) because the cadence is over
+            # the overlay's ticket flow, not per-forge.
+            arch_scanner = _architectural_review_scanner_for(backend)
+            if arch_scanner is not None:
+                jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
             if backend.messaging is not None:
                 jobs.extend(
                     [
