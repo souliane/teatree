@@ -1122,8 +1122,10 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot  Register or update a per-overlay Slack bot and store its tokens   │
-│            via ``pass``.                                                     │
+│ slack-bot         Register or update a per-overlay Slack bot and store its   │
+│                   tokens via ``pass``.                                       │
+│ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
+│                   via ``pass``.                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1147,6 +1149,21 @@ Usage: t3 setup slack-bot [OPTIONS]
 │                                   ~/.teatree.toml).                          │
 │                                   [default: /Users/adrien/.teatree.toml]     │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-user-token`
+
+```
+Usage: t3 setup slack-user-token [OPTIONS]
+
+ Re-authorize the personal Slack xoxp token and store it via ``pass``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reset               Overwrite the existing token without prompting.        │
+│ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
+│                       [default: /Users/adrien/.teatree.toml]                 │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1360,8 +1377,6 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
-│ dashboard      Render the tabular per-tick dashboard, optionally DM it to    │
-│                the user.                                                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
@@ -1418,32 +1433,6 @@ Usage: t3 loop status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 loop dashboard`
-
-```
-Usage: t3 loop dashboard [OPTIONS]
-
- Render the tabular per-tick dashboard, optionally DM it to the user.
-
- Default is print-to-stdout for piping or visual inspection. Pass
- ``--send-to-slack`` to additionally route the rendered table via
- :func:`teatree.notify.notify_user` (#963) — the send is idempotent
- per ``content_hash + 5-min-bucketed tick_ts`` so re-runs never spam.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --send-to-slack               Send the rendered dashboard to the user's      │
-│                               Slack DM via the bot.                          │
-│ --format                TEXT  Output format: 'markdown' (stdout, default) or │
-│                               'slack' (mrkdwn).                              │
-│                               [default: markdown]                            │
-│ --source                PATH  Override the tick-actions sidecar path (test   │
-│                               hook).                                         │
-│ --self-dm-marker              Tag the slack_dm row with '(this DM)' —        │
-│                               matches manual dashboard form.                 │
-│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

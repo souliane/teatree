@@ -4,10 +4,6 @@ description: Push retro improvements to a branch, open a PR, and optionally crea
 compatibility: macOS/Linux, git, gh CLI (for PRs and upstream issues).
 requires:
   - retro
-triggers:
-  priority: 90
-  keywords:
-    - '\b(t3.?contribute|push improvements?|push skills?|contribute upstream)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

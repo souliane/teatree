@@ -8,14 +8,6 @@ requires:
   - code
 companions:
   - requesting-code-review
-triggers:
-  priority: 40
-  keywords:
-    - '\b(review|check the code|check my code|feedback|quality check|code review)\b'
-search_hints:
-  - review
-  - feedback
-  - check the code
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -333,12 +325,20 @@ Speculative questions ("is this correct?", "could this cause issues?") without e
 
 **Formatting rules:**
 
-- **Single terse inline nit on a colleague MR.** On a colleague's MR (the MR's author is not your identity), the binding shape for an on-behalf review is **one terse `Nit:`-prefixed inline comment anchored on the file:line that motivated it** — never a multi-paragraph MR-level prose note. Enforced structurally by the colleague-MR shape gate in `src/teatree/cli/review_shape_gate.py` (souliane/teatree#1114): MR-level prose on a colleague MR is capped at 2 sentences / 280 chars, inline notes at 4 sentences; the gate refuses the post with steering text before any GitLab API call. Own-MR reviews are exempt (long-form self-review summaries are fine).
+- **Single terse inline nit on a colleague MR.** On a colleague's MR (the MR's author is not your identity), the binding shape for an on-behalf review is **one terse `Nit:`-prefixed inline comment anchored on the file:line that motivated it** — never a multi-section Problem/Fix/Verification dump. Enforced structurally by the colleague-MR shape gate in `src/teatree/cli/review_shape_gate.py` (souliane/teatree#1114, loosened in #1159): the body is capped at 3 blank-line-separated paragraphs and 200 words; the gate refuses the post with steering text before any GitLab API call. Multi-sentence findings are fine — the cap targets abuse (multi-section dumps), not legitimate ≤3-sentence nits. Own-MR reviews are exempt (long-form self-review summaries are fine).
 - **Prefix nits.** When a comment is nitpicking (style, naming, minor preference), prefix with `Nit:` so the author knows it's non-blocking.
 - **Backticks for code.** Always wrap code symbols, class names, method names, variable names, file paths, and CLI commands in backticks (`` ` ``).
 - **Use suggestion blocks for concrete code changes.** When you have a specific replacement in mind, use the platform's suggestion feature (` ```suggestion ` fenced block on both GitLab and GitHub) so the author can accept with one click. GitLab supports `:-N+M` to expand the range. Combine explanation text **before** the suggestion block.
 - **Readable structure for longer comments.** Use empty lines to separate distinct sections (problem, suggestion, example). Within a section, use line breaks between sentences (without empty lines) to keep things scannable. Short comments stay on one line — don't over-structure a one-liner.
 - **No walls of text.** If a comment needs more than ~5 lines, break it up visually. Paragraphs, not monoliths.
+
+**Author-Marked TODO/FIXME — Never a Blocker (Non-Negotiable):**
+
+A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `// HACK`, `# HACK` marker on an added line — or the phrases "not in this MR", "follow-up", "deferred", "implement later", "out of scope" — is the **author explicitly documenting that the work is deferred**. NEVER post a blocker-shaped (REQUEST_CHANGES) comment anchored to (or within ±3 lines of) such a marker. The strongest verdict allowed is a non-blocker comment, and only when it adds genuinely new context (e.g. "tracked at [#NNN]") — not re-stating what the author already said.
+
+`t3 review post-comment` and `post-draft-note` enforce this deterministically via `src/teatree/cli/review_todo_gate.py` (souliane/teatree#1186): a blocker-shaped body anchored on a TODO-adjacent line is REFUSED with a clear error before any GitLab API call. If you genuinely believe the TODO must be addressed in THIS MR (rare — the author knows their scope), STOP and surface to the user — never post on their identity.
+
+Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code. RED CARD !6192 (2026-05-20).
 
 **Step 3 — Post Draft Review Comments:**
 
