@@ -141,10 +141,33 @@ class ShipExecutor(RunnerBase):
             return RunnerResult(ok=False, detail=currency_error)
 
         git.push(repo=repo_path, remote="origin", branch=branch)
-
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
+        return self._open_pr_and_record(ticket, extra, host, spec, branch)
+
+    def _open_pr_and_record(
+        self,
+        ticket: "Ticket",
+        extra: "TicketExtra",
+        host: "CodeHostBackend",
+        spec: PullRequestSpec,
+        branch: str,
+    ) -> RunnerResult:
+        """Open the PR, verify the URL is present, and record it on the ticket.
+
+        #1222 / #1226 verify-by-re-read: a backend that returns a payload
+        without a URL (or with the wrong field name) MUST surface as
+        ``ok=False`` — otherwise the FSM advances to SHIPPED with an empty
+        ``pr_urls`` entry and downstream gates think no PR exists.
+        ``web_url`` is the cross-host canonical key; ``html_url`` is kept
+        for raw GitHub API payloads piped through other producers.
+        """
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
+        if not url.startswith(("http://", "https://")):
+            return RunnerResult(
+                ok=False,
+                detail=(f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(pr.keys())!r})"),
+            )
         self._record_pr_url(ticket, extra, url)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)

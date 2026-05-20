@@ -112,4 +112,16 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
                 hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
         raise
-    return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
+    # #1222 / #1226: ``web_url`` is the cross-host canonical key (GitLab
+    # API native; GitHub backend was aligned to it). ``html_url`` is kept
+    # for raw GitHub API payloads piped through other producers. An empty
+    # / non-URL payload surfaces as ``error`` so the orphan-branch path
+    # never silently advances with no PR — same invariant the ship runner
+    # enforces.
+    url = str(raw.get("web_url") or raw.get("html_url") or "")
+    if not url.startswith(("http://", "https://")):
+        return EnsurePrResult(
+            branch=branch_name,
+            error=f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(raw.keys())!r})",
+        )
+    return EnsurePrResult(branch=branch_name, url=url)
