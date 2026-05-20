@@ -216,7 +216,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         target=State.REVIEWED,
     )
     def reconcile_reviewed(self) -> None:
-        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808, #1118).
+        """Phase-driven, state-complete FSM catch-up to REVIEWED (#694, #798, #799, #808).
 
         EVERY non-terminal state reconciles to ``REVIEWED`` — the source
         set is *derived* from ``_RECONCILE_SOURCE_STATES`` (all states
@@ -246,15 +246,13 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         success; IGNORED is abandoned — none should reconcile backward to a
         shippable state.
 
-        #1118: consume pending reviewing tasks just like ``review()`` does.
-        A ticket reconciled directly from a mid-FSM state would otherwise
-        leave a PENDING reviewing task behind as a zombie (the loop's
-        orphan sweep then picks it up after we have already moved past
-        reviewing). Reconciling the FSM should also reconcile the task
-        ledger so the gate's "phase done" attestation matches the task
-        manager's view.
+        This transition body stays pure: task ledger consumption is the
+        caller's responsibility on the gate-verified path
+        (``reconcile_fsm_for_ship``). Calling this directly from the
+        ungated ``ticket transition`` CLI or from ``--skip-validation``
+        must NOT complete active reviewing tasks — those paths skip the
+        attestation that would justify it.
         """
-        self._consume_pending_phase_tasks("reviewing")
 
     def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:
         """Union the phase records across all of this ticket's sessions (#694).

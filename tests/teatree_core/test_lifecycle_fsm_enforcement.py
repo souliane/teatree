@@ -527,10 +527,39 @@ class TestReconcileReviewedExposedViaCli(TestCase):
         assert ticket.state == Ticket.State.REVIEWED
 
 
-class TestReconcileReviewedConsumesPendingReviewingTasks(TestCase):
-    """#1118: reconciling to REVIEWED also drains any orphan reviewing task."""
+class TestShippingGateConsumesPendingReviewingTasks(TestCase):
+    """#1118: the gate-verified ship path drains any orphan reviewing task.
 
-    def test_pending_reviewing_task_completed_by_reconcile_reviewed(self) -> None:
+    Consumption lives on the verified path (``_check_shipping_gate``
+    after the phase-presence gate passes), NOT inside
+    ``reconcile_reviewed`` itself. Calling ``reconcile_reviewed``
+    directly via the CLI or via ``--skip-validation`` must NOT silently
+    complete an active review task — those paths skip the per-task
+    attestation contract.
+    """
+
+    def test_gate_verified_path_completes_pending_reviewing_task(self) -> None:
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        session = Session.objects.create(ticket=ticket)
+        session.visit_phase("testing")
+        session.visit_phase("reviewing")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="cold review",
+        )
+        assert task.status == Task.Status.PENDING
+
+        assert _check_shipping_gate(ticket) is None
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_ungated_reconcile_reviewed_leaves_task_pending(self) -> None:
+        # Direct call bypasses the gate — the task ledger must NOT be drained.
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         ticket = _ticket(state=Ticket.State.IN_REVIEW)
@@ -542,13 +571,47 @@ class TestReconcileReviewedConsumesPendingReviewingTasks(TestCase):
             execution_target=Task.ExecutionTarget.HEADLESS,
             execution_reason="cold review",
         )
-        assert task.status == Task.Status.PENDING
 
         ticket.reconcile_reviewed()
         ticket.save()
 
         task.refresh_from_db()
-        assert task.status == Task.Status.COMPLETED, (
-            "reconcile_reviewed must consume pending reviewing tasks "
-            "(mirrors review() — the gate's phase attestation IS the work)"
+        assert task.status == Task.Status.PENDING, (
+            "Direct reconcile_reviewed (CLI / --skip-validation) MUST NOT "
+            "complete active reviewing tasks — that would bypass the "
+            "per-task attestation contract."
+        )
+
+
+class TestCheckGatesUsesCrossSessionAggregation(TestCase):
+    """#1118: ``pr check-gates`` matches the actual shipping gate.
+
+    Pre-#1118, ``check-gates`` evaluated ``session.check_gate`` against
+    the earliest single session, while ``pr create`` evaluated
+    ``session.check_gate_across_ticket`` against the union. A
+    legitimately-split ticket (testing on the maker session, reviewing
+    on a cold-reviewer session) passed ``pr create`` but tripped
+    ``check-gates``. Agents are instructed to run ``check-gates``
+    before ``pr create`` (``agents/prompt.py``), so the false block
+    forced unnecessary re-review.
+    """
+
+    def test_check_gates_passes_when_phases_scattered_across_sessions(self) -> None:
+        ticket = _ticket(state=Ticket.State.IN_REVIEW)
+        # Earliest session — blank (the canonical phase-visit session for
+        # the read-only gate). The phases are on later sessions.
+        Session.objects.create(ticket=ticket, agent_id="loop")
+        s_maker = Session.objects.create(ticket=ticket, agent_id="maker")
+        s_maker.visit_phase("testing", agent_id="maker")
+        s_reviewer = Session.objects.create(ticket=ticket, agent_id="cold-reviewer")
+        s_reviewer.visit_phase("reviewing", agent_id="cold-reviewer")
+
+        result = cast(
+            "dict[str, object]",
+            call_command("pr", "check-gates", str(ticket.pk)),
+        )
+
+        assert result["allowed"] is True, (
+            f"check-gates falsely blocked a split-session ticket: {result}. "
+            "It must use the same cross-session aggregation as pr create."
         )

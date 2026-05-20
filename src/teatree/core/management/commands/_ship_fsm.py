@@ -35,7 +35,7 @@ _SHIP_RECONCILE_NOOP_STATES = frozenset(
 )
 
 
-def reconcile_fsm_for_ship(ticket: Ticket) -> None:
+def reconcile_fsm_for_ship(ticket: Ticket, *, consume_reviewing_tasks: bool = False) -> None:
     """Walk the FSM to REVIEWED so ``ship()`` is legal (#694, #748).
 
     Called after a passing gate AND on the ``--skip-validation`` path
@@ -47,9 +47,19 @@ def reconcile_fsm_for_ship(ticket: Ticket) -> None:
     future source-set change still degrades to the caller's structured
     failure, never a raw raise. Rationale: BLUEPRINT §4.3 + the
     ``reconcile_reviewed`` FSM-table row.
+
+    #1118: when called from the gate-verified path
+    (``_check_shipping_gate``), pass ``consume_reviewing_tasks=True``
+    so the orphan PENDING/CLAIMED reviewing task is drained — same
+    side effect as ``review()``. The skip-validation path leaves it
+    ``False`` (the user's authorization substitutes for the gate but
+    not for the per-task attestation contract; the loop's orphan
+    sweep handles those tasks on its own clock).
     """
     if ticket.state in _SHIP_RECONCILE_NOOP_STATES:
         return
     with transaction.atomic(), contextlib.suppress(TransitionNotAllowed):
         ticket.reconcile_reviewed()
         ticket.save()
+        if consume_reviewing_tasks:
+            ticket._consume_pending_phase_tasks("reviewing")  # noqa: SLF001

@@ -42,6 +42,7 @@ from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, requi
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.phases import normalize_phase
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_ship_worktree
 from teatree.types import RawAPIDict
@@ -240,17 +241,9 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
         # are legitimately scattered across the ticket lifecycle.
         session.check_gate_across_ticket("shipping")
     except QualityGateError as exc:
-        # #1118: normalize the aggregated visited list before computing the
-        # ``missing`` report — ``_check_phases`` itself normalizes at the
-        # comparison boundary (#782), so a legacy raw spelling (``"review"``
-        # vs canonical ``"reviewing"``) satisfies the gate's PRESENCE check
-        # but a naive ``p not in visited`` here would still claim
-        # ``reviewing`` is missing. The error report would then contradict
-        # the gate's own decision (it raised, but on a DIFFERENT missing
-        # phase). Normalize on the read side so the report names the
-        # actually-missing canonical phases.
-        from teatree.core.phases import normalize_phase  # noqa: PLC0415
-
+        # #1118: normalize the visited list before comparing — ``_check_phases``
+        # normalizes both sides (#782), so an unnormalized comparison here
+        # would name a phase as missing that the gate itself accepted.
         visited, _ = ticket.aggregate_phase_records()
         canonical_visited = {normalize_phase(phase) for phase in visited}
         required = Session._REQUIRED_PHASES.get("shipping", [])  # noqa: SLF001
@@ -262,9 +255,9 @@ def _check_shipping_gate(ticket: Ticket) -> ShippingGateFailure | None:
             hint="Spawn a review sub-agent to satisfy the reviewing gate, then retry.",
         )
 
-    # Gate passed -> the work is attested. Reconcile the FSM from the single
-    # source of truth so ``ship()`` (source [REVIEWED, SHIPPED]) is legal.
-    reconcile_fsm_for_ship(ticket)
+    # Gate passed -> the work is attested. Reconcile the FSM so ``ship()``
+    # is legal and drain any orphan reviewing task (gate-verified only).
+    reconcile_fsm_for_ship(ticket, consume_reviewing_tasks=True)
     return None
 
 
@@ -511,31 +504,26 @@ class Command(TyperCommand):
 
     @command(name="check-gates")
     def check_gates(self, ticket_id: int, target_phase: str = "shipping") -> dict[str, object]:
-        """Check whether session gates allow a phase transition."""
+        """Check whether session gates allow a phase transition (#1118: cross-session)."""
         from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
-        from teatree.core.phases import normalize_phase  # noqa: PLC0415
 
+        canonical_target = normalize_phase(target_phase)
         ticket = Ticket.objects.get(pk=ticket_id)
-        # #801 SSOT: canonical earliest selection, read-only (no create).
         session = ticket.find_phase_session()
         if session is None:
             return {"allowed": False, "reason": "No active session", "missing": []}
         try:
-            session.check_gate(target_phase)
+            session.check_gate_across_ticket(canonical_target)
         except QualityGateError:
-            # #1118: normalize visited before the membership check — the
-            # gate (``_check_phases``) normalizes both sides, so a legacy
-            # raw spelling satisfies the gate but a naive comparison here
-            # would falsely report it as missing.
-            visited = session.visited_phases or []
+            visited, _ = ticket.aggregate_phase_records()
             canonical_visited = {normalize_phase(phase) for phase in visited}
-            required = session._REQUIRED_PHASES.get(target_phase, [])  # noqa: SLF001
+            required = session._REQUIRED_PHASES.get(canonical_target, [])  # noqa: SLF001
             missing = [p for p in required if p not in canonical_visited]
             return {"allowed": False, "missing": missing, "reason": f"{target_phase} requires: {', '.join(missing)}"}
         except (ValueError, KeyError) as exc:
             return {"allowed": False, "reason": str(exc), "missing": []}
         else:
-            return {"allowed": True, "target_phase": target_phase}
+            return {"allowed": True, "target_phase": canonical_target}
 
     @command(name="merge")
     def merge(self, pr: int, slug: str, *, repo_path: str = "", auto: bool = False) -> MergeResult:
