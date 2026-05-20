@@ -20,6 +20,7 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
+from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
@@ -31,6 +32,7 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 __all__ = [
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "BotPing",
+    "BroadcastObservation",
     "ClearIssuanceError",
     "ClearRequest",
     "DailyDigestMessage",
@@ -62,6 +64,7 @@ __all__ = [
     "ReviewAssignment",
     "ReviewIntent",
     "ReviewRequestPost",
+    "ScannedBroadcast",
     "SelfImproveFiring",
     "Session",
     "Task",
