@@ -34,16 +34,14 @@ checks and is itself logged for audit.
 import json
 import os
 import re
-import shlex
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, TypedDict
 
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
-from teatree.hooks._command_parser import first_shell_command as _first_shell_command
+from teatree.hooks._command_parser import first_segment_words as _first_segment_words
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
-from teatree.hooks._command_parser import normalize_line_continuations as _normalize_line_continuations
 
 Severity = str  # "high" | "medium"
 
@@ -278,6 +276,7 @@ _SLACK_MCP_WRITE_TOOLS: Final[dict[str, tuple[str, ...]]] = {
     "slack_send_message": ("text", "message"),
     "slack_send_message_draft": ("text", "message"),
     "slack_schedule_message": ("text", "message"),
+    "slack_edit_message": ("text", "message"),
     "slack_create_canvas": ("document_content", "content", "text"),
     "slack_update_canvas": ("document_content", "content", "text"),
     "slack_create_conversation": ("name",),
@@ -323,17 +322,16 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     PreToolUse handler skips its work for any tool call that does not
     intend to publish.
 
-    Bash commands are first normalised against shell-equivalent
-    spellings (line continuations, ANSI-C quoting) so the publish-
-    detection substring matcher sees the same logical command Bash
-    itself would execute (codex round-2 #2 / #3).
+    Bash commands are tokenized via the shell lexer so the publish-
+    detection substring matcher and the body-extractor see the same
+    logical token stream bash itself would execute (codex round-2 #2/#3,
+    round-3 #1/#2/#3/#4).
     """
     if tool_name == "Bash":
         raw_command = tool_input.get("command", "")
-        joined = _normalize_line_continuations(raw_command)
-        if not _is_publish_command(joined):
+        if not _is_publish_command(raw_command):
             return None
-        return _extract_bash_payload(joined)
+        return _extract_bash_payload(raw_command)
 
     return _extract_slack_mcp_payload(tool_name, tool_input)
 
@@ -345,41 +343,21 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     """Return True iff the caller explicitly opted out of the gate.
 
     Two surfaces are accepted. The flag ``--quote-ok`` may appear as a
-    standalone token in the FIRST physical line of a Bash command — a
-    newline-smuggled ``--quote-ok`` (codex round-2 #1) is rejected
-    because a literal newline is itself a shell command separator.
-    The env mapping on the tool input may set ``QUOTE_OK=1`` (the harness
-    exposes the env block separately from the command string).
+    standalone token in the FIRST shell command segment — any
+    ``--quote-ok`` that lives after a command-separator metacharacter
+    (``;`` / ``|`` / ``&`` / ``&&`` / ``||`` / literal newline) is part
+    of a SECOND command and must not bypass the gate (codex round-2 #1,
+    round-3 #2). The shell lexer normalises unspaced metacharacters
+    (``cmd "x";echo --quote-ok``) so the first-segment rule holds
+    regardless of whitespace.
+
+    The env mapping on the tool input may set ``QUOTE_OK=1`` (the
+    harness exposes the env block separately from the command string).
     """
     if tool_name == "Bash":
         command = tool_input.get("command", "")
-        # Only the FIRST shell command counts — any ``--quote-ok`` that
-        # lives on a separate physical line (outside any quoted region)
-        # is part of a different command and must not bypass the gate
-        # (codex round-2 #1). Line-continuation ``\<NL>`` is joined
-        # first so a legitimately-continued first command is still
-        # treated as one logical line. The split is QUOTE-AWARE so a
-        # newline INSIDE a body string is preserved.
-        joined = _normalize_line_continuations(command)
-        first_segment = _first_shell_command(joined)
-        try:
-            # ``comments=True`` strips ``# …`` so a smuggled
-            # ``# --quote-ok`` after the publish command does not become
-            # a real token (Codex CRITICAL #1, round 1).
-            tokens = shlex.split(first_segment, comments=True, posix=True)
-        except ValueError:
-            tokens = first_segment.split()
-        # The override is valid only when it lives in the FIRST shell
-        # segment — i.e. before any metacharacter that would route the
-        # remainder to a separate command. ``shlex`` keeps ``;``, ``|``,
-        # ``&``, ``&&`` and ``||`` as standalone tokens, so we just look
-        # for ``--quote-ok`` strictly before the first such token.
-        meta_tokens = {";", "|", "&", "&&", "||"}
-        for entry in tokens:
-            if entry in meta_tokens:
-                break
-            if entry == "--quote-ok":
-                return True
+        if "--quote-ok" in _first_segment_words(command):
+            return True
     env = tool_input.get("env") or {}
     return env.get("QUOTE_OK", "").strip() == "1"
 

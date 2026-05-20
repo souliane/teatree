@@ -637,6 +637,172 @@ class TestRound2BypassClosures:
         assert out["permissionDecision"] == "deny"
 
 
+class TestRound3BypassClosures:
+    """Regression tests for the round-3 codex-found bypass paths.
+
+    Each test reproduces one finding from the round-3 verdict comment on
+    PR #1251. The names align 1:1 with the round-3 finding numbers.
+    """
+
+    # --- Round-3 #1: token-internal line continuation ---
+
+    def test_token_internal_line_continuation_in_subcommand_still_parses(self) -> None:
+        # ``gh iss\\\nue comment`` — bash REMOVES ``\\\n`` entirely when it
+        # is INSIDE a token (the two halves rejoin as ``gh issue comment``).
+        # The publish-detection substring match must still see the joined
+        # command.
+        cmd = 'gh iss\\\nue comment 1 --body "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None, "token-internal \\<NL> must rejoin to a real publish command"
+        assert "User mandate" in payload
+
+    def test_token_internal_line_continuation_in_flag_still_parses(self) -> None:
+        # ``--bo\\\ndy "x"`` — backslash-newline INSIDE the flag name is
+        # eliminated by bash; the joined token is ``--body`` and the body
+        # value must still be extracted.
+        cmd = 'gh issue comment 1 --bo\\\ndy "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_between_token_line_continuation_still_separates_tokens(self) -> None:
+        # ``--body \\\n "x"`` — backslash-newline BETWEEN tokens collapses
+        # the whitespace but keeps the two tokens apart.
+        cmd = 'gh issue comment 1 --body \\\n  "## User mandate\nship it"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- Round-3 #2: --quote-ok after unspaced metachar ---
+
+    def test_override_after_unspaced_semicolon_is_rejected(self) -> None:
+        # ``echo body;echo --quote-ok`` — a real shell tokenizes ``;`` as
+        # a separate token regardless of whitespace, so ``--quote-ok``
+        # lives in a SECOND command and must not bypass the gate.
+        cmd = 'gh issue comment 1 --body "## User mandate\nbody";echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_override_after_unspaced_pipe_is_rejected(self) -> None:
+        cmd = 'gh issue comment 1 --body "leak"|echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_override_after_unspaced_double_amp_is_rejected(self) -> None:
+        cmd = 'gh issue comment 1 --body "leak"&&echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_override_after_unspaced_double_pipe_is_rejected(self) -> None:
+        cmd = 'gh issue comment 1 --body "leak"||echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_override_after_unspaced_semicolon_blocks_end_to_end(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cmd = 'gh issue comment 1 --body "## User mandate\nbody";echo --quote-ok'
+        blocked = handle_quote_scanner_pretool(_bash(cmd))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+    # --- Round-3 #3: ANSI-C $'...' with escaped single quote ---
+
+    def test_ansi_c_with_escaped_single_quote_does_not_truncate(self) -> None:
+        # ``$'prefix \\'\\n## User mandate\\nship'`` — the escaped single
+        # quote inside the ANSI-C body must NOT truncate the value; the
+        # full decoded payload (including the heading) must be scanned.
+        cmd = r"""gh issue create --title t --body $'prefix \'\n## User mandate\nship'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload, f"escaped single quote must not truncate ANSI-C body; payload={payload!r}"
+
+    def test_ansi_c_with_escaped_double_quote_decodes(self) -> None:
+        cmd = r"""gh issue create --title t --body $'\"## User mandate\"\nship'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_ansi_c_unicode_escape_decodes(self) -> None:
+        # ``##`` is ``##`` — must decode and trip the heading.
+        cmd = r"""gh issue create --title t --body $'## User mandate\nship'"""
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    # --- Round-3 #4: curl -dVALUE attached short-option ---
+
+    def test_curl_d_attached_value_is_parsed(self) -> None:
+        # ``-d'{...}'`` — no separator between flag and value. Real curl
+        # accepts the attached form per POSIX short-option convention.
+        cmd = 'curl -X POST https://slack.com/api/chat.postMessage -d\'{"text":"## User mandate\\nship"}\''
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_curl_d_attached_at_file_fails_closed(self) -> None:
+        # ``-d@path`` (no separator) — fail closed since we cannot read
+        # arbitrary attached files.
+        cmd = "curl -X POST https://slack.com/api/chat.postMessage -d@some-binary"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+
+    # --- Round-3 #5: slack_edit_message MCP tool ---
+
+    def test_slack_edit_message_is_a_publish_surface(self) -> None:
+        from typing import cast  # noqa: PLC0415
+
+        from teatree.hooks.quote_scanner import ToolInput  # noqa: PLC0415
+
+        tool_input = cast("ToolInput", {"text": "## User mandate\nship"})
+        payload = extract_publish_payload(
+            "mcp__claude_ai_Slack__slack_edit_message",
+            tool_input,
+        )
+        assert payload is not None
+        assert "User mandate" in payload
+
+    def test_slack_edit_message_high_match_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {
+            "tool_name": "mcp__claude_ai_Slack__slack_edit_message",
+            "tool_input": {"text": "## User mandate\nfoo"},
+        }
+        blocked = handle_quote_scanner_pretool(data)
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+    # --- Round-3 #6: gh api -F body= false-positive regression ---
+
+    def test_gh_api_dash_f_body_does_not_false_positive(self) -> None:
+        # ``gh api ... -F body="Clean update"`` is a structured field
+        # assignment, NOT a file reference. The dedicated
+        # ``_API_FIELD_BODY_RE`` must handle it and the git-style
+        # ``-F<filename>`` fail-closed must NOT fire on ``gh api`` calls.
+        cmd = 'gh api repos/x/y/issues/1/comments -F body="Clean update without quotes"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert not scan.has_high, f"gh api -F body=clean must not fail-closed; findings={scan.findings!r}"
+        assert "Clean update" in payload
+
+    def test_glab_api_dash_f_body_does_not_false_positive(self) -> None:
+        cmd = 'glab api projects/1/issues/1/notes -F body="Clean note text"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert not scan.has_high
+        assert "Clean note" in payload
+
+    def test_git_commit_dash_f_file_still_fails_closed_when_missing(self, tmp_path: Path) -> None:
+        # The git-specific ``-F`` IS a file reference. Round-3 scoping
+        # must NOT lose the fail-closed behaviour for git commits.
+        cmd = "git commit -F /nonexistent/path.txt"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+
+
 class TestHookChainRegistration:
     def test_handler_is_wired_before_skill_load(self) -> None:
         chain = router._HANDLERS["PreToolUse"]
