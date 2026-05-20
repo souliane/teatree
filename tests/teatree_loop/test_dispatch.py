@@ -46,6 +46,23 @@ def test_notion_unrouted_routes_to_webhook() -> None:
     assert actions[0].zone == "n8n"
 
 
+def test_red_card_signal_dual_dispatches_to_orchestrator_and_statusline() -> None:
+    """#1130: a user RED CARD signal routes to the orchestrator (corrective-action workflow) + statusline mirror."""
+    payload: dict[str, object] = {
+        "row_id": 7,
+        "signal_kind": "red_circle",
+        "user_id": "U0DEMOUSER1",
+        "channel": "C09",
+        "ts": "1779180558.938799",
+    }
+    actions = dispatch([ScanSignal(kind="red_card.signal", summary="RED CARD (red_circle) from U...", payload=payload)])
+    kinds = [(a.kind, a.zone) for a in actions]
+    assert ("agent", "t3:orchestrator") in kinds
+    assert ("statusline", "action_needed") in kinds
+    agent_action = next(a for a in actions if a.kind == "agent")
+    assert agent_action.payload == payload
+
+
 def test_slack_review_intent_dual_dispatches_to_reviewer_and_statusline() -> None:
     """#1047: reaction-driven review intent routes to the reviewer agent + statusline mirror."""
     payload: dict[str, object] = {
