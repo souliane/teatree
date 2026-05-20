@@ -112,4 +112,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
                 hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
         raise
-    return EnsurePrResult(branch=branch_name, url=str(raw.get("url", raw.get("web_url", ""))))
+    # #1222 / #1226: ``web_url`` is the cross-host canonical key (GitLab
+    # API native; GitHub backend was aligned to it). ``html_url`` is kept
+    # for raw GitHub API payloads piped through other producers.
+    return EnsurePrResult(branch=branch_name, url=str(raw.get("web_url") or raw.get("html_url") or ""))
