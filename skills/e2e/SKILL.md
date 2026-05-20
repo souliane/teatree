@@ -6,18 +6,6 @@ requires:
   - test
   - workspace
   - platforms
-triggers:
-  priority: 15
-  keywords:
-    - '\b(e2e|playwright|end.to.end|visual.qa|screenshot|evidence|golden)\b'
-search_hints:
-  - e2e
-  - playwright
-  - screenshot
-  - evidence
-  - visual qa
-  - golden
-  - baseline
 metadata:
   version: 0.0.1
   subagent_safe: false
