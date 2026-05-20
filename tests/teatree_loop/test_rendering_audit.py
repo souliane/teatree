@@ -113,14 +113,17 @@ class TestActiveTicketAnchors:
         future refactor moves ``_NOISE_STATES`` filtering somewhere these
         rows show up as anchors, the user sees ghost post-merge work
         forever.
+
+        #1163 refinement 2 narrowed the noise set to TRULY-terminal states
+        only — ``in_review`` and ``not_started`` are rich work states that
+        the statusline now surfaces, so they are covered by the sibling
+        ``test_statusline_refinements_1163`` cases instead.
         """
         zones = zones_for(
             [
                 _active("1", "merged"),
                 _active("2", "shipped"),
                 _active("3", "retrospected"),
-                _active("4", "in_review"),
-                _active("5", "not_started"),
             ],
             colorize=False,
         )
