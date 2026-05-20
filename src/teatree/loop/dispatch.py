@@ -42,6 +42,12 @@ _AGENT_BY_KIND: dict[str, str] = {
     # preserved because the reviewer agent runs as a separate dispatch from
     # whatever produced the Slack message.
     "slack.review_intent": "t3:reviewer",
+    # #1130: a user RED CARD signal routes to the orchestrator, whose
+    # corrective-action workflow identifies the upstream teatree gap and
+    # files the enforcement issue. The signal payload carries the
+    # ``RedCardSignal`` row id so the orchestrator can stamp the filed
+    # issue URL back onto the row via ``RedCardSignal.link_issue``.
+    "red_card.signal": "t3:orchestrator",
     "pending_task": "t3:orchestrator",
 }
 
@@ -52,6 +58,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.mention": "action_needed",
     "slack.dm": "action_needed",
     "slack.review_intent": "action_needed",
+    "red_card.signal": "action_needed",
     "assigned_issue.ready": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
@@ -120,6 +127,9 @@ _DUAL_DISPATCH: frozenset[str] = frozenset(
         # #1047: the reviewer agent runs AND we mirror into the statusline so
         # the user sees the pending review-intent on a colleague's MR.
         "slack.review_intent",
+        # #1130: the orchestrator runs AND we mirror the RED CARD into the
+        # statusline so the user sees the pending corrective-action workflow.
+        "red_card.signal",
     },
 )
 

@@ -29,6 +29,7 @@ from teatree.loop.scanners import (
     NotionViewScanner,
     OutboundAuditScanner,
     PendingTasksScanner,
+    RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
@@ -345,6 +346,15 @@ def build_default_jobs(
                             scanner=SlackReviewIntentScanner(backend=backend.messaging, overlay=tag),
                             overlay=tag,
                         ),
+                        # #1130 RED CARD detection — user's structural "fix it
+                        # upstream" signal. Runs alongside the review-intent
+                        # scanner because both drain reactions; this one only
+                        # cares about ``:red_circle:`` / ``:no_entry_sign:``
+                        # plus the literal phrase in DMs.
+                        _ScannerJob(
+                            scanner=RedCardScanner(backend=backend.messaging, overlay=tag),
+                            overlay=tag,
+                        ),
                         _ScannerJob(
                             scanner=ReviewNagScanner(
                                 messaging=backend.messaging,
@@ -369,6 +379,8 @@ def build_default_jobs(
                     _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
                     _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
                     _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
+                    # #1130 RED CARD detection for the single-overlay path.
+                    _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=""), overlay=""),
                 ]
             )
 
