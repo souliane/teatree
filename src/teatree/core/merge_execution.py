@@ -609,10 +609,13 @@ def execute_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str) -> str
     if rc != 0:
         combined = f"{out}\n{err}".lower()
         if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
+            # Print the full ``expected_head_oid`` so a length mismatch can never
+            # masquerade as a value mismatch (#1162).
             msg = (
                 f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
-                f"{expected_head_oid[:8]} (expected_head_oid mismatch). Treated as a "
-                f"failed check — NOT retried with a new head (§17.4.3)"
+                f"{expected_head_oid} (length={len(expected_head_oid)}, "
+                f"expected_head_oid mismatch). Treated as a failed check — "
+                f"NOT retried with a new head (§17.4.3)"
             )
             raise MergeHeadMovedError(msg)
         msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"

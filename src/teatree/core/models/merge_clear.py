@@ -200,12 +200,17 @@ class MergeClear(models.Model):
             )
             raise ClearIssuanceError(msg)
 
+        # Store the canonical lowercase hex form so the merge-time
+        # equality gate against GitHub's lowercase ``headRefOid`` cannot
+        # silently fail on a mixed-case input (#1162). ``is_commit_sha``
+        # already lowercases for validation; persist the same form.
+        normalized_sha = request.reviewed_sha.strip().lower()
         with transaction.atomic():
             return cls.objects.create(
                 ticket=request.ticket,
                 pr_id=request.pr_id,
                 slug=request.slug.strip(),
-                reviewed_sha=request.reviewed_sha.strip(),
+                reviewed_sha=normalized_sha,
                 reviewer_identity=reviewer,
                 gh_verify_result=normalized_verify,
                 blast_class=normalized_blast,

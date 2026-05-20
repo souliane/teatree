@@ -237,6 +237,33 @@ class TestClearIssuanceSeam(TestCase):
         assert "sha" in result["error"].lower()
         assert MergeClear.objects.count() == 0
 
+    def test_clear_normalizes_mixed_case_sha_to_lowercase(self) -> None:
+        """Mixed-case 40-char SHAs are accepted but stored in canonical lowercase (#1162).
+
+        The merge-time gate compares against GitHub's lowercase ``headRefOid``
+        — persisting the mixed-case input verbatim would produce the same
+        silent-failure mode this issue closes for truncated SHAs.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        mixed_case = "ABCDEF1234567890abcdef1234567890ABCDEF12"
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "1163",
+                "souliane/teatree",
+                mixed_case,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        assert clear.reviewed_sha == mixed_case.lower()
+
     def test_clear_rejects_truncated_sha_with_actionable_diagnostic(self) -> None:
         """A short hex SHA (#1162) is unmergeable from birth — refuse at issuance.
 
