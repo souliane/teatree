@@ -357,12 +357,12 @@ This prevents noise from multiple review passes or multiple reviewers covering t
 
 When reviewing an external MR/PR, **always post comments inline on the correct file and line** in the diff view. For comments that aren't tied to a specific line (e.g., description feedback), post a general note without position data.
 
-**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-draft-note`, `post-comment`, `delete-draft-note`, `delete-discussion`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`.
+**Extend the CLI, never inline API recipes.** If a `t3 review` operation is missing, implement it in `src/teatree/cli/review.py` — do NOT document a raw API snippet or inline script here. Skills describe what command to run, not how to replicate missing CLI functionality. Current subcommands: `post-comment`, `approve-live-post`, `delete-draft-note`, `delete-discussion`, `publish-draft-notes`, `list-draft-notes`, `update-note`, `reply-to-discussion`, `resolve-discussion`, `approve`, `unapprove`. (`post-draft-note` is deprecated — see below.)
 
-**Use `t3 review post-draft-note` (Mandatory).** It handles token extraction, diff refs, position validation, and post-flight anchor verification. Never use raw API calls.
+**Default-safe `t3 review post-comment` (Mandatory, #1207).** The subcommand creates a DRAFT by default and DMs the user the link — the CLI itself enforces the draft-by-default rule, so no separate prose check is required. To publish live (colleague-visible), the user first DMs an approval in Slack and records a single-use token with `t3 review approve-live-post <mr-url> --slack-ts <ts>`, then the agent re-runs with `--live`. Without that token `--live` refuses without any GitLab side effect.
 
 ```bash
-t3 review post-draft-note <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
+t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
 ```
 
 The CLI validates the target line is an added (`+`) line in the MR diff before posting, and verifies the response anchored correctly (non-null `line_code`). When something goes wrong it refuses upfront — common rejected cases:
@@ -371,13 +371,13 @@ The CLI validates the target line is an added (`+`) line in the MR diff before p
 - **File not in diff:** the file path isn't part of the MR. CLI rejects with the list of changed files.
 - **Collapsed-diff file:** GitLab's draft-note anchoring fails on large files whose diff was collapsed server-side. CLI detects the null `line_code` after posting, deletes the broken draft, and suggests `post-comment` (below).
 
-**Workaround for collapsed-diff files — `t3 review post-comment`.** When the file is too large for GitLab to anchor a draft, post an immediate (non-draft) inline discussion via the `/discussions` endpoint, which anchors fine even on collapsed diffs:
+**Workaround for collapsed-diff files — `t3 review post-comment --live`.** When the file is too large for GitLab to anchor a draft, the post-flight anchor check refuses the draft. The historical workaround used the `/discussions` endpoint, which anchors even on collapsed diffs. Under #1207 that path requires a Slack-recorded approval — the user DMs an approval phrase ("post live" / "submit it" / "go ahead"), the agent records it via `t3 review approve-live-post <mr-url> --slack-ts <ts>`, and then re-runs:
 
 ```bash
-t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number>
+t3 review post-comment <REPO> <MR_IID> "Comment text" --file <path/to/file> --line <line_number> --live
 ```
 
-The comment posts immediately rather than batching with a review. Reserve this for the cases where `post-draft-note` explicitly errors with the collapsed-diff message.
+The `--live` post lands immediately instead of batching with a review. Reserve this for the cases where the default draft path explicitly errors with the collapsed-diff message AND the user has authorised the live post in Slack.
 
 **Pre-flight: the file you anchor on MUST be the file the body discusses.** If the comment body describes code in `foo.py` (e.g., "`foo.py`'s `bar()` is missing X that the sibling `baz.py` got"), anchor the comment on `foo.py` — not on `baz.py`, even if `baz.py` has more added lines in the diff. Two defensible patterns when `foo.py` has no added lines:
 
@@ -431,7 +431,7 @@ t3 review approve <REPO> <MR_IID>      # approve
 t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 ```
 
-**Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` / `post-draft-note`) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
+**Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` — default draft, #1207) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
 **On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960): under `"ask"` or `"draft_or_ask"` (the default) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or widen the mode to `"immediate"` per-overlay.
 
@@ -445,7 +445,7 @@ t3 <overlay> ticket transition <ticket_id> mark_review_no_action
 
 This records `last_review_state = reviewed_no_action` (deliberately **not** `approved`, so a later genuine review is never suppressed) at the current head SHA and consumes the PENDING reviewing task. If a new revision is pushed (head SHA moves) the recorded state is dropped and the PR is reviewed again — concluding "no action" now never costs a future obligation. Maker≠checker is preserved: the reviewer sub-agent runs its own dispatch and invokes this itself; it is not a self-approval.
 
-Use this **only** when there is genuinely nothing to post or approve. If you have a finding, post it (`t3 review post-comment` / `post-draft-note`); if the verdict is approve, use `t3 review approve`. `mark_review_no_action` is the third, distinct outcome — not a shortcut to skip a review you should have done.
+Use this **only** when there is genuinely nothing to post or approve. If you have a finding, post it (`t3 review post-comment` — default draft, #1207); if the verdict is approve, use `t3 review approve`. `mark_review_no_action` is the third, distinct outcome — not a shortcut to skip a review you should have done.
 
 ## Commands
 

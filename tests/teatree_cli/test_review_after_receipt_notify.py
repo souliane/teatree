@@ -83,7 +83,13 @@ class TestReviewServiceAfterReceiptDm:
         return BotPing.objects.get(idempotency_key=f"on_behalf_post:org/repo!7:{action}")
 
     def test_post_comment_emits_after_receipt_dm(self) -> None:
-        _, code = self.svc.post_comment("org/repo", 7, "lgtm")
+        # Default ``post_comment`` is a DRAFT under #1207 — the after-receipt
+        # DM is for colleague-visible publishes only, so use the ``--live``
+        # path (gated on a recorded ``LivePostApproval``) to exercise it.
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
+        _, code = self.svc.post_comment("org/repo", 7, "lgtm", live=True)
         assert code == 0
         assert self._ping("post_comment").status == BotPing.Status.SENT
 
