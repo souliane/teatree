@@ -490,14 +490,14 @@ def _check_legacy_overlay_alias() -> None:
     try:
         from importlib.metadata import entry_points  # noqa: PLC0415
 
-        from teatree.config import CONFIG_PATH, _canonical_ep_name, load_config  # noqa: PLC0415
+        from teatree.config import CONFIG_PATH, _match_canonical_ep, load_config  # noqa: PLC0415
 
         config = load_config(CONFIG_PATH)
         ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
         for name, overlay_cfg in config.raw.get("overlays", {}).items():
             if name in ep_names or overlay_cfg.get("class") or overlay_cfg.get("path"):
                 continue
-            canonical = _canonical_ep_name(name, ep_names)
+            canonical = _match_canonical_ep(name, ep_names)
             if canonical is not None:
                 typer.echo(
                     f"WARN  Stale '[overlays.{name}]' table in ~/.teatree.toml — "
