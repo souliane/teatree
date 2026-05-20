@@ -19,6 +19,13 @@ from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
+from teatree.loop.scanners.pr_sweep import (
+    CallCommandMergeKeystone,
+    GhPrApiClient,
+    NullMergeNotifier,
+    PrSweepScanner,
+    SlackMergeNotifier,
+)
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
@@ -35,12 +42,16 @@ __all__ = [
     "ActiveTicketsScanner",
     "ArchitecturalReviewScanner",
     "AssignedIssuesScanner",
+    "CallCommandMergeKeystone",
+    "GhPrApiClient",
     "GitLabApprovalsScanner",
     "IncomingEventsScanner",
     "MyPrsScanner",
     "NotionViewScanner",
+    "NullMergeNotifier",
     "OutboundAuditScanner",
     "PendingTasksScanner",
+    "PrSweepScanner",
     "RedCardScanner",
     "ReviewNagScanner",
     "ReviewerPrsScanner",
@@ -50,6 +61,7 @@ __all__ = [
     "SlackBroadcastsScanner",
     "SlackDmInboundScanner",
     "SlackMentionsScanner",
+    "SlackMergeNotifier",
     "SlackReviewIntentScanner",
     "StaleTicketsScanner",
     "TicketCompletionScanner",
