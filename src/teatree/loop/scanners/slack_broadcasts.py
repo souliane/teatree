@@ -1,0 +1,261 @@
+"""Slack review-broadcast scanner (#1131).
+
+Polls one or more Slack channels for messages that broadcast MR/PR URLs and
+queues reviewer dispatch when the MRs are still open. Sibling to
+:class:`teatree.loop.scanners.slack_review_intent.SlackReviewIntentScanner`,
+which handles the reaction/mention-triggered path; this scanner is the
+channel-poll path for any review-team-style broadcast channel the overlay
+opts into.
+
+Behaviour per scanned broadcast
+-------------------------------
+
+The scanner extracts every MR URL from the message text, classifies the set
+via the injected :class:`MrStateClassifier`, persists a
+:class:`teatree.core.models.ScannedBroadcast` row (idempotent on
+``(channel, slack_ts)``), and reacts on the Slack message:
+
+* **All merged + approved** → react ``:white_check_mark:`` and skip
+    reviewer dispatch. Matches the user mandate in #1131 comment 2: the
+    reaction is sufficient acknowledgement, the agent does not re-review
+    already-done work.
+* **At least one open MR** → react ``:eyes:`` and emit one
+    ``slack.review_intent`` signal per open MR. The existing dispatcher
+    routes each signal to the ``t3:reviewer`` agent — no separate
+    Task-model plumbing in this PR (see follow-up #1234 / #1235 — TODO,
+    filed as part of #1131's smallest-atomic-slice scope decision).
+
+Idempotency
+-----------
+
+The :class:`ScannedBroadcast` ledger key ``(channel, slack_ts)`` makes
+re-scanning safe. A re-classification (pending → all_merged once the
+last open MR closes) updates the row and re-reacts; an unchanged
+classification is a no-op.
+
+Channel-list and MR-state lookup are dependency-injected
+-------------------------------------------------------
+
+Both the per-channel message fetcher and the MR-state classifier are
+function parameters on the scanner, not protocol methods on the
+backend. This keeps the scanner unit-testable without expanding the
+:class:`MessagingBackend` protocol or shelling out to ``glab`` in tests.
+The production wiring (channel-history fetcher on the Slack backend,
+``glab mr view`` based classifier) lands in follow-up #1131-wiring once
+the overlay extension point ``get_review_broadcast_channels()`` is
+designed and merged.
+"""
+
+import logging
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+from teatree.backends.protocols import MessagingBackend
+from teatree.core.models import BroadcastObservation, ScannedBroadcast
+from teatree.loop.scanners.base import ScanSignal
+from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
+
+_PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
+
+
+class ConnectChannelBotRestrictedError(RuntimeError):
+    """Raised when a broadcast in a Slack-Connect channel cannot be reacted to.
+
+    The bot token is rejected on Connect channels and the dual-token
+    fallback (post via the user ``xoxp``) is tracked in #1209 — until
+    that lands, the scanner must hard-fail loudly rather than silently
+    swallow the failed reaction. The error carries the channel id so
+    callers can surface a single actionable message.
+    """
+
+    def __init__(self, channel: str) -> None:
+        super().__init__(
+            f"Slack-Connect channel {channel!r} rejected the bot reaction "
+            "and the user-token fallback is not wired (tracked in #1209). "
+            "Scanner is failing loudly per #1131 to avoid silent drops.",
+        )
+        self.channel = channel
+
+
+@dataclass(frozen=True, slots=True)
+class MrState:
+    """Per-MR snapshot the classifier returns for one URL.
+
+    ``merged`` and ``approved`` are the two flags the classifier needs to
+    surface; everything else (CI status, draft flag, reviewer list) is
+    out of scope for #1131 — the existing reviewer-agent pipeline
+    handles those once the URL reaches it.
+    """
+
+    url: str
+    merged: bool
+    approved: bool
+
+
+MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
+"""Function that maps a list of MR URLs to per-URL :class:`MrState` records.
+
+Injected into the scanner so tests can supply a fake while the
+production wiring (``glab mr view``) lands separately. The function
+must preserve URL order and length — the scanner zips back to the
+input list for downstream signal emission.
+"""
+
+
+class ChannelHistoryFetcher(Protocol):
+    """Function-style fetcher for the recent messages in one channel.
+
+    The production implementation will call ``conversations.history`` on
+    the Slack backend; the test path supplies an in-memory dict. Kept
+    as a Protocol so the scanner does not depend on a concrete fetcher
+    class.
+    """
+
+    def __call__(self, *, channel: str) -> list[RawAPIDict]: ...
+
+
+def _extract_mr_urls(text: str) -> list[str]:
+    """Return every MR/PR URL in *text* in source order, deduplicated."""
+    seen: dict[str, None] = {}
+    for match in _PR_URL_RE.finditer(text):
+        url = match.group(0).rstrip("/").split("#")[0]
+        seen.setdefault(url, None)
+    return list(seen)
+
+
+def _classify(states: Sequence[MrState]) -> ScannedBroadcast.Classification:
+    """Reduce per-MR states to one broadcast-level classification.
+
+    ``all_merged`` requires every MR merged AND approved; any other
+    combination is ``pending`` (the reviewer-dispatch path handles the
+    open subset).
+    """
+    if not states:
+        return ScannedBroadcast.Classification.PENDING
+    if all(state.merged and state.approved for state in states):
+        return ScannedBroadcast.Classification.ALL_MERGED
+    return ScannedBroadcast.Classification.PENDING
+
+
+def _open_subset(states: Sequence[MrState]) -> list[MrState]:
+    return [state for state in states if not state.merged]
+
+
+@dataclass(slots=True)
+class SlackBroadcastsScanner:
+    """Scan one or more Slack channels for MR-broadcast messages.
+
+    *channels* is the explicit list of channel ids to poll; the
+    overlay-driven channel list (per the #1131 architectural
+    clarification) is resolved by the tick-jobs builder and passed in
+    here, keeping the scanner overlay-agnostic. *fetch_channel_history*
+    is the per-channel message fetcher; *classify_mrs* maps MR URLs to
+    :class:`MrState` records.
+    """
+
+    backend: MessagingBackend
+    channels: Sequence[str]
+    fetch_channel_history: ChannelHistoryFetcher
+    classify_mrs: MrStateClassifier
+    overlay: str = ""
+    name: str = field(default="slack_broadcasts", init=False)
+
+    def scan(self) -> list[ScanSignal]:
+        signals: list[ScanSignal] = []
+        for channel in self.channels:
+            signals.extend(self._scan_channel(channel))
+        return signals
+
+    def _scan_channel(self, channel: str) -> list[ScanSignal]:
+        signals: list[ScanSignal] = []
+        for message in self.fetch_channel_history(channel=channel):
+            signals.extend(self._handle_message(channel, message))
+        return signals
+
+    def _handle_message(self, channel: str, message: RawAPIDict) -> list[ScanSignal]:
+        text = message.get("text")
+        ts = message.get("ts")
+        if not isinstance(text, str) or not isinstance(ts, str) or not text or not ts:
+            return []
+        mr_urls = _extract_mr_urls(text)
+        if not mr_urls:
+            return []
+        states = self.classify_mrs(mr_urls)
+        classification = _classify(states)
+        observation = BroadcastObservation(
+            channel=channel,
+            slack_ts=ts,
+            mr_urls=mr_urls,
+            classification=classification.value,
+            overlay=self.overlay,
+        )
+        row = ScannedBroadcast.record(observation)
+        if row is None:
+            return []
+        return self._apply_classification(row, states)
+
+    def _apply_classification(
+        self,
+        row: ScannedBroadcast,
+        states: Sequence[MrState],
+    ) -> list[ScanSignal]:
+        if row.classification == ScannedBroadcast.Classification.ALL_MERGED:
+            self._react(row.channel, row.slack_ts, "white_check_mark")
+            return []
+        self._react(row.channel, row.slack_ts, "eyes")
+        return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in _open_subset(states)]
+
+    def _react(self, channel: str, ts: str, emoji: str) -> None:
+        try:
+            self.backend.react(channel=channel, ts=ts, emoji=emoji)
+        except ConnectChannelBotRestrictedError:
+            raise
+        except Exception as exc:
+            # A Slack-Connect channel rejecting the bot token is the
+            # specific failure #1131 must surface loudly until #1209
+            # lands; the backend reports it as a generic exception, so
+            # we lift it here. Any other reaction failure is logged
+            # and left to the next tick.
+            if _looks_like_connect_restriction(exc):
+                raise ConnectChannelBotRestrictedError(channel) from exc
+            logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
+
+
+def _looks_like_connect_restriction(exc: BaseException) -> bool:
+    """Heuristic for the Slack-Connect bot-restricted error shape.
+
+    Slack's API returns ``not_in_channel`` / ``channel_not_found`` /
+    ``is_archived`` for the Connect-bot-restricted case. The backend
+    wraps the response in a generic exception with the error code in
+    the message, so the scanner matches on the string. Once #1209
+    introduces typed errors on the backend the heuristic moves to an
+    ``isinstance`` check.
+    """
+    message = str(exc)
+    return any(token in message for token in ("not_in_channel", "channel_not_found", "is_ext_shared"))
+
+
+def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
+    """Build the ``slack.review_intent`` signal for one open MR in a broadcast.
+
+    Reuses the existing signal shape so the dispatcher routes through
+    ``_review_request_dispatch`` to the ``t3:reviewer`` agent — no new
+    signal kind, no parallel dispatch path.
+    """
+    return ScanSignal(
+        kind="slack.review_intent",
+        summary=f"Review intent (broadcast): {mr_url}",
+        payload={
+            "url": mr_url,
+            "mr_url": mr_url,
+            "channel": row.channel,
+            "ts": row.slack_ts,
+            "trigger": "broadcast",
+            "overlay": overlay,
+            "broadcast_id": row.pk,
+        },
+    )
