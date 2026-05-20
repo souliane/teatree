@@ -38,8 +38,17 @@ class CanonicalizeTeatreeOverlayCollisionMigrationTest(TransactionTestCase):
         return executor.loader.project_state([target]).apps
 
     def _restore_head(self) -> None:
-        """Re-apply 0027 so TransactionTestCase teardown flushes the real schema."""
-        self._migrate(self._AFTER)
+        """Re-apply every core migration so TransactionTestCase teardown flushes the real schema.
+
+        Hard-coding a specific migration here makes the head stale every time a new
+        migration is added — the new migration ends up unrecorded for the rest of the
+        session, and the schema-guard tests fire spuriously. Resolve the leaf from the
+        live graph instead.
+        """
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        core_leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
+        executor.migrate(core_leaves)
 
     def test_pending_chat_legacy_row_with_canonical_twin_is_deleted(self) -> None:
         apps = self._migrate(self._BEFORE)
