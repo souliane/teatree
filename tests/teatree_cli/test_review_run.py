@@ -35,7 +35,15 @@ type JSONObject = dict[str, object]
 
 @dataclass(frozen=True, slots=True)
 class _ProjectInfo:
-    id: int
+    """Mirrors the production ``teatree.backends.gitlab_api.ProjectInfo`` shape.
+
+    The attribute name (``project_id``) is load-bearing: the audit code
+    reads ``project.project_id``, not ``project.id``. A test stub that
+    misnames the attribute masks the AttributeError the real backend
+    would raise on the first call against an actual GitLab instance.
+    """
+
+    project_id: int
     full_path: str
 
 
@@ -58,7 +66,7 @@ class _StubGitLabAPI:
         return None
 
     def resolve_project(self, repo: str) -> _ProjectInfo:
-        return _ProjectInfo(id=42, full_path=repo)
+        return _ProjectInfo(project_id=42, full_path=repo)
 
     def get_mr_discussions(self, project_id: int, mr_iid: int) -> list[JSONObject]:
         del project_id, mr_iid
@@ -151,6 +159,60 @@ class TestReviewRunBadUrl:
         assert result.exit_code == 2, f"output={result.output!r} exc={result.exception!r}"
         payload = json.loads(result.output.strip())
         assert payload["error"] == "bad_url"
+
+
+class TestReviewRunApiUnavailable:
+    """Missing token / inaccessible repo surfaces as ``api_unavailable`` — never a fake ``ready_to_review``.
+
+    Regression guard: an earlier draft of the audit fell through to
+    ``files=0, additions=0, deletions=0`` and emitted ``verdict:
+    ready_to_review`` when the GitLab API returned no data (no token,
+    repo not found). That is exactly the "masquerading success" the
+    command's docstring forbids — pinned here with a stub that returns
+    ``None`` for the ``/changes`` call.
+    """
+
+    def test_changes_endpoint_returning_none_exits_one_with_api_unavailable(self) -> None:
+        runner = CliRunner()
+
+        class _NullAPI:
+            def get_json(self, endpoint: str) -> object:
+                del endpoint
+                return None
+
+            def resolve_project(self, repo: str) -> object:
+                del repo
+                return None
+
+            def get_mr_discussions(self, project_id: int, mr_iid: int) -> list[JSONObject]:
+                del project_id, mr_iid
+                return []
+
+            def get_draft_notes_count(self, project_id: int, mr_iid: int) -> int:
+                del project_id, mr_iid
+                return 0
+
+            def get_mr_approvals(self, project_id: int, mr_iid: int) -> JSONObject:
+                del project_id, mr_iid
+                return {"count": 0, "required": 1, "approved_by": []}
+
+        url = "https://gitlab.com/org/proj/-/merge_requests/77"
+        with (
+            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=_NullAPI()),
+            patch(
+                "teatree.cli.review.ReviewService.get_gitlab_token",
+                return_value="t",
+            ),
+        ):
+            result = runner.invoke(review_app, ["run", url])
+
+        assert result.exit_code == 1, f"output={result.output!r} exc={result.exception!r}"
+        payload = json.loads(result.output.strip())
+        assert payload["error"] == "api_unavailable"
+        assert payload["url"] == url
+        # No verdict / changes fields — the audit must not synthesize fake "ready_to_review" output.
+        assert "verdict" not in payload
+        assert "changes" not in payload
 
 
 class TestReviewRunLargeMRFinding:

@@ -222,13 +222,25 @@ def _diff_stats_from_changes(changes_payload: object) -> _DiffStats:
     return _DiffStats(files=len(raw_changes), additions=additions, deletions=deletions, touched=tuple(touched))
 
 
+class _ReviewRunAPIError(RuntimeError):
+    """The GitLab API refused or returned an unusable response — audit cannot run.
+
+    Distinct from :class:`ValueError` (bad URL): the URL parsed, but
+    the API surface refused our GETs (no token, repo not found, etc.).
+    The CLI surfaces this as a structured ``{"error": "api_unavailable"}``
+    exit-1 payload so the reviewer sub-agent never reads "ready_to_review"
+    on data that was never fetched.
+    """
+
+
 def _fetch_review_state(api: object, repo: str, iid: int) -> _ReviewState:
     """Aggregate existing-review counts for the MR."""
     resolve_project = getattr(api, "resolve_project", None)
     project = resolve_project(repo) if callable(resolve_project) else None
     if project is None:
-        return _ReviewState(open_discussions=0, draft_notes=0, approvals=0, approved_by=())
-    project_id = project.id
+        msg = f"resolve_project({repo!r}) returned None — token missing or repo inaccessible"
+        raise _ReviewRunAPIError(msg)
+    project_id = project.project_id
     discussions = api.get_mr_discussions(project_id, iid)  # type: ignore[attr-defined]
     draft_count = api.get_draft_notes_count(project_id, iid)  # type: ignore[attr-defined]
     approvals = api.get_mr_approvals(project_id, iid)  # type: ignore[attr-defined]
@@ -257,7 +269,11 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     encoded = repo.replace("/", "%2F")
     api = GitLabAPI(token=ReviewService.get_gitlab_token(), base_url=ReviewService._resolve_base_url())  # noqa: SLF001
 
-    diff = _diff_stats_from_changes(api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes"))
+    changes_payload = api.get_json(f"projects/{encoded}/merge_requests/{iid}/changes")
+    if changes_payload is None:
+        msg = f"GET /changes returned no payload for {repo}!{iid} — token missing or MR inaccessible"
+        raise _ReviewRunAPIError(msg)
+    diff = _diff_stats_from_changes(changes_payload)
     state = _fetch_review_state(api, repo, iid)
     complexity = _classify_complexity(files=diff.files, additions=diff.additions, deletions=diff.deletions)
     findings = _gather_findings(complexity=complexity, files=diff.files, touched_paths=diff.touched)
@@ -315,4 +331,7 @@ def run(
     except ValueError:
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
         raise typer.Exit(code=2) from None
+    except _ReviewRunAPIError as exc:
+        typer.echo(json.dumps({"error": "api_unavailable", "url": url, "detail": str(exc)}, sort_keys=True))
+        raise typer.Exit(code=1) from None
     typer.echo(result.to_json())
