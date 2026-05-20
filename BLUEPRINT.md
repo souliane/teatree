@@ -50,7 +50,7 @@ Infrastructure and orchestration are code; development methodology is skill-guid
 
 ## 3. Package Structure
 
-Package name: `teatree` (double-e). Repo/CLI: `teatree` / `t3`. Python: 3.13+. License: MIT. Build: `uv`. Entry point: `t3 = teatree.cli:main`.
+Package name: `teatree` (double-e). Repo/CLI: `teatree` / `t3`. Python: 3.13+. License: MIT. Build: `uv`. Entry point: `t3 = t3_bootstrap:main` — a top-level shim that bootstraps Django settings before importing `teatree.cli`.
 
 Top-level layout under `src/teatree/`:
 
@@ -72,7 +72,9 @@ Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) is detailed 
 
 ## 4. Domain Models
 
-Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fsm`): **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Around them, supporting rows: `ReviewAssignment`, `PullRequest`, `TicketTransition`, `WorktreeEnvOverride`, `DailyDigestThread`/`DailyDigestMessage`, `IncomingEvent`, `IntentClassification`, `ReplyDispatch`, `PendingChatInjection`, `SelfImproveFiring`, `DeferredQuestion`, `LoopLease`, `OnBehalfApproval`, `ReviewRequestPost`, `MergeClear`.
+Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fsm`): **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Around them, supporting rows under the same package: `BotPing`, `DailyDigestThread`/`DailyDigestMessage`, `DbApproval`, `DeferredQuestion`, `IncomingEvent`, `IntentClassification`, `LivePostApproval`, `LoopLease`, `MergeClear`, `OnBehalfApproval`, `OutboundClaim`, `PendingChatInjection`, `PullRequest`, `RedCardSignal`, `ReplyDispatch`, `ReviewAssignment`, `ReviewRequestPost`, `ScannedBroadcast`, `SelfImproveFiring`, `TicketTransition`, `WorktreeEnvOverride`. The supporting set is enumerative — every row name above is cited by name from §5.6, §17.1, or §17.4 prose.
+
+`Ticket` also carries a `Role` enum (`AUTHOR` / `REVIEWER`) orthogonal to its state. The reviewer role drives the §5.6 `reviewer_prs` scanner (`Ticket(role="reviewer", issue_url=<pr_url>)`) and short-circuits to `delivered` once the review work completes; the author role is the default lifecycle.
 
 **State machines** (one row per `Ticket` is the unit of work):
 
@@ -125,7 +127,7 @@ TeaTree drives the day from a single long-lived Claude Code session running a fa
 
 ### 5.7 Self-Improving Monitor
 
-A detector swarm that rides the same tick the regular `/loop` runs. It watches for smells the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action (`log → statusline → slack → ticket → auto_fix`, monotonic ladder). It is the legibility substrate §§17.4–17.8 relies on. Auto-fix is whitelisted — a structural test enforces the whitelist. The monitor never auto-merges substrate, never bypasses the §17.4 `MergeClear` reviewer-attestation requirement, and never auto-edits memory / skills / `BLUEPRINT.md`.
+A detector swarm that rides the same tick the regular `/loop` runs. It watches for smells the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action (`log → statusline → slack → ticket → auto_fix`, monotonic ladder). It is the legibility substrate §§17.4–17.8 relies on. Auto-fix is whitelisted: today only `StaleStatuslineEntryDetector` carries `auto_fix = True` (it re-renders the statusline from durable state). The currently shipped detector set (`detectors/registry.py`) is `DispatchGapDetector`, `ForgottenMergeDetector`, `StaleStatuslineEntryDetector`. Additional `auto_fix` slots (e.g. a worktree-cleanup detector) are spec-only and will land with their own structural whitelist test. The monitor never auto-merges substrate, never bypasses the §17.4 `MergeClear` reviewer-attestation requirement, and never auto-edits memory / skills / `BLUEPRINT.md`.
 
 ### 5.8 Reactive Slack-Answer Loop
 
@@ -287,13 +289,24 @@ Reference DB architecture, the import fallback chain (`DjangoDbImportConfig` str
 Runtime:
 
 ```toml
+croniter>=6.2.2
 django>=5.2,<6.1
-django-tasks-db>=0.12
 django-fsm-2>=4
 django-rich>=2.2
 django-tasks>=0.9
+django-tasks-db>=0.12
 django-typer>=3.3
 httpx>=0.27
+tomlkit>=0.13
+```
+
+`croniter` parses the `[teatree.availability].windows` cron expressions (§5.6.3 / §17.1 invariant 9); `tomlkit` round-trips `~/.teatree.toml` for `t3 setup` and `t3 config` edits.
+
+Optional extras (installed on demand):
+
+```toml
+notion = ["browser-cookie3>=0.20"]
+slack  = ["slack-sdk>=3.35"]
 ```
 
 Dev: `ruff`, `pytest`, `pytest-cov`, `pytest-django`, `ty`, `import-linter`, `prek`, `safety`, `typer`, `django-types`.
