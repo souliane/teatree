@@ -407,6 +407,7 @@ def _assert_clear_authorized(
     returns the narrowed :class:`MergeClear` on success.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
 
     if not isinstance(clear, MergeClear):
         msg = f"no MergeClear row for {slug}#{pr_id} — refusing to merge (§17.4.3 step 1)"
@@ -428,6 +429,23 @@ def _assert_clear_authorized(
             f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) equals the "
             f"executing loop identity — a CLEAR must be issued by an independent "
             f"cold reviewer, not self-issued (§17.8 clause 3)"
+        )
+        raise MergePreconditionError(msg)
+
+    # The factory ``MergeClear.issue()`` rejects a maker/coding-agent/loop
+    # reviewer_identity at issue time (§17.8 clause 3 — the same shared
+    # ``is_non_reviewer_role`` helper), but a row written directly via
+    # ``.objects.create()`` (fixture, migration, or any non-factory ORM
+    # path — e.g. ``ticket.py`` loads the row by pk without re-validation)
+    # would otherwise smuggle a self-attesting maker through the equality
+    # check above. Re-check the same role classification here so the
+    # issue-time and merge-time gates cannot drift apart (codex #1282
+    # finding 1 / #1283).
+    if is_non_reviewer_role(clear.reviewer_identity):
+        msg = (
+            f"MergeClear reviewer_identity ({clear.reviewer_identity!r}) is a "
+            f"maker/coding-agent/loop non-reviewer role — a CLEAR must be issued "
+            f"by an independent cold reviewer, not self-attested (§17.8 clause 3)"
         )
         raise MergePreconditionError(msg)
 
