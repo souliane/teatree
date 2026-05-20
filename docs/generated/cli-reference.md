@@ -579,6 +579,9 @@ Usage: t3 review run [OPTIONS] URL
  Exit codes:
 
  * ``0`` — audit ran, JSON printed.
+ * ``1`` — URL parsed but the GitLab API refused the audit
+     (``api_unavailable``: missing token, 401/403/404, connection
+     failure, or any other backend error).
  * ``2`` — URL refused before any API call (``unsupported_forge`` for
      GitHub PRs, ``bad_url`` for anything else).
 
