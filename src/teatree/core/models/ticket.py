@@ -245,6 +245,13 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         non-recoverable: SHIPPED/MERGED/DELIVERED are genuine post-ship
         success; IGNORED is abandoned — none should reconcile backward to a
         shippable state.
+
+        This transition body stays pure: task ledger consumption is the
+        caller's responsibility on the gate-verified path
+        (``reconcile_fsm_for_ship``). Calling this directly from the
+        ungated ``ticket transition`` CLI or from ``--skip-validation``
+        must NOT complete active reviewing tasks — those paths skip the
+        attestation that would justify it.
         """
 
     def aggregate_phase_records(self) -> tuple[list[str], dict[str, dict[str, str]]]:

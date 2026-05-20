@@ -3018,7 +3018,7 @@ Usage: t3 teatree pr ensure-pr [OPTIONS]
 ```
 Usage: t3 teatree pr check-gates [OPTIONS] TICKET_ID
 
- Check whether session gates allow a phase transition.
+ Check whether session gates allow a phase transition (#1118: cross-session).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
