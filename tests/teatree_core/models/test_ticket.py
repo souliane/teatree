@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from tests.teatree_core.models._shared import (
     _advance_ticket_to_tested,
     _attach_shippable_worktree,
@@ -124,6 +124,14 @@ class TestTicketTransitions(TestCase):
         _attach_shippable_worktree(ticket, self._tmp_path)
 
         _advance_ticket_to_tested(ticket)
+
+        # #1284: ``_advance_ticket_to_tested`` fires ``test()`` directly on
+        # the FSM so the testing phase visit is not recorded. Record it
+        # symmetrically with how the loop would have done it on the testing
+        # task's completion — the shipping gate now enforces the visited
+        # phases the ``pr create`` path always required.
+        testing_session = Session.objects.create(ticket=ticket, agent_id="testing")
+        testing_session.visit_phase("testing", agent_id="testing")
 
         # test() auto-scheduled a reviewing task — complete it to unlock review()
         _complete_phase_task(ticket, "reviewing")
