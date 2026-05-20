@@ -152,7 +152,7 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\bsafety\s+(?:check|scan)\b"),
-        "BLOCKED: `safety` — use `pip-audit` (or `uv audit`) instead.",
+        "BLOCKED: `safety` — use `pip-audit` instead (#1264; `uv audit` is preview-only).",
     ),
     (
         re.compile(r"\buv\s+run\s+(?:\S+\s+)*?t3(?:\s|$)"),
