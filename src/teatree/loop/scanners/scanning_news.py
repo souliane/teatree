@@ -1,4 +1,4 @@
-"""Periodic scanning-news scanner — #1191.
+"""Periodic scanning-news scanner — #1191, #1267.
 
 Companion to the ``scanning-news`` skill (#1190): the loop should fire a
 daily ``scanning_news`` task that runs the news-scan / improvement-ideas
@@ -9,9 +9,15 @@ deliberately simpler:
 * **Single trigger.** Only a cadence (``scanning_news_cadence_hours``,
     default 24h). There is no after-merge backstop — news scanning is a
     fixed-rate platform behaviour, not coupled to delivery velocity.
-* **Single overlay anchor.** The task is always anchored to the
-    ``teatree`` overlay (the skill belongs to teatree-core); the wiring
-    layer attaches the scanner globally, not per-overlay.
+* **Overlay anchor is injected, not baked.** This is a core scanner —
+    it does not know any overlay's name. The wiring layer
+    (``teatree.loop.tick_jobs._scanning_news_scanner``) resolves the
+    active core overlay via :func:`teatree.config.discover_active_overlay`
+    and passes the result as the ``overlay_name`` constructor kwarg.
+    Tasks queued by the scanner are anchored at a placeholder Ticket
+    keyed off that resolved name (#1267 — pre-fix this module hardcoded
+    the legacy ``"teatree"`` value, which migration 0027 had already
+    canonicalized to ``"t3-teatree"``).
 * **Same dedup contract.** A pending or claimed ``scanning_news`` task
     acts as the lock — completion (or failure) unlocks the next cadence
     window. No new model fields; the ``Session.started_at`` of the most
@@ -40,26 +46,30 @@ logger = logging.getLogger(__name__)
 #: Canonical phase token written to ``Task.phase`` for scanning-news tasks.
 SCANNING_NEWS_PHASE = "scanning_news"
 
-#: The scanning-news skill is teatree-core; tasks are always anchored on
-#: the ``teatree`` overlay placeholder ticket.
-SCANNING_NEWS_OVERLAY = "teatree"
-
 #: States that mean a news task is still in-flight (cannot queue a dupe).
 _IN_FLIGHT_TASK_STATES: frozenset[str] = frozenset({"pending", "claimed"})
 
 
 @dataclass(slots=True)
 class ScanningNewsScanner:
-    """Queue a periodic ``scanning_news`` task for the teatree overlay.
+    """Queue a periodic ``scanning_news`` task for the active core overlay.
 
     Configuration fields are passed explicitly (rather than read from a
     global at scan time) so test setup is deterministic and the wiring
     layer is the single place that resolves
-    :class:`teatree.config.UserSettings` to scanner kwargs. The on/off
-    decision lives at the wiring layer (``scanning_news_disabled`` in
-    core config); the scanner itself always scans when invoked.
+    :class:`teatree.config.UserSettings` and
+    :func:`teatree.config.discover_active_overlay` to scanner kwargs. The
+    on/off decision lives at the wiring layer
+    (``scanning_news_disabled`` in core config); the scanner itself
+    always scans when invoked.
+
+    ``overlay_name`` is the resolved overlay-anchor identity for the
+    placeholder ticket (#1267). The scanner never reads or assumes the
+    name — it stamps whatever value the wiring layer hands it. The
+    canonical post-0027 default in production is ``"t3-teatree"``.
     """
 
+    overlay_name: str
     skill: str = "scanning-news"
     cadence_hours: int = 24
     name: str = "scanning_news"
@@ -80,9 +90,9 @@ class ScanningNewsScanner:
         return [
             ScanSignal(
                 kind="scanning_news.queued",
-                summary=f"scanning-news queued for {SCANNING_NEWS_OVERLAY} (trigger: {trigger})",
+                summary=f"scanning-news queued for {self.overlay_name} (trigger: {trigger})",
                 payload={
-                    "overlay": SCANNING_NEWS_OVERLAY,
+                    "overlay": self.overlay_name,
                     "skill": self.skill,
                     "phase": SCANNING_NEWS_PHASE,
                     "task_id": task.pk,
@@ -91,20 +101,18 @@ class ScanningNewsScanner:
             ),
         ]
 
-    @staticmethod
-    def _in_flight_task_exists() -> bool:
+    def _in_flight_task_exists(self) -> bool:
         """True iff a pending/claimed scanning-news task already exists."""
         task_model = _task_model()
         if task_model is None:
             return False
         return task_model.objects.filter(
-            ticket__overlay=SCANNING_NEWS_OVERLAY,
+            ticket__overlay=self.overlay_name,
             phase=SCANNING_NEWS_PHASE,
             status__in=_IN_FLIGHT_TASK_STATES,
         ).exists()
 
-    @staticmethod
-    def _last_run_at() -> object:
+    def _last_run_at(self) -> object:
         """Return the most recent task's Session.started_at, or None.
 
         ``None`` when no prior scanning-news task has been recorded — the
@@ -114,7 +122,7 @@ class ScanningNewsScanner:
         if task_model is None:
             return None
         aggregate = task_model.objects.filter(
-            ticket__overlay=SCANNING_NEWS_OVERLAY,
+            ticket__overlay=self.overlay_name,
             phase=SCANNING_NEWS_PHASE,
         ).aggregate(ts=Max("session__started_at"))
         return aggregate["ts"]
@@ -133,7 +141,7 @@ class ScanningNewsScanner:
         return None
 
     def _queue_task(self, *, trigger: str) -> "_Task | None":
-        """Create a Task + Session row anchored at the teatree placeholder ticket.
+        """Create a Task + Session row anchored at the overlay placeholder ticket.
 
         Wrapped in ``transaction.atomic()`` so a concurrent scanner on a
         second loop process can't double-queue: the in-flight check and
@@ -149,18 +157,19 @@ class ScanningNewsScanner:
         try:
             with transaction.atomic():
                 ticket, _created = ticket_model.objects.get_or_create(
-                    issue_url=_placeholder_issue_url(),
-                    defaults={"overlay": SCANNING_NEWS_OVERLAY, "role": "author"},
+                    issue_url=self._placeholder_issue_url(),
+                    defaults={"overlay": self.overlay_name, "role": "author"},
                 )
-                # Keep the overlay tag canonical even if the placeholder
-                # ticket pre-dates the scanning-news rollout.
-                if ticket.overlay != SCANNING_NEWS_OVERLAY:
-                    ticket.overlay = SCANNING_NEWS_OVERLAY
+                # Keep the overlay tag in sync even if the placeholder
+                # ticket pre-dates the current wiring (e.g. the legacy
+                # ``"teatree"`` row left over before #1267 / migration 0027).
+                if ticket.overlay != self.overlay_name:
+                    ticket.overlay = self.overlay_name
                     ticket.save(update_fields=["overlay"])
                 session = session_model.objects.create(
-                    overlay=SCANNING_NEWS_OVERLAY,
+                    overlay=self.overlay_name,
                     ticket=ticket,
-                    agent_id=f"scanning-news-{SCANNING_NEWS_OVERLAY}",
+                    agent_id=f"scanning-news-{self.overlay_name}",
                 )
                 return task_model.objects.create(
                     ticket=ticket,
@@ -173,10 +182,9 @@ class ScanningNewsScanner:
             logger.exception("ScanningNewsScanner: failed to queue scanning-news task")
             return None
 
-
-def _placeholder_issue_url() -> str:
-    """Stable synthetic URL for the teatree-overlay placeholder ticket."""
-    return f"scanning-news://{SCANNING_NEWS_OVERLAY}"
+    def _placeholder_issue_url(self) -> str:
+        """Stable synthetic URL for the overlay-anchored placeholder ticket."""
+        return f"scanning-news://{self.overlay_name}"
 
 
 def _ticket_model() -> "type[_Ticket] | None":
@@ -201,7 +209,6 @@ def _session_model() -> "type[_Session] | None":
 
 
 __all__ = [
-    "SCANNING_NEWS_OVERLAY",
     "SCANNING_NEWS_PHASE",
     "ScanningNewsScanner",
 ]
