@@ -588,7 +588,7 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
             if key in overlay_cfg:
                 overrides[key] = parser(overlay_cfg[key])
         if not overlay_class and project_path is None and name not in ep_names:
-            canonical = _canonical_ep_name(name, ep_names)
+            canonical = _match_canonical_ep(name, ep_names)
             if canonical is not None:
                 # Legacy short-alias config table — fold its overrides into
                 # the canonical entry-point overlay below; do not emit a
@@ -617,15 +617,20 @@ def discover_overlays(config_path: Path | None = None) -> list[OverlayEntry]:
     return list(seen.values())
 
 
-def _canonical_ep_name(alias: str, ep_names: "set[str]") -> str | None:
-    """Return the entry-point overlay a short config alias maps to.
+def _match_canonical_ep(alias: str, ep_names: "set[str]") -> str | None:
+    """Return the canonical overlay name a short ``alias`` maps to.
 
-    Mirrors the generic legacy-alias rule used by the loop freshness
-    segment (``loop.tick_freshness._canonical_overlay_names``): a bare
-    ``[overlays.<alias>]`` table maps to the installed entry-point overlay
-    whose name equals ``alias`` or ends with ``-<alias>`` (e.g. a short
-    ``<alias>`` table folding into the canonical ``t3-<alias>`` entry
-    point). ``None`` when no such canonical entry point is installed.
+    Single home for the legacy-alias rule (souliane/teatree#1138): a bare
+    ``[overlays.<alias>]`` table in ``~/.teatree.toml`` (without
+    ``path``/``class``) maps to the installed overlay whose name equals
+    ``alias`` or ends with ``"-<alias>"`` — e.g. a short
+    ``[overlays.teatree]`` table folds into the canonical
+    ``t3-teatree`` entry point.
+
+    The dash separator in the suffix match is required: a name that
+    happens to end with the alias *without* a dash (e.g. ``t3acme``
+    for alias ``acme``) is a semantic collision, not a legacy alias,
+    and is rejected. Returns ``None`` when no canonical match exists.
     """
     for ep_name in ep_names:
         if ep_name == alias or ep_name.endswith(f"-{alias}"):

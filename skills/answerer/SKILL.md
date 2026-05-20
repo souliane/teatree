@@ -8,10 +8,6 @@ requires:
   - platforms
 companions:
   - verification-before-completion
-triggers:
-  priority: 25
-  keywords:
-    - '\b(answer (this )?(question|thread|comment)|draft (a )?(reply|response)|reply to (the )?(thread|comment|question)|respond on my behalf)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false
