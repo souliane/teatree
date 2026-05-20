@@ -25,7 +25,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents.model_tiering import resolve_phase_model
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
@@ -215,7 +215,7 @@ def run_headless(
         return _record_failure(task, exit_code=returncode, error=stderr[:2000])
 
     envelope = _parse_cli_envelope(stdout)
-    return _record_success(task, envelope)
+    return _record_success(task, envelope, phase=phase)
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
@@ -299,7 +299,7 @@ def _run_with_heartbeat(
     return stdout or "", stderr or "", proc.returncode
 
 
-def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
+def _record_success(task: Task, envelope: dict[str, str], *, phase: str = "") -> TaskAttempt:
     agent_text = envelope.get("agent_text", "")
     result = _parse_result(agent_text)
     if not result:
@@ -308,6 +308,16 @@ def _record_success(task: Task, envelope: dict[str, str]) -> TaskAttempt:
     schema_error = _validate_result(result)
     if schema_error:
         return _record_failure(task, exit_code=0, error=schema_error)
+
+    # #1284 (codex #1282-6): a sub-agent claiming success must back the
+    # claim with at least one phase-specific evidence field — otherwise a
+    # one-line summary advances the FSM with no proof (the "DM sent
+    # successfully but didn't deliver" false-positive class). Bypassed for
+    # ``needs_user_input`` handoffs (the agent is *not* claiming the phase
+    # is done) by ``check_evidence`` itself.
+    evidence_error = check_evidence(result, phase or task.phase)
+    if evidence_error:
+        return _record_failure(task, exit_code=0, error=evidence_error)
 
     attempt = TaskAttempt.objects.create(
         task=task,

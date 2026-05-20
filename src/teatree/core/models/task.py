@@ -223,6 +223,18 @@ class Task(models.Model):
                 ticket.review()
                 ticket.save()
             elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
+                # #1284 (codex #1282-2): the task-based completion path must
+                # enforce the same visited-phases gate the ``pr create`` path
+                # runs through ``_check_shipping_gate`` — otherwise a REVIEWED
+                # ticket with missing testing/reviewing attestations advances
+                # to SHIPPED through the task path, bypassing the gate. The
+                # single source of truth is ``Session.visited_phases`` union
+                # across the ticket (#694); ``check_gate_across_ticket``
+                # raises ``QualityGateError`` when phases are missing, which
+                # propagates out of ``_apply_phase_transition`` so the caller
+                # surfaces the structured failure rather than silently
+                # advancing the FSM.
+                self.session.check_gate_across_ticket("shipping")
                 ticket.ship()
                 ticket.save()
             else:
