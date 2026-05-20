@@ -30,7 +30,7 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
 
 
 def test_slack_satisfies_messaging_protocol() -> None:
-    assert isinstance(SlackBotBackend(bot_token="x"), MessagingBackend)
+    assert isinstance(SlackBotBackend(bot_token="xoxb-x"), MessagingBackend)
 
 
 def test_slack_post_message_omits_thread_ts_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,8 +212,8 @@ def test_slack_fetch_dms_drains_enqueued_events() -> None:
 
 
 def test_slack_exposes_app_token_and_user_id() -> None:
-    backend = SlackBotBackend(bot_token="xoxb", app_token="xapp", user_id="U123")
-    assert backend.app_token == "xapp"
+    backend = SlackBotBackend(bot_token="xoxb-test", app_token="xapp-test", user_id="U123")
+    assert backend.app_token == "xapp-test"
     assert backend.user_id == "U123"
 
 

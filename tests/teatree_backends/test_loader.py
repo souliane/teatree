@@ -172,7 +172,12 @@ def test_get_messaging_resolves_user_token_ref(monkeypatch: pytest.MonkeyPatch) 
 
 def test_get_messaging_user_token_absent_when_ref_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     """Without ``user_token_ref`` the backend keeps an empty user token."""
-    monkeypatch.setattr("teatree.backends.loader.read_pass", lambda _: "xoxb-resolved")
+
+    # Per-slot prefixes — #1285 validates them at construction.
+    def fake_read_pass(key: str) -> str:
+        return {"ref/bot-bot": "xoxb-resolved", "ref/bot-app": "xapp-resolved"}.get(key, "")
+
+    monkeypatch.setattr("teatree.backends.loader.read_pass", fake_read_pass)
 
     overlay = _build_overlay(messaging_backend="slack", slack_token_ref="ref/bot")
     backend = get_messaging(overlay)
