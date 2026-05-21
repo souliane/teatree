@@ -65,6 +65,11 @@ from teatree.types import RawAPIDict
 logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
+# #1295 cap B: a broadcast that @-mentions the user's own Slack id is the
+# auto-pickup trigger. The Slack message format is ``<@U_USER_ID>``; the
+# scanner records the assignment intent so the dispatcher's mechanical
+# action can assign the user as reviewer on the MR.
+_SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
 _GITLAB_MR_URL_RE = re.compile(
     r"^https://[^/]+/(?P<project>[^?#]+?)/-/merge_requests/(?P<iid>\d+)/?$",
 )
@@ -190,6 +195,12 @@ class SlackBroadcastsScanner:
     fetch_channel_history: ChannelHistoryFetcher
     classify_mrs: MrStateClassifier
     overlay: str = ""
+    # #1295 cap B: when set, broadcasts mentioning ``<@user_slack_id>``
+    # emit an extra ``review_request_in_slack`` signal so the dispatcher
+    # mechanically assigns the user as reviewer on the MR. Default empty
+    # disables auto-pickup so legacy callers keep their previous behaviour.
+    user_slack_id: str = ""
+    reviewer_username: str = ""
     name: str = field(default="slack_broadcasts", init=False)
 
     def scan(self) -> list[ScanSignal]:
@@ -241,7 +252,40 @@ class SlackBroadcastsScanner:
         row = ScannedBroadcast.record(observation)
         if row is None:
             return []
-        return self._apply_classification(row, states)
+        signals = self._apply_classification(row, states)
+        # #1295 cap B: detect ``<@user_slack_id>`` mentions so the
+        # mechanical assigner picks up the MR without waiting for a
+        # forge-side assignment to land.
+        signals.extend(self._pickup_signals(text, row, states))
+        return signals
+
+    def _pickup_signals(
+        self,
+        text: str,
+        row: ScannedBroadcast,
+        states: Sequence[MrState],
+    ) -> list[ScanSignal]:
+        if not self.user_slack_id or not self.reviewer_username:
+            return []
+        mentioned = {match.group(1) for match in _SLACK_MENTION_RE.finditer(text)}
+        if self.user_slack_id not in mentioned:
+            return []
+        return [
+            ScanSignal(
+                kind="review_request_in_slack",
+                summary=f"Review request via Slack mention: {state.url}",
+                payload={
+                    "url": state.url,
+                    "mr_url": state.url,
+                    "channel": row.channel,
+                    "ts": row.slack_ts,
+                    "reviewer_username": self.reviewer_username,
+                    "overlay": self.overlay,
+                    "broadcast_id": row.pk,
+                },
+            )
+            for state in _open_subset(states)
+        ]
 
     def _apply_classification(
         self,
@@ -250,9 +294,33 @@ class SlackBroadcastsScanner:
     ) -> list[ScanSignal]:
         if row.classification == ScannedBroadcast.Classification.ALL_MERGED:
             self._react(row.channel, row.slack_ts, "white_check_mark")
+            # #1295 cap C: cross-channel sweep — once a broadcast resolves
+            # to all-merged on its own channel, replicate the
+            # ``:white_check_mark:`` to every other broadcast channel that
+            # also carries one of the same MR URLs, skipping channels
+            # where the reaction is already present.
+            self._sweep_white_check_mark(row, states)
             return []
         self._react(row.channel, row.slack_ts, "eyes")
         return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in _open_subset(states)]
+
+    def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
+        """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
+
+        Uses each MR URL as a search anchor across every configured
+        channel — if a sibling broadcast already carries the green-check
+        from the user's identity we skip (idempotent), otherwise we
+        react. Best-effort: any failure is logged and the rest of the
+        sweep continues so one flaky channel cannot wedge the others.
+        """
+        mr_urls = {state.url for state in states}
+        for sibling_row in ScannedBroadcast.objects.filter(
+            classification=ScannedBroadcast.Classification.ALL_MERGED,
+        ).exclude(pk=row.pk):
+            sibling_urls = sibling_row.mr_urls if isinstance(sibling_row.mr_urls, list) else []
+            if not mr_urls.intersection(sibling_urls):
+                continue
+            self._react(sibling_row.channel, sibling_row.slack_ts, "white_check_mark")
 
     def _react(self, channel: str, ts: str, emoji: str) -> None:
         try:

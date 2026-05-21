@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib import import_module
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ __all__ = [
     "DEFAULT_TRANSITION_EMOJIS",
     "BaseImageConfig",
     "DbImportStrategy",
+    "FailedE2EWatcher",
     "HealthCheck",
     "MergeGuard",
     "OverlayBase",
@@ -46,6 +48,30 @@ __all__ = [
 
 
 # ── Overlay configuration ────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class FailedE2EWatcher:
+    """One Slack-channel watcher spec for capability E (#1295).
+
+    The loop's ``FailedE2EPostsScanner`` consumes a list of these from
+    :meth:`OverlayConfig.get_failed_e2e_watchers`; each watcher tells the
+    scanner which channel to poll, how to recognise a failed-E2E post in
+    that channel, how to extract the failing spec path from one bullet,
+    and which agent skill to dispatch with the extracted spec.
+
+    ``post_pattern`` is a regex applied to the *message text* — a match
+    means "this is a failed-E2E post". ``spec_pattern`` is a regex
+    applied to one bullet line and must yield the spec path in either
+    group(1) or the named group ``spec``; non-matching bullets are
+    skipped. ``agent_skill`` is the skill name (e.g. ``"t3:e2e"``) the
+    dispatcher routes the resulting signal to.
+    """
+
+    channel_id: str
+    post_pattern: str
+    spec_pattern: str
+    agent_skill: str = "t3:e2e"
 
 
 DEFAULT_TRANSITION_EMOJIS: dict[str, str] = {
@@ -114,6 +140,14 @@ class OverlayConfig:
     # workspace-scoped edits on this machine. Outside ``$T3_WORKSPACE_DIR``
     # (e.g. ``~/.zshrc``, ``~/.claude/``, agent memory) the gate is silent.
     plan_gate: bool = False
+    # #1295 capability J: privacy-redaction patterns scanned by the
+    # pre-publish privacy gate before every public-repo write. Lists are
+    # empty in core; each overlay supplies its own customer-domain
+    # acronyms, internal org prefixes, and quote-anchor patterns. The
+    # gate fires only when the target repo is in ``public_repos``.
+    privacy_redact_terms: list[str]
+    privacy_block_patterns: list[str]
+    public_repos: list[str]
     # ``companion_skills`` is a per-overlay list of skill names that must be
     # loaded alongside the active lifecycle skill — the standing equivalent of
     # "always load /ac-django and /ac-python when working in this overlay".
@@ -141,6 +175,9 @@ class OverlayConfig:
         self.exclude_labels = []
         self.identity_aliases = []
         self.companion_skills = []
+        self.privacy_redact_terms = []
+        self.privacy_block_patterns = []
+        self.public_repos = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
@@ -210,6 +247,40 @@ class OverlayConfig:
 
     def get_review_channel(self) -> tuple[str, str]:
         return ("", "")
+
+    def get_review_broadcast_channels(self, repo: str = "") -> list[tuple[str, str]]:
+        """Return all review-broadcast channels for the overlay (#1295 capability A).
+
+        Defaults to a single-element list wrapping :meth:`get_review_channel`
+        when that getter returns a non-empty pair, else an empty list. This
+        keeps every legacy caller (review request guard, slack review sync,
+        slack broadcast scanner) backward-compatible: an overlay that only
+        sets ``review_channel`` continues to broadcast to one channel; an
+        overlay that needs a multi-channel fan-out (per-repo, per-team)
+        overrides this method without touching the legacy single-channel
+        accessor.
+
+        The ``repo`` parameter is reserved for overlays that route by repo
+        (e.g. one channel per repo group); the default implementation
+        ignores it.
+        """
+        del repo  # default impl is repo-agnostic; overrides may consult it.
+        channel_name, channel_id = self.get_review_channel()
+        if not channel_id:
+            return []
+        return [(channel_name, channel_id)]
+
+    def get_failed_e2e_watchers(self) -> list["FailedE2EWatcher"]:
+        """Return failed-E2E Slack-channel watchers for the overlay (#1295 cap E).
+
+        Each watcher tells the loop which Slack channel publishes failed-E2E
+        notifications, the regex that recognises one (``post_pattern``), the
+        regex that extracts the failing spec path (``spec_pattern``), and
+        the agent skill to dispatch (``agent_skill``). Default is empty:
+        teatree-core does not watch any channel out of the box; downstream
+        overlays supply watchers.
+        """
+        return []
 
     def get_transition_emojis(self) -> dict[str, str]:
         override = getattr(self, "transition_emojis", None)

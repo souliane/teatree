@@ -536,3 +536,53 @@ def test_get_pr_open_state_any_exception_fails_open_to_unknown() -> None:
     host = GitLabCodeHost(client=client)
 
     assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
+
+
+# ── #1295 cap B: assign_reviewer on GitLabCodeHost ──────────────────────
+
+
+def test_assign_reviewer_returns_false_on_blank_inputs() -> None:
+    host = GitLabCodeHost(client=MagicMock(spec=GitLabAPI))
+    assert host.assign_reviewer(pr_url="", username="alice") is False
+    assert host.assign_reviewer(pr_url="https://gitlab.com/o/r/-/merge_requests/1", username="") is False
+
+
+def test_assign_reviewer_returns_false_on_unparseable_url() -> None:
+    host = GitLabCodeHost(client=MagicMock(spec=GitLabAPI))
+    assert host.assign_reviewer(pr_url="https://gitlab.com/not-an-mr", username="alice") is False
+
+
+def test_assign_reviewer_returns_false_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.assign_reviewer(pr_url="https://gitlab.com/org/repo/-/merge_requests/9", username="alice") is False
+
+
+def test_assign_reviewer_returns_false_when_user_lookup_fails() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.resolve_user_id_by_username.return_value = 0
+    host = GitLabCodeHost(client=client)
+
+    assert host.assign_reviewer(pr_url="https://gitlab.com/org/repo/-/merge_requests/9", username="ghost") is False
+
+
+def test_assign_reviewer_delegates_to_client_on_success() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.resolve_user_id_by_username.return_value = 77
+    client.assign_reviewer.return_value = True
+    host = GitLabCodeHost(client=client)
+
+    assert host.assign_reviewer(pr_url="https://gitlab.com/org/repo/-/merge_requests/9", username="alice") is True
+    client.assign_reviewer.assert_called_once_with(42, 9, 77)
+
+
+def test_assign_reviewer_swallows_exception_and_returns_false() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.side_effect = RuntimeError("API down")
+    host = GitLabCodeHost(client=client)
+
+    assert host.assign_reviewer(pr_url="https://gitlab.com/org/repo/-/merge_requests/9", username="alice") is False
