@@ -137,3 +137,144 @@ class FailedE2EScannerTests(TestCase):
         assert second == []
         # One ledger row.
         assert ScannedFailedE2E.objects.count() == 1
+
+    def test_message_without_post_pattern_match_is_ignored(self) -> None:
+        watcher = self._watcher()
+        messages = {CHANNEL: [{"text": "regular chat message", "ts": "1779.010"}]}
+
+        def fetch(*, channel: str) -> list[RawAPIDict]:
+            return list(messages.get(channel, []))
+
+        scanner = FailedE2EPostsScanner(
+            backend=FakeMessaging(),
+            watchers=[watcher],
+            fetch_channel_history=fetch,
+            overlay="test",
+        )
+        assert scanner.scan() == []
+
+    def test_message_with_missing_text_or_ts_is_ignored(self) -> None:
+        watcher = self._watcher()
+        messages = {
+            CHANNEL: [
+                {"ts": "1779.011"},  # no text
+                {"text": "E2E failures:\n* tests/x.spec.ts"},  # no ts
+                {"text": "", "ts": "1779.012"},  # blank text
+                {"text": "E2E failures:\n* tests/y.spec.ts", "ts": ""},  # blank ts
+                {"text": 123, "ts": "1779.013"},  # non-string text
+            ],
+        }
+
+        def fetch(*, channel: str) -> list[RawAPIDict]:
+            return list(messages.get(channel, []))
+
+        scanner = FailedE2EPostsScanner(
+            backend=FakeMessaging(),
+            watchers=[watcher],
+            fetch_channel_history=fetch,
+            overlay="test",
+        )
+        assert scanner.scan() == []
+
+    def test_lines_without_spec_match_are_skipped(self) -> None:
+        watcher = self._watcher()
+        text = "E2E failures:\nSome context line with no spec ref\n* tests/real/spec.spec.ts (timeout)\nTrailing prose."
+        messages = {CHANNEL: [{"text": text, "ts": "1779.020"}]}
+
+        def fetch(*, channel: str) -> list[RawAPIDict]:
+            return list(messages.get(channel, []))
+
+        scanner = FailedE2EPostsScanner(
+            backend=FakeMessaging(),
+            watchers=[watcher],
+            fetch_channel_history=fetch,
+            overlay="test",
+        )
+        signals = scanner.scan()
+        assert [s.payload["spec"] for s in signals] == ["tests/real/spec.spec.ts"]
+
+
+class FailedE2EScannerFactoryTests(TestCase):
+    """Cover :func:`failed_e2e_scanner_for` early-return branches."""
+
+    def test_returns_none_when_overlay_missing(self) -> None:
+        from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+
+        class _Backend:
+            overlay = None
+            messaging = FakeMessaging()
+            name = "x"
+
+        assert failed_e2e_scanner_for(_Backend()) is None
+
+    def test_returns_none_when_messaging_missing(self) -> None:
+        from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+
+        class _Backend:
+            overlay = object()
+            messaging = None
+            name = "x"
+
+        assert failed_e2e_scanner_for(_Backend()) is None
+
+    def test_returns_none_when_overlay_has_no_watchers_getter(self) -> None:
+        from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+
+        class _Config:
+            pass  # no get_failed_e2e_watchers attr
+
+        class _Overlay:
+            config = _Config()
+
+        class _Backend:
+            overlay = _Overlay()
+            messaging = FakeMessaging()
+            name = "x"
+
+        assert failed_e2e_scanner_for(_Backend()) is None
+
+    def test_returns_none_when_watchers_empty(self) -> None:
+        from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+
+        class _Config:
+            def get_failed_e2e_watchers(self) -> list[FailedE2EWatcher]:
+                return []
+
+        class _Overlay:
+            config = _Config()
+
+        class _Backend:
+            overlay = _Overlay()
+            messaging = FakeMessaging()
+            name = "x"
+
+        assert failed_e2e_scanner_for(_Backend()) is None
+
+    def test_returns_scanner_when_watchers_configured(self) -> None:
+        from teatree.loop.scanners.failed_e2e_posts import (  # noqa: PLC0415
+            FailedE2EPostsScanner,
+            failed_e2e_scanner_for,
+        )
+
+        class _Config:
+            def get_failed_e2e_watchers(self) -> list[FailedE2EWatcher]:
+                return [
+                    FailedE2EWatcher(
+                        channel_id=CHANNEL,
+                        post_pattern=r"failures?",
+                        spec_pattern=r"(?P<spec>tests/\S+\.spec\.ts)",
+                        agent_skill="t3:e2e",
+                    ),
+                ]
+
+        class _Overlay:
+            config = _Config()
+
+        class _Backend:
+            overlay = _Overlay()
+            messaging = FakeMessaging()
+            name = "ovl"
+
+        scanner = failed_e2e_scanner_for(_Backend())
+        assert isinstance(scanner, FailedE2EPostsScanner)
+        assert scanner.overlay == "ovl"

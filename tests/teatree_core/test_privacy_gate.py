@@ -6,7 +6,7 @@ text for the overlay's redact-terms + the default quote-anchor
 patterns, and refuses when any match fires.
 """
 
-from teatree.core.privacy_gate import scan_for_publication
+from teatree.core.privacy_gate import format_refusal, scan_for_publication
 
 PUBLIC = "souliane/teatree"
 PRIVATE = "private-org/internal-repo"
@@ -69,3 +69,55 @@ def test_no_match_on_clean_public_text() -> None:
     )
     assert not result.refused
     assert result.matches == ()
+
+
+def test_redact_terms_skip_blank_entries() -> None:
+    """Empty / None entries in redact_terms must not crash the scan."""
+    result = scan_for_publication(
+        text=f"Body references {REDACT_ACRONYM} once.",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        redact_terms=["", REDACT_ACRONYM],
+    )
+    assert result.refused
+    # Exactly one match — the empty term was skipped, not regex-matched.
+    assert len(result.matches) == 1
+
+
+def test_custom_block_patterns_match() -> None:
+    """Caller-supplied regexes are evaluated alongside the default set."""
+    result = scan_for_publication(
+        text="secret token ABC-12345 leaked here",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        block_patterns=[r"ABC-\d{5}"],
+    )
+    assert result.refused
+    assert any(m.pattern_name.startswith("block:") for m in result.matches)
+
+
+def test_invalid_regex_in_block_patterns_skipped_gracefully() -> None:
+    """A malformed pattern logs nothing and just gets skipped — never crashes."""
+    result = scan_for_publication(
+        text="Body content",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        block_patterns=["[unclosed", ""],
+    )
+    # Invalid pattern is skipped; empty pattern filtered by the comprehension.
+    assert not result.refused
+
+
+def test_format_refusal_renders_matches_block() -> None:
+    """The structured error message names the repo, the count, and each pattern."""
+    result = scan_for_publication(
+        text=f"Mentions {REDACT_ACRONYM} once.",
+        target_repo=PUBLIC,
+        public_repos=[PUBLIC],
+        redact_terms=[REDACT_ACRONYM],
+    )
+    rendered = format_refusal(result)
+    assert PUBLIC in rendered
+    assert "privacy gate refused" in rendered
+    assert REDACT_ACRONYM in rendered
+    assert "--privacy-ok" in rendered
