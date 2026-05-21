@@ -1,14 +1,17 @@
 """Mechanical action handlers — inline ticket transitions during a tick."""
 
 import datetime as dt
+import logging
 from typing import cast
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from teatree.loop.dispatch import ActionPayload, DispatchAction
 from teatree.loop.mechanical import (
     HANDLERS,
+    assign_gitlab_reviewer,
     complete_ticket,
     ignore_disposed_ticket,
     reopen_ticket,
@@ -161,9 +164,134 @@ class TestReviewerTaskOrphaned(TestCase):
         assert task.status == Task.Status.COMPLETED
 
 
+class TestAssignGitlabReviewer:
+    """#1295 cap B: Slack-mention pickup appends the user as reviewer.
+
+    The handler walks: payload → overlay → code host → ``assign_reviewer``.
+    Each step is best-effort: missing payload, no host, no method, raising
+    host, or False return — all log and exit cleanly without raising.
+    """
+
+    def test_no_op_when_url_missing(self) -> None:
+        # Must not even touch the overlay loader.
+        assign_gitlab_reviewer(_payload(reviewer_username="alice"))
+
+    def test_no_op_when_username_missing(self) -> None:
+        assign_gitlab_reviewer(_payload(url="https://gitlab.example.com/x/y/-/merge_requests/1"))
+
+    def test_logs_when_overlay_loader_raises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        def _raise(name: str | None = None) -> object:
+            msg = "no overlay"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", _raise)
+        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
+
+        assert any("Could not resolve code host" in r.message for r in caplog.records)
+
+    def test_logs_when_host_is_none(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.backends import loader  # noqa: PLC0415
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
+        monkeypatch.setattr(loader, "get_code_host", lambda overlay: None)
+        with caplog.at_level(logging.INFO, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
+
+        assert any("No code host resolved" in r.message for r in caplog.records)
+
+    def test_logs_when_host_has_no_assign_reviewer(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.backends import loader  # noqa: PLC0415
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        class _PlainHost:  # no assign_reviewer attr
+            pass
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
+        monkeypatch.setattr(loader, "get_code_host", lambda overlay: _PlainHost())
+        with caplog.at_level(logging.INFO, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
+
+        assert any("no assign_reviewer support" in r.message for r in caplog.records)
+
+    def test_logs_when_assign_reviewer_raises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.backends import loader  # noqa: PLC0415
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        class _RaisingHost:
+            def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
+                msg = "API exploded"
+                raise RuntimeError(msg)
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
+        monkeypatch.setattr(loader, "get_code_host", lambda overlay: _RaisingHost())
+        with caplog.at_level(logging.ERROR, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/9", reviewer_username="bob"))
+
+        assert any("Failed to assign" in r.message for r in caplog.records)
+
+    def test_success_logs_info(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.backends import loader  # noqa: PLC0415
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        class _Host:
+            def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
+                return True
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
+        monkeypatch.setattr(loader, "get_code_host", lambda overlay: _Host())
+        with caplog.at_level(logging.INFO, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/42", reviewer_username="alice"))
+
+        assert any("Assigned alice as reviewer" in r.message for r in caplog.records)
+
+    def test_warning_logged_when_assign_returns_false(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from teatree.backends import loader  # noqa: PLC0415
+        from teatree.core import overlay_loader  # noqa: PLC0415
+
+        class _RefusingHost:
+            def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
+                return False
+
+        monkeypatch.setattr(overlay_loader, "get_overlay", lambda name=None: object())
+        monkeypatch.setattr(loader, "get_code_host", lambda overlay: _RefusingHost())
+        with caplog.at_level(logging.WARNING, logger="teatree.loop.mechanical"):
+            assign_gitlab_reviewer(_payload(url="https://x/-/merge_requests/43", reviewer_username="bob"))
+
+        assert any("returned False" in r.message for r in caplog.records)
+
+
 class TestHandlersRegistry:
     def test_registry_maps_kind_to_handler(self) -> None:
         assert HANDLERS["ticket_disposition"] is ignore_disposed_ticket
         assert HANDLERS["ticket_completion"] is complete_ticket
         assert HANDLERS["ticket_reopen"] is reopen_ticket
         assert HANDLERS["reviewer_task_orphaned"] is reviewer_task_orphaned
+        assert HANDLERS["assign_gitlab_reviewer"] is assign_gitlab_reviewer

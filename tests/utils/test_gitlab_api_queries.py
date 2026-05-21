@@ -275,3 +275,140 @@ def test_get_draft_notes_count_returns_zero_when_not_a_list(monkeypatch: pytest.
     result = client.get_draft_notes_count(42, 1)
 
     assert result == 0
+
+
+# ── #1295 cap B: resolve_user_id_by_username + assign_reviewer ──────────
+
+
+def test_resolve_user_id_by_username_returns_zero_on_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    assert client.resolve_user_id_by_username("") == 0
+
+
+def test_resolve_user_id_by_username_returns_id_from_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: [{"id": 42, "username": "alice"}])
+
+    assert client.resolve_user_id_by_username("alice") == 42
+
+
+def test_resolve_user_id_by_username_returns_zero_when_response_not_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+
+    assert client.resolve_user_id_by_username("alice") == 0
+
+
+def test_resolve_user_id_by_username_returns_zero_when_response_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: [])
+
+    assert client.resolve_user_id_by_username("ghost") == 0
+
+
+def test_resolve_user_id_by_username_returns_zero_when_first_entry_not_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: ["not a dict"])
+
+    assert client.resolve_user_id_by_username("alice") == 0
+
+
+def test_assign_reviewer_returns_false_on_non_positive_ids() -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    assert client.assign_reviewer(0, 1, 5) is False
+    assert client.assign_reviewer(1, 0, 5) is False
+    assert client.assign_reviewer(1, 1, 0) is False
+
+
+def test_assign_reviewer_returns_false_when_mr_lookup_not_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+
+    assert client.assign_reviewer(42, 9, 5) is False
+
+
+def test_assign_reviewer_short_circuits_when_user_already_a_reviewer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Idempotent: user_id already in reviewers list → True without PUT."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(
+        client,
+        "get_json",
+        lambda endpoint: {"reviewers": [{"id": 5, "username": "alice"}, {"id": 6, "username": "bob"}]},
+    )
+    put_calls: list[tuple[str, dict[str, object]]] = []
+
+    def _put(endpoint: str, payload: dict[str, object]) -> int:
+        put_calls.append((endpoint, payload))
+        return 200
+
+    monkeypatch.setattr(client, "put_status", _put)
+
+    assert client.assign_reviewer(42, 9, 5) is True
+    assert put_calls == []  # no network call when already a reviewer
+
+
+def test_assign_reviewer_appends_existing_reviewers_on_put(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The PUT payload preserves existing reviewer ids and appends the new one."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(
+        client,
+        "get_json",
+        lambda endpoint: {"reviewers": [{"id": 5, "username": "alice"}]},
+    )
+    captured: dict[str, object] = {}
+
+    def _put(endpoint: str, payload: dict[str, object]) -> int:
+        captured["endpoint"] = endpoint
+        captured["payload"] = payload
+        return 200
+
+    monkeypatch.setattr(client, "put_status", _put)
+
+    assert client.assign_reviewer(42, 9, 7) is True
+    assert captured["endpoint"] == "projects/42/merge_requests/9"
+    assert captured["payload"] == {"reviewer_ids": [5, 7]}
+
+
+def test_assign_reviewer_returns_false_on_non_2xx_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: {"reviewers": []})
+    monkeypatch.setattr(client, "put_status", lambda endpoint, payload: 500)
+
+    assert client.assign_reviewer(42, 9, 7) is False
+
+
+def test_assign_reviewer_tolerates_non_list_reviewers_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``reviewers`` is missing or not a list, treat as empty and PUT just the new id."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "get_json", lambda endpoint: {"reviewers": "weird-value"})
+    captured: dict[str, object] = {}
+
+    def _put(endpoint: str, payload: dict[str, object]) -> int:
+        captured["payload"] = payload
+        return 201
+
+    monkeypatch.setattr(client, "put_status", _put)
+
+    assert client.assign_reviewer(42, 9, 7) is True
+    assert captured["payload"] == {"reviewer_ids": [7]}
+
+
+def test_assign_reviewer_skips_non_dict_reviewer_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bogus non-dict entry inside ``reviewers`` is skipped, not crashy."""
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(
+        client,
+        "get_json",
+        lambda endpoint: {"reviewers": [{"id": 5}, "bad-entry", {"id": 6}]},
+    )
+    captured: dict[str, object] = {}
+
+    def _put(endpoint: str, payload: dict[str, object]) -> int:
+        captured["payload"] = payload
+        return 200
+
+    monkeypatch.setattr(client, "put_status", _put)
+
+    assert client.assign_reviewer(42, 9, 7) is True
+    # Bad string entry skipped; the two valid existing ids are preserved.
+    assert captured["payload"] == {"reviewer_ids": [5, 6, 7]}

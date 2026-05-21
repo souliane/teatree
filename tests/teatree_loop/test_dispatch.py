@@ -1,17 +1,45 @@
 """Tests for ``teatree.loop.dispatch`` — signal → action routing."""
 
 import pytest
+from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.loop.dispatch import dispatch
 from teatree.loop.scanners.base import ScanSignal
 
 
-def test_my_pr_failed_routes_to_action_needed_statusline() -> None:
-    actions = dispatch([ScanSignal(kind="my_pr.failed", summary="PR #1 failed")])
-    assert len(actions) == 1
-    assert actions[0].kind == "statusline"
-    assert actions[0].zone == "action_needed"
+class MyPrFailedDispatchTests(TestCase):
+    def test_my_pr_failed_dispatches_to_debug_agent_and_statusline(self) -> None:
+        """``my_pr.failed`` dispatches to ``t3:debug`` and mirrors the statusline (#1295 cap D)."""
+        actions = dispatch(
+            [
+                ScanSignal(
+                    kind="my_pr.failed",
+                    summary="PR #1 failed",
+                    payload={"pr_url": "https://example.com/pr/1", "head_sha": "abc12345"},
+                ),
+            ],
+        )
+        kinds_zones = [(a.kind, a.zone) for a in actions]
+        assert ("agent", "t3:debug") in kinds_zones
+        assert ("statusline", "action_needed") in kinds_zones
+
+    def test_my_pr_failed_idempotent_on_same_head_sha(self) -> None:
+        """Re-dispatching on the same ``(pr_url, head_sha)`` yields no second agent action (#1295 cap D)."""
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary="PR #1 failed",
+            payload={"pr_url": "https://example.com/pr/42", "head_sha": "deadbeef00"},
+        )
+        first = dispatch([signal])
+        second = dispatch([signal])
+        first_agents = [a for a in first if a.kind == "agent"]
+        second_agents = [a for a in second if a.kind == "agent"]
+        assert len(first_agents) == 1
+        assert second_agents == []
+        # Statusline mirror still fires on every tick — user sees the
+        # red PR even though the agent does not re-run.
+        assert any(a.kind == "statusline" for a in second)
 
 
 def test_my_pr_open_routes_to_in_flight_statusline() -> None:

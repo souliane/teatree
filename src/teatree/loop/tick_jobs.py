@@ -157,6 +157,29 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     return jobs
 
 
+_TUPLE_PAIR = 2
+
+
+def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
+    """Read overlay broadcast-channel list with legacy fallback (#1295 cap A)."""
+    pairs: list[tuple[str, str]] = []
+    multi_getter = getattr(config, "get_review_broadcast_channels", None)
+    if callable(multi_getter):
+        try:
+            raw = multi_getter()
+        except TypeError:
+            raw = None
+        if isinstance(raw, list):
+            pairs = [pair for pair in raw if isinstance(pair, tuple) and len(pair) == _TUPLE_PAIR]
+    if not pairs:
+        legacy_getter = getattr(config, "get_review_channel", None)
+        if callable(legacy_getter):
+            legacy = legacy_getter()
+            if isinstance(legacy, tuple) and len(legacy) == _TUPLE_PAIR and legacy[1]:
+                pairs = [legacy]
+    return pairs
+
+
 def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
     """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
 
@@ -169,14 +192,15 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     overlay = backend.overlay
     if overlay is None or backend.messaging is None:
         return None
-    _channel_name, channel_id = overlay.config.get_review_channel()
-    if not channel_id:
+    channels_pairs = _resolve_broadcast_channels(overlay.config)
+    channel_ids = [cid for _name, cid in channels_pairs if cid]
+    if not channel_ids:
         return None
     glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
     github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
     return SlackBroadcastsScanner(
         backend=backend.messaging,
-        channels=[channel_id],
+        channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
         classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
         overlay=backend.name,
@@ -463,9 +487,21 @@ def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    # #1295 cap E: failed-E2E Slack-post scanner; the overlay supplies
+    # watchers via ``OverlayConfig.get_failed_e2e_watchers``.
+    failed_e2e_scanner = _failed_e2e_scanner_for(backend)
+    if failed_e2e_scanner is not None:
+        jobs.append(_ScannerJob(scanner=failed_e2e_scanner, overlay=tag))
     if backend.messaging is not None:
         jobs.extend(_messaging_jobs_for_backend(backend, tag))
     return jobs
+
+
+def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
+    """Build a per-overlay failed-E2E scanner from overlay watchers (#1295 cap E)."""
+    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
+
+    return failed_e2e_scanner_for(backend)
 
 
 def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
