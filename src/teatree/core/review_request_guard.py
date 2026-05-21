@@ -340,3 +340,40 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     if not token:
         return None
     return GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token)
+
+
+def resolve_guard_targets() -> list[GuardTarget]:
+    """Resolve every review-broadcast channel + post-token for the active overlay (#1295 cap A).
+
+    Iterates :meth:`OverlayConfig.get_review_broadcast_channels` so a
+    Slack-Connect channel uses the per-channel ``xoxp`` from the bot
+    backend and a plain channel uses the sync token. Returns an empty
+    list when no channels resolve to a usable target — callers fall back
+    to the legacy single-channel behaviour.
+    """
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    try:
+        overlay = get_overlay()
+    except ImproperlyConfigured:
+        return []
+    channels = overlay.config.get_review_broadcast_channels()
+    if not channels:
+        return []
+    messaging = messaging_from_overlay()
+    targets: list[GuardTarget] = []
+    for channel_name, channel_id in channels:
+        if not channel_id:
+            continue
+        if isinstance(messaging, SlackBotBackend):
+            token = messaging.resolve_channel_token(channel_id)
+        else:
+            token = overlay.config.get_slack_token()
+        if not token:
+            continue
+        targets.append(GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token))
+    return targets

@@ -250,6 +250,33 @@ class GitLabCodeHost:
             return PrOpenState.UNKNOWN
         return _GITLAB_MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)
 
+    def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
+        """Append *username* as a reviewer on the MR at *pr_url* (#1295 cap B).
+
+        Resolves the project from the URL path, looks up *username* via the
+        GitLab ``/users`` endpoint, then calls
+        :meth:`gitlab_api.GitLabAPI.assign_reviewer` which preserves the
+        existing reviewer list. Returns ``False`` on any failure (URL
+        parse, project lookup, username lookup, PUT failure) so callers
+        can surface the failure to the user instead of silently swallowing
+        it.
+        """
+        if not pr_url or not username:
+            return False
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return False
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return False
+            user_id = self._client.resolve_user_id_by_username(username)
+            if user_id <= 0:
+                return False
+            return self._client.assign_reviewer(project.project_id, int(match["iid"]), user_id)
+        except Exception:  # noqa: BLE001 — fail closed: callers must see False on lookup errors.
+            return False
+
     def get_issue(self, issue_url: str) -> RawAPIDict:
         """Fetch a GitLab issue from its full URL.
 

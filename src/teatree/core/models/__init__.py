@@ -1,3 +1,4 @@
+from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
 from teatree.core.models.bot_ping import BotPing
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
@@ -18,10 +19,12 @@ from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
+from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
+from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
@@ -32,6 +35,8 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
     "LIVE_POST_APPROVAL_TTL_MINUTES",
+    "AssessFinding",
+    "AssessSweepRun",
     "BotPing",
     "BroadcastObservation",
     "ClearIssuanceError",
@@ -63,11 +68,13 @@ __all__ = [
     "QualityGateError",
     "RedCardIntent",
     "RedCardSignal",
+    "RedMrFixAttempt",
     "ReplyDispatch",
     "ReviewAssignment",
     "ReviewIntent",
     "ReviewRequestPost",
     "ScannedBroadcast",
+    "ScannedFailedE2E",
     "SelfImproveFiring",
     "Session",
     "Task",

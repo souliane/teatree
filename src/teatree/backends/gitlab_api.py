@@ -4,7 +4,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import SupportsInt, cast
+from typing import SupportsInt, TypedDict, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -20,6 +20,18 @@ _TTL_DISCUSSIONS = 120
 _TTL_ISSUE = 300
 _TTL_WORK_ITEM = 300
 _TTL_USERNAME = 3600
+
+# HTTP status code bounds for success classification.
+_HTTP_OK_LOW = 200
+_HTTP_OK_HIGH = 300
+
+
+class _ReviewerEntry(TypedDict, total=False):
+    """Subset of the GitLab reviewer payload teatree reads (#1295 cap B)."""
+
+    id: int
+    username: str
+
 
 _WORK_ITEM_STATUS_QUERY = """\
 query($projectPath: ID!, $iid: String!) {
@@ -455,6 +467,53 @@ class GitLabAPI(GitLabHTTPClient):
                 self.post_json(f"projects/{project_id}/pipelines/{pipeline_id}/cancel")
                 cancelled.append(pipeline_id)
         return cancelled
+
+    def resolve_user_id_by_username(self, username: str) -> int:
+        """Resolve a GitLab username to its numeric user id (#1295 capability B).
+
+        Uses ``GET /users?username=<username>`` which returns at most one
+        result (usernames are unique). Returns 0 when the user cannot be
+        resolved so callers can detect and report the failure.
+        """
+        if not username:
+            return 0
+        data = self.get_json(f"users?username={username}")
+        if not isinstance(data, list) or not data:
+            return 0
+        first = data[0]
+        if not isinstance(first, dict):
+            return 0
+        return _as_int(first.get("id", 0))
+
+    def assign_reviewer(self, project_id: int, mr_iid: int, user_id: int) -> bool:
+        """Append *user_id* to the MR's reviewer list (#1295 capability B).
+
+        Reads the current MR state first to preserve existing reviewer ids
+        (never clobbers); idempotent when *user_id* is already a reviewer.
+        Returns ``True`` when the PUT succeeded (or the user was already a
+        reviewer), ``False`` on a failed lookup / non-2xx response.
+        """
+        if project_id <= 0 or mr_iid <= 0 or user_id <= 0:
+            return False
+        current = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}")
+        if not isinstance(current, dict):
+            return False
+        existing_ids: list[int] = []
+        reviewers = current.get("reviewers", [])
+        if isinstance(reviewers, list):
+            for entry in reviewers:
+                if not isinstance(entry, dict):
+                    continue
+                entry_typed: _ReviewerEntry = entry  # type: ignore[assignment]
+                existing_ids.append(_as_int(entry_typed.get("id", 0)))
+        if user_id in existing_ids:
+            return True
+        new_ids = [*existing_ids, user_id]
+        status = self.put_status(
+            f"projects/{project_id}/merge_requests/{mr_iid}",
+            {"reviewer_ids": new_ids},
+        )
+        return _HTTP_OK_LOW <= status < _HTTP_OK_HIGH
 
     def current_username(self) -> str:
         cache_key = "username"

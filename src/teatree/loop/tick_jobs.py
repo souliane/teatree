@@ -170,14 +170,19 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     overlay = backend.overlay
     if overlay is None or backend.messaging is None:
         return None
-    _channel_name, channel_id = overlay.config.get_review_channel()
-    if not channel_id:
+    # #1295 capability A: iterate the overlay's full broadcast channel list,
+    # not just the legacy single ``get_review_channel``. Default impl on
+    # OverlayConfig wraps the legacy getter so existing overlays are
+    # backward compatible.
+    channels_pairs = overlay.config.get_review_broadcast_channels()
+    channel_ids = [cid for _name, cid in channels_pairs if cid]
+    if not channel_ids:
         return None
     glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
     github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
     return SlackBroadcastsScanner(
         backend=backend.messaging,
-        channels=[channel_id],
+        channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
         classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
         overlay=backend.name,
