@@ -469,9 +469,38 @@ def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
+    # #1295 cap E: failed-E2E Slack-post scanner; the overlay supplies
+    # watchers via ``OverlayConfig.get_failed_e2e_watchers``.
+    failed_e2e_scanner = _failed_e2e_scanner_for(backend)
+    if failed_e2e_scanner is not None:
+        jobs.append(_ScannerJob(scanner=failed_e2e_scanner, overlay=tag))
     if backend.messaging is not None:
         jobs.extend(_messaging_jobs_for_backend(backend, tag))
     return jobs
+
+
+def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
+    """Build a per-overlay failed-E2E scanner from the overlay's watchers (#1295 cap E).
+
+    Returns ``None`` when the overlay has no Python class, no messaging
+    backend, or no watchers configured — those cases make the scanner a
+    no-op.
+    """
+    from teatree.loop.scanners.failed_e2e_posts import FailedE2EPostsScanner  # noqa: PLC0415
+    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415
+
+    overlay = backend.overlay
+    if overlay is None or backend.messaging is None:
+        return None
+    watchers = list(overlay.config.get_failed_e2e_watchers())
+    if not watchers:
+        return None
+    return FailedE2EPostsScanner(
+        backend=backend.messaging,
+        watchers=watchers,
+        fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
+        overlay=backend.name,
+    )
 
 
 def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:

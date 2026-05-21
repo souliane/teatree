@@ -116,9 +116,51 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
         )
 
 
+def assign_gitlab_reviewer(payload: ActionPayload) -> None:
+    """Append the user as reviewer on the MR carried by *payload* (#1295 cap B).
+
+    Reads ``url`` and ``reviewer_username`` from the payload, resolves
+    the active overlay's GitLab host, and calls
+    :meth:`GitLabCodeHost.assign_reviewer` which preserves the existing
+    reviewer list. Best-effort: any failure logs without raising so a
+    Slack mention on a non-GitLab forge or a transient API hiccup
+    cannot wedge the tick.
+    """
+    pr_url = str(payload.get("url") or payload.get("mr_url") or "")
+    reviewer_username = str(payload.get("reviewer_username", ""))
+    if not pr_url or not reviewer_username:
+        return
+    try:
+        from teatree.backends.loader import get_code_host  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
+        host = get_code_host(overlay)
+    except Exception:
+        logger.exception("Could not resolve code host for cap-B assignment of %s", pr_url)
+        return
+    if host is None:
+        logger.info("No code host resolved for cap-B assignment of %s", pr_url)
+        return
+    assign = getattr(host, "assign_reviewer", None)
+    if assign is None or not callable(assign):
+        logger.info("Code host has no assign_reviewer support for %s — skipping cap-B", pr_url)
+        return
+    try:
+        ok = assign(pr_url=pr_url, username=reviewer_username)
+    except Exception:
+        logger.exception("Failed to assign %s as reviewer on %s", reviewer_username, pr_url)
+        return
+    if ok:
+        logger.info("Assigned %s as reviewer on %s via Slack-mention pickup", reviewer_username, pr_url)
+    else:
+        logger.warning("assign_reviewer returned False for %s on %s", reviewer_username, pr_url)
+
+
 HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "ticket_disposition": ignore_disposed_ticket,
     "ticket_completion": complete_ticket,
     "ticket_reopen": reopen_ticket,
     "reviewer_task_orphaned": reviewer_task_orphaned,
+    "assign_gitlab_reviewer": assign_gitlab_reviewer,
 }
