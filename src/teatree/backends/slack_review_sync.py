@@ -52,28 +52,34 @@ def _apply_match(ticket: Ticket, pr_url: str, permalink: str, channel: str) -> b
 def fetch_review_permalinks(result: SyncResult) -> None:
     overlay = get_overlay()
     token = overlay.config.get_slack_token()
-    channel_name, channel_id = overlay.config.get_review_channel()
-    if not token or not channel_id:
+    # #1295 capability A: iterate every broadcast channel, not just the
+    # legacy single review channel. Default returns the single-channel
+    # pair so existing overlays keep working unchanged.
+    channels = overlay.config.get_review_broadcast_channels()
+    if not token or not channels:
         return
 
     pr_urls, url_to_ticket = _collect_reviewable_pr_urls()
     if not pr_urls:
         return
 
-    try:
-        matches = search_review_permalinks(
-            SlackReviewSearchRequest(
-                token=token,
-                channel_id=channel_id,
-                channel_name=channel_name,
-                pr_urls=pr_urls,
+    for channel_name, channel_id in channels:
+        if not channel_id:
+            continue
+        try:
+            matches = search_review_permalinks(
+                SlackReviewSearchRequest(
+                    token=token,
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    pr_urls=pr_urls,
+                )
             )
-        )
-    except (httpx.HTTPError, RuntimeError, ValueError) as exc:
-        result.errors.append(f"Slack review sync: {exc}")
-        return
+        except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+            result.errors.append(f"Slack review sync: {exc}")
+            continue
 
-    for match in matches:
-        ticket, pr_url = url_to_ticket[match.pr_url]
-        if _apply_match(ticket, pr_url, match.permalink, match.channel):
-            result.reviews_synced += 1
+        for match in matches:
+            ticket, pr_url = url_to_ticket[match.pr_url]
+            if _apply_match(ticket, pr_url, match.permalink, match.channel):
+                result.reviews_synced += 1

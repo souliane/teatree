@@ -335,7 +335,13 @@ def _cleanup_stale_pending(session_id: str) -> None:
 
 
 def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, check if the fat loop needs registration."""
+    """On first prompt, check if the fat loop needs registration.
+
+    #1295 capability F: emit a structured ``hookSpecificOutput`` directive
+    so a harness that natively supports the ``register_cron`` action can
+    auto-register without a manual CronCreate. Falls back to the prose
+    nag for harnesses that do not consume the structured directive.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return
@@ -350,6 +356,21 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     cadence = _loop_cadence_seconds()
     minutes = max(1, cadence // 60)
     pending.write_text("1", encoding="utf-8")
+    # The directive carries the same payload the agent would pass to
+    # ``CronCreate`` — a harness consumer reads ``hookSpecificOutput``
+    # and skips the prose nag entirely. The prose remains as a fallback
+    # for harness builds that do not yet read the directive.
+    directive = {
+        "hookSpecificOutput": {
+            "action": "register_cron",
+            "cron": f"*/{minutes} * * * *",
+            "prompt": _LOOP_PROMPT,
+            "recurring": True,
+            "slots": ["tick", "review", "self-improve", "slack-answer"],
+        },
+    }
+    json.dump(directive, sys.stdout)
+    print()  # noqa: T201
     print(  # noqa: T201
         f"Session setup: the teatree background loop is not registered yet. "
         f"Please call CronCreate with "

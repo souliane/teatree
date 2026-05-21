@@ -37,6 +37,11 @@ _AGENT_BY_KIND: dict[str, str] = {
     "reviewer_pr.new_sha": "t3:reviewer",
     "reviewer_pr.unreviewed": "t3:reviewer",
     "reviewer_pr.approval_dismissed": "t3:reviewer",
+    # #1295 cap D: a failing MR/PR routes to the debug agent. Mirrored
+    # into the statusline (via _DUAL_DISPATCH) so the user sees the red
+    # MR even when the agent's dispatch is gated by the
+    # ``RedMrFixAttempt`` ledger.
+    "my_pr.failed": "t3:debug",
     # #1047: a Slack reaction/mention on an MR-bearing message routes to the
     # reviewer pipeline. The maker/checker boundary (BLUEPRINT §17.8) is
     # preserved because the reviewer agent runs as a separate dispatch from
@@ -130,6 +135,11 @@ _DUAL_DISPATCH: frozenset[str] = frozenset(
         # #1130: the orchestrator runs AND we mirror the RED CARD into the
         # statusline so the user sees the pending corrective-action workflow.
         "red_card.signal",
+        # #1295 cap D: the t3:debug agent runs AND we mirror the failed
+        # PR into the statusline so the user sees the red MR even when
+        # the ledger idempotency gate suppresses the agent dispatch on
+        # a re-tick of the same head_sha.
+        "my_pr.failed",
     },
 )
 
@@ -155,6 +165,17 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # fallback and leaked raw ``ts``/``text`` verbatim into ``action_needed``.
     "slack.user_reply": ("mechanical", "slack_user_reply"),
     "notion.unrouted": ("webhook", "n8n"),
+    # #1295 cap B: Slack @-mention pickup → mechanically assign the user
+    # as reviewer on the MR. Once GitLab acknowledges the assignment, the
+    # existing ReviewerPrsScanner emits ``reviewer_pr.unreviewed`` which
+    # already routes to ``t3:reviewer``; no separate agent wire-up here.
+    "review_request_in_slack": ("mechanical", "assign_gitlab_reviewer"),
+    # #1295 cap E: failed-E2E Slack-post sweep emits this per failing
+    # spec → routes to ``t3:e2e`` for the actual fix attempt.
+    "e2e.failure_detected": ("agent", "t3:e2e"),
+    # #1295 cap H: ac-reviewing-codebase auto-fix sweep emits this per
+    # new finding → routes to ``t3:coder`` for the drift fix.
+    "skill_drift_detected": ("agent", "t3:coder"),
 }
 
 
@@ -240,13 +261,51 @@ def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAc
     ]
 
 
+def _claim_red_mr_fix(signal: ScanSignal) -> bool:
+    """Idempotency gate for capability D's ``my_pr.failed`` dispatch.
+
+    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a
+    previous tick — the caller proceeds to dispatch the agent. Returns
+    False when the same failing SHA already has a recorded attempt —
+    the statusline mirror still emits so the user sees the red MR but
+    the agent does not re-run. Best-effort: any DB issue defaults to
+    True so the fix-attempt path is not silently dropped on a missing
+    migration; the statusline always fires.
+    """
+    from django.db import DatabaseError  # noqa: PLC0415
+
+    pr_url = str(signal.payload.get("pr_url") or signal.payload.get("url") or "")
+    head_sha = str(signal.payload.get("head_sha", ""))
+    if not pr_url or not head_sha:
+        return True
+    try:
+        from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415
+
+        row = RedMrFixAttempt.claim(
+            pr_url=pr_url,
+            head_sha=head_sha,
+            overlay=str(signal.payload.get("overlay", "")),
+            worktree_hint=str(signal.payload.get("worktree_hint", "")),
+        )
+    except DatabaseError:
+        return True
+    return row is not None
+
+
 def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
     conditional = _conditional_dispatch(signal)
     if conditional is not None:
         return conditional
     agent = _AGENT_BY_KIND.get(signal.kind)
     if agent is not None:
-        actions = [DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload)]
+        actions: list[DispatchAction] = []
+        # #1295 cap D: gate the agent action on the RedMrFixAttempt
+        # idempotency ledger so the same failing head_sha never
+        # re-dispatches. The statusline mirror still fires below.
+        if signal.kind != "my_pr.failed" or _claim_red_mr_fix(signal):
+            actions.append(
+                DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload),
+            )
         if signal.kind in _DUAL_DISPATCH:
             actions.append(
                 DispatchAction(
