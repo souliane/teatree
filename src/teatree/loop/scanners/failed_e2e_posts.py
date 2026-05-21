@@ -119,3 +119,30 @@ class FailedE2EPostsScanner:
                 ),
             )
         return signals
+
+
+def failed_e2e_scanner_for(backend: object) -> FailedE2EPostsScanner | None:
+    """Construct a :class:`FailedE2EPostsScanner` from an :class:`OverlayBackends` (#1295 cap E).
+
+    Returns ``None`` when the overlay has no Python class, no messaging
+    backend, or no watchers configured. Moved out of tick_jobs to keep
+    that orchestrator under the module-LOC gate.
+    """
+    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415
+
+    overlay = getattr(backend, "overlay", None)
+    messaging = getattr(backend, "messaging", None)
+    if overlay is None or messaging is None:
+        return None
+    watchers_getter = getattr(overlay.config, "get_failed_e2e_watchers", None)
+    if not callable(watchers_getter):
+        return None
+    watchers = list(watchers_getter())
+    if not watchers:
+        return None
+    return FailedE2EPostsScanner(
+        backend=messaging,
+        watchers=watchers,
+        fetch_channel_history=BackendChannelHistoryFetcher(backend=messaging),
+        overlay=getattr(backend, "name", ""),
+    )

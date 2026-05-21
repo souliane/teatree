@@ -157,6 +157,29 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
     return jobs
 
 
+_TUPLE_PAIR = 2
+
+
+def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
+    """Read overlay broadcast-channel list with legacy fallback (#1295 cap A)."""
+    pairs: list[tuple[str, str]] = []
+    multi_getter = getattr(config, "get_review_broadcast_channels", None)
+    if callable(multi_getter):
+        try:
+            raw = multi_getter()
+        except TypeError:
+            raw = None
+        if isinstance(raw, list):
+            pairs = [pair for pair in raw if isinstance(pair, tuple) and len(pair) == _TUPLE_PAIR]
+    if not pairs:
+        legacy_getter = getattr(config, "get_review_channel", None)
+        if callable(legacy_getter):
+            legacy = legacy_getter()
+            if isinstance(legacy, tuple) and len(legacy) == _TUPLE_PAIR and legacy[1]:
+                pairs = [legacy]
+    return pairs
+
+
 def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
     """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
 
@@ -170,11 +193,7 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     overlay = backend.overlay
     if overlay is None or backend.messaging is None:
         return None
-    # #1295 capability A: iterate the overlay's full broadcast channel list,
-    # not just the legacy single ``get_review_channel``. Default impl on
-    # OverlayConfig wraps the legacy getter so existing overlays are
-    # backward compatible.
-    channels_pairs = overlay.config.get_review_broadcast_channels()
+    channels_pairs = _resolve_broadcast_channels(overlay.config)
     channel_ids = [cid for _name, cid in channels_pairs if cid]
     if not channel_ids:
         return None
@@ -480,27 +499,10 @@ def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
 
 
 def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
-    """Build a per-overlay failed-E2E scanner from the overlay's watchers (#1295 cap E).
+    """Build a per-overlay failed-E2E scanner from overlay watchers (#1295 cap E)."""
+    from teatree.loop.scanners.failed_e2e_posts import failed_e2e_scanner_for  # noqa: PLC0415
 
-    Returns ``None`` when the overlay has no Python class, no messaging
-    backend, or no watchers configured — those cases make the scanner a
-    no-op.
-    """
-    from teatree.loop.scanners.failed_e2e_posts import FailedE2EPostsScanner  # noqa: PLC0415
-    from teatree.loop.scanners.slack_broadcasts import BackendChannelHistoryFetcher  # noqa: PLC0415
-
-    overlay = backend.overlay
-    if overlay is None or backend.messaging is None:
-        return None
-    watchers = list(overlay.config.get_failed_e2e_watchers())
-    if not watchers:
-        return None
-    return FailedE2EPostsScanner(
-        backend=backend.messaging,
-        watchers=watchers,
-        fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
-        overlay=backend.name,
-    )
+    return failed_e2e_scanner_for(backend)
 
 
 def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
