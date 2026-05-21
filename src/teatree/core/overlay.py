@@ -140,6 +140,14 @@ class OverlayConfig:
     # workspace-scoped edits on this machine. Outside ``$T3_WORKSPACE_DIR``
     # (e.g. ``~/.zshrc``, ``~/.claude/``, agent memory) the gate is silent.
     plan_gate: bool = False
+    # #1295 capability J: privacy-redaction patterns scanned by the
+    # pre-publish privacy gate before every public-repo write. Lists are
+    # empty in core; each overlay supplies its own customer-domain
+    # acronyms, internal org prefixes, and quote-anchor patterns. The
+    # gate fires only when the target repo is in ``public_repos``.
+    privacy_redact_terms: list[str]
+    privacy_block_patterns: list[str]
+    public_repos: list[str]
     # ``companion_skills`` is a per-overlay list of skill names that must be
     # loaded alongside the active lifecycle skill — the standing equivalent of
     # "always load /ac-django and /ac-python when working in this overlay".
@@ -167,6 +175,9 @@ class OverlayConfig:
         self.exclude_labels = []
         self.identity_aliases = []
         self.companion_skills = []
+        self.privacy_redact_terms = []
+        self.privacy_block_patterns = []
+        self.public_repos = []
         if settings_module:
             self._load_settings(settings_module)
         if overlay_name:
