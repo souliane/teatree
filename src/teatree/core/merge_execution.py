@@ -65,6 +65,7 @@ from urllib.parse import urlparse
 from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
+from django_fsm import TransitionNotAllowed
 
 from teatree.config import discover_overlays
 from teatree.project import find_project_root
@@ -1101,8 +1102,25 @@ def record_merge_and_advance(
         # against a different HEAD.
         session = ticket.resolve_phase_session(agent_id="merge-loop")
         session.visit_phase("merged", agent_id=f"merge-loop@{merged_sha[:12]}")
-        if ticket.state in {"in_review", "merged"}:
-            ticket.mark_merged()
+        # #1343: state-complete reconcile. An authorised, audited PR-merge
+        # is the authority — every pre-merged state (NOT_STARTED through
+        # IN_REVIEW, plus SHIPPED) must advance to MERGED. RETROSPECTED/
+        # DELIVERED are past MERGED and stay where they are; IGNORED is
+        # abandoned. The original ``state in {in_review, merged}`` guard
+        # left STARTED tickets visibly stuck on the statusline after their
+        # PR merged (#1324 follow-up). The FSM source-set on
+        # ``reconcile_merged`` is the single source of truth — catching
+        # ``TransitionNotAllowed`` lets the source list evolve in one
+        # place (the model) without a parallel guard here.
+        try:
+            ticket.reconcile_merged()
+        except TransitionNotAllowed:
+            logger.info(
+                "merge keystone: ticket %s state=%s is past MERGED; FSM unchanged",
+                ticket.pk,
+                ticket.state,
+            )
+        else:
             ticket.save()
         return ticket.state
 
