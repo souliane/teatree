@@ -40,6 +40,10 @@ class PREntrySerialized(TypedDict, total=False):
 class TicketExtra(TypedDict, total=False):
     tests_passed: bool
     pr_urls: list[str]
+    # #1263: per-branch PR URL index so a reused-ticket multi-workstream
+    # ship can tell whether the *current* invoking branch's PR exists,
+    # without short-circuiting on the truthiness of the shared ``pr_urls``.
+    pr_url_by_branch: dict[str, str]
     prs: dict[str, PREntrySerialized]
     pr_title_override: str
     ship_invoking_branch: str
