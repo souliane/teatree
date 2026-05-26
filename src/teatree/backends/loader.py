@@ -126,6 +126,11 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
             app_token=read_pass(f"{token_ref}-app") if token_ref else "",
             user_token=read_pass(user_token_ref) if user_token_ref else "",
             user_id=overlay.config.slack_user_id,
+            # Setup-time provisioned IM channel id (#1342) — see
+            # ``OverlayConfig.slack_dm_channel_id``. ``getattr`` keeps older
+            # third-party overlay subclasses (that pre-date the field)
+            # working without an explicit default.
+            dm_channel_id=getattr(overlay.config, "slack_dm_channel_id", ""),
         )
     if choice == "noop":
         return NoopMessagingBackend()
