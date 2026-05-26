@@ -20,6 +20,14 @@ if TYPE_CHECKING:
 
 _APPROVAL_EMOJI = "white_check_mark"
 
+# Engagement emojis signal "someone is looking at / picking up this PR" rather
+# than "outcome reached". When the loop user is the ticket's author, posting
+# one of these on the author's own review-team broadcast inverts the signal —
+# colleagues read "the author is reviewing his own MR". Outcome emojis
+# (``tada``, ``white_check_mark``, ``arrows_counterclockwise``) stay enabled
+# for authored tickets because they communicate state regardless of who acts.
+_ENGAGEMENT_EMOJIS: frozenset[str] = frozenset({"eyes", "hand", "raised_hand"})
+
 logger = logging.getLogger(__name__)
 
 _PERMALINK_RE = re.compile(r"/archives/(?P<channel>[^/]+)/p(?P<ts>\d+)")
@@ -100,10 +108,27 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
 
     Returns the number of successful reaction posts.  Missing credentials,
     missing permalinks, and unmapped transitions are all silent no-ops.
+
+    Engagement emojis (``eyes``, ``hand``, ``raised_hand``) are gated when
+    ``ticket.role == "author"``: the loop user is the PR's author, so an
+    "I'm engaging" reaction on the author's own review-team broadcast
+    misrepresents the author as reviewing their own MR. Outcome emojis
+    (``tada``, ``white_check_mark``, ``arrows_counterclockwise``) post
+    regardless because they communicate state rather than engagement.
     """
     overlay = get_overlay(name=ticket.overlay or None)
     emoji = overlay.config.get_transition_emojis().get(transition_name)
     if not emoji:
+        return 0
+
+    if emoji in _ENGAGEMENT_EMOJIS and _ticket_role(ticket) == "author":
+        logger.info(
+            "Skipping %s reaction on authored ticket %s (transition=%s) — "
+            "author cannot signal engagement on their own PR broadcast.",
+            emoji,
+            getattr(ticket, "pk", "?"),
+            transition_name,
+        )
         return 0
 
     token = overlay.config.get_slack_token()
@@ -119,6 +144,16 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
         if add_reaction(token, channel_id, timestamp, emoji):
             posted += 1
     return posted
+
+
+def _ticket_role(ticket: "Ticket") -> str:
+    """Return ``ticket.role`` as a plain string, defaulting to ``"author"``.
+
+    ``Ticket.role`` is a CharField backed by :class:`Ticket.Role` text choices;
+    callers in tests may pass a ``SimpleNamespace`` without the attribute, so
+    fall back to the model default (``author``) the same way Django does.
+    """
+    return str(getattr(ticket, "role", "author") or "author")
 
 
 def add_approval_reaction(pull_request: "PullRequest") -> int:
