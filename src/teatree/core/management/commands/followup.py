@@ -5,7 +5,6 @@ from django_typer.management import TyperCommand, command
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.types import RawAPIDict
 
 
@@ -95,7 +94,7 @@ class Command(TyperCommand):
                 }
             )
             for pr in host.list_my_prs(author=author)
-            if not _is_draft(pr) and not should_review_candidate_reasons(pr, current_user=author)
+            if not _is_draft(pr)
         ]
         return {"author": author, "count": len(mrs), "mrs": mrs}
 
