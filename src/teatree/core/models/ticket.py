@@ -76,6 +76,24 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         State.IN_REVIEW,
         State.RETROSPECTED,
     ]
+    # #1343: PR-merge reconcile catches every PRE-MERGED state. The
+    # original guard only fired ``mark_merged()`` from IN_REVIEW/MERGED,
+    # so tickets whose PR landed while the FSM still read STARTED stayed
+    # stuck on the statusline. The merge keystone calls
+    # ``reconcile_merged()``, which targets MERGED from every pre-merged
+    # state (and is idempotent at MERGED). RETROSPECTED/DELIVERED are
+    # past MERGED and must not be dragged backward; IGNORED is abandoned.
+    _MERGED_RECONCILE_SOURCE_STATES: ClassVar[list[str]] = [
+        State.NOT_STARTED,
+        State.SCOPED,
+        State.STARTED,
+        State.CODED,
+        State.TESTED,
+        State.REVIEWED,
+        State.SHIPPED,
+        State.IN_REVIEW,
+        State.MERGED,
+    ]
 
     overlay = models.CharField(max_length=255)
     issue_url = models.URLField(max_length=500, blank=True)
@@ -547,6 +565,34 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         previous teardown reported errors, the operator can re-call
         ``mark_merged()`` to retry. The worker is best-effort and does not
         advance the FSM, so retries are safe.
+        """
+        from teatree.core.tasks import execute_teardown  # noqa: PLC0415
+
+        ticket_pk = int(self.pk)
+        transaction.on_commit(lambda: execute_teardown.enqueue(ticket_pk))
+
+    @transition(
+        field=state,
+        source=_MERGED_RECONCILE_SOURCE_STATES,
+        target=State.MERGED,
+    )
+    def reconcile_merged(self) -> None:
+        """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343).
+
+        The merge keystone (``merge_execution.record_merge_and_advance``)
+        calls this from its post hook: an authorised, audited PR-merge is
+        the authority — whatever pre-merged state the ticket sat in, the
+        FSM must follow. Mirrors ``reconcile_reviewed`` (#808) — the source
+        is derived from the pre-merged set so a future-added pre-merged
+        state cannot silently re-introduce the stale-``started`` class.
+
+        Post-MERGED states (``RETROSPECTED``/``DELIVERED``) and ``IGNORED``
+        are NOT sources: the keystone must never drag a ticket BACKWARD
+        from a state past MERGED.
+
+        Schedules the same teardown work as ``mark_merged`` so a
+        keystone-driven reconcile cleans up worktrees identically to the
+        normal IN_REVIEW → MERGED path.
         """
         from teatree.core.tasks import execute_teardown  # noqa: PLC0415
 
