@@ -3642,13 +3642,20 @@ def _enforce_answered_questions(data: dict) -> bool | None:
         "or `t3 teatree pending_chat mark-answered <ts>`).\n"
         "Unanswered:\n" + "\n".join(bullets)
     )
-    json.dump({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}}, sys.stdout)
-    # Return True to break the Stop chain — we want the additionalContext
+    # Stop hooks may NOT carry ``hookSpecificOutput.additionalContext`` —
+    # the Claude Code schema reserves that field for ``UserPromptSubmit`` /
+    # ``PostToolUse`` / ``PostToolBatch``. Emitting it for ``Stop`` makes
+    # the validator reject the JSON ("Hook JSON output validation failed —
+    # (root): Invalid input") and the nag is lost. The schema-valid soft-
+    # block channel is the top-level ``systemMessage`` string, which
+    # surfaces the body to the agent without hard-blocking the turn.
+    json.dump({"systemMessage": body}, sys.stdout)
+    # Return True to break the Stop chain — we want the systemMessage
     # nag delivered intact, and we want to preempt any subsequent handler
     # (notably loop_self_pump) that would also write to stdout and either
     # corrupt the JSON or override our soft-block with a hard-block
     # continuation directive. Soft-block intent is preserved by emitting
-    # only ``additionalContext``, never ``decision: block``.
+    # only ``systemMessage``, never ``decision: block``.
     return True
 
 
@@ -3858,10 +3865,11 @@ def _consideration_gate(data: dict) -> bool | None:
         "user-specific (theme, voice, paths) and not a missing framework feature.\n"
         "Promotable paths:\n" + bullets
     )
-    json.dump(
-        {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": body}},
-        sys.stdout,
-    )
+    # Stop schema rejects ``hookSpecificOutput.additionalContext`` —
+    # ``additionalContext`` is reserved for ``UserPromptSubmit`` /
+    # ``PostToolUse`` / ``PostToolBatch``. Soft-block via top-level
+    # ``systemMessage`` (schema-valid; non-decision; visible to the agent).
+    json.dump({"systemMessage": body}, sys.stdout)
     # Return True to break the Stop chain — preserves the JSON shape and
     # preempts the loop self-pump (which would override our soft-block
     # with a continuation directive).

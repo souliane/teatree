@@ -194,10 +194,12 @@ class TestGate:
 
         assert rv is True
         payload = json.loads(out)
-        body = payload["hookSpecificOutput"]["additionalContext"]
+        # #1335: Stop schema rejects ``hookSpecificOutput.additionalContext``;
+        # soft-block body rides in top-level ``systemMessage``.
+        body = payload["systemMessage"]
         assert "CONSIDERATION GATE" in body
         assert "settings.json" in body
-        assert payload["hookSpecificOutput"]["hookEventName"] == "Stop"
+        assert "hookSpecificOutput" not in payload
         # Soft block only — never emit decision: block.
         assert "decision" not in payload
 
@@ -214,7 +216,7 @@ class TestGate:
         rv, out = _run_hook({"session_id": "s1", "transcript_path": transcript}, monkeypatch)
 
         assert rv is True
-        body = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        body = json.loads(out)["systemMessage"]
         assert "hooks.json" in body
 
     def test_keep_personal_edit_does_not_trip_gate(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -281,7 +283,7 @@ class TestGate:
         rv, out = _run_hook({"session_id": "s1", "transcript_path": transcript}, monkeypatch)
 
         assert rv is True
-        body = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        body = json.loads(out)["systemMessage"]
         assert "settings.json" in body
         assert "hooks.json" in body
 
