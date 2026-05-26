@@ -22,6 +22,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ ci              CI pipeline helpers.                                         │
 │ review          Code review helpers.                                         │
 │ review-request  Batch review requests.                                       │
+│ eval            Behavioral eval harness.                                     │
 │ doctor          Smoke-test hooks, imports, services.                         │
 │ tool            Standalone utilities.                                        │
 │ setup           First-time setup and global skill management.                │
@@ -851,6 +852,52 @@ Usage: t3 review-request post [OPTIONS]
 │                            [required]                                        │
 │    --title           TEXT  Review-request subject (recommended).             │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 eval`
+
+```
+Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
+
+ Behavioral eval harness.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list  List discovered eval scenarios.                                        │
+│ run   Run one scenario by name, or all scenarios when no name is given.      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval list`
+
+```
+Usage: t3 eval list [OPTIONS]
+
+ List discovered eval scenarios.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval run`
+
+```
+Usage: t3 eval run [OPTIONS] [NAME]
+
+ Run one scenario by name, or all scenarios when no name is given.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to run (omit to run all).                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format           TEXT     Report format: text or json. [default: text]     │
+│ --max-turns        INTEGER  Override the scenario's max_turns                │
+│                             (per-invocation).                                │
+│ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

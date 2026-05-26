@@ -1,0 +1,217 @@
+from pathlib import Path
+
+import pytest
+
+from teatree.eval.loader import EvalSpecError, load_eval_yaml
+
+_MINIMAL = (
+    "- name: example\n"
+    "  scenario: example scenario\n"
+    "  prompt: do the thing\n"
+    "  expect:\n"
+    "    - tool_call: bash\n"
+    '      args.command: contains "git worktree add"\n'
+)
+
+
+def _write(tmp_path: Path, body: str) -> Path:
+    target = tmp_path / "spec.yaml"
+    target.write_text(body, encoding="utf-8")
+    return target
+
+
+class TestLoadEvalYaml:
+    def test_loads_one_spec_with_required_fields(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _MINIMAL)
+        specs = load_eval_yaml(path)
+        assert len(specs) == 1
+        spec = specs[0]
+        assert spec.name == "example"
+        assert spec.scenario == "example scenario"
+        assert spec.prompt == "do the thing"
+
+    def test_defaults_model_to_haiku(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.model == "haiku"
+
+    def test_defaults_max_turns_to_four(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.max_turns == 4
+
+    def test_defaults_tools_to_bash(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.tools == ("Bash",)
+
+    def test_overrides_model_max_turns_and_tools(self, tmp_path: Path) -> None:
+        body = (
+            "- name: tuned\n"
+            "  scenario: tuned scenario\n"
+            "  prompt: do the thing\n"
+            "  model: sonnet\n"
+            "  max_turns: 7\n"
+            "  tools: [Bash, Read]\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.model == "sonnet"
+        assert spec.max_turns == 7
+        assert spec.tools == ("Bash", "Read")
+
+    def test_uses_agent_path_field(self, tmp_path: Path) -> None:
+        body = (
+            "- name: agent_path_test\n"
+            "  scenario: agent path\n"
+            "  agent_path: skills/ship/SKILL.md\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.agent_path == "skills/ship/SKILL.md"
+
+    def test_parses_positive_matcher(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "positive"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.operator == "contains"
+        assert matcher.value == "git worktree add"
+
+    def test_parses_negative_matcher(self, tmp_path: Path) -> None:
+        body = (
+            "- name: neg\n"
+            "  scenario: negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: ~ "rm -rf"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "negative"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.operator == "~"
+        assert matcher.value == "rm -rf"
+
+    def test_rejects_empty_expect(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do the thing\n  expect: []\n"
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_missing_required_field(self, tmp_path: Path) -> None:
+        body = (
+            "- scenario: no name here\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_positive_max_turns(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad_turns\n"
+            "  scenario: bad turns\n"
+            "  prompt: do\n"
+            "  max_turns: 0\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_empty_tools_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad_tools\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  tools: []\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_yaml_with_parse_error(self, tmp_path: Path) -> None:
+        # Tabs inside a flow-style block trigger a YAML scanner error and the
+        # loader must surface it as EvalSpecError with a file location.
+        body = "- name: bad\n\tindent_error_here: 1\n"
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_top_level_non_list(self, tmp_path: Path) -> None:
+        body = "name: example\nscenario: not in a list\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expected a top-level YAML list" in str(exc.value)
+
+    def test_rejects_non_mapping_entry(self, tmp_path: Path) -> None:
+        body = "- just a string\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "each spec must be a mapping" in str(exc.value)
+
+    def test_rejects_expect_entry_without_known_key(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - something_else: yes\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "tool_call" in str(exc.value)
+
+    def test_rejects_negative_without_dot_key(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        nodot: ~ "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "<tool>.<arg>" in str(exc.value)
+
+    def test_rejects_negative_with_multiple_inner_keys(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: ~ "x"\n'
+            '        bash.description: ~ "y"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_positive_without_args_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - tool_call: bash\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "args." in str(exc.value)
+
+    def test_rejects_unknown_operator(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: startswith "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "contains" in str(exc.value)
+
+    def test_rejects_non_mapping_expect_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - just a string entry\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expect" in str(exc.value) or "mapping" in str(exc.value)
