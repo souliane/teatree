@@ -149,7 +149,13 @@ class TestEvalRun:
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--format", "json"])
         assert result.exit_code == 0
-        payload = json.loads(result.output)
+        # Other pytest plugins (e.g. inline-snapshot) can write banners to
+        # stdout during the test session; isolate the JSON document by
+        # slicing from the first '{' to the last '}'.
+        output = result.output
+        start = output.index("{")
+        end = output.rindex("}") + 1
+        payload = json.loads(output[start:end])
         assert payload["summary"]["total"] == 1
 
     def test_exits_nonzero_when_any_scenario_failed(self) -> None:
