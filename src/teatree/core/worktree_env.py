@@ -12,6 +12,7 @@ truth.
 """
 
 import platform
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,10 +145,18 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
 
 
 def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
-    """Write the env cache and symlink it into the repo worktree.
+    """Write the env cache and copy it into the repo worktree.
 
     Idempotent.  Writes the file ``chmod 444``.  Callers that modify the
     DB should call this afterwards to refresh the cache.
+
+    The in-worktree copy at ``<wt_path>/.t3-env.cache`` is a real file,
+    not a symlink: when the worktree is bind-mounted into a Docker
+    container, a symlink pointing at the host-absolute cache path
+    dangles inside the container (errno 22 on stat). A real-file copy
+    survives any mount layout. Drift detection still compares the
+    canonical file under ``.t3-cache/`` against a fresh DB render, so
+    the worktree-local copy is just a consumer-facing convenience.
     """
     spec = render_env_cache(worktree)
     if spec is None:
@@ -163,10 +172,10 @@ def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     spec.path.write_text(spec.content, encoding="utf-8")
     spec.path.chmod(stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)  # 0o444
 
-    repo_link = wt_path / CACHE_FILENAME
-    if repo_link.is_symlink() or repo_link.exists():
-        repo_link.unlink()
-    repo_link.symlink_to(spec.path)
+    repo_copy = wt_path / CACHE_FILENAME
+    if repo_copy.is_symlink() or repo_copy.exists():
+        repo_copy.unlink()
+    shutil.copy2(spec.path, repo_copy)
 
     return spec
 
