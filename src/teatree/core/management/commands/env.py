@@ -117,12 +117,18 @@ class Command(TyperCommand):
             self.stdout.write(f"  {key}={value}")
         return 0
 
-    @command()
-    def check(
+    @command(name="check")
+    def check_drift(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> int:
-        """Exit non-zero if the on-disk cache diverges from the DB render."""
+        """Exit non-zero if the on-disk cache diverges from the DB render.
+
+        The Python method is named ``check_drift`` (not ``check``) to avoid
+        shadowing :meth:`django.core.management.base.BaseCommand.check`,
+        which Django invokes on every command to run the system-checks
+        framework. The typer subcommand name is still ``check``.
+        """
         worktree = resolve_worktree(path)
         drifted, cache_path = detect_drift(worktree)
         if drifted:

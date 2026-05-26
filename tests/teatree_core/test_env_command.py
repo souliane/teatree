@@ -124,6 +124,37 @@ class TestEnvOverrides(TestCase):
             call_command("env", "overrides", "--path", "/tmp/wt/repo")
 
 
+class TestEnvSystemCheckCollision(TestCase):
+    """Regression: the env management command must not crash Django's system check.
+
+    Django ``BaseCommand`` calls ``self.check(**check_kwargs)`` on every
+    management command invocation to run the system checks framework. If a
+    typer ``@command`` named ``check`` shadows that method, Django ends up
+    invoking the typer wrapper with the ``typer.Option`` descriptor in
+    place of the resolved value — every other env subcommand
+    (``show`` / ``set-var`` / ``unset`` / ``overrides``) raises a
+    ``TypeError: ... not 'OptionInfo'`` before the typer dispatcher gets
+    to run. The check subcommand must be exposed under a name that does
+    not collide with Django's reserved method.
+    """
+
+    def test_django_system_check_does_not_invoke_typer_check_subcommand(self) -> None:
+        """``BaseCommand.execute`` calls ``self.check()`` with no kwargs.
+
+        Pre-fix the env command exposed a typer subcommand named ``check``
+        whose Python method shadowed Django's reserved
+        ``BaseCommand.check`` method. Calling ``cmd.check()`` (as Django
+        does on every command invocation) hit the typer wrapper with the
+        ``typer.Option`` descriptor as the ``path`` value, raising
+        ``TypeError`` from ``Path(OptionInfo(...))``.
+        """
+        from teatree.core.management.commands.env import Command  # noqa: PLC0415
+
+        # Django's system-checks framework calls this with app_configs/tags
+        # kwargs — never with our typer path/format kwargs. Must not raise.
+        Command().check()
+
+
 class TestEnvCheck(TestCase):
     def test_check_in_sync(self) -> None:
         ticket = _make_ticket()
