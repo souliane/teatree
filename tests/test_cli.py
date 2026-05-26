@@ -510,11 +510,11 @@ class TestReviewRequestDiscover:
         active = OverlayEntry(name="t3-test", overlay_class="test.Overlay", project_path=tmp_path)
         with (
             patch.object(config_mod, "_active_overlay_entry", return_value=active),
-            patch.object(cli_review_request_mod, "managepy") as mock_manage,
+            patch.object(cli_review_request_mod, "managepy_core") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "discover"])
             assert result.exit_code == 0
-            mock_manage.assert_called_once_with(tmp_path, "followup", "discover-mrs", overlay_name="t3-test")
+            mock_manage.assert_called_once_with("followup", "discover-mrs", overlay_name="t3-test")
 
     def test_review_request_check(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -526,12 +526,11 @@ class TestReviewRequestDiscover:
         mr = "https://gitlab.com/org/repo/-/merge_requests/385"
         with (
             patch.object(config_mod, "_active_overlay_entry", return_value=active),
-            patch.object(cli_review_request_mod, "managepy") as mock_manage,
+            patch.object(cli_review_request_mod, "managepy_core") as mock_manage,
         ):
             result = runner.invoke(app, ["review-request", "check", "--mr-url", mr])
             assert result.exit_code == 0
             mock_manage.assert_called_once_with(
-                tmp_path,
                 "review_request_check",
                 "--mr-url",
                 mr,
