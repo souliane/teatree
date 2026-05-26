@@ -18,7 +18,16 @@ from dataclasses import dataclass, field
 import pytest
 
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.loop.scanners.codex_review import CodexReviewScanner, PrSummary
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
+from teatree.loop.scanners.codex_review import (
+    ADVERSARIAL_REVIEW_VARIANT,
+    STANDARD_REVIEW_VARIANT,
+    CodexReviewScanner,
+    GhCodexPrApi,
+    PrSummary,
+    _classify_gh_stderr,
+    _decode_pr,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -173,3 +182,255 @@ class TestSignalAttribution:
         signals = scanner.scan()
 
         assert signals[0].payload["overlay"] == "my-client-overlay"
+
+
+@dataclass(slots=True)
+class _FakeCompleted:
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+
+
+class TestSafeListErrorHandling:
+    """``_safe_list`` propagates ``ScannerError`` but isolates other exceptions."""
+
+    def test_scanner_error_propagates_to_dispatcher(self) -> None:
+        class _AuthFailingApi:
+            def list_open_self_prs(self, *, slug: str) -> list[PrSummary]:
+                _ = slug
+                raise ScannerError(
+                    scanner="codex_review",
+                    error_class=ScannerErrorClass.AUTH,
+                    detail="gh auth login required",
+                )
+
+        scanner = CodexReviewScanner(repos=(SLUG,), api=_AuthFailingApi(), overlay="t")
+        with pytest.raises(ScannerError) as excinfo:
+            scanner.scan()
+        assert excinfo.value.error_class == ScannerErrorClass.AUTH
+
+    def test_unexpected_exception_is_isolated_to_empty_list(self) -> None:
+        class _BoomApi:
+            def list_open_self_prs(self, *, slug: str) -> list[PrSummary]:
+                _ = slug
+                msg = "unexpected"
+                raise RuntimeError(msg)
+
+        scanner = CodexReviewScanner(repos=(SLUG,), api=_BoomApi(), overlay="t")
+        assert scanner.scan() == []
+
+
+class TestGhCodexPrApi:
+    """``GhCodexPrApi`` — the ``gh``-backed implementation of ``CodexPrApi``."""
+
+    def test_returns_decoded_prs_on_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        payload = (
+            '[{"number": 1, "headRefOid": "abc", "isDraft": false, "url": "u", '
+            '"title": "t", "files": [{"path": "src/a.py"}, {"path": "src/b.py"}]}]'
+        )
+
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=0, stdout=payload, stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="ghp_x")
+        prs = api.list_open_self_prs(slug=SLUG)
+        assert len(prs) == 1
+        assert prs[0].slug == SLUG
+        assert prs[0].number == 1
+        assert prs[0].head_sha == "abc"
+        assert prs[0].is_draft is False
+        assert prs[0].changed_files == ("src/a.py", "src/b.py")
+        assert prs[0].url == "u"
+        assert prs[0].title == "t"
+
+    def test_gh_not_installed_rc_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=127, stdout="", stderr="gh: command not found")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="")
+        assert api.list_open_self_prs(slug=SLUG) == []
+
+    def test_file_not_found_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            msg = "gh"
+            raise FileNotFoundError(msg)
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        assert api.list_open_self_prs(slug=SLUG) == []
+
+    def test_gh_auth_failure_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(
+                returncode=1,
+                stdout="",
+                stderr="gh auth login required",
+            )
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="")
+        with pytest.raises(ScannerError) as excinfo:
+            api.list_open_self_prs(slug=SLUG)
+        assert excinfo.value.error_class == ScannerErrorClass.AUTH
+
+    def test_gh_rate_limit_failure_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(
+                returncode=1,
+                stdout="",
+                stderr="API rate limit exceeded for user.",
+            )
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        with pytest.raises(ScannerError) as excinfo:
+            api.list_open_self_prs(slug=SLUG)
+        assert excinfo.value.error_class == ScannerErrorClass.RATE_LIMIT
+
+    def test_gh_network_failure_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(
+                returncode=1,
+                stdout="",
+                stderr="dial tcp: no such host",
+            )
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        with pytest.raises(ScannerError) as excinfo:
+            api.list_open_self_prs(slug=SLUG)
+        assert excinfo.value.error_class == ScannerErrorClass.NETWORK
+
+    def test_gh_unknown_failure_raises_unknown_error_class(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=1, stdout="", stderr="some other failure")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        with pytest.raises(ScannerError) as excinfo:
+            api.list_open_self_prs(slug=SLUG)
+        assert excinfo.value.error_class == ScannerErrorClass.UNKNOWN
+
+    def test_empty_stdout_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=0, stdout="   \n", stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        assert api.list_open_self_prs(slug=SLUG) == []
+
+    def test_malformed_json_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=0, stdout="not json", stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        assert api.list_open_self_prs(slug=SLUG) == []
+
+    def test_non_list_json_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            _ = (cmd, kwargs)
+            return _FakeCompleted(returncode=0, stdout='{"oops": "object not array"}', stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="x")
+        assert api.list_open_self_prs(slug=SLUG) == []
+
+    def test_token_is_exported_as_gh_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return _FakeCompleted(returncode=0, stdout="[]", stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="ghp_secret")
+        api.list_open_self_prs(slug=SLUG)
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env.get("GH_TOKEN") == "ghp_secret"
+
+    def test_no_token_does_not_set_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def _stub_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+            captured["env"] = kwargs.get("env")
+            return _FakeCompleted(returncode=0, stdout="[]", stderr="")
+
+        monkeypatch.setattr("teatree.loop.scanners.codex_review.run_allowed_to_fail", _stub_run)
+        api = GhCodexPrApi(token="")
+        api.list_open_self_prs(slug=SLUG)
+        assert captured["env"] is None
+
+
+class TestDecodePr:
+    """``_decode_pr`` is defensive — coerces missing/wrong-type fields to safe defaults."""
+
+    def test_missing_fields_default_to_safe_values(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={})
+        assert pr.slug == SLUG
+        assert pr.number == 0
+        assert pr.head_sha == ""
+        assert pr.is_draft is False
+        assert pr.changed_files == ()
+        assert pr.url == ""
+        assert pr.title == ""
+
+    def test_non_int_number_falls_back_to_zero(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": "not-an-int"})
+        assert pr.number == 0
+
+    def test_non_list_files_falls_back_to_empty(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"files": "not-a-list"})
+        assert pr.changed_files == ()
+
+    def test_non_dict_file_entry_is_skipped(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"files": ["bare-string", {"path": "src/a.py"}]})
+        assert pr.changed_files == ("src/a.py",)
+
+    def test_blank_path_in_file_entry_is_skipped(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"files": [{"path": ""}, {"path": "src/a.py"}]})
+        assert pr.changed_files == ("src/a.py",)
+
+
+class TestClassifyGhStderr:
+    """``_classify_gh_stderr`` returns the expected ``ScannerErrorClass``."""
+
+    @pytest.mark.parametrize(
+        ("stderr", "expected"),
+        [
+            ("API rate limit exceeded", ScannerErrorClass.RATE_LIMIT),
+            ("secondary rate limit", ScannerErrorClass.RATE_LIMIT),
+            ("Please run gh auth login", ScannerErrorClass.AUTH),
+            ("Bad credentials", ScannerErrorClass.AUTH),
+            ("HTTP 401", ScannerErrorClass.AUTH),
+            ("dial tcp: lookup api.github.com: no such host", ScannerErrorClass.NETWORK),
+            ("could not resolve host", ScannerErrorClass.NETWORK),
+            ("network is unreachable", ScannerErrorClass.NETWORK),
+            ("absolutely unexpected error", ScannerErrorClass.UNKNOWN),
+        ],
+    )
+    def test_classifier_matches_known_markers(self, stderr: str, expected: ScannerErrorClass) -> None:
+        assert _classify_gh_stderr(stderr) == expected
+
+
+class TestVariantConstants:
+    """The ``codex:review`` / ``codex:adversarial-review`` variant names match the agent zones."""
+
+    def test_standard_variant_name_matches_slash_command(self) -> None:
+        assert STANDARD_REVIEW_VARIANT == "codex:review"
+
+    def test_adversarial_variant_name_matches_slash_command(self) -> None:
+        assert ADVERSARIAL_REVIEW_VARIANT == "codex:adversarial-review"

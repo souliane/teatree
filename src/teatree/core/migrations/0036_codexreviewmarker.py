@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0034_scannedbroadcast_sticky_manual_flag"),
+        ("core", "0035_selfupdatemarker"),
     ]
 
     operations = [
