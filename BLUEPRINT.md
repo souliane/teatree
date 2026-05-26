@@ -451,6 +451,7 @@ graph TD
     teatree.cli --> teatree.memory_audit
     teatree.cli --> teatree.on_behalf_gate
     teatree.cli --> teatree.outbound_claim
+    teatree.eval --> teatree.core
     teatree.eval --> teatree.utils
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
