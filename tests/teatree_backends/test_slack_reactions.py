@@ -140,10 +140,16 @@ class _StubOverlay:
 
 
 class TestAddReactionsForTransition:
-    def _ticket(self, permalinks: list[str], overlay: str = "") -> SimpleNamespace:
+    def _ticket(
+        self,
+        permalinks: list[str],
+        overlay: str = "",
+        role: str = "author",
+    ) -> SimpleNamespace:
         return SimpleNamespace(
             extra={"prs": {f"pr-{i}": {"review_permalink": p} for i, p in enumerate(permalinks)}},
             overlay=overlay,
+            role=role,
         )
 
     def test_posts_one_reaction_per_permalink(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,6 +220,72 @@ class TestAddReactionsForTransition:
             ],
         )
         assert add_reactions_for_transition(ticket, "mark_merged") == 2
+
+    def test_skips_eyes_on_authored_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Author's own request_review must NOT put :eyes: on the author's PR broadcast.
+
+        The transition ``request_review`` maps to ``eyes`` in the default emoji map,
+        signalling "someone is engaging with this PR". When the loop user — the
+        ticket's author — transitions their OWN ticket into the reviewing phase,
+        posting :eyes: on the author's review-crew broadcast looks like the author
+        is reviewing their own MR, which inverts the intended signal. Skip these
+        reactions when ``ticket.role == "author"`` and the transition emoji is
+        :eyes:.
+        """
+        overlay = _StubOverlay(_StubConfig(token="xoxb"))
+        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        calls: list[tuple[str, str, str, str]] = []
+        monkeypatch.setattr(
+            slack_reactions,
+            "add_reaction",
+            lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
+        )
+
+        ticket = self._ticket(
+            [
+                "https://team.slack.com/archives/C111/p1700000001000100",
+                "https://team.slack.com/archives/C222/p1700000002000200",
+            ],
+            role="author",
+        )
+        assert add_reactions_for_transition(ticket, "request_review") == 0
+        assert calls == []
+
+    def test_posts_eyes_on_reviewer_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reviewer role still triggers :eyes: — the author skip does not affect reviewer flows."""
+        overlay = _StubOverlay(_StubConfig(token="xoxb"))
+        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        calls: list[tuple[str, str, str, str]] = []
+        monkeypatch.setattr(
+            slack_reactions,
+            "add_reaction",
+            lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
+        )
+
+        ticket = self._ticket(
+            ["https://team.slack.com/archives/C111/p1700000001000100"],
+            role="reviewer",
+        )
+        assert add_reactions_for_transition(ticket, "request_review") == 1
+        assert calls == [("xoxb", "C111", "1700000001.000100", "eyes")]
+
+    def test_posts_outcome_emoji_on_authored_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Outcome emojis (tada, white_check_mark) still post on authored tickets — only :eyes: is gated."""
+        overlay = _StubOverlay(_StubConfig(token="xoxb"))
+        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        calls: list[tuple[str, str, str, str]] = []
+        monkeypatch.setattr(
+            slack_reactions,
+            "add_reaction",
+            lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
+        )
+
+        ticket = self._ticket(
+            ["https://team.slack.com/archives/C111/p1700000001000100"],
+            role="author",
+        )
+        assert add_reactions_for_transition(ticket, "mark_merged") == 1
+        assert calls == [("xoxb", "C111", "1700000001.000100", "tada")]
 
     def test_overlay_override_takes_precedence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb", emojis={"mark_merged": "rocket"}))
