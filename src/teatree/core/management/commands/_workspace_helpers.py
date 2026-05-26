@@ -1,12 +1,14 @@
-"""DSLR snapshot helpers for ``t3 workspace clean-all`` (#1306).
+"""Helpers for ``t3 workspace`` subcommands (#1306).
 
-Split from :mod:`_workspace_cleanup` so the public-functions-per-module
-cap stays clear. Functions here own the "is this tenant in use?" guard
-that prevents :func:`prune_dslr_snapshots` from destroying a snapshot
-an in-flight worktree is about to restore from.
+Split from :mod:`workspace` to keep the command module under the per-
+module LOC cap. Covers two surfaces: the DSLR-snapshot-in-use guard
+shared by ``clean-all`` and the variant-mismatch refusal used by
+``ticket``.
 """
 
-from teatree.core.models import Worktree
+from collections.abc import Callable
+
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 
 
@@ -43,3 +45,21 @@ def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> lis
 
     pruned = prune_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
     return [f"Pruned DSLR snapshot: {name}" for name in pruned]
+
+
+def reject_variant_mismatch(write_err: Callable[[str], None], ticket: Ticket, variant: str) -> None:
+    """Refuse to rebind an existing ticket to a different variant (#1306).
+
+    Pre-fix `workspace ticket <url> --variant <v>` silently kept the
+    existing ticket's variant and rebound to the URL's inferred branch
+    — downstream operations then targeted the wrong code. Raises
+    `SystemExit(2)` with a remediation hint when the caller supplied a
+    `--variant` that disagrees with the row's variant.
+    """
+    if variant and ticket.variant and variant != ticket.variant:
+        write_err(
+            f"  ticket #{ticket.ticket_number} already exists with variant {ticket.variant!r}; "
+            f"refusing to rebind to variant {variant!r}. "
+            f"Use `t3 <overlay> ticket switch` or create a new ticket scope."
+        )
+        raise SystemExit(2)

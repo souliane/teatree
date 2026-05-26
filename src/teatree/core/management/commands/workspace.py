@@ -15,6 +15,7 @@ from django_typer.management import TyperCommand, command
 from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
+from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
     _die,
     _raise_on_cleanup_failures,
@@ -23,7 +24,6 @@ from teatree.core.management.commands._workspace_cleanup import (
     prune_branches,
     resolve_unsynced_worktree,
 )
-from teatree.core.management.commands._workspace_dslr import dslr_tenants_in_use, prune_dslr_snapshots_skipping
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket import format_intake_summary
 from teatree.core.orphan_guard import find_orphans_in_workspace
@@ -215,6 +215,9 @@ class Command(TyperCommand):
 
         with transaction.atomic():
             ticket = _locked_get_or_create_ticket(issue_url, variant, repo_names)
+
+            # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).
+            _wh.reject_variant_mismatch(self.stderr.write, ticket, variant)
 
             if ticket.state == Ticket.State.NOT_STARTED:
                 ticket.scope(issue_url=issue_url, variant=variant or None, repos=repo_names)
@@ -569,7 +572,7 @@ class Command(TyperCommand):
         workspace = _workspace_dir()
         cleaned: list[str] = []
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
-        in_use = dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
+        in_use = _wh.dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
                 cleaned.append(str(cleanup_worktree(wt)))
@@ -589,7 +592,7 @@ class Command(TyperCommand):
             cleaned.extend(prune_branches(str(repo_root)))
             cleaned.extend(drop_orphaned_stashes(str(repo_root)))
 
-        cleaned.extend(prune_dslr_snapshots_skipping(keep=keep_dslr, in_use_tenants=in_use))
+        cleaned.extend(_wh.prune_dslr_snapshots_skipping(keep=keep_dslr, in_use_tenants=in_use))
 
         _raise_on_cleanup_failures(cleaned, self.stdout.write, self.stderr.write)
         return cleaned
