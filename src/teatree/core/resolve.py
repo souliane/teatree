@@ -2,7 +2,7 @@
 
 Resolution order:
 
-1. Walk up from CWD looking for the env cache symlink → parse
+1. Walk up from CWD looking for the env cache copy → parse
     ``TICKET_DIR`` → match against ``Worktree.extra["worktree_path"]``
 2. Match CWD directly against ``Worktree.extra["worktree_path"]``
 3. Detect git worktree from filesystem and auto-register in DB
@@ -46,10 +46,10 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 def _find_env_cache(cwd: str) -> Path | None:
     """Walk up from *cwd* looking for the env cache.
 
-    Only returns a path whose target can actually be read. ``is_file()``
-    follows symlinks and returns False for broken ones, so this naturally
-    skips worktree symlinks whose target is not present in the current
-    filesystem view (e.g. Docker mounts that don't include the ticket dir).
+    The in-worktree env cache is a regular file copy (since #1316) of the
+    canonical cache under ``.t3-cache/``; ``is_file()`` returns True for
+    that copy and False for missing entries, so a worktree whose copy was
+    never generated is naturally skipped.
     """
     cwd_path = Path(cwd)
     for parent in [cwd_path, *cwd_path.parents]:
@@ -247,8 +247,8 @@ def resolve_worktree(path: str = "") -> Worktree:
     """
     cwd = str(Path(path).resolve()) if path else _get_user_cwd()
 
-    # 1. Walk up from CWD to find the env cache (symlink resolves to
-    #    the canonical file in .t3-cache/).
+    # 1. Walk up from CWD to find the env cache (a regular file copy of
+    #    the canonical file in .t3-cache/, since #1316).
     envfile = _find_env_cache(cwd)
     if envfile is not None:
         env = _parse_env_file(envfile)
