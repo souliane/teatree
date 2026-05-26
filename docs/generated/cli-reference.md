@@ -45,6 +45,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 one consolidation loop per agent identity, deduped across    │
 │                 all sessions (#786 WS4); it idles when none.                 │
 │ slack           Slack integration commands.                                  │
+│ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
+│                 short form, #1306).                                          │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1973,6 +1975,47 @@ Usage: t3 slack status [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+### `t3 task`
+
+```
+Usage: t3 task [OPTIONS] COMMAND [ARGS]...
+
+ Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly short form, #1306).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ complete  Forward `t3 task complete <id> ` to `t3 <overlay> tasks complete`. │
+│ list      Forward `t3 task list ` to `t3 <overlay> tasks list`.              │
+│ cancel    Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 task complete`
+
+```
+Usage: t3 task complete [OPTIONS]
+
+ Forward `t3 task complete <id> ` to `t3 <overlay> tasks complete`.
+```
+
+#### `t3 task list`
+
+```
+Usage: t3 task list [OPTIONS]
+
+ Forward `t3 task list ` to `t3 <overlay> tasks list`.
+```
+
+#### `t3 task cancel`
+
+```
+Usage: t3 task cancel [OPTIONS]
+
+ Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.
+```
+
 ### `t3 teatree`
 
 ```
@@ -3542,6 +3585,11 @@ Usage: t3 teatree env overrides [OPTIONS]
 Usage: t3 teatree env check [OPTIONS]
 
  Exit non-zero if the on-disk cache diverges from the DB render.
+
+ The Python method is named ``check_drift`` (not ``check``) to avoid
+ shadowing :meth:`django.core.management.base.BaseCommand.check`,
+ which Django invokes on every command to run the system-checks
+ framework. The typer subcommand name is still ``check``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │

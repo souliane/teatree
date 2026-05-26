@@ -4,7 +4,6 @@ from teatree.core.cleanup import cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.runners.worktree_start import compose_project, docker_compose_down
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +48,9 @@ class WorktreeTeardownRunner(RunnerBase):
 
     def run(self) -> RunnerResult:
         worktree = self.worktree
-        project = compose_project(worktree)
-
-        docker_compose_down(project)
-
+        # `cleanup_worktree` now owns `docker compose down` so every caller
+        # (runner, sync backend, clean-all, clean-merged) tears down docker
+        # the same way (#1306).
         try:
             cleanup_result = cleanup_worktree(worktree, force=self.force, strict_hygiene=False)
         except RuntimeError as exc:

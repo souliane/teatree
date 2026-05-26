@@ -93,7 +93,9 @@ class TestDjangoDbImport:
         monkeypatch.setattr(DjangoDbImporter, "_try_restore_from_ci_dump", lambda self: False)
         cfg = _make_cfg(tmp_path, remote_db_url="postgres://u:p@host/db")
         django_db_import(cfg, slow_import=True)
-        assert "--slow-import" in capsys.readouterr().out
+        # #1306: the hint must reference the actually-valid CLI flag (--fresh-dump),
+        # not the internal `slow_import` keyword.
+        assert "--fresh-dump" in capsys.readouterr().out
 
     def test_failure_message_without_remote_url(
         self,

@@ -79,10 +79,19 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
         return False
 
+    # Idempotent on SENT (the canonical "already delivered" no-op). A
+    # prior FAILED / NOOP row is a recoverable state — a sub-agent that
+    # hit a transient Slack 500 or a missing-backend window must be
+    # able to retry under the same key (#1306). We delete the recoverable
+    # row so the verify-by-re-read invariant still holds: the terminal
+    # ledger entry reflects the eventual outcome, not a transient miss.
     existing = BotPing.objects.filter(idempotency_key=idempotency_key).first()
     if existing is not None:
-        logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
-        return existing.status == BotPing.Status.SENT
+        if existing.status == BotPing.Status.SENT:
+            logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
+            return True
+        logger.info("notify_user retrying key=%s (prior status=%s)", idempotency_key, existing.status)
+        existing.delete()
 
     resolved_backend = backend if backend is not None else messaging_from_overlay()
     resolved_user_id = user_id if user_id is not None else _resolve_user_id()

@@ -16,7 +16,7 @@ from teatree.core.cleanup import CleanupResult
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.worktree_teardown import WorktreeTeardownRunner
 
-_PATCH_DOWN = "teatree.core.runners.worktree_teardown.docker_compose_down"
+_PATCH_DOWN = "teatree.core.runners.worktree_start.docker_compose_down"
 _PATCH_CLEANUP = "teatree.core.runners.worktree_teardown.cleanup_worktree"
 
 
