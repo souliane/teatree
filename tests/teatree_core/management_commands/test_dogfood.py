@@ -57,6 +57,8 @@ def _parse_args(args: tuple[str, ...]) -> dict[str, object]:
             kwargs["notify_on_failure"] = False
         elif arg == "--notify-on-failure":
             kwargs["notify_on_failure"] = True
+        elif arg == "--no-overlay":
+            kwargs["overlay"] = ""
     return kwargs
 
 
@@ -206,3 +208,147 @@ class TestNotifyFailureBody:
         # Markdown code fence for the stderr block — Slack renders it as
         # a monospace block.
         assert "```" in body
+
+    def test_body_omits_stderr_block_when_stderr_is_blank(self) -> None:
+        from teatree.core.management.commands.dogfood import _dm_failure_body  # noqa: PLC0415
+
+        body = _dm_failure_body(
+            "dogfood smoke timeout at worktree_start",
+            failing_step="worktree_start",
+            command_str="t3 teatree worktree start",
+            stderr="   \n  \n",  # only whitespace → no stderr section
+        )
+        assert "worktree_start" in body
+        assert "stderr:" not in body
+        assert "```" not in body
+
+    def test_body_omits_stderr_block_when_stderr_is_empty(self) -> None:
+        from teatree.core.management.commands.dogfood import _dm_failure_body  # noqa: PLC0415
+
+        body = _dm_failure_body(
+            "dogfood smoke timeout at worktree_start",
+            failing_step="worktree_start",
+            command_str="t3 teatree worktree start",
+            stderr="",
+        )
+        assert "stderr:" not in body
+
+
+class TestNotifyFailureRouting:
+    """Exercise the ``_notify_failure`` helper itself (#1308)."""
+
+    def test_notify_failure_routes_to_notify_user(self) -> None:
+        from teatree.core.management.commands.dogfood import _notify_failure  # noqa: PLC0415
+
+        with patch("teatree.core.notify.notify_user") as mock_notify:
+            _notify_failure(
+                summary_text="dogfood smoke provision_failed",
+                failing_step="worktree_provision",
+                command_str="t3 teatree worktree provision",
+                stderr="boom",
+            )
+
+        mock_notify.assert_called_once()
+        kwargs = mock_notify.call_args.kwargs
+        assert kwargs["idempotency_key"] == "dogfood_smoke:worktree_provision"
+        assert "worktree_provision" in mock_notify.call_args.args[0]
+
+    def test_notify_failure_swallows_notify_exception(self) -> None:
+        from teatree.core.management.commands.dogfood import _notify_failure  # noqa: PLC0415
+
+        with patch("teatree.core.notify.notify_user", side_effect=RuntimeError("slack down")):
+            # Best-effort — the helper must not propagate notify failures.
+            _notify_failure(
+                summary_text="dogfood smoke provision_failed",
+                failing_step="worktree_provision",
+                command_str="t3 teatree worktree provision",
+                stderr="boom",
+            )
+
+
+class TestOverlayResolution:
+    """Cover the active-overlay fallback path (#1308)."""
+
+    def test_missing_overlay_exits_two_and_skips_smoke(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """An unresolved overlay short-circuits with exit code 2 and never calls ``run_smoke``."""
+        with (
+            patch("teatree.core.management.commands.dogfood._resolve_active_overlay", return_value=""),
+            patch("teatree.core.management.commands.dogfood.run_smoke") as mock_run,
+        ):
+            _, code = _call_smoke(capsys, "--no-overlay")
+
+        assert code == 2
+        mock_run.assert_not_called()
+
+    def test_resolve_active_overlay_returns_empty_when_no_overlay_registered(self) -> None:
+        from teatree.core.management.commands.dogfood import _resolve_active_overlay  # noqa: PLC0415
+
+        with patch("teatree.config.discover_active_overlay", return_value=None):
+            assert _resolve_active_overlay() == ""
+
+    def test_resolve_active_overlay_strips_t3_prefix(self) -> None:
+        from teatree.core.management.commands.dogfood import _resolve_active_overlay  # noqa: PLC0415
+
+        class _Overlay:
+            name = "t3-teatree"
+
+        with patch("teatree.config.discover_active_overlay", return_value=_Overlay()):
+            assert _resolve_active_overlay() == "teatree"
+
+
+class TestFailingStepCommandLookup:
+    """Cover the ``command_str`` lookup loop inside the smoke command (#1308)."""
+
+    def test_failing_step_not_in_report_yields_empty_command_str(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Defensive: a corrupted report where ``failing_step`` does not match
+        # any captured step's name — the lookup loop falls through without
+        # break, leaving ``command_str`` empty.
+        step = SmokeStep(name="workspace_ticket", command=("t3", "teatree", "workspace", "ticket"))
+        result = StepResult(step=step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+        report = SmokeReport(
+            outcome=SmokeOutcomeKind.UNKNOWN,
+            failing_step="missing_step",
+            steps=[result],
+        )
+        with (
+            patch("teatree.core.management.commands.dogfood.run_smoke", return_value=report),
+            patch("teatree.core.management.commands.dogfood._notify_failure") as mock_notify,
+        ):
+            _, code = _call_smoke(capsys)
+
+        # UNKNOWN maps to exit code 19.
+        assert code == 19
+        kwargs = mock_notify.call_args.kwargs
+        assert kwargs["command_str"] == ""
+
+    def test_failing_step_command_propagated_to_notifier(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Two steps in the report — the second is the failing one, so the
+        # lookup loop must iterate past the first to find the command_str.
+        first_step = SmokeStep(name="workspace_ticket", command=("t3", "teatree", "workspace", "ticket"))
+        failing_step = SmokeStep(
+            name="worktree_provision",
+            command=("t3", "teatree", "worktree", "provision"),
+        )
+        first_result = StepResult(step=first_step, returncode=0, stderr="", stdout="", elapsed_seconds=0.01)
+        failing_result = StepResult(
+            step=failing_step,
+            returncode=1,
+            stderr="missing dslr",
+            stdout="",
+            elapsed_seconds=0.1,
+        )
+        report = SmokeReport(
+            outcome=SmokeOutcomeKind.PROVISION_FAILED,
+            failing_step="worktree_provision",
+            steps=[first_result, failing_result],
+        )
+
+        with (
+            patch("teatree.core.management.commands.dogfood.run_smoke", return_value=report),
+            patch("teatree.core.management.commands.dogfood._notify_failure") as mock_notify,
+        ):
+            _, code = _call_smoke(capsys)
+
+        assert code == 11
+        kwargs = mock_notify.call_args.kwargs
+        assert kwargs["command_str"] == "t3 teatree worktree provision"

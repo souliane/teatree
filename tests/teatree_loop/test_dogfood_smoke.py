@@ -260,3 +260,123 @@ def test_smoke_report_is_dataclass_with_evidence_trail() -> None:
     report = SmokeReport()
     assert report.steps == []
     assert report.outcome is SmokeOutcomeKind.PASS
+
+
+class TestFailingStepStderrLookup:
+    """Cover ``SmokeReport.failing_step_stderr`` iteration (#1308)."""
+
+    def test_returns_stderr_of_named_failing_step(self) -> None:
+        first = SmokeStep(name="step_a", command=("t3", "a"))
+        second = SmokeStep(name="step_b", command=("t3", "b"))
+        report = SmokeReport(
+            outcome=SmokeOutcomeKind.PROVISION_FAILED,
+            failing_step="step_b",
+            steps=[
+                _step_result(first, returncode=0),
+                _step_result(second, returncode=1, stderr="boom on b"),
+            ],
+        )
+        assert report.failing_step_stderr == "boom on b"
+
+    def test_returns_empty_when_failing_step_name_does_not_match_any_result(self) -> None:
+        step = SmokeStep(name="step_a", command=("t3", "a"))
+        report = SmokeReport(
+            outcome=SmokeOutcomeKind.UNKNOWN,
+            failing_step="step_z",  # not in steps
+            steps=[_step_result(step, returncode=1, stderr="boom")],
+        )
+        assert report.failing_step_stderr == ""
+
+    def test_returns_empty_for_passing_report(self) -> None:
+        assert SmokeReport().failing_step_stderr == ""
+
+
+class TestDecodeSubprocessOutput:
+    """Cover :func:`teatree.loop.dogfood_smoke._decode_subprocess_output` (#1308)."""
+
+    def test_decodes_bytes_with_utf8(self) -> None:
+        from teatree.loop.dogfood_smoke import _decode_subprocess_output  # noqa: PLC0415
+
+        assert _decode_subprocess_output(b"hello \xe2\x9c\x93") == "hello ✓"
+
+    def test_replaces_invalid_utf8_bytes(self) -> None:
+        from teatree.loop.dogfood_smoke import _decode_subprocess_output  # noqa: PLC0415
+
+        # ``\xff`` is not valid UTF-8 — must be replaced, not raised.
+        result = _decode_subprocess_output(b"bad: \xff bytes")
+        assert "bad: " in result
+        assert "bytes" in result
+
+    def test_passes_str_through_unchanged(self) -> None:
+        from teatree.loop.dogfood_smoke import _decode_subprocess_output  # noqa: PLC0415
+
+        assert _decode_subprocess_output("already text") == "already text"
+
+    def test_returns_empty_string_for_none(self) -> None:
+        from teatree.loop.dogfood_smoke import _decode_subprocess_output  # noqa: PLC0415
+
+        assert _decode_subprocess_output(None) == ""
+
+
+class TestRunT3CommandRunner:
+    """Cover :func:`teatree.loop.dogfood_smoke.run_t3_command` (#1308).
+
+    The runner is the production-mode default — tests inject fakes for
+    other paths. The CI suite never shells out, so we mock the underlying
+    ``run_allowed_to_fail`` and ``TimeoutExpired`` path.
+    """
+
+    def test_run_t3_command_captures_completed_process(self) -> None:
+        from subprocess import CompletedProcess  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.dogfood_smoke import run_t3_command  # noqa: PLC0415
+
+        step = SmokeStep(name="workspace_ticket", command=("t3", "teatree", "workspace", "ticket"))
+        fake = CompletedProcess(args=step.command, returncode=0, stdout="ok", stderr="")
+        with patch("teatree.loop.dogfood_smoke.run_allowed_to_fail", return_value=fake):
+            result = run_t3_command(step)
+
+        assert result.step is step
+        assert result.returncode == 0
+        assert result.stdout == "ok"
+        assert result.stderr == ""
+        assert result.timed_out is False
+        assert result.elapsed_seconds >= 0
+
+    def test_run_t3_command_propagates_non_zero_return_code(self) -> None:
+        from subprocess import CompletedProcess  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.dogfood_smoke import run_t3_command  # noqa: PLC0415
+
+        step = SmokeStep(name="worktree_provision", command=("t3", "teatree", "worktree", "provision"))
+        fake = CompletedProcess(args=step.command, returncode=2, stdout="", stderr="bad config")
+        with patch("teatree.loop.dogfood_smoke.run_allowed_to_fail", return_value=fake):
+            result = run_t3_command(step)
+
+        assert result.returncode == 2
+        assert result.stderr == "bad config"
+        assert result.timed_out is False
+
+    def test_run_t3_command_converts_timeout_into_timed_out_result(self) -> None:
+        from subprocess import TimeoutExpired  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.dogfood_smoke import run_t3_command  # noqa: PLC0415
+
+        step = SmokeStep(
+            name="worktree_start",
+            command=("t3", "teatree", "worktree", "start"),
+            timeout_seconds=1,
+        )
+        # TimeoutExpired carries stdout/stderr that may be bytes — exercise both.
+        exc = TimeoutExpired(cmd=step.command, timeout=1, output=b"partial\xffstdout", stderr=b"partial stderr")
+        with patch("teatree.loop.dogfood_smoke.run_allowed_to_fail", side_effect=exc):
+            result = run_t3_command(step)
+
+        assert result.timed_out is True
+        assert result.returncode == -1
+        assert "partial stderr" in result.stderr
+        assert "partial" in result.stdout
+        assert result.elapsed_seconds >= 0
