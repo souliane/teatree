@@ -1,7 +1,6 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
 import os
-import socket
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
@@ -10,13 +9,37 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import E2ERepo, load_e2e_repos
-from teatree.core.models import Worktree
+from teatree.core.management.commands import _e2e_discovery as _disc
+from teatree.core.models import Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
 from teatree.core.runners.worktree_start import compose_project
 from teatree.paths import get_data_dir
-from teatree.utils.ports import get_service_port
 from teatree.utils.run import run_checked, run_streamed
+
+# Re-exports for back-compat with tests and external callers (#1322 split).
+_ticket_frontend_projects = _disc.ticket_frontend_projects
+_discover_frontend_port = _disc.discover_frontend_port
+_resolve_linked_worktree = _disc.resolve_linked_worktree
+_linked_env_cache = _disc.linked_env_cache
+_compose_frontend_port = _disc.compose_frontend_port
+_detect_local_port = _disc.detect_local_port
+
+
+@dataclass
+class DispatchOptions:
+    """Common flags forwarded from ``e2e run`` to the resolved runner.
+
+    Bundles the runner-shared flags so internal dispatch methods stay below
+    the project's per-function argument cap without per-call ``noqa``.
+    """
+
+    test_path: str = ""
+    target: str = ""
+    headed: bool = False
+    update_snapshots: bool = False
+    docker: bool = True
+    linked_to: int = 0
 
 
 @dataclass
@@ -39,15 +62,6 @@ class PlaywrightOptions:
             args.append("--headed")
         args.extend(self.extra)
         return args
-
-
-def _detect_local_port(port: int) -> int | None:
-    """Return *port* if something is listening on localhost, else None."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.3)
-        if s.connect_ex(("127.0.0.1", port)) == 0:
-            return port
-    return None
 
 
 def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
@@ -82,63 +96,13 @@ def _resolve_private_tests_path() -> Path | None:
     return path if path.is_dir() else None
 
 
-def _compose_frontend_port(project: str) -> int | None:
-    # The compose `frontend` service is nginx serving the pre-built dist on
-    # container port 80; a raw dev-server setup instead listens on 4200.
-    for container_port in (80, 4200):
-        port = get_service_port(project, "frontend", container_port)
-        if port is not None:
-            return port
-    return None
-
-
-def _ticket_frontend_projects(worktree: Worktree) -> list[str]:
-    """Compose projects that may host the frontend for this worktree's ticket.
-
-    The resolved worktree is whatever the cwd matched — for an external test
-    repo that is the *test* worktree, whose compose project has no frontend.
-    The frontend lives in a sibling repo's worktree under the same ticket, so
-    probe the resolved worktree first, then every sibling under the ticket.
-    """
-    ticket = worktree.ticket
-    candidates = [worktree]
-    if ticket is not None:
-        candidates += [wt for wt in Worktree.objects.filter(ticket=ticket) if wt.pk != worktree.pk]
-    seen: set[str] = set()
-    projects: list[str] = []
-    for wt in candidates:
-        project = compose_project(wt)
-        if project not in seen:
-            seen.add(project)
-            projects.append(project)
-    return projects
-
-
-def _discover_frontend_port(worktree: Worktree) -> int | None:
-    """Discover the frontend port for a worktree's stack.
-
-    ``docker compose port`` is authoritative when the stack is up; the local
-    scan is a last-ditch fallback for users who started compose outside the
-    teatree runner. The frontend may be served by a sibling repo's compose
-    project under the same ticket, so every ticket project is probed.
-    """
-    for project in _ticket_frontend_projects(worktree):
-        port = _compose_frontend_port(project)
-        if port is not None:
-            return port
-    # Scan the allocation range — ports start at 4200 and go up
-    for candidate in range(4200, 4211):
-        if _detect_local_port(candidate) is not None:
-            return candidate
-    return None
-
-
 def _build_e2e_env(
     frontend_url: str | None = None,
     *,
     headed: bool,
     target: str,
     compose_project: str | None = None,
+    env_cache_override: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
 
@@ -171,8 +135,11 @@ def _build_e2e_env(
     if compose_project:
         env["COMPOSE_PROJECT_NAME"] = compose_project
 
-    envfile = _find_env_cache(_get_user_cwd())
-    env_cache = _parse_env_file(envfile) if envfile is not None else {}
+    if env_cache_override is not None:
+        env_cache = env_cache_override
+    else:
+        envfile = _find_env_cache(_get_user_cwd())
+        env_cache = _parse_env_file(envfile) if envfile is not None else {}
     for key, value in get_overlay().get_e2e_env_extras(env_cache).items():
         env.setdefault(key, value)
 
@@ -198,6 +165,7 @@ class Command(TyperCommand):
         headed: bool = False,
         update_snapshots: bool = False,
         docker: bool = True,
+        linked_to: int = 0,
     ) -> str:
         """Run E2E tests — the one command that works for every overlay.
 
@@ -220,37 +188,34 @@ class Command(TyperCommand):
         ``--target dev|local`` selects the dual-env target and is forwarded to
         whichever runner handles the overlay (see ``external`` for semantics).
 
+        ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo is not
+        DB-linked to the backend worktree (a frequent shape for
+        out-of-tree test repos), name the backend ticket explicitly so
+        frontend discovery, ``COMPOSE_PROJECT_NAME``, and the env cache
+        feeding ``get_e2e_env_extras`` all route at the linked stack.
+        ``0`` means "no link" (default — back-compat).
+
         Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
         explicit ``external`` subcommand to keep this entry point overlay-agnostic.
         """
-        if work_item:
-            return self._run_work_item(
-                work_item,
-                test_path=test_path,
-                at=at,
-                target=target,
-                headed=headed,
-                update_snapshots=update_snapshots,
-                docker=docker,
-            )
-        return self._dispatch_runner(
+        opts = DispatchOptions(
             test_path=test_path,
             target=target,
             headed=headed,
             update_snapshots=update_snapshots,
             docker=docker,
+            linked_to=linked_to,
         )
+        if work_item:
+            return self._run_work_item(work_item, at=at, opts=opts)
+        return self._dispatch_runner(opts)
 
-    def _run_work_item(  # noqa: PLR0913
+    def _run_work_item(
         self,
         work_item: str,
         *,
-        test_path: str,
         at: str,
-        target: str,
-        headed: bool,
-        update_snapshots: bool,
-        docker: bool,
+        opts: DispatchOptions,
     ) -> str:
         """#794 keystone: resolve work item → ladder → run → record provenance.
 
@@ -294,45 +259,32 @@ class Command(TyperCommand):
         os.environ["T3_ORIG_CWD"] = primary_dir
 
         try:
-            result = self._dispatch_runner(
-                test_path=test_path,
-                target=target,
-                headed=headed,
-                update_snapshots=update_snapshots,
-                docker=docker,
-            )
+            result = self._dispatch_runner(opts)
         except SystemExit as exc:
             record_run(ticket, result="red", per_repo_shas=per_repo_shas)
             raise SystemExit(exc.code) from exc
         record_run(ticket, result="green", per_repo_shas=per_repo_shas)
         return result
 
-    def _dispatch_runner(
-        self,
-        *,
-        test_path: str,
-        target: str,
-        headed: bool,
-        update_snapshots: bool,
-        docker: bool,
-    ) -> str:
+    def _dispatch_runner(self, opts: DispatchOptions) -> str:
         overlay = get_overlay()
         e2e_config = overlay.metadata.get_e2e_config()
         runner = e2e_config.get("runner") or self._infer_runner(e2e_config)
         if runner == "project":
             return self.project(
-                test_path=test_path,
-                target=target,
-                headed=headed,
-                docker=docker,
-                update_snapshots=update_snapshots,
+                test_path=opts.test_path,
+                target=opts.target,
+                headed=opts.headed,
+                docker=opts.docker,
+                update_snapshots=opts.update_snapshots,
             )
         if runner == "external":
             return self.external(
-                test_path=test_path,
-                target=target,
-                headed=headed,
-                update_snapshots=update_snapshots,
+                test_path=opts.test_path,
+                target=opts.target,
+                headed=opts.headed,
+                update_snapshots=opts.update_snapshots,
+                linked_to=opts.linked_to,
             )
         self.stderr.write(
             f"Overlay e2e_config has no runner ({e2e_config}). "
@@ -378,6 +330,61 @@ class Command(TyperCommand):
                 self.stderr.write(f"E2E preflight failed: {exc}")
                 raise SystemExit(1) from exc
 
+    def _resolve_target_env(
+        self,
+        resolved_target: str,
+        linked_ticket: Ticket | None,
+    ) -> tuple[str | None, str | None, dict[str, str] | None]:
+        """Build the per-target trio passed to ``_build_e2e_env``.
+
+        Returns ``(frontend_url, worktree_compose_project, env_cache_override)``.
+        For ``dev`` the BASE_URL is preserved and the other two stay None.
+        For ``local`` the frontend port is discovered (routed through
+        ``linked_ticket`` when provided), the compose project comes from the
+        linked worktree (else the resolved one), and the env-cache override
+        comes from the linked worktree's on-disk path (None when no link).
+        """
+        if resolved_target == "dev":
+            if not os.environ.get("BASE_URL"):
+                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
+                raise SystemExit(1)
+            return None, None, None
+
+        worktree = resolve_worktree()
+        frontend_port = _discover_frontend_port(worktree, linked_ticket=linked_ticket)
+        if frontend_port is None:
+            probed = ", ".join(_ticket_frontend_projects(worktree, linked_ticket=linked_ticket)) or "none"
+            self.stderr.write(
+                f"Frontend not running (no docker `frontend` service in [{probed}], "
+                "no local process on 4200). Run `t3 <overlay> worktree start` first.",
+            )
+            raise SystemExit(1)
+
+        frontend_url = f"http://localhost:{frontend_port}"
+        if linked_ticket is not None:
+            linked_wt = _resolve_linked_worktree(linked_ticket)
+            if linked_wt is not None:
+                return frontend_url, compose_project(linked_wt), _linked_env_cache(linked_wt)
+        return frontend_url, compose_project(worktree), None
+
+    def _resolve_linked_ticket(self, linked_to: int) -> Ticket | None:
+        """Resolve ``--linked-to <pk>`` to a Ticket or exit on misconfig.
+
+        ``0`` means "no link" — return None (back-compat path). A non-zero
+        pk that misses must fail fast: silently falling through would mask
+        the user's intent to route at a specific backend stack.
+        """
+        if not linked_to:
+            return None
+        try:
+            return Ticket.objects.get(pk=linked_to)
+        except Ticket.DoesNotExist:
+            self.stderr.write(
+                f"--linked-to ticket pk={linked_to} not found. "
+                "Pass the backend ticket's pk (see `t3 <overlay> ticket list`).",
+            )
+            raise SystemExit(2) from None
+
     def _resolve_target(self, target: str) -> str:
         """Resolve the dual-env target deterministically.
 
@@ -404,6 +411,7 @@ class Command(TyperCommand):
         headed: bool = False,
         update_snapshots: bool = False,
         playwright_args: str = "",
+        linked_to: int = 0,
     ) -> str:
         """Run Playwright tests from the external test repo (T3_PRIVATE_TESTS or --repo).
 
@@ -430,6 +438,14 @@ class Command(TyperCommand):
         Discovers the frontend port from docker-compose (or local process)
         and reads the tenant variant from the env cache.
 
+        ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo's
+        auto-registered worktree is not DB-linked to the backend stack
+        (``auto:<branch>`` ticket, different ticket, or no worktree row at
+        all), name the backend ticket explicitly. Discovery,
+        ``COMPOSE_PROJECT_NAME``, and the env cache feeding
+        ``get_e2e_env_extras`` all route at the linked stack. ``0`` means
+        "no link" (default — back-compat with the resolved-worktree path).
+
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
         """
@@ -447,30 +463,12 @@ class Command(TyperCommand):
                 )
                 raise SystemExit(1)
 
+        linked_ticket = self._resolve_linked_ticket(linked_to)
         resolved_target = self._resolve_target(target)
-
-        # target=dev   → keep the pre-set BASE_URL (deployed env), no port scan.
-        # target=local → always discover the local frontend, even if a stray
-        #                 BASE_URL is exported, so `--target local` can never
-        #                 silently hit a deployed environment.
-        worktree_compose_project: str | None = None
-        if resolved_target == "dev":
-            if not os.environ.get("BASE_URL"):
-                self.stderr.write("--target dev requires BASE_URL (the deployed environment URL) to be set.")
-                raise SystemExit(1)
-            frontend_url = None  # preserve existing BASE_URL
-        else:
-            worktree = resolve_worktree()
-            frontend_port = _discover_frontend_port(worktree)
-            if frontend_port is None:
-                probed = ", ".join(_ticket_frontend_projects(worktree)) or "none"
-                self.stderr.write(
-                    f"Frontend not running (no docker `frontend` service in [{probed}], "
-                    "no local process on 4200). Run `t3 <overlay> worktree start` first.",
-                )
-                raise SystemExit(1)
-            frontend_url = f"http://localhost:{frontend_port}"
-            worktree_compose_project = compose_project(worktree)
+        frontend_url, worktree_compose_project, env_cache_override = self._resolve_target_env(
+            resolved_target,
+            linked_ticket,
+        )
 
         extra = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
@@ -484,6 +482,7 @@ class Command(TyperCommand):
             headed=headed,
             target=resolved_target,
             compose_project=worktree_compose_project,
+            env_cache_override=env_cache_override,
         )
 
         self.stdout.write(f"  Running from: {private_tests_path}")
