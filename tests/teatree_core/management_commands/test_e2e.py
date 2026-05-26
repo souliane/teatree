@@ -16,6 +16,7 @@ from django.utils.module_loading import import_string
 
 import teatree.config as config_mod
 import teatree.core.backend_factory as backend_factory_mod
+import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
@@ -381,7 +382,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
                 patch.object(config_mod, "load_config") as mock_cfg,
-                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
@@ -427,7 +428,7 @@ class TestE2eExternal(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "get_service_port", return_value=5555),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external"))
@@ -474,13 +475,120 @@ class TestE2eExternal(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "get_service_port", return_value=5555),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", target="local"))
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
             assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.ticket_number}"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_linked_to_routes_discovery_at_named_ticket(self) -> None:
+        """``--linked-to <ticket>`` ties the e2e cache repo's run to a backend ticket.
+
+        Defect 1 of souliane/teatree#1322: when the external e2e runner runs
+        from an external e2e cache repo whose auto-registered worktree is
+        ticketless or belongs to a different ticket than the backend stack,
+        frontend port discovery returned None and the run aborted. The
+        explicit link tells the runner which backend ticket owns the stack
+        and the COMPOSE_PROJECT_NAME / env-cache lookup also routes through
+        that ticket — so a single command boots the spec against the
+        linked backend without manual ``BASE_URL``/``COMPOSE_PROJECT_NAME``
+        overrides.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            backend_wt_dir = tmp_path / "backend-worktree"
+            backend_wt_dir.mkdir()
+            # The env cache lives on the linked backend worktree — overlay
+            # extras (CUSTOMER, app credentials) are sourced from there.
+            (backend_wt_dir / ".t3-env.cache").write_text(
+                f"WT_VARIANT=tenant-child\nTICKET_DIR={backend_wt_dir.parent}\n",
+                encoding="utf-8",
+            )
+            e2e_cache_dir = tmp_path / "e2e-cache"
+            e2e_cache_dir.mkdir()
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
+
+            # Backend ticket: the stack the user wants to test against.
+            backend_ticket = Ticket.objects.create(
+                overlay="test",
+                issue_url="https://example.com/issues/backend",
+                variant="tenant-child",
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=backend_ticket,
+                repo_path="backend-repo",
+                branch="backend",
+                extra={"worktree_path": str(backend_wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+
+            # E2E cache "worktree": auto-registered, ticketless or different
+            # ticket. The user's CWD when calling `e2e external` is the cache.
+            e2e_ticket = Ticket.objects.create(
+                overlay="test",
+                issue_url="auto:e2e-cache",
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=e2e_ticket,
+                repo_path="e2e-cache-repo",
+                branch="e2e",
+                extra={"worktree_path": str(e2e_cache_dir)},
+            )
+
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict(
+                    "os.environ",
+                    {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(e2e_cache_dir)},
+                    clear=False,
+                ),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
+                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            ):
+                os.environ.pop("BASE_URL", None)
+                result = cast(
+                    "str",
+                    call_command("e2e", "external", target="local", linked_to=backend_ticket.pk),
+                )
+
+            assert "passed" in result
+            env = mock_run.call_args[1]["env"]
+            # Frontend discovered via the linked backend worktree's project.
+            assert env["BASE_URL"] == "http://localhost:62674"
+            # COMPOSE_PROJECT_NAME points at the backend worktree's project,
+            # not the e2e cache worktree's.
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
+            # Defect 2: the env-cache that feeds get_e2e_env_extras must be
+            # the linked backend worktree's, so overlay-derived extras (e.g.
+            # CUSTOMER=<variant>) reach the spec.
+            assert env["CUSTOMER"] == "tenant-child"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_linked_to_unknown_ticket_exits_with_error(self) -> None:
+        """``--linked-to <bogus-pk>`` is a misconfig — fail fast with exit 2.
+
+        Misconfigured link IDs must not silently fall through to the
+        resolved-worktree path; that would mask the user's intent.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            private_dir = Path(tmp) / "private"
+            private_dir.mkdir()
+
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir)}, clear=False),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                call_command("e2e", "external", target="local", linked_to=9_999_999)
+
+            assert exc_info.value.code == 2
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -533,7 +641,7 @@ class TestE2eExternal(TestCase):
             mock_result = MagicMock(returncode=1)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -566,7 +674,7 @@ class TestE2eExternal(TestCase):
             mock_result = MagicMock(returncode=0)
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 call_command("e2e", "external", test_path="tests/login.py")
@@ -595,7 +703,7 @@ class TestE2eExternal(TestCase):
             )
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
-                patch.object(e2e_mod, "get_service_port", return_value=None),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=None),
                 patch.object(e2e_mod, "_detect_local_port", return_value=None),
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -898,7 +1006,7 @@ class TestE2eExternalRepo(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
-                patch.object(e2e_mod, "get_service_port", return_value=4200),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="demo-svc"))
