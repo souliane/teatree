@@ -22,7 +22,9 @@ class RecordClaimTests(TestCase):
         row = OutboundClaim.objects.get(idempotency_key="gitlab_note:repo!1:42")
         assert row.kind == OutboundClaim.Kind.GITLAB_NOTE
         assert row.target_url.endswith("/merge_requests/1")
-        assert row.extra == {"repo": "repo", "mr": 1}
+        # ``record_claim`` stamps the active overlay name on extra (#1275).
+        # No env override here -> empty string (default overlay).
+        assert row.extra == {"repo": "repo", "mr": 1, "overlay": ""}
         assert row.verified_at is None
         assert row.drift_detected is False
         assert row.drift_alerted_at is None

@@ -13,6 +13,7 @@ so an outage of the audit ledger does not cascade into the CLI turn.
 """
 
 import logging
+import os
 from typing import Any
 
 from django.db import DatabaseError, IntegrityError, transaction
@@ -21,6 +22,16 @@ from teatree.core.models import OutboundClaim
 from teatree.core.session_identity import current_session_id as _resolve_agent_session_id
 
 logger = logging.getLogger(__name__)
+
+
+def _active_overlay_name() -> str:
+    """Read the active overlay name from the env (``T3_OVERLAY_NAME``).
+
+    Empty string is the canonical single-overlay default — record helpers
+    stamp that on the claim's ``extra["overlay"]`` so the audit scanner
+    knows which credential pipeline to re-read with (#1275).
+    """
+    return os.environ.get("T3_OVERLAY_NAME", "") or ""
 
 
 def record_claim(
@@ -39,9 +50,18 @@ def record_claim(
     degrade to ``None`` + a logger warning. The caller's publish has
     already succeeded by the time we get here; failing to audit it must
     not turn that success into a user-visible failure.
+
+    Stamps ``extra["overlay"]`` from ``T3_OVERLAY_NAME`` so the audit
+    verifier can re-read the artifact through THAT overlay's credentials —
+    not whichever credential a process-global resolver lands on (#1275).
+    Callers that already have an explicit overlay in mind pass it in the
+    ``extra`` dict directly (``extra={"overlay": "client-A", ...}``); that
+    value wins over the env-var fallback.
     """
     kind_value = OutboundClaim.Kind(kind) if not isinstance(kind, OutboundClaim.Kind) else kind
     session_id = agent_session_id or _resolve_agent_session_id()
+    final_extra: dict[str, Any] = dict(extra or {})
+    final_extra.setdefault("overlay", _active_overlay_name())
     try:
         with transaction.atomic():
             claim, _created = OutboundClaim.objects.get_or_create(
@@ -50,7 +70,7 @@ def record_claim(
                     "kind": kind_value.value,
                     "target_url": target_url,
                     "agent_session_id": session_id,
-                    "extra": extra or {},
+                    "extra": final_extra,
                 },
             )
     except IntegrityError:

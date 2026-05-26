@@ -252,7 +252,10 @@ def _record_outbound_claim(
     ignores it), so adding a return value would be dead code — a future
     sibling-sync pass should not "fix" this asymmetry.
     """
+    import os  # noqa: PLC0415 — defer stdlib import out of module load
+
     session_id = current_session_id()
+    overlay_name = os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
         with transaction.atomic():
             OutboundClaim.objects.get_or_create(
@@ -261,7 +264,11 @@ def _record_outbound_claim(
                     "kind": OutboundClaim.Kind.SLACK_DM.value,
                     "target_url": target_url,
                     "agent_session_id": session_id,
-                    "extra": {"channel": channel, "ts": posted_ts},
+                    "extra": {
+                        "channel": channel,
+                        "ts": posted_ts,
+                        "overlay": overlay_name,
+                    },
                 },
             )
     except IntegrityError:
