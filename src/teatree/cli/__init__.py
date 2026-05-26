@@ -28,6 +28,7 @@ from teatree.cli.assess import assess_app
 from teatree.cli.ci import ci_app
 from teatree.cli.config import config_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
+from teatree.cli.dogfood import dogfood_app
 from teatree.cli.eval import eval_app
 from teatree.cli.infra import infra_app
 from teatree.cli.loop import loop_app
@@ -124,6 +125,7 @@ app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
+app.add_typer(dogfood_app, name="dogfood")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

@@ -335,6 +335,17 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
 _CANONICAL_CORE_OVERLAY = "t3-teatree"
 
 
+def _dogfood_smoke_scanner() -> Scanner | None:
+    """Wire the global provision-smoke scanner (#1308)."""
+    from teatree.loop.scanners.provision_smoke import build_provision_smoke_scanner  # noqa: PLC0415
+
+    return build_provision_smoke_scanner(
+        load_config=load_config,
+        discover_active_overlay=discover_active_overlay,
+        canonical_fallback=_CANONICAL_CORE_OVERLAY,
+    )
+
+
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
@@ -620,9 +631,8 @@ def build_default_jobs(
     # per-overlay). Daily cadence is teatree-platform config; the queued
     # task is anchored on the `teatree` overlay placeholder ticket so
     # the dispatcher routes through the standard pending-task pipeline.
-    news_scanner = _scanning_news_scanner()
-    if news_scanner is not None:
-        jobs.append(_ScannerJob(scanner=news_scanner, overlay=""))
+    # #1191 / #1308 — global teatree-CORE scanners (news + provision smoke).
+    jobs.extend(_ScannerJob(scanner=s, overlay="") for s in (_scanning_news_scanner(), _dogfood_smoke_scanner()) if s)
 
     if backends:
         all_backends = tuple(backends)

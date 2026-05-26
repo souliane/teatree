@@ -48,6 +48,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
+│ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
+│                 in the loop, not in E2E.                                     │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2061,6 +2063,31 @@ Usage: t3 task list [OPTIONS]
 Usage: t3 task cancel [OPTIONS]
 
  Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.
+```
+
+### `t3 dogfood`
+
+```
+Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
+
+ Overlay-smoke commands — exercise CLI paths so bugs surface in the loop, not
+ in E2E.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ overlay-provision-smoke  Forward ``t3 dogfood overlay-provision-smoke `` to  │
+│                          the management command.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 dogfood overlay-provision-smoke`
+
+```
+Usage: t3 dogfood overlay-provision-smoke [OPTIONS]
+
+ Forward ``t3 dogfood overlay-provision-smoke `` to the management command.
 ```
 
 ### `t3 teatree`
