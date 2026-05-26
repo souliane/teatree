@@ -57,7 +57,9 @@ class TestUnansweredQuestionEmitsBlockingReminder:
 
         assert rv is True
         payload = json.loads(out)
-        body = payload["hookSpecificOutput"]["additionalContext"]
+        # #1335: Stop schema rejects ``hookSpecificOutput.additionalContext``;
+        # nag rides in top-level ``systemMessage``.
+        body = payload["systemMessage"]
         assert "BLOCKING REMINDER" in body
         assert "why are some tests skipped?" in body
         assert "1700000000.0001" in body
@@ -88,7 +90,7 @@ class TestUnansweredQuestionEmitsBlockingReminder:
         _, out = _run_hook({"session_id": "s1"}, monkeypatch)
 
         payload = json.loads(out)
-        body = payload["hookSpecificOutput"]["additionalContext"]
+        body = payload["systemMessage"]
         assert "why is this red?" in body
         assert "what about merging?" in body
         # The list should claim 2 questions.
@@ -144,8 +146,13 @@ class TestUnansweredQuestionEmitsBlockingReminder:
         _, out = _run_hook({"session_id": "s1"}, monkeypatch)
 
         payload = json.loads(out)
+        # Soft-block: top-level ``systemMessage`` (schema-valid), never
+        # ``decision: block`` (hard-block). Stop schema also rejects
+        # ``hookSpecificOutput.additionalContext`` (#1335).
         assert "decision" not in payload
-        assert payload["hookSpecificOutput"]["hookEventName"] == "Stop"
+        assert "hookSpecificOutput" not in payload
+        assert isinstance(payload["systemMessage"], str)
+        assert payload["systemMessage"]
 
 
 class TestRouterWiring:
