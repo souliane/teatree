@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import typer
 
+from teatree.backends.slack_react_errors import SlackReactionError, build_react_error_message
 from teatree.backends.slack_receiver import default_queue_path, run_listener
 from teatree.cli.slack_user_token_setup import USER_TOKEN_PASS_KEY
 from teatree.utils.secrets import read_pass
@@ -34,11 +35,18 @@ def post_reaction(*, token: str, channel: str, ts: str, emoji: str) -> bool:
     """Call Slack ``reactions.add`` with *token* and return success.
 
     Treats ``already_reacted`` as success — the desired end state is the
-    emoji being present on the message. Network and API failures are
-    logged but never raised: a Slack outage must not break a fast loop
-    tick. Mirrors :func:`teatree.backends.slack_reactions.add_reaction`
-    but kept inline here so the CLI surface does not pull the FSM-side
-    transition-reaction module just for an HTTP POST.
+    emoji being present on the message. Transport-level failures (HTTP
+    5xx, ``httpx.HTTPError``) return ``False`` and are logged: there is
+    no auth gap to surface, just a network blip.
+
+    Slack-API-level failures (``ok:false`` — ``missing_scope``,
+    ``not_in_channel``, ``mcp_externally_shared_channel_restricted``, …)
+    raise :class:`SlackReactionError` (#1281). The pre-#1281 silent
+    ``return False`` let callers fall back to
+    ``chat.postMessage(text=":emoji:")`` on the broadcast's thread —
+    which the BINDING memory ``feedback_react_not_emoji_thread_comment``
+    forbids. The CLI ``react`` command translates the raise into a
+    structured exit-1 message pointing at the documented remediation.
     """
     if not (token and channel and ts and emoji):
         return False
@@ -61,8 +69,7 @@ def post_reaction(*, token: str, channel: str, ts: str, emoji: str) -> bool:
     error = payload.get("error", "")
     if error == "already_reacted":
         return True
-    logging.getLogger(__name__).warning("Slack reactions.add error: %s", error)
-    return False
+    raise SlackReactionError(error, build_react_error_message(error, channel, ts))
 
 
 def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
@@ -181,7 +188,19 @@ def _ack_messages(messages: list[dict[str, str]]) -> None:
     for msg in messages:
         channel = msg.get("channel", "")
         ts = msg.get("ts", "")
-        post_reaction(token=token, channel=channel, ts=ts, emoji="eyes")
+        try:
+            post_reaction(token=token, channel=channel, ts=ts, emoji="eyes")
+        except SlackReactionError as exc:
+            # ``t3 slack check`` runs from a fast cron — a Slack auth gap
+            # on a single ack must not break the whole tick. Surface the
+            # gap in the log; the next ``react`` invocation (or the
+            # operator's own re-run) gets the same structured hint.
+            logging.getLogger(__name__).warning(
+                "Skipping :eyes: ack on %s/%s: %s",
+                channel,
+                ts,
+                exc,
+            )
 
 
 @slack_app.command("react")
@@ -195,9 +214,22 @@ def react_command(
     The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
     (provisioned by ``t3 setup slack-user-token``) is the only credential
     that reliably reaches user DMs and Slack-Connect externally-shared
-    channels for ``reactions.add`` (#1232). Exits 0 on success (including
-    the idempotent ``already_reacted`` case), 1 when the token is missing,
-    2 on any other Slack-side failure.
+    channels for ``reactions.add`` (#1232).
+
+    Exit codes:
+
+    - ``0`` — success (including the idempotent ``already_reacted`` case).
+    - ``1`` — token is missing **OR** Slack rejected the call with an
+        ``ok:false`` error (``missing_scope``, ``not_in_channel``,
+        ``mcp_externally_shared_channel_restricted``, …). The structured
+        message prints the error code, the remediation CLI
+        (``t3 setup slack-user-token``), #1232, and the BINDING that
+        forbids a thread-emoji fallback
+        (``feedback_react_not_emoji_thread_comment``).
+    - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
+
+    A non-zero exit means **stop and surface the gap** — never fall back
+    to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
     """
     token = _resolve_reaction_token()
     if not token:
@@ -206,7 +238,12 @@ def react_command(
             "Run `t3 setup slack-user-token` first."
         )
         raise typer.Exit(code=1)
-    if post_reaction(token=token, channel=channel, ts=ts, emoji=emoji):
+    try:
+        success = post_reaction(token=token, channel=channel, ts=ts, emoji=emoji)
+    except SlackReactionError as exc:
+        typer.echo(f"ERROR {exc}")
+        raise typer.Exit(code=1) from exc
+    if success:
         typer.echo(f"OK    Reacted :{emoji}: on {channel}/{ts}")
         return
     typer.echo(f"ERROR reactions.add failed for {channel}/{ts}; see logs.")

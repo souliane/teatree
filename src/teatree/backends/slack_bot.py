@@ -45,6 +45,7 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
 from teatree.backends.slack_token_policy import SlackOp, channel_token
 from teatree.backends.slack_token_validation import (
     TokenSlotMismatchError,
@@ -54,7 +55,12 @@ from teatree.backends.slack_token_validation import (
 )
 from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
 
-__all__ = ["SlackBotBackend", "SlackOp", "TokenSlotMismatchError"]
+__all__ = [
+    "SingleEmojiBodyRefusedError",
+    "SlackBotBackend",
+    "SlackOp",
+    "TokenSlotMismatchError",
+]
 
 
 # Slack ``ok:false`` error codes that indicate the bot/user TOKEN is
@@ -487,12 +493,16 @@ class SlackBotBackend:
         return self._post("auth.test", {})
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        if is_single_emoji_body(text):
+            raise SingleEmojiBodyRefusedError(text)
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
         return self._post("chat.postMessage", payload, token=self._channel_token(channel, op=SlackOp.WRITE))
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
+        if is_single_emoji_body(text):
+            raise SingleEmojiBodyRefusedError(text)
         return self._post(
             "chat.postMessage",
             {"channel": channel, "thread_ts": ts, "text": text},
