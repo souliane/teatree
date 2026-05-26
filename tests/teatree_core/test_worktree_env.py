@@ -252,10 +252,13 @@ class TestWriteEnvCache(TestCase):
             mode = stat.S_IMODE(spec.path.stat().st_mode)
             assert mode == 0o444
 
-            # Symlink in repo
-            repo_link = wt_path / CACHE_FILENAME
-            assert repo_link.is_symlink()
-            assert repo_link.resolve() == spec.path.resolve()
+            # Real file in repo — not a symlink (#1313). A symlink would dangle
+            # inside a bind-mounted container because the target is a host-only
+            # absolute path.
+            repo_copy = wt_path / CACHE_FILENAME
+            assert not repo_copy.is_symlink()
+            assert repo_copy.is_file()
+            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
 
     def test_shared_postgres_adds_host(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,6 +325,50 @@ class TestWriteEnvCache(TestCase):
                 spec = write_env_cache(wt)
             assert spec is not None
             assert "MYAPP_BASE_IMAGE=myapp-local:deps-" in spec.content
+
+
+class TestRepoCopyNotSymlink(TestCase):
+    """Regression for #1313 — the in-worktree copy must be a real file.
+
+    A symlink at ``<wt_path>/.t3-env.cache`` pointing at the host-absolute
+    cache path dangles inside a bind-mounted container, breaking any
+    in-container reader of the env file (pipenv, dotenv, plain ``stat``)
+    with errno 22.
+    """
+
+    def test_repo_copy_is_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, wt_path = _make_worktree(tmp, ticket_name="t-r1", ticket_url="https://ex.com/r1", db_name="wt_r1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            repo_copy = wt_path / CACHE_FILENAME
+            assert not repo_copy.is_symlink()
+            assert repo_copy.is_file()
+
+    def test_repo_copy_content_equals_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, wt_path = _make_worktree(tmp, ticket_name="t-r2", ticket_url="https://ex.com/r2", db_name="wt_r2")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            repo_copy = wt_path / CACHE_FILENAME
+            assert repo_copy.read_text(encoding="utf-8") == spec.path.read_text(encoding="utf-8")
+
+    def test_repo_copy_survives_source_deletion(self) -> None:
+        """A real file is independent of the source — symlinks would dangle."""
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, wt_path = _make_worktree(tmp, ticket_name="t-r3", ticket_url="https://ex.com/r3", db_name="wt_r3")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                spec = write_env_cache(wt)
+            assert spec is not None
+            repo_copy = wt_path / CACHE_FILENAME
+            expected = spec.path.read_text(encoding="utf-8")
+            spec.path.chmod(stat.S_IWUSR | stat.S_IRUSR)
+            spec.path.unlink()
+            assert repo_copy.is_file()
+            assert not repo_copy.is_symlink()
+            assert repo_copy.read_text(encoding="utf-8") == expected
 
 
 class TestDetectDrift(TestCase):
