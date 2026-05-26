@@ -917,6 +917,35 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     proceeds. Every decision (including overrides) lands in the
     quote-scanner JSONL ledger so cold review can audit what the gate
     saw.
+
+    Fail-open on any internal error: a crashing hook is worse than no
+    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
+    the sibling ``src/`` directory (the hook script runs in the user's
+    session shell with no guarantee that ``teatree`` is already
+    importable, #1314) and swallows any exception, returning ``False``
+    so the tool use proceeds unchanged.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_quote_scanner_pretool(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_quote_scanner_pretool(data: dict) -> bool:
+    """Quote-scanner inner body — assumes ``teatree`` is already importable.
+
+    Split out of :func:`handle_quote_scanner_pretool` so the outer
+    wrapper owns the ``sys.path`` bootstrap + fail-open exception
+    handler (#1314) without inflating its return count.
     """
     from typing import cast  # noqa: PLC0415
 

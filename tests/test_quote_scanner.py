@@ -11,7 +11,10 @@ are asserted as a unit.
 """
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -393,6 +396,77 @@ class TestHookHandlerEndToEnd:
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert "heading-user-ask-verbatim" in out["permissionDecisionReason"]
+
+
+class TestHookHandlerFailOpenWithoutTeatreeImport:
+    """Regression for #1314.
+
+    The hook script is invoked from the user's session shell with no
+    guarantee that ``teatree`` is already importable on ``sys.path``.
+    A failure to import (or any other internal scanner error) must
+    fail open: the handler returns ``False`` (no block, no traceback)
+    so the tool use proceeds unchanged. A crashing PreToolUse hook
+    leaks the traceback to stderr on every Bash invocation and is
+    strictly worse than no scan.
+    """
+
+    def test_handler_returns_false_when_teatree_unimportable(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # ``sys.modules["teatree"] = None`` forces ``from teatree...``
+        # to raise ``ImportError`` even though pytest has teatree on
+        # the path — simulating the production hook process.
+        with patch.dict(sys.modules, {"teatree": None}):
+            blocked = handle_quote_scanner_pretool(_bash("echo test"))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_handler_returns_false_on_arbitrary_internal_exception(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An internal scanner error (regex compile, ledger I/O,
+        # blocklist parse) must not crash the hook chain either.
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "synthetic"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(quote_scanner, "extract_publish_payload", _boom)
+        blocked = handle_quote_scanner_pretool(_bash('gh pr create --title t --body "foo"'))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_subprocess_invocation_without_teatree_on_path_does_not_traceback(self, tmp_path: Path) -> None:
+        # End-to-end reproducer for #1314: invoke the hook script as a
+        # fresh subprocess with a stripped ``PYTHONPATH`` so ``teatree``
+        # is not preloaded. The hook must bootstrap ``sys.path`` from
+        # ``parents[2] / src`` and exit cleanly without leaking a
+        # traceback.
+        hook_script = Path(router.__file__).resolve()
+        payload = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo test"},
+                "session_id": "diag",
+            }
+        )
+        # Empty PYTHONPATH ensures the in-repo ``src/`` is NOT on path
+        # by inheritance; the handler's own bootstrap is the only way
+        # ``teatree`` can be imported.
+        env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": "", "HOME": str(tmp_path)}
+        result = subprocess.run(
+            [sys.executable, str(hook_script), "--event", "PreToolUse"],
+            input=payload,
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert result.returncode == 0, f"exit={result.returncode}, stderr={result.stderr!r}"
+        assert "Traceback" not in result.stderr
+        assert "ModuleNotFoundError" not in result.stderr
 
 
 class TestRound2BypassClosures:
