@@ -1,0 +1,159 @@
+"""Load eval specs from YAML into typed dataclasses.
+
+Schema lives in ``src/teatree/eval/README.md`` and
+``src/teatree/eval/scenarios/*.yaml``; the loader validates each spec at
+load time and raises ``EvalSpecError`` with the offending file path so
+spec authors can jump to the problem.
+
+Supported operators: ``contains`` (substring match) and ``~`` (regex match).
+"""
+
+import re
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from teatree.eval.models import EvalSpec, Matcher
+
+DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
+DEFAULT_MODEL = "haiku"
+DEFAULT_MAX_TURNS = 4
+DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
+
+_OP_PATTERN = re.compile(r'^(contains|~)\s+"(.*)"$')
+
+
+class EvalSpecError(ValueError):
+    def __init__(self, path: Path, line: int | None, message: str) -> None:
+        loc = f"{path}:{line}" if line is not None else str(path)
+        super().__init__(f"{loc}: {message}")
+
+
+def load_eval_yaml(path: Path) -> list[EvalSpec]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        line = getattr(getattr(exc, "problem_mark", None), "line", None)
+        raise EvalSpecError(path, (line + 1) if line is not None else None, str(exc)) from exc
+    if not isinstance(loaded, list) or not loaded:
+        raise EvalSpecError(path, None, "expected a top-level YAML list with at least one spec")
+    return [_parse_spec(entry, path) for entry in loaded]
+
+
+def _parse_spec(entry: object, path: Path) -> EvalSpec:
+    if not isinstance(entry, Mapping):
+        raise EvalSpecError(path, None, f"each spec must be a mapping, got {type(entry).__name__}")
+    spec_map: Mapping[str, Any] = {str(k): v for k, v in entry.items()}
+    name = _required_str(spec_map, "name", path)
+    scenario = _required_str(spec_map, "scenario", path)
+    agent_path = str(spec_map.get("agent_path") or spec_map.get("agent") or DEFAULT_AGENT_PATH)
+    prompt = str(spec_map.get("prompt") or scenario)
+    expect = spec_map.get("expect")
+    if not isinstance(expect, list) or not expect:
+        raise EvalSpecError(path, None, f"spec {name!r}: `expect` must be a non-empty list")
+    matchers = tuple(_parse_matcher(item, name, path) for item in expect)
+    model = str(spec_map.get("model") or DEFAULT_MODEL)
+    max_turns = _parse_max_turns(spec_map, name, path)
+    tools = _parse_tools(spec_map, name, path)
+    return EvalSpec(
+        name=name,
+        scenario=scenario,
+        agent_path=agent_path,
+        prompt=prompt,
+        matchers=matchers,
+        source_path=path,
+        model=model,
+        max_turns=max_turns,
+        tools=tools,
+    )
+
+
+def _parse_max_turns(entry: Mapping[str, Any], spec_name: str, path: Path) -> int:
+    raw = entry.get("max_turns")
+    if raw is None:
+        return DEFAULT_MAX_TURNS
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `max_turns` must be a positive integer")
+    return raw
+
+
+def _parse_tools(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    raw = entry.get("tools")
+    if raw is None:
+        return DEFAULT_TOOLS
+    if not isinstance(raw, list) or not raw or not all(isinstance(t, str) and t for t in raw):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `tools` must be a non-empty list of strings")
+    return tuple(raw)
+
+
+def _required_str(entry: Mapping[str, Any], key: str, path: Path) -> str:
+    value = entry.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise EvalSpecError(path, None, f"required string field missing or empty: {key!r}")
+    return value
+
+
+def _parse_matcher(item: object, spec_name: str, path: Path) -> Matcher:
+    if not isinstance(item, Mapping):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: each `expect` entry must be a mapping")
+    item_map: Mapping[str, Any] = {str(k): v for k, v in item.items()}
+    if "tool_call" in item_map:
+        return _parse_positive(item_map, spec_name, path)
+    if "no_tool_call_matching" in item_map:
+        return _parse_negative(item_map, spec_name, path)
+    raise EvalSpecError(
+        path,
+        None,
+        f"spec {spec_name!r}: expect entry must have `tool_call` or `no_tool_call_matching`",
+    )
+
+
+def _parse_positive(item: Mapping[str, Any], spec_name: str, path: Path) -> Matcher:
+    tool = str(item["tool_call"]).strip()
+    arg_key, op_expr = _single_args_entry(item, spec_name, path)
+    operator, value = _parse_op_expr(op_expr, spec_name, path)
+    return Matcher(kind="positive", tool=tool, arg_path=arg_key, operator=operator, value=value)
+
+
+def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matcher:
+    inner = item["no_tool_call_matching"]
+    if not isinstance(inner, Mapping) or len(inner) != 1:
+        raise EvalSpecError(
+            path,
+            None,
+            f'spec {spec_name!r}: `no_tool_call_matching` must hold exactly one `<tool>.<arg>: op "value"` entry',
+        )
+    inner_map: dict[str, Any] = {str(k): v for k, v in inner.items()}
+    raw_key, op_expr = next(iter(inner_map.items()))
+    if "." not in raw_key:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: negative key must be `<tool>.<arg>`")
+    tool, arg_path = raw_key.split(".", 1)
+    operator, value = _parse_op_expr(str(op_expr), spec_name, path)
+    return Matcher(kind="negative", tool=tool, arg_path=arg_path, operator=operator, value=value)
+
+
+def _single_args_entry(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str]:
+    args_entries = [(k, v) for k, v in item.items() if str(k).startswith("args.")]
+    if len(args_entries) != 1:
+        raise EvalSpecError(
+            path,
+            None,
+            f'spec {spec_name!r}: `tool_call` entry needs exactly one `args.<path>: op "value"` line',
+        )
+    raw_key, value = args_entries[0]
+    arg_path = str(raw_key).removeprefix("args.")
+    return arg_path, str(value)
+
+
+def _parse_op_expr(expr: str, spec_name: str, path: Path) -> tuple[str, str]:
+    match = _OP_PATTERN.match(expr.strip())
+    if not match:
+        raise EvalSpecError(
+            path,
+            None,
+            f'spec {spec_name!r}: operator must be `contains "..."` or `~ "..."`, got {expr!r}',
+        )
+    return match.group(1), match.group(2)
