@@ -84,3 +84,47 @@ class TestExtractTerminalReason:
         reason, is_error = extract_terminal_reason(events)
         assert reason == "error_max_turns"
         assert is_error is True
+
+
+class TestMalformedStreams:
+    """Defensive paths for ``claude -p`` output that doesn't match the spec."""
+
+    def test_drops_non_dict_json_lines(self) -> None:
+        # Top-level JSON arrays must be ignored — only dict events count.
+        events = parse_stream_json('[1, 2, 3]\n{"type":"result","subtype":"success"}\n')
+        assert [e.type for e in events] == ["result"]
+
+    def test_ignores_assistant_event_without_message_dict(self) -> None:
+        stream = '{"type":"assistant"}\n{"type":"assistant","message":"not a dict"}\n'
+        events = parse_stream_json(stream)
+        assert extract_tool_calls(events) == []
+        assert extract_text_blocks(events) == []
+
+    def test_ignores_assistant_event_with_non_list_content(self) -> None:
+        stream = '{"type":"assistant","message":{"content":"not a list"}}\n'
+        events = parse_stream_json(stream)
+        assert extract_tool_calls(events) == []
+        assert extract_text_blocks(events) == []
+
+    def test_ignores_non_dict_content_items(self) -> None:
+        stream = '{"type":"assistant","message":{"content":["string","not dict",42]}}\n'
+        events = parse_stream_json(stream)
+        assert extract_tool_calls(events) == []
+        assert extract_text_blocks(events) == []
+
+    def test_ignores_tool_use_without_string_name(self) -> None:
+        stream = '{"type":"assistant","message":{"content":[{"type":"tool_use","name":42,"input":{}}]}}\n'
+        events = parse_stream_json(stream)
+        assert extract_tool_calls(events) == []
+
+    def test_ignores_text_block_with_non_string_text(self) -> None:
+        stream = '{"type":"assistant","message":{"content":[{"type":"text","text":42}]}}\n'
+        events = parse_stream_json(stream)
+        assert extract_text_blocks(events) == []
+
+    def test_tool_use_with_non_dict_input_falls_back_to_empty_dict(self) -> None:
+        stream = '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":"raw"}]}}\n'
+        events = parse_stream_json(stream)
+        calls = extract_tool_calls(events)
+        assert calls[0].name == "Bash"
+        assert calls[0].input == {}

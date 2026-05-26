@@ -140,3 +140,56 @@ class TestClaudePRunner:
             pytest.raises(FileNotFoundError),
         ):
             ClaudePRunner(workspace=tmp_path).run(spec)
+
+    def test_raises_when_agent_definition_is_empty(self, tmp_path: Path) -> None:
+        agent = tmp_path / "empty.md"
+        agent.write_text("", encoding="utf-8")
+        spec = EvalSpec(
+            name="empty",
+            scenario="empty",
+            agent_path=str(agent),
+            prompt="x",
+            matchers=(),
+            source_path=tmp_path / "spec.yaml",
+        )
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            pytest.raises(ValueError, match="empty"),
+        ):
+            ClaudePRunner(workspace=tmp_path).run(spec)
+
+    def test_nonzero_returncode_with_aborted_terminal_marks_is_error(self, tmp_path: Path) -> None:
+        # No `result` event in the stream → terminal_reason is "aborted".
+        # Combined with returncode != 0, the runner must set is_error=True
+        # (covers the post-parse re-flag at line 73-74).
+        spec = _spec(tmp_path)
+        stream = '{"type":"system","subtype":"init"}\n'
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.utils.run.subprocess.run", return_value=_FakeCompleted(stdout=stream, returncode=2)),
+        ):
+            result = ClaudePRunner(workspace=tmp_path).run(spec)
+        assert result.terminal_reason == "aborted"
+        assert result.is_error is True
+
+    def test_timeout_with_bytes_streams_decodes_to_strings(self, tmp_path: Path) -> None:
+        # subprocess.TimeoutExpired may carry bytes for stdout/stderr when
+        # text=False; _coerce_stream must decode them rather than blow up.
+        spec = _spec(tmp_path)
+
+        def _raise(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=cmd,
+                timeout=120,
+                output=b"partial-bytes\n",
+                stderr=b"err-bytes\n",
+            )
+
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.utils.run.subprocess.run", side_effect=_raise),
+        ):
+            result = ClaudePRunner(workspace=tmp_path).run(spec)
+        assert result.terminal_reason == "timeout"
+        assert "partial-bytes" in result.raw_stdout
+        assert "err-bytes" in result.raw_stderr

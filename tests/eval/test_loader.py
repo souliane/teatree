@@ -139,3 +139,79 @@ class TestLoadEvalYaml:
         )
         with pytest.raises(EvalSpecError):
             load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_yaml_with_parse_error(self, tmp_path: Path) -> None:
+        # Tabs inside a flow-style block trigger a YAML scanner error and the
+        # loader must surface it as EvalSpecError with a file location.
+        body = "- name: bad\n\tindent_error_here: 1\n"
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_top_level_non_list(self, tmp_path: Path) -> None:
+        body = "name: example\nscenario: not in a list\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expected a top-level YAML list" in str(exc.value)
+
+    def test_rejects_non_mapping_entry(self, tmp_path: Path) -> None:
+        body = "- just a string\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "each spec must be a mapping" in str(exc.value)
+
+    def test_rejects_expect_entry_without_known_key(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - something_else: yes\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "tool_call" in str(exc.value)
+
+    def test_rejects_negative_without_dot_key(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        nodot: ~ "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "<tool>.<arg>" in str(exc.value)
+
+    def test_rejects_negative_with_multiple_inner_keys(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: ~ "x"\n'
+            '        bash.description: ~ "y"\n'
+        )
+        with pytest.raises(EvalSpecError):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_positive_without_args_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - tool_call: bash\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "args." in str(exc.value)
+
+    def test_rejects_unknown_operator(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: startswith "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "contains" in str(exc.value)
+
+    def test_rejects_non_mapping_expect_entry(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - just a string entry\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expect" in str(exc.value) or "mapping" in str(exc.value)
