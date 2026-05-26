@@ -52,7 +52,11 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
-from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
+from teatree.loop.tick_resolvers import (
+    _allowed_url_prefixes_for_host,
+    _identity_alias_groups_for_overlay,
+    _web_origin_for_host,
+)
 from teatree.notify import NotifyKind, notify_user
 
 logger = logging.getLogger(__name__)
@@ -66,13 +70,22 @@ class _ScannerJob:
     overlay: str
 
 
-def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+def _jobs_for_backend_hosts(
+    backend: OverlayBackends,
+    tag: str,
+    *,
+    all_backends: tuple[OverlayBackends, ...] = (),
+) -> list[_ScannerJob]:
     """Build one scanner-job fan-out per host on *backend* (#976).
 
     Pre-fix the caller assumed one ``backend.host``; with multi-host the
     same fan-out must run for each platform that resolved a credential.
     ``TicketCompletionScanner`` is overlay-scoped (reads local Ticket
     rows), so it's emitted exactly once even when two hosts are present.
+
+    *all_backends* (when provided) lets each scanner know the URL claims
+    of sibling overlays so a less-specific claim here yields to a more
+    specific claim there — see :func:`_competing_url_prefixes` (#1324).
     """
     jobs: list[_ScannerJob] = []
     ticket_completion_emitted = False
@@ -89,6 +102,11 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
         identity_groups = (tuple(backend.identities),)
     for code_host in backend.hosts:
         url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
+        competing_prefixes = _competing_url_prefixes(
+            this_backend=backend,
+            code_host=code_host,
+            all_backends=all_backends,
+        )
         jobs.extend(
             [
                 _ScannerJob(
@@ -96,6 +114,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                         host=code_host,
                         identities=backend.identities,
                         allowed_url_prefixes=url_prefixes,
+                        competing_url_prefixes=competing_prefixes,
                     ),
                     overlay=tag,
                 ),
@@ -105,6 +124,7 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
                         identities=backend.identities,
                         overlay_name=tag,
                         allowed_url_prefixes=url_prefixes,
+                        competing_url_prefixes=competing_prefixes,
                     ),
                     overlay=tag,
                 ),
@@ -158,6 +178,39 @@ def _jobs_for_backend_hosts(backend: OverlayBackends, tag: str) -> list[_Scanner
 
 
 _TUPLE_PAIR = 2
+
+
+def _competing_url_prefixes(
+    *,
+    this_backend: OverlayBackends,
+    code_host: CodeHostBackend,
+    all_backends: tuple[OverlayBackends, ...],
+) -> tuple[str, ...]:
+    """Collect URL claims from every overlay OTHER than *this_backend* (#1324).
+
+    Lets a scanner reject a URL it claims less specifically than a sibling
+    overlay claims — the most-specific overlay attribution wins, so a
+    dogfooding overlay that lists a sibling's repo path under
+    ``workspace_repos`` no longer steals the sibling's PRs from its zone.
+
+    Only sibling backends with a code-host that resolves to the same web
+    origin contribute claims; a GitLab-only sibling can't compete for a
+    GitHub URL.
+    """
+    if not all_backends:
+        return ()
+    own_origin = _web_origin_for_host(code_host)
+    if not own_origin:
+        return ()
+    prefixes: list[str] = []
+    for sibling in all_backends:
+        if sibling is this_backend or sibling.name == this_backend.name:
+            continue
+        for sibling_host in sibling.hosts:
+            if _web_origin_for_host(sibling_host) != own_origin:
+                continue
+            prefixes.extend(_allowed_url_prefixes_for_host(sibling, sibling_host))
+    return tuple(prefixes)
 
 
 def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
@@ -437,7 +490,11 @@ def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
     return global_value
 
 
-def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
+def _jobs_for_overlay_backend(
+    backend: OverlayBackends,
+    *,
+    all_backends: tuple[OverlayBackends, ...] = (),
+) -> list[_ScannerJob]:
     """Build every scanner job that fans out for one overlay backend.
 
     Split out of :func:`build_default_jobs` to keep the orchestrator
@@ -445,6 +502,10 @@ def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
     active-or-external tickets, stale tickets, per-host PR/issue
     scanners, architectural review, PR sweep, slack broadcasts, and
     the messaging-dependent slack scanners.
+
+    *all_backends* is the full multi-overlay roster — passed through to
+    per-host scanner construction so each scanner knows the URL claims of
+    its siblings (cross-overlay PR attribution, #1324).
     """
     jobs: list[_ScannerJob] = []
     tag = backend.name
@@ -469,7 +530,7 @@ def _jobs_for_overlay_backend(backend: OverlayBackends) -> list[_ScannerJob]:
     # forges, so PRs on one platform don't drown out PRs on the other
     # (#976). The single-host path is preserved by iterating
     # ``backend.hosts`` (which is empty when no token resolved).
-    jobs.extend(_jobs_for_backend_hosts(backend, tag))
+    jobs.extend(_jobs_for_backend_hosts(backend, tag, all_backends=all_backends))
     # #1136 / #1152 Periodic architectural-review scanner. CORE
     # always-on for every registered overlay; the cadence lives in
     # teatree-core config since architectural review applies uniformly
@@ -563,8 +624,9 @@ def build_default_jobs(
         jobs.append(_ScannerJob(scanner=news_scanner, overlay=""))
 
     if backends:
+        all_backends = tuple(backends)
         for backend in backends:
-            jobs.extend(_jobs_for_overlay_backend(backend))
+            jobs.extend(_jobs_for_overlay_backend(backend, all_backends=all_backends))
     else:
         if host is not None:
             jobs.extend(
