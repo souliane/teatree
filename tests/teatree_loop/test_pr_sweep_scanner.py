@@ -122,10 +122,18 @@ def _scanner(
     keystone: FakeKeystone,
     notifier: NullMergeNotifier | None = None,
     repos: tuple[str, ...] = (SLUG,),
+    solo_overlay: bool = False,
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
-        PrSweepScanner(repos=repos, api=api, keystone=keystone, notifier=notifier, overlay="teatree"),
+        PrSweepScanner(
+            repos=repos,
+            api=api,
+            keystone=keystone,
+            notifier=notifier,
+            overlay="teatree",
+            solo_overlay=solo_overlay,
+        ),
         notifier,
     )
 
@@ -318,6 +326,110 @@ class TestMultiRepo:
         assert kinds == ["pr_sweep.merged", "pr_sweep.skip"]
         assert signals[1].payload["slug"] == other
         assert signals[1].payload["reason"] == "draft"
+
+
+class TestSoloOverlayBypassesClearGate:
+    """Solo-overlay bypass — green PRs merge via gh fallback when no CLEAR exists (#1309).
+
+    A solo overlay (single-author repo opted into auto + no-human-approval-to-merge)
+    cannot issue a CLEAR for its own PRs — the maker/reviewer is the same identity, and
+    ``MergeClear.issue`` refuses self-attested CLEARs. The scanner must still merge
+    green+mergeable+clean PRs on those overlays via direct ``gh pr merge --squash``;
+    refusing on ``no_clear_for_head`` makes the sweep silently no-op on the dogfood
+    overlay.
+    """
+
+    def test_solo_overlay_with_no_clear_merges_via_gh_fallback(self) -> None:
+        # No CLEAR issued for this PR — the dogfood case.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []  # CLEAR-keystone never invoked
+        assert api.merge_pr_calls == [(SLUG, 6230)]  # direct gh fallback fired
+        assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+        assert signals[0].payload["reason"] == "solo_overlay_no_clear"
+
+    def test_solo_overlay_still_skips_draft_prs(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(is_draft=True)]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "draft"
+
+    def test_solo_overlay_still_skips_on_changes_requested(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(changes_requested=True)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert signals[0].payload["reason"] == "changes_requested"
+
+    def test_solo_overlay_still_skips_on_ci_red(self) -> None:
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]},
+        )
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
+
+    def test_solo_overlay_prefers_existing_clear_when_one_was_issued(self) -> None:
+        # When a CLEAR exists (e.g. a colleague did review the solo overlay anyway),
+        # the keystone path wins so the audit row gets written through the canonical
+        # transition. The fallback is only for the no-CLEAR case.
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert api.merge_pr_calls == []  # keystone took it, no gh fallback
+        assert signals[0].payload["reason"] == "all_green"
+
+    def test_solo_overlay_gh_fallback_failure_emits_blocked_signal(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]}, fallback_succeeds=False)
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert notifier.calls == []
+        assert signals[0].kind == "pr_sweep.blocked"
+        assert signals[0].payload["reason"] == "solo_overlay_gh_fallback_failed"
+
+    def test_collaborative_overlay_default_still_skips_on_no_clear(self) -> None:
+        # Anti-vacuous: without solo_overlay, the existing no_clear_for_head
+        # skip MUST still fire. This is the gate that keeps the CLEAR contract
+        # in force for every overlay that did not explicitly opt in.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=False)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "no_clear_for_head"
 
 
 class TestErrorIsolation:
