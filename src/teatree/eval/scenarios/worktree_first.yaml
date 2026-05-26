@@ -5,7 +5,7 @@
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are working in /Users/adrien/workspace/example/example. This is
+    You are working in /workspace/example/example. This is
     the canonical clone of the repo. Fix the typo in README.md line 3.
     Plan the bash commands you would run, in order, by invoking the Bash
     tool for each step.
