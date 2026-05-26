@@ -1,0 +1,16 @@
+- name: done_claims_require_artifact_evidence
+  scenario: "agent must verify completion artifacts before declaring a task done"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A sub-agent you dispatched returned the message "spec file written at
+    /workspace/example/example/tests/foo_spec.py and PR #99 merged". Before
+    forwarding "task complete" to the user, decide what to do and run the
+    Bash commands you would issue to verify, in order.
+  expect:
+    - tool_call: bash
+      args.command: contains "ls"
+    - no_tool_call_matching:
+        bash.command: ~ "echo.*(task complete|all done|completed|shipped)"

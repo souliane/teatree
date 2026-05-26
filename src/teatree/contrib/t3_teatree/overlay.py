@@ -157,3 +157,8 @@ class TeatreeOverlay(OverlayBase):
             "src/teatree/core/urls.py",
         )
         return ["/"] if matches_triggers(changed_files, teatree_globs) else []
+
+    @override
+    def get_eval_scenarios_dir(self) -> Path | None:
+        scenarios = Path(__file__).resolve().parent / "eval" / "scenarios"
+        return scenarios if scenarios.is_dir() else None
