@@ -21,10 +21,22 @@ def _append_envrc_lines(wt_path: str, lines: list[str]) -> None:
         envrc.write_text(existing.rstrip() + "\n" + "\n".join(missing) + "\n")
 
 
-def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) -> None:
-    """Configure direnv + prek for the worktree directory."""
+def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) -> str | None:
+    """Configure direnv + prek for the worktree directory.
+
+    Returns ``None`` on success or a short failure detail when ``prek
+    install`` cannot install the hook scripts. A non-``None`` return is the
+    caller's signal to refuse to mark the worktree provisioned — without an
+    installed pre-commit hook the worktree is a silent-bypass surface for
+    every gate the project enforces at commit time (souliane/teatree#1253).
+
+    ``direnv allow`` failures are kept warning-only — direnv is a developer
+    convenience, not a correctness gate. ``prek install`` is upgraded to an
+    error because a missing pre-commit hook is a hard correctness regression
+    (migration-scoping, banned-terms, privacy guard all rely on it firing).
+    """
     if not wt_path or not Path(wt_path).is_dir():
-        return
+        return None
     core_lines = [f"dotenv {CACHE_FILENAME}"]
     _append_envrc_lines(wt_path, core_lines + overlay.get_envrc_lines(worktree))
     result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
@@ -33,7 +45,9 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     if (Path(wt_path) / ".pre-commit-config.yaml").is_file():
         result = run_step("prek-install", ["prek", "install", "-f"], cwd=wt_path, check=False)
         if not result.success:
-            logger.warning("prek install failed: %s", result.error)
+            logger.error("prek install failed: %s", result.error)
+            return f"prek install failed: {result.error}"
+    return None
 
 
 class WorktreeProvisionRunner(RunnerBase):
@@ -67,7 +81,9 @@ class WorktreeProvisionRunner(RunnerBase):
             logger.info("Wrote env cache: %s", spec.path)
 
         wt_path = (worktree.extra or {}).get("worktree_path", "")
-        _setup_worktree_dir(wt_path, worktree, overlay)
+        setup_failure = _setup_worktree_dir(wt_path, worktree, overlay)
+        if setup_failure is not None:
+            return RunnerResult(ok=False, detail=setup_failure)
 
         if worktree.db_name and overlay.get_db_import_strategy(worktree) is not None:
             self._run_db_import()

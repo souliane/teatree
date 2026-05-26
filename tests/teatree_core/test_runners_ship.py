@@ -356,6 +356,126 @@ class TestShipResolvesBranchFromInvokingWorktree(TestCase):
         host.create_pr.assert_not_called()
 
 
+class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
+    """#1263: ``ShipExecutor.run`` must not short-circuit on a stale prior URL.
+
+    Reused-ticket / multi-workstream flow: one ticket spans several PRs,
+    each on its own branch. The first workstream records its URL on
+    ``extra['pr_urls']``; a second workstream then invokes ship on a
+    different branch. The legacy short-circuit returned the first
+    workstream's URL on truthiness alone — the new branch was never
+    pushed and no PR was opened, yet ``pr create --sync`` reported
+    success and the FSM advanced to ``IN_REVIEW``.
+
+    The guard: when ``ship_invoking_branch`` names a branch whose URL is
+    not the one recorded for that branch, the runner must proceed to
+    push and open a new PR for the invoking branch.
+    """
+
+    def _multi_worktree_ticket(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1263")
+        # Workstream A (already shipped; URL on the ticket).
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-1263-a",
+            branch="s-1263-pr-a-shipped",
+            extra={"worktree_path": "/tmp/repo-1263-a"},
+        )
+        # Workstream B (current; needs its own PR).
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo-1263-b",
+            branch="s-1263-pr-b-current",
+            extra={"worktree_path": "/tmp/repo-1263-b"},
+        )
+        return ticket
+
+    def test_does_not_short_circuit_when_prior_url_is_for_a_different_branch(self) -> None:
+        """Stale ``pr_urls`` from workstream A must not skip workstream B."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {
+            "pr_urls": ["https://example.com/pr/a-shipped"],
+            "ship_invoking_branch": "s-1263-pr-b-current",
+        }
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/b-new"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        # The runner must push the current invoking branch and open a new PR —
+        # NOT silently return the stale workstream-A URL.
+        assert result.ok is True
+        assert result.detail == "https://example.com/pr/b-new"
+        push.assert_called_once_with(repo="/tmp/repo-1263-b", remote="origin", branch="s-1263-pr-b-current")
+        host.create_pr.assert_called_once()
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "s-1263-pr-b-current"
+        ticket.refresh_from_db()
+        # Both URLs are recorded; the new one is appended (not replacing the prior).
+        assert "https://example.com/pr/a-shipped" in ticket.extra["pr_urls"]
+        assert "https://example.com/pr/b-new" in ticket.extra["pr_urls"]
+
+    def test_short_circuits_when_current_branch_already_has_pr_recorded(self) -> None:
+        """Idempotent retry: same branch + URL already mapped ⇒ short-circuit.
+
+        The guard rail must NOT regress the original idempotency: a retry
+        of ship on the SAME workstream (the recorded URL is for this
+        branch) must still short-circuit and return the recorded URL.
+        """
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {
+            "pr_urls": ["https://example.com/pr/b-already"],
+            "pr_url_by_branch": {"s-1263-pr-b-current": "https://example.com/pr/b-already"},
+            "ship_invoking_branch": "s-1263-pr-b-current",
+        }
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        assert result.detail == "https://example.com/pr/b-already"
+        push.assert_not_called()
+        host.create_pr.assert_not_called()
+
+    def test_records_pr_url_by_branch_for_each_workstream(self) -> None:
+        """After a successful ship, the URL is recorded against its branch."""
+        ticket = self._multi_worktree_ticket()
+        ticket.extra = {"ship_invoking_branch": "s-1263-pr-b-current"}
+        ticket.save(update_fields=["extra"])
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/b-new"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: b", "body")),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+        ):
+            ShipExecutor(ticket).run()
+
+        ticket.refresh_from_db()
+        assert ticket.extra["pr_url_by_branch"]["s-1263-pr-b-current"] == "https://example.com/pr/b-new"
+
+
 class TestSanitizeCloseKeywords:
     @pytest.mark.parametrize(
         ("description", "expected"),

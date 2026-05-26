@@ -302,6 +302,12 @@ class TestE2ESlackToInjection:
                 _ = handle
                 return ""
 
+            def auth_test(self) -> RawAPIDict:
+                # #1346 self-filter probe — return a resolved identity so
+                # genuine user messages are not dropped by the fail-closed
+                # path for this round-trip integration test.
+                return {"ok": True, "user_id": "U_BOT_SELF", "bot_id": "B_BOT_SELF"}
+
         _own_loop("owner")
         backend = FakeBackend(
             dms=[

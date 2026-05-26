@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from teatree.backends.slack_react_errors import SlackReactionError, build_react_error_message
 from teatree.core.overlay_loader import get_overlay
 
 if TYPE_CHECKING:
@@ -56,11 +57,24 @@ def parse_permalink(permalink: str) -> tuple[str, str] | None:
 
 
 def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> bool:
-    """Call Slack ``reactions.add``. Return True on success, False otherwise.
+    """Call Slack ``reactions.add``. Return True on success.
 
     Treats ``already_reacted`` as success — the desired end state is the
-    emoji being present on the message.  All failures are logged but never
-    raised; Slack outages must not block FSM transitions.
+    emoji being present on the message. Transport-level failures (HTTP
+    5xx, ``httpx.HTTPError``) return ``False`` and are logged: a Slack
+    outage must not block FSM transitions, and there is no auth gap to
+    surface.
+
+    Slack-API-level failures (``ok:false`` — ``missing_scope``,
+    ``not_in_channel``, ``mcp_externally_shared_channel_restricted``, …)
+    raise :class:`SlackReactionError` (#1281). The pre-#1281 silent
+    ``return False`` lets callers fall back to
+    ``chat.postMessage(text=":emoji:")`` on the broadcast's thread —
+    which the BINDING memory ``feedback_react_not_emoji_thread_comment``
+    forbids. Raising loudly forecloses that substitute. FSM-side wrappers
+    (:func:`add_reactions_for_transition`) catch the raise locally so a
+    Slack auth gap during a state transition still degrades to a no-op
+    that retries on the next tick.
     """
     if not (token and channel_id and timestamp and emoji):
         return False
@@ -83,8 +97,7 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
     error = payload.get("error", "")
     if error == "already_reacted":
         return True
-    logger.warning("Slack reactions.add error: %s", error)
-    return False
+    raise SlackReactionError(error, build_react_error_message(error, channel_id, timestamp))
 
 
 def _iter_pr_permalinks(ticket: "Ticket") -> list[str]:
@@ -141,7 +154,22 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
         if not parsed:
             continue
         channel_id, timestamp = parsed
-        if add_reaction(token, channel_id, timestamp, emoji):
+        try:
+            success = add_reaction(token, channel_id, timestamp, emoji)
+        except SlackReactionError as exc:
+            # A Slack auth gap (missing_scope, restricted channel, …)
+            # must surface to a human, but not roll back the FSM
+            # transition — the next tick re-tries. Log + continue so
+            # later permalinks still get their reaction attempted.
+            logger.warning(
+                "Slack reactions.add refused for %s/%s (emoji=%s): %s",
+                channel_id,
+                timestamp,
+                emoji,
+                exc,
+            )
+            continue
+        if success:
             posted += 1
     return posted
 
@@ -179,4 +207,17 @@ def add_approval_reaction(pull_request: "PullRequest") -> int:
         return 0
 
     channel_id, timestamp = parsed
-    return 1 if add_reaction(token, channel_id, timestamp, _APPROVAL_EMOJI) else 0
+    try:
+        success = add_reaction(token, channel_id, timestamp, _APPROVAL_EMOJI)
+    except SlackReactionError as exc:
+        # Approval reaction is FSM-coupled: a Slack auth gap surfaces in
+        # the log but must not roll back the approve() transition.
+        logger.warning(
+            "Slack reactions.add refused for %s/%s (emoji=%s): %s",
+            channel_id,
+            timestamp,
+            _APPROVAL_EMOJI,
+            exc,
+        )
+        return 0
+    return 1 if success else 0
