@@ -4014,10 +4014,181 @@ def _consideration_gate(data: dict) -> bool | None:
     return True
 
 
+# ── Classifier-denial STOP gate (#1247) ─────────────────────────────
+#
+# When the auto-mode classifier denies a tool call the agent must STOP
+# and explain (action / reason / minimum-unblock) per the binding
+# "Classifier Denial Protocol" in skills/rules/SKILL.md.  Prose-only
+# enforcement has slipped repeatedly — the gate makes it deterministic:
+#
+# 1. PostToolUse scans every tool_response for the canonical denial
+#    preamble — the exact phrase the harness emits on classifier
+#    deny (see ``_CLASSIFIER_DENIAL_PREAMBLE`` below).  On a match it
+#    writes a per-session marker carrying the action fingerprint
+#    (tool name + short input excerpt).
+# 2. Stop reads the marker.  If present it emits a top-level
+#    ``systemMessage`` reminding the agent to STOP and explain.
+#    Returns True to break the Stop chain so the message survives.
+# 3. The next UserPromptSubmit clears the marker — the fresh user
+#    turn carries the explicit per-call authorisation (or a redirect),
+#    so the gate auto-disarms.
+#
+# Fail-safe-to-empty: handler returns silently on malformed input or
+# missing fields — the hook must NEVER crash the harness.
+
+_CLASSIFIER_DENIAL_PREAMBLE = "denied by the Claude Code auto mode classifier"
+_CLASSIFIER_DENY_MARKER_SUFFIX = "classifier-deny"
+_CLASSIFIER_DENY_ACTION_EXCERPT_MAX = 120
+
+
+_DENIAL_RESPONSE_STRING_KEYS = ("error", "content", "stderr", "stdout", "message", "output", "reason")
+
+
+def _tool_response_strings(tool_response: object) -> list[str]:
+    """Return every string value reachable from ``tool_response`` (shallow).
+
+    The classifier denial can land in ``error``, ``content``, ``stderr``,
+    ``message``, ``output``, or as a bare string.  We scan a fixed set of
+    likely keys rather than recursing — keeps the detector cheap and
+    predictable.  Fail-safe-to-empty on unexpected shapes.
+    """
+    from typing import cast  # noqa: PLC0415
+
+    if isinstance(tool_response, str):
+        return [tool_response]
+    if not isinstance(tool_response, dict):
+        return []
+    response = cast("dict[str, object]", tool_response)
+    out: list[str] = []
+    for key in _DENIAL_RESPONSE_STRING_KEYS:
+        value = response.get(key)
+        if isinstance(value, str):
+            out.append(value)
+    return out
+
+
+def _format_action_excerpt(tool_name: str, tool_input: object) -> str:
+    """Build a short ``<tool_name>: <input>`` excerpt naming the denied action.
+
+    Truncates to ``_CLASSIFIER_DENY_ACTION_EXCERPT_MAX`` characters so the
+    Stop gate's systemMessage stays one line.  Tries the common
+    descriptive keys (``command``, ``file_path``, ``prompt``) before
+    falling back to the repr of the full input.
+    """
+    from typing import cast  # noqa: PLC0415
+
+    name = tool_name if isinstance(tool_name, str) else "tool"
+    excerpt = name
+    if isinstance(tool_input, dict):
+        input_dict = cast("dict[str, object]", tool_input)
+        excerpt = f"{name}: {input_dict!r}"
+        for key in ("command", "file_path", "prompt", "url", "channel"):
+            value = input_dict.get(key)
+            if isinstance(value, str) and value:
+                excerpt = f"{name}: {value}"
+                break
+    if len(excerpt) > _CLASSIFIER_DENY_ACTION_EXCERPT_MAX:
+        excerpt = excerpt[: _CLASSIFIER_DENY_ACTION_EXCERPT_MAX - 1] + "…"
+    return excerpt
+
+
+def handle_track_classifier_denial(data: dict) -> None:
+    """PostToolUse: persist a marker when the classifier denies a tool call.
+
+    Scans the ``tool_response`` payload for the canonical denial preamble
+    and writes ``<session_id>.classifier-deny`` carrying enough context
+    for the Stop gate to name what was denied.  Returns silently on any
+    missing/malformed field — fail-safe-to-empty per the spec.
+    """
+    if not isinstance(data, dict):
+        return
+    session_id = data.get("session_id", "")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    tool_response = data.get("tool_response")
+    if tool_response is None:
+        return
+    strings = _tool_response_strings(tool_response)
+    if not any(_CLASSIFIER_DENIAL_PREAMBLE in s for s in strings):
+        return
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input")
+    excerpt = _format_action_excerpt(tool_name, tool_input)
+    payload = {
+        "tool_name": tool_name if isinstance(tool_name, str) else "",
+        "action": excerpt,
+    }
+    try:
+        _ensure_state_dir()
+        marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
+        marker.write_text(json.dumps(payload), encoding="utf-8")
+    except OSError:
+        # Fail-safe: a write failure must not crash the harness.
+        return
+
+
+def handle_classifier_deny_stop_gate(data: dict) -> bool | None:
+    """Stop: emit STOP-and-explain ``systemMessage`` if a denial is pending.
+
+    Returns ``True`` to break the Stop chain (mirrors the consideration
+    gate pattern) when the marker exists.  Otherwise returns ``None``
+    so the rest of the Stop chain runs unchanged.
+    """
+    if not isinstance(data, dict):
+        return None
+    session_id = data.get("session_id", "")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
+    if not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    action = payload.get("action") or payload.get("tool_name") or "the denied tool call"
+    body = (
+        f"Classifier denied {action}. STOP and explain: action / reason / "
+        'minimum-unblock — per the binding "Classifier Denial Protocol" '
+        "(skills/rules/SKILL.md). Do not retry with a different argument "
+        "shape, decompose the command, or switch tools. Ask the user via "
+        'AskUserQuestion with two options: "Allow it (relax classifier)" '
+        'or "Keep the denial (do it differently)".'
+    )
+    # Stop schema reserves ``hookSpecificOutput.additionalContext`` for
+    # other events — emit the top-level ``systemMessage`` (schema-valid;
+    # non-decision; visible to the agent) so the nag survives.
+    json.dump({"systemMessage": body}, sys.stdout)
+    return True
+
+
+def handle_clear_classifier_deny_marker(data: dict) -> None:
+    """UserPromptSubmit: clear the classifier-deny marker for this session.
+
+    The next user turn re-arms the gate — the user either grants the
+    per-call authorisation explicitly (which the agent now relays) or
+    redirects to a different approach.  Either way the previous denial
+    is no longer the active blocker.
+    """
+    if not isinstance(data, dict):
+        return
+    session_id = data.get("session_id", "")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    marker = _state_file(session_id, _CLASSIFIER_DENY_MARKER_SUFFIX)
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 # ── Router ──────────────────────────────────────────────────────────
 
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [
+        handle_clear_classifier_deny_marker,
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
         handle_inject_pending_questions,
@@ -4041,6 +4212,7 @@ _HANDLERS: dict[str, list] = {
         handle_mirror_question_to_slack,
     ],
     "PostToolUse": [
+        handle_track_classifier_denial,
         handle_track_active_repo,
         handle_track_skill_usage,
         handle_track_cron_jobs,
@@ -4058,6 +4230,7 @@ _HANDLERS: dict[str, list] = {
     # runs in handle_session_start_bootstrap on source=="compact".
     "SessionEnd": [handle_session_end, handle_session_end_loop_registry, handle_session_end_self_pump],
     "Stop": [
+        handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
         handle_consideration_gate,
