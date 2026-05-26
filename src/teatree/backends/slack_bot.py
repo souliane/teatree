@@ -517,17 +517,7 @@ class SlackBotBackend:
         )
 
     def open_dm(self, user_id: str) -> str:
-        """Open a direct-message channel with *user_id* and return its channel id.
-
-        Short-circuits on a setup-time provisioned channel id (#1342). When
-        ``user_id`` matches the configured ``user_id`` and a cached
-        ``dm_channel_id`` is set, return it directly without a Slack call —
-        the per-overlay bot's IM was already opened during ``t3 setup`` and
-        persisted in ``~/.teatree.toml`` under ``[overlays.<name>]
-        slack_dm_channel_id``. Falls back to a live ``conversations.open``
-        for any other user id, and for the configured user when no cache
-        was provisioned (legacy behaviour).
-        """
+        """Return the IM channel id for *user_id*; short-circuit to the cached id when set (#1342)."""
         if user_id and user_id == self._user_id and self._dm_channel_id:
             return self._dm_channel_id
         data = self._post("conversations.open", {"users": user_id})

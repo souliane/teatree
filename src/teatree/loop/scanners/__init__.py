@@ -13,6 +13,7 @@ from teatree.loop.scanners.active_tickets import ActiveTicketsScanner
 from teatree.loop.scanners.architectural_review import ArchitecturalReviewScanner
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.base import Scanner, ScanSignal
+from teatree.loop.scanners.codex_review import CodexReviewScanner, GhCodexPrApi
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
@@ -49,6 +50,8 @@ __all__ = [
     "AssignedIssuesScanner",
     "BackendChannelHistoryFetcher",
     "CallCommandMergeKeystone",
+    "CodexReviewScanner",
+    "GhCodexPrApi",
     "GhPrApiClient",
     "GitLabApprovalsScanner",
     "GlabGhMrStateClassifier",

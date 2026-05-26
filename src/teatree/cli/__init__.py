@@ -26,6 +26,7 @@ from teatree.cli import (
 )
 from teatree.cli.assess import assess_app
 from teatree.cli.ci import ci_app
+from teatree.cli.codex import codex_app
 from teatree.cli.config import config_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.eval import eval_app
@@ -111,6 +112,7 @@ app.command()(_sessions.sessions)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
 app.add_typer(ci_app, name="ci")
+app.add_typer(codex_app, name="codex")
 app.add_typer(review_app, name="review")
 app.add_typer(review_request_app, name="review-request")
 app.add_typer(eval_app, name="eval")
