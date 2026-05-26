@@ -74,7 +74,17 @@ class TestAddReaction:
         monkeypatch.setattr(slack_reactions.httpx, "post", post)
         assert add_reaction("xoxb", "C1", "1.0", "tada") is True
 
-    def test_other_error_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_other_error_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """#1281: any Slack ``ok:false`` raises :class:`SlackReactionError`.
+
+        Pre-#1281 the helper returned ``False`` on every non-``already_reacted``
+        error — that let callers silently substitute a
+        ``chat.postMessage(text=":emoji:")`` thread reply, which the BINDING
+        memory ``feedback_react_not_emoji_thread_comment`` forbids. Raising
+        loudly at the helper boundary forecloses the silent swallow.
+        """
+        from teatree.backends.slack_react_errors import SlackReactionError  # noqa: PLC0415
+
         post = _FakePost(
             responses=[
                 httpx.Response(
@@ -85,7 +95,9 @@ class TestAddReaction:
             ],
         )
         monkeypatch.setattr(slack_reactions.httpx, "post", post)
-        assert add_reaction("xoxb", "C1", "1.0", "tada") is False
+        with pytest.raises(SlackReactionError) as exc_info:
+            add_reaction("xoxb", "C1", "1.0", "tada")
+        assert exc_info.value.error_code == "channel_not_found"
 
     def test_http_error_swallowed_and_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _raise(*_a: object, **_kw: object) -> httpx.Response:

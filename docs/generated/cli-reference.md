@@ -2018,9 +2018,22 @@ Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
  The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
  (provisioned by ``t3 setup slack-user-token``) is the only credential
  that reliably reaches user DMs and Slack-Connect externally-shared
- channels for ``reactions.add`` (#1232). Exits 0 on success (including
- the idempotent ``already_reacted`` case), 1 when the token is missing,
- 2 on any other Slack-side failure.
+ channels for ``reactions.add`` (#1232).
+
+ Exit codes:
+
+ - ``0`` — success (including the idempotent ``already_reacted`` case).
+ - ``1`` — token is missing **OR** Slack rejected the call with an
+     ``ok:false`` error (``missing_scope``, ``not_in_channel``,
+     ``mcp_externally_shared_channel_restricted``, …). The structured
+     message prints the error code, the remediation CLI
+     (``t3 setup slack-user-token``), #1232, and the BINDING that
+     forbids a thread-emoji fallback
+     (``feedback_react_not_emoji_thread_comment``).
+ - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
+
+ A non-zero exit means **stop and surface the gap** — never fall back
+ to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
