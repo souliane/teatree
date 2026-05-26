@@ -79,7 +79,10 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         worktree = self._make_worktree(db_name="")
         overlay = _RecordingOverlay()
 
-        with patch("teatree.core.runners.worktree_provision._setup_worktree_dir"):
+        with patch(
+            "teatree.core.runners.worktree_provision._setup_worktree_dir",
+            return_value=None,
+        ):
             WorktreeProvisionRunner(worktree, overlay=overlay).run()
 
         assert overlay.db_import_calls == 0
@@ -90,7 +93,10 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         overlay = _RecordingOverlay()
 
         with (
-            patch("teatree.core.runners.worktree_provision._setup_worktree_dir"),
+            patch(
+                "teatree.core.runners.worktree_provision._setup_worktree_dir",
+                return_value=None,
+            ),
             patch("teatree.utils.db.db_exists", return_value=False),
         ):
             WorktreeProvisionRunner(worktree, overlay=overlay).run()
