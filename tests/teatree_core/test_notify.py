@@ -80,6 +80,51 @@ class TestNotifyUser(TestCase):
         assert backend.post_message.call_count == 1
         assert BotPing.objects.filter(idempotency_key="dup").count() == 1
 
+    def test_prior_failed_attempt_does_not_block_retry(self) -> None:
+        """Regression for #1306: a FAILED BotPing must not block a sub-agent retry.
+
+        Pre-fix the idempotency-key ledger was strict: ANY existing row
+        (FAILED, NOOP, SENT) made the helper return the prior outcome
+        without retrying. A sub-agent that hit a transient Slack failure
+        was permanently locked out — the only escape was a fresh key.
+
+        verify-by-re-read + idempotency means: SENT stays a no-op,
+        FAILED/NOOP are recoverable. The prior failed row is replaced
+        when delivery succeeds, so the audit trail still reflects the
+        terminal outcome.
+        """
+        # First attempt — transport raises, ledger records FAILED.
+        bad_backend = _backend()
+        bad_backend.post_message.side_effect = RuntimeError("transient slack 500")
+        assert (
+            notify_user(
+                "retry me",
+                kind=NotifyKind.INFO,
+                idempotency_key="retry-1306",
+                backend=bad_backend,
+                user_id="U_ME",
+            )
+            is False
+        )
+        assert BotPing.objects.get(idempotency_key="retry-1306").status == BotPing.Status.FAILED
+
+        # Second attempt with a working backend — must actually deliver, not no-op.
+        good_backend = _backend()
+        assert (
+            notify_user(
+                "retry me",
+                kind=NotifyKind.INFO,
+                idempotency_key="retry-1306",
+                backend=good_backend,
+                user_id="U_ME",
+            )
+            is True
+        )
+        good_backend.open_dm.assert_called_once_with("U_ME")
+        good_backend.post_message.assert_called_once()
+        # The terminal ledger row reflects the eventual success.
+        assert BotPing.objects.get(idempotency_key="retry-1306").status == BotPing.Status.SENT
+
     def test_missing_backend_records_noop_and_returns_false(self) -> None:
         with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
             sent = notify_user(

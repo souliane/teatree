@@ -512,7 +512,8 @@ class DjangoDbImporter:
             self.stderr.write(
                 "\n  DSLR restore failed or unavailable. Non-DSLR fallbacks are disabled by default.\n"
                 "  Non-DSLR paths (pg_restore, remote dump) take minutes instead of seconds.\n"
-                "  To allow slow fallback paths, re-run with: --slow-import\n",
+                "  To allow slow fallback paths, re-run with: --fresh-dump --user-authorized <user-id>\n"
+                "  (the equivalent internal flag is `slow_import=True`)\n",
             )
             return False
 
@@ -536,7 +537,9 @@ class DjangoDbImporter:
         self.stdout.write(f"  - No CI dump matching {cfg.ci_dump_glob} in {cfg.main_repo_path}\n")
         self.stdout.write("\n")
         if cfg.remote_db_url:
-            self.stdout.write("  To fetch a fresh dump from the remote DB, re-run with --slow-import.\n")
+            self.stdout.write(
+                "  To fetch a fresh dump from the remote DB, re-run with `--fresh-dump --user-authorized <user-id>`.\n"
+            )
         else:
             self.stdout.write("  Configure remote_db_url in DjangoDbImportConfig to enable remote dump fetching.\n")
         return False
