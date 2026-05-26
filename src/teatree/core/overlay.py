@@ -102,6 +102,16 @@ class OverlayConfig:
     # token is rejected by the workspace restriction policy.
     user_token_ref: str = ""
     slack_user_id: str = ""
+    # Setup-time provisioned IM channel id between the per-overlay bot and
+    # the user (#1342). Populated by ``t3 setup`` calling
+    # ``conversations.open`` once and persisting the result back to
+    # ``[overlays.<name>] slack_dm_channel_id`` in ``~/.teatree.toml``.
+    # ``SlackBotBackend.open_dm`` short-circuits to this value for the
+    # configured ``slack_user_id`` so DMs route through this bot's IM
+    # rather than re-deriving the channel (which fails ``channel_not_found``
+    # for a freshly-registered per-overlay bot and silently falls back
+    # through whichever bot already has an IM with the user).
+    slack_dm_channel_id: str = ""
     require_ticket: bool = False
     ready_labels: list[str]
     exclude_labels: list[str]
