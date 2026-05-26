@@ -372,14 +372,21 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
 
         Overlays whose DB-import strategy uses DSLR translate the
         ``Ticket.variant`` string into the tenant suffix that appears in
-        DSLR snapshot names (e.g. an overlay may prefix the variant with
-        ``development-`` so the ``client-a`` variant becomes the tenant
-        ``development-client-a``). The default returns the variant
-        verbatim, which is correct for overlays that don't prefix the
-        tenant.
+        DSLR snapshot names. Two transformations may stack:
 
-        Used by ``workspace clean-all`` to compute the in-use tenant set
-        from active worktrees so the DSLR pruner can skip them (#1306).
+        1.  **Prefix** — e.g. an overlay may turn ``client-a`` into the
+            tenant ``development-client-a`` so the snapshot key carries
+            the environment alongside the tenant identity.
+        2.  **Alias** — a child variant whose data is identical to its
+            parent (e.g. ``client-a-regional`` shares snapshots with
+            ``client-a``) maps to the parent's tenant so the snapshot
+            lookup actually finds the right file (#1306).
+
+        The default returns the variant verbatim, which is correct for
+        overlays that don't prefix or alias the tenant. Used by
+        ``workspace clean-all`` to compute the in-use tenant set, and by
+        overlays computing ``DjangoDbImportConfig.ref_db_name`` for the
+        DSLR snapshot lookup.
         """
         return variant
 

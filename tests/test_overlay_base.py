@@ -34,6 +34,34 @@ def test_get_env_extra_returns_empty_dict():
     assert overlay.get_env_extra(_make_worktree()) == {}
 
 
+def test_get_dslr_tenant_for_variant_default_returns_variant_verbatim():
+    """The default hook is identity (#1306) — overlays override for prefix/alias."""
+    overlay = _MinimalOverlay()
+    assert overlay.get_dslr_tenant_for_variant("client-a") == "client-a"
+    assert overlay.get_dslr_tenant_for_variant("") == ""
+
+
+def test_get_dslr_tenant_for_variant_supports_alias_mapping_in_override():
+    """An overlay can map a child variant to its parent tenant (#1306).
+
+    The motivating case: a child variant (e.g. ``client-a-regional``)
+    shares snapshots with its parent (``client-a``). Without the alias
+    hook the DSLR lookup tried ``development-client-a-regional`` and
+    found nothing; with it the overlay returns ``development-client-a``
+    and the existing parent snapshot satisfies the lookup.
+    """
+
+    class _AliasOverlay(_MinimalOverlay):
+        def get_dslr_tenant_for_variant(self, variant: str) -> str:
+            aliases = {"client-a-regional": "client-a"}
+            return f"development-{aliases.get(variant, variant)}"
+
+    overlay = _AliasOverlay()
+    assert overlay.get_dslr_tenant_for_variant("client-a") == "development-client-a"
+    assert overlay.get_dslr_tenant_for_variant("client-a-regional") == "development-client-a"
+    assert overlay.get_dslr_tenant_for_variant("client-b") == "development-client-b"
+
+
 def test_get_run_commands_returns_empty_dict():
     overlay = _MinimalOverlay()
     assert overlay.get_run_commands(_make_worktree()) == {}
