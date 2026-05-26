@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core import resolve as resolve_module
 from teatree.core.models import Ticket, Worktree
 from teatree.core.resolve import (
     WorktreeNotFoundError,
@@ -517,14 +518,14 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")  # sibling under the same tmp_path
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="client-term-redacted/other"):
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
         assert result.ticket_id == owner_ticket.pk
         assert result.repo_path == "repo-b"
-        assert result.branch == "client-term-redacted/other"
-        assert not Ticket.objects.filter(issue_url="auto:client-term-redacted/other").exists()
+        assert result.branch == "feat/other"
+        assert not Ticket.objects.filter(issue_url="auto:feat/other").exists()
         assert Ticket.objects.count() == 1
 
     def test_reuses_workspace_owner_when_stored_path_is_symlink_unresolved(self) -> None:
@@ -549,12 +550,12 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="client-term-redacted/other"):
+        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
         assert result.ticket_id == owner_ticket.pk
-        assert not Ticket.objects.filter(issue_url="auto:client-term-redacted/other").exists()
+        assert not Ticket.objects.filter(issue_url="auto:feat/other").exists()
 
     def test_no_workspace_owner_still_creates_auto_ticket(self) -> None:
         """When no sibling worktree shares the workspace dir, the auto: path stands."""
@@ -607,3 +608,50 @@ class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
         assert owner is not None
         assert owner.pk == first_ticket.pk
         assert owner.pk == first_wt.ticket.pk
+
+
+class TestResolveModuleDocstringMatchesCopyShape:
+    """Guard against re-introducing the pre-#1316 "symlink" wording.
+
+    The in-worktree env cache is a regular file copy (since #1316), not a
+    symlink. The module-level docstring, the ``_find_env_cache`` docstring,
+    and the inline comment in ``resolve_worktree`` must describe it that
+    way — otherwise readers chasing a Docker bind-mount failure will be
+    led back to the pre-fix mental model.
+
+    Anti-vacuous: revert any of these sites to the word "symlink" and the
+    relevant assertion goes red.
+    """
+
+    def _resolve_source(self) -> str:
+        return Path(resolve_module.__file__).read_text(encoding="utf-8")
+
+    def test_module_docstring_does_not_call_env_cache_a_symlink(self) -> None:
+        docstring = resolve_module.__doc__ or ""
+        assert "symlink" not in docstring.lower(), (
+            "module docstring still describes the env cache as a symlink; "
+            "since #1316 the in-worktree cache is a regular file copy"
+        )
+        assert "env cache" in docstring, (
+            "module docstring must still mention the env cache as the first resolution anchor"
+        )
+
+    def test_find_env_cache_docstring_describes_copy_not_symlink(self) -> None:
+        docstring = _find_env_cache.__doc__ or ""
+        assert "worktree symlinks" not in docstring, (
+            "_find_env_cache docstring still claims the in-worktree cache "
+            "is a symlink; since #1316 it is a regular file copy"
+        )
+
+    def test_resolve_worktree_step1_comment_does_not_mention_symlink(self) -> None:
+        source = self._resolve_source()
+        # Locate the step-1 walk-up block inside resolve_worktree.
+        marker = "# 1. Walk up from CWD to find the env cache"
+        assert marker in source, "step-1 walk-up comment moved or was removed"
+        start = source.index(marker)
+        block = source[start : start + 200]
+        assert "symlink" not in block.lower(), (
+            f"step-1 inline comment in resolve_worktree still mentions "
+            f"'symlink'; since #1316 the in-worktree env cache is a "
+            f"regular file copy. Offending block:\n{block}"
+        )
