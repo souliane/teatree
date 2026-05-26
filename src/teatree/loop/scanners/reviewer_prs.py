@@ -258,12 +258,19 @@ class ReviewerPrsScanner:
     ``allowed_url_prefixes`` gates emission to PRs whose URL starts with one
     of the listed prefixes — the per-overlay analogue of ``overlay_name``
     for PR-event signals (#1015). Empty tuple preserves legacy behaviour.
+
+    ``competing_url_prefixes`` carries the URL-prefix claims of OTHER
+    registered overlays (#1324). When a PR's URL is claimed by both this
+    overlay and another, the most-specific claim wins so a dogfooding
+    overlay that lists a sibling's repo path does not steal the sibling's
+    reviewer-role PRs from its own zone.
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
     overlay_name: str = ""
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     name: str = "reviewer_prs"
     _migrated: bool = field(default=False, init=False)
 
@@ -358,12 +365,18 @@ class ReviewerPrsScanner:
         return (user,) if user else ()
 
     def _url_allowed(self, url: str) -> bool:
-        """Same per-overlay URL-prefix gate as ``MyPrsScanner._url_allowed`` (#1015)."""
+        """Same per-overlay URL-prefix gate as ``MyPrsScanner._url_allowed`` (#1015, #1324)."""
+        from teatree.loop.tick_resolvers import best_url_match_specificity  # noqa: PLC0415
+
         if not self.allowed_url_prefixes:
             return True
         if not url:
             return False
-        return any(url.startswith(prefix) for prefix in self.allowed_url_prefixes)
+        own = best_url_match_specificity(url, self.allowed_url_prefixes)
+        if own == 0:
+            return False
+        competing = best_url_match_specificity(url, self.competing_url_prefixes)
+        return competing <= own
 
     def _collect_unique_prs(self, reviewers: tuple[str, ...]) -> list[RawAPIDict]:
         """Union review-requested PRs across *reviewers*, deduped by URL."""
