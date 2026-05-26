@@ -112,6 +112,28 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_rejects_variant_mismatch_on_existing_ticket(self) -> None:
+        """Re-issuing `workspace ticket <url> --variant <v>` with a different variant must error (#1306).
+
+        Pre-fix the second invocation silently kept the existing ticket's
+        variant and rebound the call to the inferred branch from the URL
+        — downstream operations then targeted the wrong code. The fix
+        rejects the variant mismatch loudly so the operator knows they
+        need to either switch to the existing variant or pick a new
+        ticket scope.
+        """
+        from django.core.management import CommandError  # noqa: PLC0415
+
+        call_command("workspace", "ticket", "https://example.com/issues/1306", variant="client-a")
+
+        with pytest.raises((SystemExit, CommandError)) as exc_info:
+            call_command("workspace", "ticket", "https://example.com/issues/1306", variant="client-b")
+
+        if isinstance(exc_info.value, SystemExit):
+            assert exc_info.value.code != 0
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_with_custom_repos(self) -> None:
         ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/92", repos="api,web"))
 
@@ -757,11 +779,10 @@ class TestWorkspaceCleanAll(TestCase):
             assert len(cleaned) == 1
             assert Worktree.objects.count() == 0
 
-            # Should have called dropdb
-            assert mock_run.call_count == 1
-            dropdb_call = mock_run.call_args_list[0]
-            assert "dropdb" in dropdb_call[0][0]
-            assert "wt_test_db" in dropdb_call[0][0]
+            # cleanup_worktree now calls docker_compose_down then dropdb (#1306).
+            calls = [c[0][0] for c in mock_run.call_args_list]
+            assert any("dropdb" in cmd and "wt_test_db" in cmd for cmd in calls)
+            assert any("docker" in cmd[0] and "compose" in cmd for cmd in calls)
 
     @_no_prune
     @_no_stash
@@ -901,6 +922,51 @@ class TestWorkspaceCleanAll(TestCase):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
         assert any("old-snapshot-2025" in c for c in cleaned)
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_passes_in_use_tenants_from_active_worktrees(self) -> None:
+        """clean-all collects DSLR tenants from CREATED worktrees and skips them (#1306).
+
+        A worktree in ``CREATED`` state is mid-provision — its DB has not
+        yet been imported and it depends on the tenant's DSLR snapshot
+        remaining intact. Pre-fix clean-all pruned unconditionally and
+        destroyed snapshots that an in-flight worktree was about to
+        restore from. The fix collects active variants from CREATED
+        worktrees and passes them to ``prune_dslr_snapshots`` via the
+        new ``in_use_tenants`` kwarg.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_prune(**kw: object) -> list[str]:
+            captured.update(kw)
+            return []
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch("teatree.utils.django_db.prune_dslr_snapshots", side_effect=fake_prune),
+        ):
+            ticket = Ticket.objects.create(
+                overlay="test", issue_url="https://example.com/issues/1306", variant="tenant-a"
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-1306",
+                state=Worktree.State.CREATED,
+                extra={},
+            )
+            call_command("workspace", "clean-all")
+
+        # Default overlay returns the variant verbatim; the in-use tenant set
+        # carries the active variant string so the pruner skips it.
+        assert captured.get("in_use_tenants") == {"tenant-a"}
 
     @_no_prune
     @_no_stash

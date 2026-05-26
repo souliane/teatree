@@ -82,6 +82,38 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
+    def test_stops_docker_compose_project_to_avoid_leaking_containers(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """Regression for #1306: `cleanup_worktree` must stop the docker compose project.
+
+        Pre-fix only `WorktreeTeardownRunner` called `docker_compose_down`,
+        but `cleanup_worktree` itself was also reached by the FSM-merged
+        auto-teardown path (`WorktreeTeardown`), `clean-merged`, and
+        `clean-all`. Those paths left containers running on host ports
+        5432/6379, blocking the next `worktree provision` with a port
+        conflict. Wiring docker-down into `cleanup_worktree` makes the
+        promise in the docstring ("Stop docker, drop DB, remove git
+        worktree, delete row") hold for every caller.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_down:
+            cleanup_worktree(wt)
+        # The compose project name follows `{repo_path}-wt{ticket_number}`.
+        ((project,), _kwargs) = mock_down.call_args
+        assert project.startswith("org/repo-wt")
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
     def test_drops_database_when_db_name_set(
         self,
         mock_config: MagicMock,
