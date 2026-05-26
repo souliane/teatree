@@ -216,6 +216,8 @@ Posting discipline (#1207): `t3 review post-comment` defaults to creating a DRAF
 
 Review-shape audit (#1206): `t3 review run <MR_URL>` is the read-only entry point reviewer sub-agents call before scanning a diff. It fetches MR metadata, classifies complexity, counts existing-review state (open discussions + draft notes + approvals), and emits a structured JSON summary so every reviewer starts from the same shape rather than improvising. The command never publishes — it stays outside the on-behalf surface. GitHub PR URLs return `unsupported_forge` (exit 2) deterministically until a parallel GitHub backend lands.
 
+Structured-evidence gate (#1280): `t3 review post-comment` and `post-draft-note` refuse a finding whose body matches an "X is missing/wrong/broken/stale" pattern unless an accompanying `FindingEvidence` record (passed via `--evidence-json '{...}'`) carries verified receipts. The schema fields are `master_check_paths`, `ticket_dep_refs`, `helper_indirection_paths`, `recent_merge_sweep_query`, and `confidence` (`verified` | `speculative`); the gate passes only when `confidence='verified'` AND at least one of `master_check_paths` or `ticket_dep_refs` is non-empty. Implemented in `teatree.cli.review_evidence_gate`; runs alongside the on-behalf (#960), colleague-MR shape (#1114), and TODO-anchor (#1186) sibling gates inside `ReviewService._run_pre_publish_gates`.
+
 ---
 
 ## 10. Configuration
