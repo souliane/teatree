@@ -1,9 +1,10 @@
 """Detect and guard against orphan branches.
 
-An ORPHAN is a local branch that carries work not on ``origin/main`` (after
-subject-match and tree-equality checks) AND has no open PR on the remote.
-Orphans silently leak work: they accumulate between weekly cleanups and are
-easy to miss when closing a session.
+An ORPHAN is a local branch that carries work not on the repo's default branch
+(``origin/main``, ``origin/master``, or whatever ``refs/remotes/origin/HEAD``
+points at — resolved per-repo) after subject-match and tree-equality checks
+AND has no open PR on the remote. Orphans silently leak work: they accumulate
+between weekly cleanups and are easy to miss when closing a session.
 
 This module is the single source of truth used by the three enforcement
 points that keep the no-orphan invariant:
@@ -24,10 +25,11 @@ from teatree.core.cleanup import _branch_tree_matches_squash, classify_branch_co
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 
 class BranchStatus(StrEnum):
-    """Classification of a branch's sync state against ``origin/main``."""
+    """Classification of a branch's sync state against the repo's default branch."""
 
     SYNCED = "synced"
     OPEN_PR = "open_pr"
@@ -74,9 +76,24 @@ def find_open_pr(repo: str, branch: str) -> str:
     )
 
 
+def _origin_default_branch_target(repo: str) -> str:
+    """Resolve ``origin/<default-branch>`` for the repo, defaulting to ``origin/main``.
+
+    A repo whose default branch is ``master`` (or any non-``main`` name) was
+    misclassified as SYNCED because :func:`classify_branch_commits` defaulted
+    to ``origin/main``. Resolving the actual default via ``git symbolic-ref
+    refs/remotes/origin/HEAD`` makes the comparison authoritative.
+    """
+    try:
+        return f"origin/{git.default_branch(repo=repo)}"
+    except (CommandFailedError, RuntimeError, ValueError):
+        return "origin/main"
+
+
 def classify_branch(repo: str, branch: str) -> BranchReport:
     """Classify ``branch`` in ``repo`` as synced, open PR, or orphan (unpushed / pushed)."""
-    classification = classify_branch_commits(repo, branch)
+    target = _origin_default_branch_target(repo)
+    classification = classify_branch_commits(repo, branch, target=target)
     ahead = len(classification.genuinely_ahead)
 
     if ahead == 0:

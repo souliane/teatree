@@ -476,11 +476,11 @@ class Command(TyperCommand):
     ) -> EnsurePrResult:
         """Create a PR for an orphan branch (idempotent, no-op when a PR already exists).
 
-        An orphan is a branch with commits not on ``origin/main`` (after
-        subject-match + tree-equality checks) and no open PR. When this
-        runs inside a git pre-push hook for a *first* push, the branch is not
-        yet on the remote — creating the PR is deferred with a warning so the
-        push proceeds and the agent can re-run this command afterwards.
+        An orphan is a branch with commits not on the repo's default branch
+        (resolved per-repo via ``refs/remotes/origin/HEAD``) after subject-
+        match + tree-equality checks and no open PR. When this runs inside a
+        git pre-push hook for a *first* push, the branch is not yet on the
+        remote — creating the PR is deferred so the push proceeds.
         """
         repo_path = repo or "."
         branch_name = branch or git.current_branch(repo=repo_path)
@@ -490,7 +490,7 @@ class Command(TyperCommand):
         report = classify_branch(repo_path, branch_name)
 
         if report.status is BranchStatus.SYNCED:
-            return EnsurePrResult(skipped="branch synced to origin/main", branch=branch_name)
+            return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)
         if report.status is BranchStatus.OPEN_PR:
             return EnsurePrResult(skipped="open PR exists", branch=branch_name, url=report.open_pr_url)
         if report.status is BranchStatus.UNPUSHED_ORPHAN:
