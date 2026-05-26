@@ -11,6 +11,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
+import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.utils.run as utils_run_mod
@@ -357,45 +358,45 @@ class TestPlaywrightOptions:
 
 class TestDetectLocalPort:
     def test_returns_port_when_listening(self) -> None:
-        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+        with patch("teatree.core.management.commands._e2e_discovery.socket.socket") as mock_sock_cls:
             mock_sock = MagicMock()
             mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
             mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
             mock_sock.connect_ex.return_value = 0
-            assert e2e_mod._detect_local_port(8080) == 8080
+            assert e2e_disc_mod.detect_local_port(8080) == 8080
 
     def test_returns_none_when_not_listening(self) -> None:
-        with patch("teatree.core.management.commands.e2e.socket.socket") as mock_sock_cls:
+        with patch("teatree.core.management.commands._e2e_discovery.socket.socket") as mock_sock_cls:
             mock_sock = MagicMock()
             mock_sock_cls.return_value.__enter__ = MagicMock(return_value=mock_sock)
             mock_sock_cls.return_value.__exit__ = MagicMock(return_value=False)
             mock_sock.connect_ex.return_value = 1
-            assert e2e_mod._detect_local_port(8080) is None
+            assert e2e_disc_mod.detect_local_port(8080) is None
 
 
 class TestDiscoverFrontendPort:
     def test_returns_docker_port_when_compose_reports_it(self) -> None:
         with (
-            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
-            patch.object(e2e_mod, "get_service_port", return_value=4201),
+            patch.object(e2e_disc_mod, "ticket_frontend_projects", return_value=["project"]),
+            patch.object(e2e_disc_mod, "get_service_port", return_value=4201),
         ):
-            assert e2e_mod._discover_frontend_port(MagicMock()) == 4201
+            assert e2e_disc_mod.discover_frontend_port(MagicMock()) == 4201
 
     def test_scans_local_ports_as_final_fallback(self) -> None:
         with (
-            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
-            patch.object(e2e_mod, "get_service_port", return_value=None),
-            patch.object(e2e_mod, "_detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
+            patch.object(e2e_disc_mod, "ticket_frontend_projects", return_value=["project"]),
+            patch.object(e2e_disc_mod, "get_service_port", return_value=None),
+            patch.object(e2e_disc_mod, "detect_local_port", side_effect=lambda p: 4203 if p == 4203 else None),
         ):
-            assert e2e_mod._discover_frontend_port(MagicMock()) == 4203
+            assert e2e_disc_mod.discover_frontend_port(MagicMock()) == 4203
 
     def test_returns_none_when_no_port_found(self) -> None:
         with (
-            patch.object(e2e_mod, "_ticket_frontend_projects", return_value=["project"]),
-            patch.object(e2e_mod, "get_service_port", return_value=None),
-            patch.object(e2e_mod, "_detect_local_port", return_value=None),
+            patch.object(e2e_disc_mod, "ticket_frontend_projects", return_value=["project"]),
+            patch.object(e2e_disc_mod, "get_service_port", return_value=None),
+            patch.object(e2e_disc_mod, "detect_local_port", return_value=None),
         ):
-            assert e2e_mod._discover_frontend_port(MagicMock()) is None
+            assert e2e_disc_mod.discover_frontend_port(MagicMock()) is None
 
 
 class TestRunHealthChecks(TestCase):

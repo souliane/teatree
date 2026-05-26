@@ -8,7 +8,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
 
-import teatree.core.management.commands.e2e as e2e_mod
+import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
 import teatree.core.management.commands.run as run_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -231,7 +231,7 @@ class TestE2eExternalCommand(TestCase):
                     },
                 ),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
-                patch.object(e2e_mod, "get_service_port", return_value=4299),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=4299),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
                 result = cast("str", call_command("e2e", "external"))
@@ -271,8 +271,8 @@ class TestE2eExternalCommand(TestCase):
                         "T3_ORIG_CWD": str(worktree_dir),
                     },
                 ),
-                patch.object(e2e_mod, "get_service_port", return_value=None),
-                patch.object(e2e_mod, "_detect_local_port", return_value=None),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=None),
+                patch.object(e2e_disc_mod, "detect_local_port", return_value=None),
                 pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("e2e", "external")

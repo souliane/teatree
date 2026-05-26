@@ -41,3 +41,25 @@ class TicketFrontendProjectsTests(TestCase):
         projects = _ticket_frontend_projects(orphan)
 
         assert projects == [compose_project(orphan)]
+
+    def test_linked_ticket_override_uses_named_tickets_worktrees(self) -> None:
+        """``linked_ticket`` reroutes discovery at the named ticket's worktrees.
+
+        Defect 1 of souliane/teatree#1322: when the e2e cache repo's
+        auto-registered worktree belongs to a different ticket than the
+        backend, the explicit override bypasses the resolved ticket's
+        siblings and probes the linked ticket's projects.
+        """
+        other_ticket = Ticket.objects.create(overlay="demo", issue_url="https://example.test/issues/1322")
+        backend_wt = Worktree.objects.create(
+            ticket=other_ticket,
+            overlay="demo",
+            repo_path="backend-repo",
+            branch="other",
+        )
+
+        projects = _ticket_frontend_projects(self.test_repo_wt, linked_ticket=other_ticket)
+
+        assert compose_project(backend_wt) in projects
+        # The resolved-worktree ticket's siblings are bypassed when a link is given.
+        assert "webapp-wt147" not in projects
