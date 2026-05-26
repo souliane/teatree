@@ -210,7 +210,11 @@ class Command(TyperCommand):
         into ``ticket.repos`` so the next ``execute_provision`` picks them up.
         """
         _warn_orphans(self.stderr.write)
-        overlay = get_overlay()
+        # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
+        # used to die on the ambiguous ``get_overlay()`` call here.
+        # Infer from the issue URL whose workspace repos own it; the
+        # default ``get_overlay()`` env-var path still wins when set.
+        overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
         repo_names = resolve_repo_names(overlay, issue_url, repos)
 
         with transaction.atomic():
@@ -290,7 +294,11 @@ class Command(TyperCommand):
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
             ticket = _resolve_workspace_ticket(path)
-        overlay = get_overlay()
+        # #1310: disambiguate from ``ticket.overlay`` so multi-overlay
+        # installs don't die on ambiguous ``get_overlay()`` when
+        # ``T3_OVERLAY_NAME`` env var is missing (a real path when a
+        # caller bypasses the CLI bridge or the env is lost).
+        overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         for wt in worktrees:
@@ -320,7 +328,8 @@ class Command(TyperCommand):
         exits 1 if any probe fails.
         """
         ticket = _resolve_workspace_ticket(path)
-        overlay = get_overlay()
+        # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
+        overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         failures: list[str] = []
@@ -364,7 +373,8 @@ class Command(TyperCommand):
         an empty list (or omits that probe) for that worktree.
         """
         ticket = _resolve_workspace_ticket(path)
-        overlay = get_overlay()
+        # #1310: disambiguate from ``ticket.overlay`` (see ``provision``).
+        overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         total = 0

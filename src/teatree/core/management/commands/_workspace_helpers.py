@@ -1,15 +1,17 @@
-"""Helpers for ``t3 workspace`` subcommands (#1306).
+"""Helpers for ``t3 workspace`` subcommands (#1306, #1310).
 
 Split from :mod:`workspace` to keep the command module under the per-
-module LOC cap. Covers two surfaces: the DSLR-snapshot-in-use guard
-shared by ``clean-all`` and the variant-mismatch refusal used by
-``ticket``.
+module LOC cap. Covers the DSLR-snapshot-in-use guard shared by
+``clean-all``, the variant-mismatch refusal used by ``ticket``, and the
+overlay-name resolution helper that ``ticket`` leans on when
+``T3_OVERLAY_NAME`` is missing on a multi-overlay install.
 """
 
+import os
 from collections.abc import Callable
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 
 
 def dslr_tenants_in_use() -> set[str]:
@@ -45,6 +47,25 @@ def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> lis
 
     pruned = prune_dslr_snapshots(keep=keep, in_use_tenants=in_use_tenants)
     return [f"Pruned DSLR snapshot: {name}" for name in pruned]
+
+
+def resolve_overlay_name_for_url(issue_url: str) -> str | None:
+    """Pick an overlay name for an issue URL with no explicit env var (#1310).
+
+    Precedence: ``T3_OVERLAY_NAME`` env var wins when set (the CLI bridge
+    sets it from ``t3 <overlay>`` invocations and ``get_overlay`` consumes
+    it on a ``None`` argument; this helper returns ``None`` then to defer).
+    Otherwise, route through ``infer_overlay_for_url`` — every registered
+    overlay declares its workspace repo slugs; the first that owns
+    ``issue_url`` wins. Returns ``None`` if no overlay claims the URL, in
+    which case ``get_overlay(None)`` raises ``ImproperlyConfigured`` with
+    the actual list of installed overlays so the user knows to pass
+    ``T3_OVERLAY_NAME`` explicitly.
+    """
+    if os.environ.get("T3_OVERLAY_NAME"):
+        return None  # let ``get_overlay`` consume the env var
+    inferred = infer_overlay_for_url(issue_url)
+    return inferred or None
 
 
 def reject_variant_mismatch(write_err: Callable[[str], None], ticket: Ticket, variant: str) -> None:

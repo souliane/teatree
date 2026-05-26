@@ -674,6 +674,174 @@ class TestWorkspaceStartTeardownExitCodes(TestCase):
             assert exc_info.value.code == 1
 
 
+class TestWorkspaceMultiOverlayResolution(TestCase):
+    """#1310: workspace subcommands disambiguate overlays from the ticket row.
+
+    When two overlays are installed and ``T3_OVERLAY_NAME`` is NOT set in
+    the subprocess env (a real path that happens when the env var is lost,
+    or when a future call site bypasses the CLI bridge), the workspace
+    subcommands ``provision``/``start``/``ready``/``teardown`` used to die
+    with ``ImproperlyConfigured: Multiple overlays found``. The ticket
+    itself stores the overlay name in ``Ticket.overlay`` — passing that
+    through to ``get_overlay(name)`` is the unambiguous resolution and
+    removes the env-var dependence.
+    """
+
+    def _make_worktree(self, tmp: str, overlay_name: str = "alpha") -> tuple[Ticket, Worktree, Path]:
+        wt_dir = Path(tmp) / "backend"
+        wt_dir.mkdir()
+        ticket = Ticket.objects.create(
+            overlay=overlay_name,
+            issue_url="https://example.com/issues/1310",
+        )
+        wt = Worktree.objects.create(
+            overlay=overlay_name,
+            ticket=ticket,
+            repo_path="/tmp/backend",
+            branch="feature",
+            extra={"worktree_path": str(wt_dir)},
+            state=Worktree.State.PROVISIONED,
+        )
+        return ticket, wt, wt_dir
+
+    @staticmethod
+    def _patch_two_overlays():
+        """Return a patch that exposes ``alpha`` and ``beta`` overlays.
+
+        Mirrors ``_patch_overlays`` but registers two overlays so the
+        ambiguous ``get_overlay()`` resolution would fail; ``ticket.overlay``
+        is the only signal that breaks the tie.
+        """
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+
+        alpha = FullOverlay()
+        beta = FullOverlay()
+        result: dict[str, OverlayBase] = {"alpha": alpha, "beta": beta}
+
+        def _fake_discover() -> dict[str, OverlayBase]:
+            return result
+
+        _fake_discover.cache_clear = lambda: None
+        return patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover)
+
+    @override_settings(**SETTINGS)
+    def test_provision_resolves_overlay_from_ticket_without_env_var(self) -> None:
+        """``workspace provision`` survives a missing ``T3_OVERLAY_NAME`` env."""
+        with self._patch_two_overlays(), tempfile.TemporaryDirectory() as tmp:
+            ticket, _wt, _wt_dir = self._make_worktree(tmp, overlay_name="alpha")
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="2 step(s) ok")
+            env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+            with (
+                patch.dict(os.environ, env_without_overlay, clear=True),
+                patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok),
+            ):
+                # Pre-fix: raises ImproperlyConfigured(Multiple overlays found …).
+                # Post-fix: resolves from ``ticket.overlay`` = "alpha".
+                call_command("workspace", "provision", str(ticket.pk))
+
+    @override_settings(**SETTINGS)
+    def test_start_resolves_overlay_from_ticket_without_env_var(self) -> None:
+        """``workspace start`` survives a missing ``T3_OVERLAY_NAME`` env."""
+        with self._patch_two_overlays(), tempfile.TemporaryDirectory() as tmp:
+            _ticket, _wt, wt_dir = self._make_worktree(tmp, overlay_name="alpha")
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="ok")
+            env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+            with (
+                patch.dict(os.environ, env_without_overlay, clear=True),
+                patch.object(workspace_mod, "WorktreeStartRunner", return_value=ok),
+            ):
+                call_command("workspace", "start", path=str(wt_dir))
+
+    @override_settings(**SETTINGS)
+    def test_ready_resolves_overlay_from_ticket_without_env_var(self) -> None:
+        """``workspace ready`` survives a missing ``T3_OVERLAY_NAME`` env."""
+        with self._patch_two_overlays(), tempfile.TemporaryDirectory() as tmp:
+            _ticket, _wt, wt_dir = self._make_worktree(tmp, overlay_name="alpha")
+            env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+            with patch.dict(os.environ, env_without_overlay, clear=True):
+                # ``alpha`` returns no readiness probes (FullOverlay default), so
+                # this call asserts the resolution path; no SystemExit because
+                # no probes ran => total_failures == 0.
+                call_command("workspace", "ready", path=str(wt_dir))
+
+    @override_settings(**SETTINGS)
+    def test_resolve_overlay_name_for_url_helper_routes_through_inference(self) -> None:
+        """``_resolve_overlay_name_for_url`` returns the correct overlay name.
+
+        Unit-level: validates the resolution helper that the ``ticket``
+        command leans on when ``T3_OVERLAY_NAME`` is missing. ``alpha``
+        claims any URL containing ``alpha-corp/<repo>``, ``beta`` claims
+        ``beta-corp/<repo>``. Mirrors what ``get_overlay(name)`` would
+        receive on the production code path.
+        """
+        from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+
+        class AlphaOverlay(FullOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return ["alpha-corp/backend", "alpha-corp/frontend"]
+
+        class BetaOverlay(FullOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return ["beta-corp/api", "beta-corp/web"]
+
+        result: dict[str, OverlayBase] = {"alpha": AlphaOverlay(), "beta": BetaOverlay()}
+
+        def _fake_discover() -> dict[str, OverlayBase]:
+            return result
+
+        _fake_discover.cache_clear = lambda: None
+
+        env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.dict(os.environ, env_without_overlay, clear=True),
+            patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
+        ):
+            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+                resolve_overlay_name_for_url,
+            )
+
+            assert resolve_overlay_name_for_url("https://example.com/alpha-corp/backend/issues/77") == "alpha"
+            assert resolve_overlay_name_for_url("https://example.com/beta-corp/api/issues/88") == "beta"
+            # No overlay claims the URL → ``None`` (caller surfaces the
+            # ambiguity error from ``get_overlay`` with the actual list).
+            assert resolve_overlay_name_for_url("https://example.com/unknown-corp/repo/issues/99") is None
+
+        # When ``T3_OVERLAY_NAME`` is set, the helper defers to ``get_overlay``
+        # (returns ``None`` so ``get_overlay(None)`` reads the env var itself).
+        with (
+            patch.dict(os.environ, {**env_without_overlay, "T3_OVERLAY_NAME": "beta"}, clear=True),
+            patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
+        ):
+            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+                resolve_overlay_name_for_url,
+            )
+
+            assert resolve_overlay_name_for_url("https://example.com/alpha-corp/backend/issues/77") is None
+
+    @override_settings(**SETTINGS)
+    def test_teardown_does_not_need_overlay_resolution(self) -> None:
+        """``workspace teardown`` does not call ``get_overlay()`` on the hot path.
+
+        The teardown runner only consults the worktree row (db_name, extra
+        snapshot, force flag) — no overlay hooks. The bare ``get_overlay()``
+        call at line 367 was on the (now-removed) `ready`-style header; once
+        the multi-overlay fix re-routes resolution through ``ticket.overlay``,
+        teardown stays unaffected and survives a missing env var trivially.
+        """
+        with self._patch_two_overlays(), tempfile.TemporaryDirectory() as tmp:
+            _ticket, _wt, wt_dir = self._make_worktree(tmp, overlay_name="alpha")
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="torn down")
+            env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+            with (
+                patch.dict(os.environ, env_without_overlay, clear=True),
+                patch.object(workspace_mod, "WorktreeTeardownRunner", return_value=ok),
+            ):
+                call_command("workspace", "teardown", path=str(wt_dir))
+
+
 class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
