@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from teatree.backends.protocols import CodeHostBackend, PrOpenState, ReviewState
+from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -283,50 +284,71 @@ class ReviewerPrsScanner:
             url = _pr_url(pr)
             if not url or not self._url_allowed(url):
                 continue
+            # #1321 (post-#1328 rewire): the 4 review-candidate skip-conditions
+            # belong on the colleague-MR review-sweep path — exactly this loop.
+            # ``list_review_requested_prs`` can return MRs the agent must not
+            # dispatch ``t3:reviewer`` on (self-authored, self-approved,
+            # self-noted, or already merged/closed); filter them here BEFORE
+            # adding the URL to ``scanned_urls`` so the orphan-task sweep
+            # still reaps the corresponding ticket via ``get_pr_open_state``
+            # when the MR is genuinely merged/closed.
+            if should_review_candidate_reasons(pr, current_user=primary_reviewer):
+                continue
             scanned_urls.add(url)
-            head = _head_sha(pr)
-            previous = cache.get(url, CacheEntry())
-            if previous.sha and previous.sha != head:
-                signals.append(
-                    ScanSignal(
-                        kind="reviewer_pr.new_sha",
-                        summary=f"Review needed: {url}",
-                        payload={"url": url, "head_sha": head, "previous_sha": previous.sha, "raw": pr},
-                    ),
-                )
-                if ticket_model is not None:
-                    _persist_entry(ticket_model, url, CacheEntry(sha=head, state=previous.state))
-                continue
-            if not previous.sha:
-                signals.append(
-                    ScanSignal(
-                        kind="reviewer_pr.unreviewed",
-                        summary=f"Review needed: {url}",
-                        payload={"url": url, "head_sha": head, "previous_sha": "", "raw": pr},
-                    ),
-                )
-                continue
-            # Query review state under one canonical alias — the cache
-            # tracks one entry per URL, so a per-alias query would just
-            # race the persist back to itself.
-            current = self.host.get_review_state(pr_url=url, reviewer=primary_reviewer)
-            if _is_dismissed_from_approved(previous.state, current):
-                signals.append(
-                    ScanSignal(
-                        kind="reviewer_pr.approval_dismissed",
-                        summary=f"Approval dismissed: {url}",
-                        payload={
-                            "url": url,
-                            "head_sha": head,
-                            "previous_state": previous.state,
-                            "current_state": current.value,
-                            "raw": pr,
-                        },
-                    ),
-                )
-            if current.value != previous.state and ticket_model is not None:
-                _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
+            signals.extend(self._signals_for_pr(pr, url, cache, ticket_model, primary_reviewer))
         signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
+        return signals
+
+    def _signals_for_pr(
+        self,
+        pr: RawAPIDict,
+        url: str,
+        cache: dict[str, CacheEntry],
+        ticket_model: "TicketModel | None",
+        primary_reviewer: str,
+    ) -> list[ScanSignal]:
+        """Emit the review signals (new_sha / unreviewed / approval_dismissed) for one PR."""
+        head = _head_sha(pr)
+        previous = cache.get(url, CacheEntry())
+        if previous.sha and previous.sha != head:
+            if ticket_model is not None:
+                _persist_entry(ticket_model, url, CacheEntry(sha=head, state=previous.state))
+            return [
+                ScanSignal(
+                    kind="reviewer_pr.new_sha",
+                    summary=f"Review needed: {url}",
+                    payload={"url": url, "head_sha": head, "previous_sha": previous.sha, "raw": pr},
+                ),
+            ]
+        if not previous.sha:
+            return [
+                ScanSignal(
+                    kind="reviewer_pr.unreviewed",
+                    summary=f"Review needed: {url}",
+                    payload={"url": url, "head_sha": head, "previous_sha": "", "raw": pr},
+                ),
+            ]
+        # Query review state under one canonical alias — the cache tracks one
+        # entry per URL, so a per-alias query would just race the persist
+        # back to itself.
+        current = self.host.get_review_state(pr_url=url, reviewer=primary_reviewer)
+        signals: list[ScanSignal] = []
+        if _is_dismissed_from_approved(previous.state, current):
+            signals.append(
+                ScanSignal(
+                    kind="reviewer_pr.approval_dismissed",
+                    summary=f"Approval dismissed: {url}",
+                    payload={
+                        "url": url,
+                        "head_sha": head,
+                        "previous_state": previous.state,
+                        "current_state": current.value,
+                        "raw": pr,
+                    },
+                ),
+            )
+        if current.value != previous.state and ticket_model is not None:
+            _persist_entry(ticket_model, url, CacheEntry(sha=previous.sha, state=current.value))
         return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:
