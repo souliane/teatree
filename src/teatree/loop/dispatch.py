@@ -228,10 +228,32 @@ def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
             return _review_request_dispatch(signal, pr_url)
     if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
         return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
+    if signal.kind == "codex_review.dispatch":
+        return _codex_review_dispatch(signal)
     phase = normalize_phase(str(signal.payload.get("phase", "")))
     if signal.kind == "incoming_event.task_needed" and phase == "answering":
         return _dispatch_answering(signal)
     return None
+
+
+def _codex_review_dispatch(signal: ScanSignal) -> list[DispatchAction]:
+    """Route ``codex_review.dispatch`` to the variant agent named in the payload (#1254).
+
+    The agent zone is the slash-command name (``codex:review`` or
+    ``codex:adversarial-review``) so the runtime invokes the same agent
+    the user would have invoked manually. Falls back to ``codex:review``
+    when the payload is missing the variant — the standard review is
+    the safe default.
+    """
+    variant = str(signal.payload.get("variant") or "codex:review")
+    return [
+        DispatchAction(
+            kind="agent",
+            zone=variant,
+            detail=signal.summary,
+            payload=signal.payload,
+        ),
+    ]
 
 
 def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAction]:
