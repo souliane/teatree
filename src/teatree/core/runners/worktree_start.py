@@ -34,7 +34,14 @@ def _compose_files(compose_file: str) -> list[str]:
 
 
 def docker_compose_down(project: str, *, timeout: int | None = 30) -> None:
-    """Stop and remove containers for the compose project."""
+    """Stop and remove containers for the compose project.
+
+    Tolerant of an unavailable docker binary (CI sandboxes, hermetic test
+    environments): a ``FileNotFoundError`` / ``PermissionError`` from
+    ``subprocess.run`` is logged and swallowed so cleanup paths that
+    funnel through here (#1306) don't break when there's no docker to
+    talk to in the first place.
+    """
     try:
         result = run_allowed_to_fail(
             ["docker", "compose", "-p", project, "down", "--remove-orphans"],
@@ -45,6 +52,8 @@ def docker_compose_down(project: str, *, timeout: int | None = 30) -> None:
             logger.warning("docker compose down: %s", result.stderr.strip()[:300])
     except TimeoutExpired:
         logger.warning("docker compose down timed out after %ss", timeout)
+    except (FileNotFoundError, PermissionError) as exc:
+        logger.debug("docker compose down skipped — docker unavailable: %s", exc)
 
 
 class WorktreeStartRunner(RunnerBase):
@@ -141,7 +150,7 @@ class WorktreeStartRunner(RunnerBase):
 
         ``up --no-build --pull=never`` fails the first time a worktree's
         compose override references a service that builds from a Dockerfile
-        (e.g. an overlay's docgen sidecar) — neither pull nor build runs, so
+        (e.g. an overlay's locally-built sidecar) — neither pull nor build runs, so
         the missing image is a hard error. Pre-flight per service, build the
         missing ones once, then let the subsequent ``up`` reuse the local
         images on every later start.
