@@ -98,11 +98,20 @@ class MyPrsScanner:
     sharing the same code-host token don't bleed into this overlay's
     statusline zone (#1015). Empty tuple keeps the legacy "emit all"
     behaviour for callers that scan a single global account.
+
+    ``competing_url_prefixes`` carries the URL-prefix claims of OTHER
+    registered overlays (#1324). When a PR's URL is claimed by both this
+    overlay and another, the most-specific claim wins — a wildcard prefix
+    like ``host/*/repo/`` loses to an exact ``host/owner/repo/`` claim, so
+    a teatree-overlay dogfooding scan that lists ``souliane/teatree`` plus
+    a sibling overlay's repo path does not steal the sibling's PRs from
+    its own zone. Empty tuple disables cross-overlay attribution.
     """
 
     host: CodeHostBackend
     identities: tuple[str, ...] = field(default_factory=tuple)
     allowed_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
+    competing_url_prefixes: tuple[str, ...] = field(default_factory=tuple)
     name: str = "my_prs"
 
     def scan(self) -> list[ScanSignal]:
@@ -154,19 +163,35 @@ class MyPrsScanner:
         return signals
 
     def _url_allowed(self, url: str) -> bool:
-        """Drop a PR whose URL is outside the overlay's repo prefixes (#1015).
+        """Drop a PR whose URL is outside the overlay's repo prefixes (#1015, #1324).
 
         When ``allowed_url_prefixes`` is empty the scanner is single-overlay
         (or legacy multi-overlay) and emits every PR it sees. When non-empty,
-        only URLs that start with one of the prefixes survive — sibling MRs
-        from another overlay's repos are dropped at the scanner boundary so
-        they never reach the per-overlay statusline zone.
+        only URLs claimed by one of the prefixes survive — sibling MRs from
+        another overlay's repos are dropped at the scanner boundary so they
+        never reach the per-overlay statusline zone.
+
+        Prefix shapes are interpreted by
+        :func:`teatree.loop.tick_resolvers.url_match_specificity` — plain
+        prefixes match ``startswith``, wildcard ``host/*/repo/`` prefixes
+        match across any owner segment (#1324).
+
+        When a competing overlay's claim is **more specific** (longer
+        non-wildcard prefix) than every claim this scanner holds, the URL
+        is dropped so the sibling overlay's scanner emits the PR under its
+        own ``[overlay]`` zone instead of this scanner stealing it (#1324).
         """
+        from teatree.loop.tick_resolvers import best_url_match_specificity  # noqa: PLC0415
+
         if not self.allowed_url_prefixes:
             return True
         if not url:
             return False
-        return any(url.startswith(prefix) for prefix in self.allowed_url_prefixes)
+        own = best_url_match_specificity(url, self.allowed_url_prefixes)
+        if own == 0:
+            return False
+        competing = best_url_match_specificity(url, self.competing_url_prefixes)
+        return competing <= own
 
     def _resolve_identities(self) -> tuple[str, ...]:
         # Multi-identity wins: caller supplied an explicit alias set, use it
