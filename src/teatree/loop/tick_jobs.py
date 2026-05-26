@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import discover_active_overlay, discover_overlays, load_config
+from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config
 
 if TYPE_CHECKING:
     from teatree.config import UserSettings
@@ -208,15 +208,14 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
 
 
 def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> PrSweepScanner | None:
-    """Build a per-overlay PR-sweep scanner from the overlay's followup repos (#1257).
+    """Build a per-overlay PR-sweep scanner from the overlay's followup repos (#1257, #1309).
 
-    The scanner merges green-and-cleared PRs on the overlay's GitHub repos
-    every tick. Repo list is sourced from
-    ``overlay.metadata.get_followup_repos()`` — the same accessor client-term-redacted
-    and skill-sync already use for "cross-repo work scoped to this
-    overlay". Returns ``None`` when the overlay has no Python class
-    (TOML-only) or no GitHub repos configured; the loop must skip
-    cleanly in those cases.
+    Repo list comes from ``overlay.metadata.get_followup_repos()``. Returns
+    ``None`` when the overlay has no Python class or no repos configured.
+    ``solo_overlay`` opts the scanner into the dogfood bypass (#1309) when the
+    user has declared this overlay end-to-end-trusted (``mode = "auto"`` +
+    ``require_human_approval_to_merge = false``); on every other overlay the
+    CLEAR contract is preserved as-is.
     """
     overlay = backend.overlay
     if overlay is None:
@@ -230,12 +229,15 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         notifier = SlackMergeNotifier(backend=backend.messaging, user_id=slack_user_id)
     else:
         notifier = NullMergeNotifier()
+    settings = _effective_settings_for_overlay(backend.name)
+    solo_overlay = settings.mode == Mode.AUTO and not settings.require_human_approval_to_merge
     return PrSweepScanner(
         repos=repos,
         api=GhPrApiClient(token=github_token),
         keystone=CallCommandMergeKeystone(),
         notifier=notifier,
         overlay=backend.name,
+        solo_overlay=solo_overlay,
     )
 
 
