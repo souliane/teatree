@@ -39,6 +39,21 @@ def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, subst
     raise AssertionError(msg)
 
 
+def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
+    pattern = re.compile(regex)
+    for call in run.tool_calls:
+        if call.name != tool_name:
+            continue
+        value = _get_arg(call, arg_path)
+        if isinstance(value, str) and pattern.search(value):
+            return
+    msg = (
+        f"Expected a {tool_name} tool call with {arg_path} matching regex {regex!r}, "
+        f"but captured tool calls were:\n{_format_calls(run)}"
+    )
+    raise AssertionError(msg)
+
+
 def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex: str) -> None:
     pattern = re.compile(regex)
     for call in run.tool_calls:
