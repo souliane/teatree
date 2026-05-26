@@ -195,6 +195,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
+    "dogfood_smoke_disabled": bool,
+    "dogfood_smoke_skill": str,
+    "dogfood_smoke_cadence_hours": int,
+    "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
 }
@@ -349,6 +353,18 @@ class UserSettings:
     scanning_news_disabled: bool = False
     scanning_news_skill: str = "scanning-news"
     scanning_news_cadence_hours: int = 24
+    # #1308 Periodic provision-smoke scanner — CORE always-on with a
+    # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
+    # window so the loop exercises the active overlay's provision path
+    # before the user reaches for E2E. Set
+    # ``dogfood_smoke_disabled = true`` in ``[teatree]`` (or per-overlay)
+    # as the escape hatch. ``dogfood_smoke_overlay`` pins which overlay
+    # anchor the placeholder task is created against — empty falls back
+    # to the active overlay resolved via ``discover_active_overlay``.
+    dogfood_smoke_disabled: bool = False
+    dogfood_smoke_skill: str = "dogfood-smoke"
+    dogfood_smoke_cadence_hours: int = 24
+    dogfood_smoke_overlay: str = ""
     # #1249 Auto t3-update scanner — fast-forwards the editable teatree
     # clone + every registered overlay clone to ``origin/<default>`` once
     # the cadence has elapsed. Hourly default keeps the orchestrator
@@ -416,6 +432,10 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
+        dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
+        dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),
+        dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
     )
