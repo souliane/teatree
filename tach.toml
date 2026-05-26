@@ -109,6 +109,7 @@ depends_on = [
   "teatree.core",
   "teatree.agents",
   "teatree.backends",
+  "teatree.eval",
   "teatree.skill_loading",
   "teatree.skill_schema",
   "teatree.claude_sessions",
@@ -122,6 +123,10 @@ depends_on = [
   "teatree.on_behalf_gate",
   "teatree.outbound_claim"
 ]
+
+[[modules]]
+path = "teatree.eval"
+depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.core.management"
