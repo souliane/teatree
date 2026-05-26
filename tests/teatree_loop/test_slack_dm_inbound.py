@@ -57,6 +57,13 @@ class FakeMessaging:
         _ = handle
         return ""
 
+    def auth_test(self) -> RawAPIDict:
+        # The scanner self-filter (#1346) probes this once to learn the
+        # bot's own user / bot ids. Returning a fully-resolved identity
+        # keeps these legacy tests focused on persistence and
+        # idempotency behaviour rather than the self-filter path.
+        return {"ok": True, "user_id": "U_BOT_SELF", "bot_id": "B_BOT_SELF"}
+
 
 class TestScan:
     def test_one_user_message_creates_one_row(self) -> None:
