@@ -607,6 +607,144 @@ def handle_enforce_plan_gate(data: dict) -> bool:
     return True
 
 
+# ── PreToolUse: enforce-agent-plan-gate (#1302) ──────────────────────
+#
+# Sibling of ``handle_enforce_plan_gate`` (#1133, Edit/Write surface).
+# Denies ``Agent`` / ``Task`` dispatch unless one of:
+#
+# 1. A recent ``/plan`` invocation is recorded in
+#    ``$XDG_DATA_HOME/teatree/last-plan-skill-ts`` (default
+#    ``~/.local/share/teatree/last-plan-skill-ts``) within the cooldown
+#    window (default 30 minutes, configurable via
+#    ``TEATREE_PLAN_GATE_WINDOW_MINUTES``).
+# 2. The Agent prompt carries an explicit per-call opt-out token
+#    ``[skip-plan-gate: <reason>]`` (reason is mandatory — empty rejects).
+#
+# The marker file is written by ``handle_track_plan_skill_timestamp``
+# (PostToolUse), which fires on every ``Skill`` tool call whose final
+# path segment starts with ``plan`` (``plan``, ``t3:plan``, ``plan-*``).
+# This is wall-clock based rather than per-session so an orchestrator's
+# /plan in turn N still authorises sub-agent dispatches across the
+# following turns, until the cooldown lapses.
+#
+# Why the timestamp file (not the existing ``<session>.plan-invocations``
+# marker): the existing #1133 gate is per-session and indefinite. The
+# Agent-dispatch gate is per-time-window so the "I planned this hour ago"
+# proof expires — stale plan assertions are the failure mode the issue
+# names.
+
+_AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES = 30
+_AGENT_PLAN_GATE_TOOLS = {"Agent", "Task"}
+# Mandatory reason: ``[skip-plan-gate: <non-empty-reason>]``. We allow
+# the token anywhere in the first few hundred characters of the prompt
+# so a heading/preamble or a leading "Notes:" block does not force it
+# strictly onto line 1.
+_SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
+
+
+def _plan_gate_window_minutes() -> int:
+    raw = os.environ.get("TEATREE_PLAN_GATE_WINDOW_MINUTES", "").strip()
+    if not raw:
+        return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
+    return value if value > 0 else _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
+
+
+def _plan_skill_timestamp_file() -> Path:
+    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
+    return base / "teatree" / "last-plan-skill-ts"
+
+
+def _plan_skill_recently_invoked() -> bool:
+    """True iff the gate's timestamp file is fresh within the cooldown window."""
+    ts_file = _plan_skill_timestamp_file()
+    if not ts_file.is_file():
+        return False
+    try:
+        recorded = int(ts_file.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    import time  # noqa: PLC0415
+
+    age = int(time.time()) - recorded
+    return 0 <= age <= _plan_gate_window_minutes() * 60
+
+
+def _agent_prompt_skip_token(prompt: str) -> str | None:
+    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
+
+    Scans only the first 512 characters so a buried token in a long
+    prompt body does not silently authorise dispatch.
+    """
+    head = prompt[:512]
+    match = _SKIP_PLAN_GATE_RE.search(head)
+    if not match:
+        return None
+    reason = match.group(1).strip()
+    return reason or None
+
+
+def handle_track_plan_skill_timestamp(data: dict) -> None:
+    """PostToolUse: write a POSIX timestamp when a ``plan*`` skill is invoked.
+
+    Mirrors the routing of :func:`handle_track_plan_invocation` (final
+    path segment starts with ``plan``), but writes a wall-clock marker
+    used by the Agent-dispatch plan-gate (#1302) instead of a per-
+    session boolean.
+    """
+    if data.get("tool_name") != "Skill":
+        return
+    skill = data.get("tool_input", {}).get("skill", "")
+    if not skill:
+        return
+    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    if not final.startswith("plan"):
+        return
+    import time  # noqa: PLC0415
+
+    ts_file = _plan_skill_timestamp_file()
+    ts_file.parent.mkdir(parents=True, exist_ok=True)
+    ts_file.write_text(str(int(time.time())), encoding="utf-8")
+
+
+def handle_enforce_agent_plan_gate(data: dict) -> bool:
+    """Deny ``Agent``/``Task`` dispatch lacking a fresh ``/plan`` or a skip token.
+
+    Returns ``True`` (deny JSON emitted) only when ALL of:
+
+    1. The tool is ``Agent`` or ``Task``.
+    2. The prompt carries no ``[skip-plan-gate: <reason>]`` token.
+    3. The plan-skill timestamp file is missing or older than the
+        cooldown window (``TEATREE_PLAN_GATE_WINDOW_MINUTES``, default 30).
+    """
+    tool_name = data.get("tool_name", "")
+    if tool_name not in _AGENT_PLAN_GATE_TOOLS:
+        return False
+
+    prompt = data.get("tool_input", {}).get("prompt", "") or ""
+    if _agent_prompt_skip_token(prompt):
+        return False
+    if _plan_skill_recently_invoked():
+        return False
+
+    window = _plan_gate_window_minutes()
+    reason = (
+        f"BLOCKED: `{tool_name}` dispatch requires a recent `/plan` invocation "
+        f"(within the last {window} minutes) or an explicit per-call opt-out. "
+        "Unblock paths: (a) call the Skill tool with skill=`plan` to plan this "
+        "dispatch first, or (b) prefix the Agent prompt with "
+        "`[skip-plan-gate: <reason>]` (reason mandatory) — e.g. "
+        "`[skip-plan-gate: trivial-bug-fix]`. "
+        "Override the window via `TEATREE_PLAN_GATE_WINDOW_MINUTES`. (#1302)"
+    )
+    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return True
+
+
 # ── PreToolUse: protect-default-branch ─────────────────────────────
 
 
@@ -3891,6 +4029,7 @@ _HANDLERS: dict[str, list] = {
         handle_route_away_mode_question,
         handle_enforce_loop_registration,
         handle_enforce_plan_gate,
+        handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
         handle_quote_scanner_pretool,
         handle_enforce_skill_loading,
@@ -3908,6 +4047,7 @@ _HANDLERS: dict[str, list] = {
         handle_read_dedup,
         handle_track_todos,
         handle_track_plan_invocation,
+        handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
     ],
     "InstructionsLoaded": [handle_track_skill_usage],
