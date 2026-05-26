@@ -4,13 +4,13 @@ from pathlib import Path
 
 import typer
 
-from teatree.cli.overlay import managepy
+from teatree.cli.overlay import managepy_core
 
 review_request_app = typer.Typer(no_args_is_help=True, help="Batch review requests.")
 
 
 def _active_project() -> tuple[Path, str]:
-    """Resolve the (project_path, overlay_name) the managepy delegate runs as.
+    """Resolve the (project_path, overlay_name) for review-request dispatch.
 
     Routes through :func:`config._active_overlay_entry` so the precedence
     matches ``get_overlay()``: ``T3_OVERLAY_NAME`` env first, then the
@@ -21,6 +21,11 @@ def _active_project() -> tuple[Path, str]:
     configured overlay could not resolve that overlay's Connect
     channel/token (#1103). The cwd-``manage.py`` discovery is preserved as
     the final fallback (dev-mode unbroken).
+
+    The returned ``project_path`` is no longer used to pick the dispatch
+    target (commands here are teatree-CORE — see :func:`managepy_core` and
+    #1312); it is kept on the tuple only to preserve the existing return
+    shape for callers and tests.
     """
     from teatree.cli import _find_project_root  # noqa: PLC0415
     from teatree.config import _active_overlay_entry  # noqa: PLC0415
@@ -33,8 +38,8 @@ def _active_project() -> tuple[Path, str]:
 @review_request_app.command()
 def discover() -> None:
     """Discover open merge requests awaiting review."""
-    project, overlay_name = _active_project()
-    managepy(project, "followup", "discover-mrs", overlay_name=overlay_name)
+    _, overlay_name = _active_project()
+    managepy_core("followup", "discover-mrs", overlay_name=overlay_name)
 
 
 @review_request_app.command()
@@ -48,8 +53,8 @@ def check(mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL 
     ``ReviewRequestPost`` claim (``peek_should_post_review_request``), so
     it can never leave an orphan that wedges a later real post (#1103).
     """
-    project, overlay_name = _active_project()
-    managepy(project, "review_request_check", "--mr-url", mr_url, overlay_name=overlay_name)
+    _, overlay_name = _active_project()
+    managepy_core("review_request_check", "--mr-url", mr_url, overlay_name=overlay_name)
 
 
 @review_request_app.command()
@@ -65,10 +70,9 @@ def post(
     the only way to satisfy it), then the post. Refuses with the exact
     ``approve-on-behalf`` remediation when no recorded approval matches.
     """
-    project, overlay_name = _active_project()
+    _, overlay_name = _active_project()
     extra = ("--title", title) if title else ()
-    managepy(
-        project,
+    managepy_core(
         "review_request_post",
         "--mr-url",
         mr_url,

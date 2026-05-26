@@ -10,8 +10,7 @@ from teatree.cli.overlay import DJANGO_GROUPS
 
 
 def _ticket_subcommands() -> set[str]:
-    _help, subcommands = DJANGO_GROUPS["ticket"]
-    return {name for name, _desc in subcommands}
+    return {name for name, _desc in DJANGO_GROUPS["ticket"].subcommands}
 
 
 def test_ticket_group_exposes_comment() -> None:

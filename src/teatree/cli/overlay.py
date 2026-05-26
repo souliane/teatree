@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -25,8 +26,25 @@ across Typer's ``get_command`` conversion.
 """
 
 
-DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
-    "worktree": (
+@dataclass(frozen=True)
+class DjangoGroup:
+    """One overlay sub-app group description.
+
+    ``core_dispatch`` flags groups whose subcommands live in
+    ``teatree.core.management.commands`` (not in any overlay-owned
+    ``manage.py``). When ``True``, :meth:`OverlayAppBuilder._bridge_subcommand`
+    dispatches via :func:`managepy_core` (``python -m teatree``) so the call
+    never reaches an overlay's ``manage.py`` whose settings module may not
+    register the command (#1318 follow-up to #1312).
+    """
+
+    help_text: str
+    subcommands: list[tuple[str, str]]
+    core_dispatch: bool = False
+
+
+DJANGO_GROUPS: dict[str, DjangoGroup] = {
+    "worktree": DjangoGroup(
         "Per-worktree FSM operations.",
         [
             ("provision", "Run DB import + env cache + direnv + prek + overlay setup steps for one worktree."),
@@ -40,7 +58,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("diagram", "Print a state diagram as Mermaid. Models: worktree, ticket, task."),
         ],
     ),
-    "workspace": (
+    "workspace": DjangoGroup(
         "Ticket-level workspace operations (every worktree in the ticket).",
         [
             ("ticket", "Create or update a ticket and trigger worktree provisioning."),
@@ -55,7 +73,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
         ],
     ),
-    "run": (
+    "run": DjangoGroup(
         "Run services.",
         [
             ("verify", "Verify worktree state and return URLs."),
@@ -66,7 +84,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("tests", "Run the project test suite."),
         ],
     ),
-    "e2e": (
+    "e2e": DjangoGroup(
         "E2E test commands.",
         [
             ("run", "Run E2E tests — dispatches to project or external runner based on overlay config."),
@@ -75,7 +93,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("project", "Run E2E tests from the project's own test directory."),
         ],
     ),
-    "db": (
+    "db": DjangoGroup(
         "Database operations.",
         [
             ("refresh", "Re-import the worktree database from dump/DSLR."),
@@ -85,7 +103,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("shell", "Drop into a Django shell against the resolved (gate) control DB."),
         ],
     ),
-    "pr": (
+    "pr": DjangoGroup(
         "Pull request helpers.",
         [
             ("create", "Create a pull request for the ticket's branch."),
@@ -97,7 +115,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
         ],
     ),
-    "tasks": (
+    "tasks": DjangoGroup(
         "Async task queue.",
         [
             ("cancel", "Cancel a task by ID."),
@@ -110,7 +128,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("work-next-user-input", "Claim and execute a user input task."),
         ],
     ),
-    "followup": (
+    "followup": DjangoGroup(
         "Follow-up snapshots.",
         [
             ("refresh", "Return counts of tickets and tasks."),
@@ -118,22 +136,23 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("discover-mrs", "List the user's open non-draft PRs/MRs awaiting a review request."),
             ("remind", "Return list of pending user input tasks."),
         ],
+        core_dispatch=True,
     ),
-    "standup": (
+    "standup": DjangoGroup(
         "Auto-generated daily update (read-only).",
         [
             ("generate", "Generate a standup from transition + attempt data (read-only)."),
             ("stale", "List tickets with no activity past the staleness threshold (read-only)."),
         ],
     ),
-    "lifecycle": (
+    "lifecycle": DjangoGroup(
         "Session lifecycle and phase tracking.",
         [
             ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
             ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
         ],
     ),
-    "env": (
+    "env": DjangoGroup(
         "Inspect and mutate the worktree env cache.",
         [
             ("show", "Print the env cache as the DB would render it."),
@@ -144,7 +163,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("migrate-secrets", "Move POSTGRES_PASSWORD literals out of .t3-env.cache into pass."),
         ],
     ),
-    "ticket": (
+    "ticket": DjangoGroup(
         "Ticket state management.",
         [
             ("transition", "Transition a ticket to a new state."),
@@ -156,7 +175,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
         ],
     ),
-    "availability": (
+    "availability": DjangoGroup(
         "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
         [
             ("away", "Set manual away-mode override (questions queue as DeferredQuestion rows)."),
@@ -165,7 +184,7 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("show", "Print the currently resolved mode and source (override/schedule/default)."),
         ],
     ),
-    "questions": (
+    "questions": DjangoGroup(
         "Manage the away-mode deferred-question backlog (#58).",
         [
             ("record", "Record a deferred question (used by the PreToolUse away-mode hook)."),
@@ -174,14 +193,14 @@ DJANGO_GROUPS: dict[str, tuple[str, list[tuple[str, str]]]] = {
             ("dismiss", "Dismiss a pending question without answering it."),
         ],
     ),
-    "pending_chat": (
+    "pending_chat": DjangoGroup(
         "Manage the inbound Slack-DM queue (#1063).",
         [
             ("list", "List inbound rows from the last hour (or --all)."),
             ("mark-answered", "Stamp ``answered_at`` on rows matching a Slack ts."),
         ],
     ),
-    "notify": (
+    "notify": DjangoGroup(
         "Bot→user Slack DM from the shell (#1030).",
         [
             ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
@@ -260,6 +279,28 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
+def managepy_core(*args: str, overlay_name: str = "") -> None:
+    """Run a teatree-CORE management command via ``python -m teatree``.
+
+    Use this for commands that live in ``teatree.core.management.commands`` —
+    ``followup``, ``review_request_check``, ``review_request_post``, etc.
+    These exist on teatree core, not on overlay-owned ``manage.py`` projects
+    (an overlay clone may run against its own settings module that has no
+    such commands). Routing them through :func:`managepy` would crash when
+    invoked from such a clone, because :func:`managepy` prefers the overlay's
+    ``manage.py`` whenever the resolved project path has one (#1312).
+
+    When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
+    environment so that ``get_overlay()`` can resolve the correct overlay even
+    when multiple overlays are installed.
+    """
+    env = _base_env()
+    if overlay_name:
+        env["T3_OVERLAY_NAME"] = overlay_name
+    env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+
+
 class OverlayAppBuilder:
     """Build a Typer sub-app for a single installed overlay."""
 
@@ -283,10 +324,10 @@ class OverlayAppBuilder:
         self._register_shortcut_commands()
         self._register_config_commands()
 
-        for group_name, (help_text, subcommands) in DJANGO_GROUPS.items():
-            group = typer.Typer(no_args_is_help=True, help=help_text)
-            for sub_name, sub_help in subcommands:
-                self._bridge_subcommand(group, group_name, sub_name, sub_help)
+        for group_name, dj_group in DJANGO_GROUPS.items():
+            group = typer.Typer(no_args_is_help=True, help=dj_group.help_text)
+            for sub_name, sub_help in dj_group.subcommands:
+                self._bridge_subcommand(group, group_name, sub_name, sub_help, core_dispatch=dj_group.core_dispatch)
             self.overlay_app.add_typer(group, name=group_name)
 
         self._register_overlay_tools()
@@ -345,7 +386,11 @@ class OverlayAppBuilder:
         @overlay_app.command(name="full-status")
         def full_status() -> None:
             """Show ticket, worktree, and session state summary."""
-            managepy(project_path, "followup", "refresh", overlay_name=overlay_name)
+            # ``followup`` is a teatree-CORE management command — dispatch via
+            # ``python -m teatree`` so an overlay clone with its own
+            # ``manage.py`` (different settings module) does not crash with
+            # ``Unknown command: 'followup'`` (#1318).
+            managepy_core("followup", "refresh", overlay_name=overlay_name)
 
         @overlay_app.command(name="ship")
         def ship(
@@ -361,7 +406,8 @@ class OverlayAppBuilder:
         @overlay_app.command(name="daily")
         def daily() -> None:
             """Daily followup — sync MRs, check gates, remind reviewers."""
-            managepy(project_path, "followup", "sync", overlay_name=overlay_name)
+            # Same as ``full-status``: ``followup`` is core-only (#1318).
+            managepy_core("followup", "sync", overlay_name=overlay_name)
 
         self._register_agent_command()
 
@@ -421,12 +467,20 @@ class OverlayAppBuilder:
         group_name: str,
         sub_name: str,
         sub_help: str,
+        *,
+        core_dispatch: bool = False,
     ) -> None:
         """Register a single subcommand that forwards to ``manage.py <group> <sub>``.
 
         Uses ``invoke_without_command=True`` and disables the default typer help
         so that ``--help`` is forwarded to the Django management command, which
         shows the real options (``--path``, ``--variant``, etc.).
+
+        When ``core_dispatch`` is ``True`` the command is dispatched via
+        :func:`managepy_core` (teatree-native ``python -m teatree``) instead
+        of :func:`managepy` — required for groups whose commands live in
+        teatree core only and would crash if routed through an overlay's
+        own ``manage.py`` (#1312, #1318).
         """
         project_path = self.project_path
         overlay_name = self.overlay_name
@@ -442,7 +496,10 @@ class OverlayAppBuilder:
             add_help_option=False,
         )
         def _run(ctx: typer.Context) -> None:
-            managepy(project_path, group_name, sub_name, *ctx.args, overlay_name=overlay_name)
+            if core_dispatch:
+                managepy_core(group_name, sub_name, *ctx.args, overlay_name=overlay_name)
+            else:
+                managepy(project_path, group_name, sub_name, *ctx.args, overlay_name=overlay_name)
 
         _run.__name__ = f"_run_{group_name}_{sub_name.replace('-', '_')}"
         OVERLAY_PROXY_COMMANDS[_run.__name__] = (group_name, sub_name)
