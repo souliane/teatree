@@ -178,6 +178,35 @@ def _open_subset(states: Sequence[MrState]) -> list[MrState]:
     return [state for state in states if not state.merged]
 
 
+def _seed_review_request_posts(
+    *,
+    channel: str,
+    ts: str,
+    states: Sequence[MrState],
+) -> None:
+    """Seed a ``ReviewRequestPost`` for every open MR in a broadcast (#1256).
+
+    The ``ReviewNagScanner`` walks ``ReviewRequestPost`` rows; before #1256
+    only the bot's review-request flow wrote those rows, so manually-posted
+    MRs in the review channel escaped the +1/+2/+3/+5d nag cadence. Seeding
+    here closes that gap — the broadcast scanner is the single ingestion
+    point for any colleague- or author-broadcast.
+
+    Idempotent on ``mr_url`` via ``record_review_request_post``: a re-scan
+    refreshes the channel/thread reference but preserves ``last_nag_step``
+    and ``done_at`` so the nag state machine is not reset. Merged URLs are
+    skipped — only open MRs need nagging.
+    """
+    from teatree.loop.review_request_tracker import record_review_request_post  # noqa: PLC0415
+
+    for state in _open_subset(states):
+        record_review_request_post(
+            mr_url=state.url,
+            slack_channel_id=channel,
+            slack_thread_ts=ts,
+        )
+
+
 @dataclass(slots=True)
 class SlackBroadcastsScanner:
     """Scan one or more Slack channels for MR-broadcast messages.
@@ -252,6 +281,11 @@ class SlackBroadcastsScanner:
         row = ScannedBroadcast.record(observation)
         if row is None:
             return []
+        # #1256: seed a ReviewRequestPost for every open MR in the broadcast
+        # so the ReviewNagScanner picks them up — manual broadcasts in the
+        # review channel were previously invisible to the nag train because
+        # only the bot's review-request flow wrote ReviewRequestPost rows.
+        _seed_review_request_posts(channel=row.channel, ts=row.slack_ts, states=states)
         signals = self._apply_classification(row, states)
         # #1295 cap B: detect ``<@user_slack_id>`` mentions so the
         # mechanical assigner picks up the MR without waiting for a

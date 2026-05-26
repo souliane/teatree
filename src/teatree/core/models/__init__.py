@@ -27,6 +27,7 @@ from teatree.core.models.review_request_post import ReviewRequestPost
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
+from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
@@ -78,6 +79,7 @@ __all__ = [
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "SelfImproveFiring",
+    "SelfUpdateMarker",
     "Session",
     "Task",
     "TaskAttempt",

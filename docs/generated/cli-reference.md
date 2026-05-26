@@ -492,18 +492,31 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file           TEXT     File path for inline comment — REQUIRED unless     │
-│                           --general is passed.                               │
-│ --line           INTEGER  Line number in the new file (must be an added      │
-│                           line) — REQUIRED unless --general is passed.       │
-│ --general                 Post a general (MR-wide) note instead of an inline │
-│                           one. Mutually exclusive with --file/--line.        │
-│                           Without this flag, --file AND --line are both      │
-│                           required — omitting either is refused upfront so a │
-│                           missed-flag invocation can no longer silently      │
-│                           degrade an intended-inline draft into a general    │
-│                           note (souliane/teatree#72).                        │
-│ --help                    Show this message and exit.                        │
+│ --file                 TEXT     File path for inline comment — REQUIRED      │
+│                                 unless --general is passed.                  │
+│ --line                 INTEGER  Line number in the new file (must be an      │
+│                                 added line) — REQUIRED unless --general is   │
+│                                 passed.                                      │
+│ --general                       Post a general (MR-wide) note instead of an  │
+│                                 inline one. Mutually exclusive with          │
+│                                 --file/--line. Without this flag, --file AND │
+│                                 --line are both required — omitting either   │
+│                                 is refused upfront so a missed-flag          │
+│                                 invocation can no longer silently degrade an │
+│                                 intended-inline draft into a general note    │
+│                                 (souliane/teatree#72).                       │
+│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
+│                                 'missing/wrong/broken' finding               │
+│                                 (souliane/teatree#1280). Required when the   │
+│                                 note asserts something is                    │
+│                                 missing/wrong/broken/stale or does not       │
+│                                 exist. JSON keys: master_check_paths (list), │
+│                                 ticket_dep_refs (list),                      │
+│                                 helper_indirection_paths (list),             │
+│                                 recent_merge_sweep_query (str), confidence   │
+│                                 ('verified'|'speculative'). Schema:          │
+│                                 teatree.cli.review_evidence_gate.FindingEvi… │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -529,16 +542,30 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file        TEXT     File path for inline comment (omit for general note)  │
-│ --line        INTEGER  Line number in the new file (must be an added line)   │
-│                        [default: 0]                                          │
-│ --live                 Publish a colleague-visible comment directly instead  │
-│                        of creating a draft. Requires a single-use            │
-│                        Slack-recorded approval token minted via `t3 review   │
-│                        approve-live-post <mr-url> --slack-ts <ts>` (#1207).  │
-│                        The default (no flag) creates a DRAFT and DMs the     │
-│                        user the link — safe-by-default.                      │
-│ --help                 Show this message and exit.                           │
+│ --file                 TEXT     File path for inline comment (omit for       │
+│                                 general note)                                │
+│ --line                 INTEGER  Line number in the new file (must be an      │
+│                                 added line)                                  │
+│                                 [default: 0]                                 │
+│ --live                          Publish a colleague-visible comment directly │
+│                                 instead of creating a draft. Requires a      │
+│                                 single-use Slack-recorded approval token     │
+│                                 minted via `t3 review approve-live-post      │
+│                                 <mr-url> --slack-ts <ts>` (#1207). The       │
+│                                 default (no flag) creates a DRAFT and DMs    │
+│                                 the user the link — safe-by-default.         │
+│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
+│                                 'missing/wrong/broken' finding               │
+│                                 (souliane/teatree#1280). Required when the   │
+│                                 note asserts something is                    │
+│                                 missing/wrong/broken/stale or does not       │
+│                                 exist. JSON keys: master_check_paths (list), │
+│                                 ticket_dep_refs (list),                      │
+│                                 helper_indirection_paths (list),             │
+│                                 recent_merge_sweep_query (str), confidence   │
+│                                 ('verified'|'speculative'). Schema:          │
+│                                 teatree.cli.review_evidence_gate.FindingEvi… │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2035,9 +2062,22 @@ Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
  The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
  (provisioned by ``t3 setup slack-user-token``) is the only credential
  that reliably reaches user DMs and Slack-Connect externally-shared
- channels for ``reactions.add`` (#1232). Exits 0 on success (including
- the idempotent ``already_reacted`` case), 1 when the token is missing,
- 2 on any other Slack-side failure.
+ channels for ``reactions.add`` (#1232).
+
+ Exit codes:
+
+ - ``0`` — success (including the idempotent ``already_reacted`` case).
+ - ``1`` — token is missing **OR** Slack rejected the call with an
+     ``ok:false`` error (``missing_scope``, ``not_in_channel``,
+     ``mcp_externally_shared_channel_restricted``, …). The structured
+     message prints the error code, the remediation CLI
+     (``t3 setup slack-user-token``), #1232, and the BINDING that
+     forbids a thread-emoji fallback
+     (``feedback_react_not_emoji_thread_comment``).
+ - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
+
+ A non-zero exit means **stop and surface the gap** — never fall back
+ to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │

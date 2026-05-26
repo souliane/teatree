@@ -373,6 +373,49 @@ class TestMergeExecutionEdgeCases(TestCase):
         assert outcome.ticket_state == Ticket.State.RETROSPECTED
         assert MergeAudit.objects.filter(clear=clear).exists()
 
+    def test_record_advance_promotes_started_ticket_to_merged(self) -> None:
+        """#1343: PR-merge keystone advances a ``STARTED`` ticket to ``MERGED``.
+
+        The original guard only fired ``mark_merged()`` when the ticket was
+        already at ``IN_REVIEW``/``MERGED``, so tickets whose PR landed
+        while the FSM still read ``STARTED`` stayed visibly stuck at
+        ``started`` on the statusline. The post hook must reconcile any
+        pre-MERGED non-terminal state to ``MERGED``.
+        """
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
+        clear = _clear(ticket)
+        outcome = _run(clear, _GhStub())
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED, f"PR merged but ticket stuck at {ticket.state} — #1343 regression"
+        assert outcome.ticket_state == Ticket.State.MERGED
+        assert MergeAudit.objects.filter(clear=clear).exists()
+
+    def test_record_advance_promotes_every_pre_merged_state(self) -> None:
+        """State-complete: PR-merge keystone advances EVERY pre-merged state to MERGED.
+
+        Pins the contract so a future-added pre-merged state can't silently
+        re-introduce the ``stale-started`` class. ``RETROSPECTED`` /
+        ``DELIVERED`` / ``IGNORED`` stay where they are (covered by sibling
+        skip-test).
+        """
+        pre_merged = [
+            Ticket.State.NOT_STARTED,
+            Ticket.State.SCOPED,
+            Ticket.State.STARTED,
+            Ticket.State.CODED,
+            Ticket.State.TESTED,
+            Ticket.State.REVIEWED,
+            Ticket.State.SHIPPED,
+            Ticket.State.IN_REVIEW,
+        ]
+        for idx, start_state in enumerate(pre_merged):
+            ticket = Ticket.objects.create(overlay="t3-teatree", state=start_state)
+            clear = _clear(ticket, pr_id=2000 + idx)
+            outcome = _run(clear, _GhStub())
+            ticket.refresh_from_db()
+            assert ticket.state == Ticket.State.MERGED, f"PR merged but {start_state} did not advance to MERGED"
+            assert outcome.ticket_state == Ticket.State.MERGED
+
     def test_merge_response_non_json_falls_back_to_expected_head(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)

@@ -330,12 +330,18 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     user_token_ref = cfg.get("user_token_ref", "")
     user_token = read_pass(user_token_ref) if user_token_ref else ""
     user_id = cfg.get("slack_user_id", "")
+    # Setup-time provisioned IM channel id (#1342). When set, threads into
+    # ``SlackBotBackend`` so the per-overlay bot's ``open_dm`` short-circuits
+    # the live ``conversations.open`` for the configured user, routing DMs
+    # through this bot's IM instead of failing ``channel_not_found``.
+    dm_channel_id = cfg.get("slack_dm_channel_id", "")
     if bot_token:
         return SlackBotBackend(
             bot_token=bot_token,
             app_token=app_token or "",
             user_token=user_token,
             user_id=user_id,
+            dm_channel_id=dm_channel_id,
         )
     return None
 

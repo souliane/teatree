@@ -107,9 +107,6 @@ class ShipExecutor(RunnerBase):
     def run(self) -> RunnerResult:
         ticket = self.ticket
         extra = cast("TicketExtra", ticket.extra or {})
-        existing_urls = list(extra.get("pr_urls") or [])
-        if existing_urls:
-            return RunnerResult(ok=True, detail=existing_urls[-1])
 
         worktree = resolve_ship_worktree(ticket, extra)
         if worktree is None:
@@ -121,6 +118,18 @@ class ShipExecutor(RunnerBase):
 
         repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
         branch = worktree.branch
+
+        # #1263: short-circuit only when THIS branch already has a PR.
+        # The legacy truthiness check fired on any prior ``pr_urls`` entry,
+        # so on a reused-ticket multi-workstream flow a stale URL from an
+        # earlier workstream silently advanced the FSM without pushing or
+        # opening a PR for the current branch. ``pr_url_by_branch`` is the
+        # per-branch index; fall back to ``pr_urls[-1]`` only when no
+        # ``ship_invoking_branch`` hint is recorded (single-PR async-worker
+        # path with no multi-workstream context).
+        recorded_url = self._recorded_url_for_branch(extra, branch)
+        if recorded_url:
+            return RunnerResult(ok=True, detail=recorded_url)
 
         # #776: a ticket can span multiple PRs (one branch per workstream).
         # Refuse to re-open a PR for a branch already merged into base —
@@ -168,7 +177,7 @@ class ShipExecutor(RunnerBase):
                 ok=False,
                 detail=(f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(pr.keys())!r})"),
             )
-        self._record_pr_url(ticket, extra, url)
+        self._record_pr_url(ticket, extra, url, branch)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)
         return RunnerResult(ok=True, detail=url)
 
@@ -222,6 +231,29 @@ class ShipExecutor(RunnerBase):
             ticket.merge_extra(pop_keys=["ship_invoking_branch"])
 
     @staticmethod
+    def _recorded_url_for_branch(extra: "TicketExtra", branch: str) -> str:
+        """The PR URL recorded for ``branch``, or ``""`` if none.
+
+        #1263: short-circuit only when the *current* branch already has a
+        PR. ``pr_url_by_branch`` is the per-branch index populated by
+        ``_record_pr_url`` on each successful ship; it tells us reliably
+        whether the invoking branch's PR exists. The legacy single-PR
+        fallback (``pr_urls[-1]`` when no ``ship_invoking_branch`` hint
+        is set) preserves async-worker idempotency for tickets that
+        pre-date the per-branch index.
+        """
+        by_branch = extra.get("pr_url_by_branch")
+        if isinstance(by_branch, Mapping):
+            recorded = by_branch.get(branch)
+            if isinstance(recorded, str) and recorded:
+                return recorded
+        invoking = str(extra.get("ship_invoking_branch") or "")
+        if invoking:
+            return ""
+        legacy_urls = list(extra.get("pr_urls") or [])
+        return legacy_urls[-1] if legacy_urls else ""
+
+    @staticmethod
     def _build_pr_spec(
         ticket: "Ticket",
         host: "CodeHostBackend",
@@ -249,10 +281,22 @@ class ShipExecutor(RunnerBase):
         )
 
     @staticmethod
-    def _record_pr_url(ticket: "Ticket", extra: "TicketExtra", url: str) -> None:
+    def _record_pr_url(ticket: "Ticket", extra: "TicketExtra", url: str, branch: str) -> None:
         urls = list(extra.get("pr_urls") or [])
         if url and url not in urls:
             urls.append(url)
+        # #1263: also index by branch so a later workstream on the same
+        # ticket can tell whether its own PR exists, without relying on
+        # the truthiness of the shared ``pr_urls`` list.
+        by_branch_raw = extra.get("pr_url_by_branch")
+        by_branch: dict[str, str] = (
+            {str(k): str(v) for k, v in by_branch_raw.items()} if isinstance(by_branch_raw, Mapping) else {}
+        )
+        if url and branch:
+            by_branch[branch] = url
         # #800 N3: canonical locked RMW — a concurrent visual_qa /
         # reviewed_sha writer no longer clobbers pr_urls.
-        ticket.merge_extra(set_keys={"pr_urls": urls}, pop_keys=["pr_title_override", "ship_invoking_branch"])
+        ticket.merge_extra(
+            set_keys={"pr_urls": urls, "pr_url_by_branch": by_branch},
+            pop_keys=["pr_title_override", "ship_invoking_branch"],
+        )

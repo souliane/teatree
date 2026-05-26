@@ -9,12 +9,21 @@ the agent's next ``additionalContext`` block — so a Slack DM reaches the
 agent as if the user had typed it in Claude Code chat (BLUEPRINT §17.1
 invariant 2 / §5.6).
 
-The Slack backend's ``fetch_dms`` already filters out bot-authored
-messages (`SlackBotBackend.fetch_dms` matches ``user`` and ``bot_id``
-against the resolved bot id); the scanner trusts that contract and adds
-only idempotent persistence. Duplicate ``ts`` values across polls are
-swallowed by ``PendingChatInjection.record``'s ``unique(overlay, ts)``
-constraint, so over-polling is safe.
+The scanner applies the bot's own self-filter at the write side via
+:func:`teatree.loop.scanners.slack_self_filter.filter_self_messages` so
+rows that came from the bot's own outbound DMs never reach the DB. Both
+downstream consumers — the reactive Slack-answer cycle and the
+``UserPromptSubmit`` injection handler — read from
+:class:`PendingChatInjection`, so filtering at the scanner is the lowest
+common helper: a bot-authored message is dropped exactly once, before
+persistence, and both consumers inherit the filter for free (#1346).
+
+Fail-closed: when the bot's own identity cannot be resolved (network
+down at startup, ``auth.test`` returning ``ok:false``, no bot token
+configured), :func:`filter_self_messages` returns ``None`` and the
+scanner refuses to enqueue any row that turn — better silent for one
+tick than spam-spawning ``t3:answerer`` sub-agents against the bot's
+own traffic.
 
 This scanner does NOT post anything back to Slack — recording is its only
 job. The reactive replies (the :eyes: receipt, an ack reaction, a
@@ -30,11 +39,12 @@ independent of both, so a row can be drained, loop-replied, and
 agent-answered without a double reply (#1014).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.slack_self_filter import OwnSlackIdentity, filter_self_messages, resolve_own_identity
 from teatree.types import RawAPIDict
 
 
@@ -65,14 +75,34 @@ class SlackDmInboundScanner:
     *overlay* tags rows so a multi-overlay deployment can drain per
     overlay; v1 single-overlay use sets ``overlay=""``. The scanner is
     safe to over-poll because the row is keyed on ``(overlay, ts)``.
+
+    ``_cached_identity`` memoises the bot's own Slack identity probed
+    once via :func:`resolve_own_identity`; a successful resolve is
+    cached for the scanner's lifetime so the hot path costs zero Slack
+    API calls beyond the first scan. An unresolved identity is NOT
+    cached so a transient failure that later recovers is re-probed.
     """
 
     backend: MessagingBackend
     overlay: str = ""
     name: str = "slack_dm_inbound"
+    _cached_identity: OwnSlackIdentity | None = field(default=None, init=False, repr=False)
+
+    def _identity(self) -> OwnSlackIdentity | None:
+        if self._cached_identity is not None:
+            return self._cached_identity
+        identity = resolve_own_identity(self.backend)
+        if identity is not None:
+            self._cached_identity = identity
+        return identity
 
     def scan(self) -> list[ScanSignal]:
-        dms = self.backend.fetch_dms()
+        raw = self.backend.fetch_dms()
+        dms = filter_self_messages(raw, self._identity())
+        if dms is None:
+            # Identity unknown — fail closed for this tick rather than
+            # enqueue rows that may include the bot's own outbound DMs.
+            return []
         signals: list[ScanSignal] = []
         for event in dms:
             ts = _event_ts(event)

@@ -43,6 +43,7 @@ from teatree.loop.scanners import (
     ReviewNagScanner,
     Scanner,
     ScanningNewsScanner,
+    SelfUpdateScanner,
     SlackBroadcastsScanner,
     SlackDmInboundScanner,
     SlackMentionsScanner,
@@ -369,6 +370,100 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
 _CANONICAL_CORE_OVERLAY = "t3-teatree"
 
 
+def _collect_self_update_repos() -> list[tuple[str, Path]]:
+    """Enumerate editable clones the self-update scanner should fast-forward (#1249).
+
+    Returns ``(label, repo_path)`` pairs for the editable-installed
+    teatree core clone plus every overlay clone discovered via
+    :func:`teatree.config.discover_overlays`. The label is the human-
+    friendly tag the scanner persists in :class:`SelfUpdateMarker`;
+    ``"teatree"`` for core, the overlay's registered name for overlays.
+
+    Targets stay in lockstep with what ``t3 update`` would touch: the
+    teatree core clone first, then each overlay's ``project_path``
+    resolved to its git toplevel. A repo wins exactly once even when
+    two paths resolve to the same toplevel.
+    """
+    repos: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    core = _resolve_t3_repo()
+    if core is not None:
+        repos.append(("teatree", core))
+        seen.add(core)
+
+    for entry in discover_overlays():
+        if entry.project_path is None:
+            continue
+        toplevel = _git_toplevel(entry.project_path.expanduser())
+        if toplevel is None or toplevel in seen:
+            continue
+        seen.add(toplevel)
+        repos.append((entry.name, toplevel))
+    return repos
+
+
+def _resolve_t3_repo() -> Path | None:
+    """Resolve the editable teatree clone path from the ``T3_REPO`` env var.
+
+    Returns ``None`` when the env var is unset, points at a missing
+    directory, or points at a directory that does not look like a
+    teatree clone (no ``pyproject.toml`` + ``.git``). Worktrees still
+    qualify — ``.git`` may be a file pointing at the main clone's
+    object store, which is the same shape ``t3 update`` handles.
+    """
+    env_path = os.environ.get("T3_REPO", "")
+    if not env_path:
+        return None
+    candidate = Path(env_path).expanduser()
+    if not (candidate / "pyproject.toml").is_file():
+        return None
+    git_entry = candidate / ".git"
+    if not (git_entry.is_dir() or git_entry.is_file()):
+        return None
+    return candidate.resolve()
+
+
+def _git_toplevel(path: Path) -> Path | None:
+    """Return the git work-tree root containing *path*, or ``None`` if not a repo."""
+    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
+
+    if not path.is_dir():
+        return None
+    result = run_allowed_to_fail(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=path,
+        expected_codes=None,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def _self_update_scanner() -> SelfUpdateScanner | None:
+    """Build the global self-update scanner from teatree-core config (#1249).
+
+    Returns ``None`` when ``self_update_disabled = true`` (the escape
+    hatch) OR when there are no editable clones to walk (a non-editable
+    install with no registered overlay project paths — nothing to pull).
+    Otherwise builds a single global :class:`SelfUpdateScanner` whose
+    cadence honours the ``self_update_cadence_hours`` setting (default
+    1 hour). The scanner is wired as a global job (``overlay=""``)
+    because it concerns the editable installs themselves, not any one
+    overlay's tracked work.
+    """
+    settings = load_config().user
+    if settings.self_update_disabled:
+        return None
+    repos = _collect_self_update_repos()
+    if not repos:
+        return None
+    return SelfUpdateScanner(
+        repos=tuple(repos),
+        cadence_hours=settings.self_update_cadence_hours,
+    )
+
+
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
@@ -664,6 +759,14 @@ def build_default_jobs(
     news_scanner = _scanning_news_scanner()
     if news_scanner is not None:
         jobs.append(_ScannerJob(scanner=news_scanner, overlay=""))
+    # #1249 Self-update scanner — fast-forwards the editable teatree
+    # core clone + every registered overlay clone to ``origin/<default>``
+    # once the cadence has elapsed. Wired as a global job because it
+    # concerns the editable installs themselves, not any one overlay's
+    # tracked work.
+    self_update_scanner = _self_update_scanner()
+    if self_update_scanner is not None:
+        jobs.append(_ScannerJob(scanner=self_update_scanner, overlay=""))
 
     if backends:
         all_backends = tuple(backends)

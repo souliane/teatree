@@ -289,10 +289,23 @@ class TestPostReaction:
         with patch("teatree.cli.slack_listen.httpx.post", return_value=self._response(payload=payload)):
             assert post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes") is True
 
-    def test_missing_scope_is_failure(self) -> None:
+    def test_missing_scope_raises(self) -> None:
+        """#1281: ``missing_scope`` raises :class:`SlackReactionError`.
+
+        Pre-#1281 the helper returned ``False`` and a caller could
+        silently substitute a ``chat.postMessage(text=":emoji:")`` thread
+        reply. The BINDING memory ``feedback_react_not_emoji_thread_comment``
+        forbids that fallback. Raising loudly forecloses the swallow.
+        """
+        from teatree.backends.slack_react_errors import SlackReactionError  # noqa: PLC0415
+
         payload = {"ok": False, "error": "missing_scope"}
-        with patch("teatree.cli.slack_listen.httpx.post", return_value=self._response(payload=payload)):
-            assert post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes") is False
+        with (
+            patch("teatree.cli.slack_listen.httpx.post", return_value=self._response(payload=payload)),
+            pytest.raises(SlackReactionError) as exc_info,
+        ):
+            post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes")
+        assert exc_info.value.error_code == "missing_scope"
 
     def test_transport_error_is_failure(self) -> None:
         with patch("teatree.cli.slack_listen.httpx.post", side_effect=httpx.ConnectError("nope")):
