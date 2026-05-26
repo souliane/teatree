@@ -26,6 +26,17 @@ dispatches a reviewer task scoped to the open subset.
 broadcast scanner needs is "is there work left for the reviewer?" Once the
 last open MR closes, a later scan flips the row to ``all_merged`` and
 re-reacts ``:white_check_mark:``.
+
+Sticky manual flips (#1320)
+---------------------------
+
+``manually_classified`` is the operator-applied override that survives
+rescans. The auto-derived ``_classify()`` only inspects MR state + approval;
+other skip signals (my_notes on the MR, non-self ``:eyes:`` / ``:white_check_mark:``
+reactions, author=me, upvotes) are not encoded in that decision and would
+silently revert any direct ``classification='all_merged'`` write on the next
+``t3 loop tick``. :meth:`mark_manually_classified` pins the verdict and the
+flag; :meth:`record` no-ops on sticky rows so the operator's flip is durable.
 """
 
 from dataclasses import dataclass
@@ -74,6 +85,8 @@ class ScannedBroadcast(models.Model):
     reviewer_task_id = models.CharField(max_length=64, blank=True, default="")
     observed_at = models.DateTimeField(default=timezone.now)
     reclassified_at = models.DateTimeField(null=True, blank=True)
+    manually_classified = models.BooleanField(default=False)
+    manually_classified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "teatree_scanned_broadcast"
@@ -111,6 +124,11 @@ class ScannedBroadcast(models.Model):
         )
         if created:
             return row
+        if row.manually_classified:
+            # #1320: an operator-applied skip-signal (my_notes, non-self reaction,
+            # author=me, upvotes) is durable. The scanner's auto-derived verdict
+            # does not override a row marked manual — only an explicit reset does.
+            return None
         if row.classification == observation.classification:
             return None
         row.classification = observation.classification
@@ -119,6 +137,33 @@ class ScannedBroadcast(models.Model):
         row.reviewer_task_id = ""
         row.save(update_fields=["classification", "mr_urls", "reclassified_at", "reviewer_task_id"])
         return row
+
+    def mark_manually_classified(self, classification: "ScannedBroadcast.Classification | str") -> bool:
+        """Pin *classification* on this row and mark it sticky against rescans (#1320).
+
+        Operators (or sub-agents) call this when a broadcast is socially
+        "done" — my_notes, non-self reactions claiming the MR, author=me,
+        upvotes — even though the auto-derived classifier would still emit
+        ``pending``. The flag survives subsequent ``record`` calls so the
+        next ``t3 loop tick`` does not revert the verdict. Idempotent:
+        re-marking with the same classification is a no-op and returns
+        ``False``.
+        """
+        value = classification.value if isinstance(classification, self.Classification) else str(classification)
+        if self.manually_classified and self.classification == value:
+            return False
+        updated = (
+            type(self)
+            .objects.filter(pk=self.pk)
+            .update(
+                classification=value,
+                manually_classified=True,
+                manually_classified_at=timezone.now(),
+            )
+        )
+        if updated:
+            self.refresh_from_db(fields=["classification", "manually_classified", "manually_classified_at"])
+        return bool(updated)
 
     def attach_reviewer_task(self, task_id: str) -> bool:
         """Persist the dispatched reviewer-task id on this broadcast row.
