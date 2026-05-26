@@ -20,6 +20,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
 │ ci              CI pipeline helpers.                                         │
+│ codex           Auto-dispatch /codex:review surfaces.                        │
 │ review          Code review helpers.                                         │
 │ review-request  Batch review requests.                                       │
 │ eval            Behavioral eval harness.                                     │
@@ -386,6 +387,49 @@ Usage: t3 ci quality-check [OPTIONS] [BRANCH]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 codex`
+
+```
+Usage: t3 codex [OPTIONS] COMMAND [ARGS]...
+
+ Auto-dispatch /codex:review surfaces.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ review  Emit a codex-review dispatch envelope for *pr_url* at *head_sha*.    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 codex review`
+
+```
+Usage: t3 codex review [OPTIONS] PR_URL
+
+ Emit a codex-review dispatch envelope for *pr_url* at *head_sha*.
+
+ Records a :class:`CodexReviewMarker` so the loop scanner won't
+ re-dispatch the same SHA. Prints a JSON envelope the runtime can
+ use to spawn the codex agent.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  PR URL, e.g. https://github.com/owner/repo/pull/123   │
+│                        [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --head-sha                 TEXT  Current head SHA of the PR. [required]   │
+│    --path                     TEXT  Changed file path (repeatable) — used to │
+│                                     pick standard vs adversarial variant.    │
+│    --overlay                  TEXT  Overlay name to tag the marker with.     │
+│    --force                          Re-dispatch even when a marker exists    │
+│                                     for this SHA.                            │
+│    --json        --no-json          Emit machine-readable JSON envelope.     │
+│                                     [default: json]                          │
+│    --help                           Show this message and exit.              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
