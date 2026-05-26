@@ -260,6 +260,28 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
         run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
+def managepy_core(*args: str, overlay_name: str = "") -> None:
+    """Run a teatree-CORE management command via ``python -m teatree``.
+
+    Use this for commands that live in ``teatree.core.management.commands`` —
+    ``followup``, ``review_request_check``, ``review_request_post``, etc.
+    These exist on teatree core, not on overlay-owned ``manage.py`` projects
+    (an overlay clone may run against its own settings module that has no
+    such commands). Routing them through :func:`managepy` would crash when
+    invoked from such a clone, because :func:`managepy` prefers the overlay's
+    ``manage.py`` whenever the resolved project path has one (#1312).
+
+    When *overlay_name* is provided, ``T3_OVERLAY_NAME`` is set in the subprocess
+    environment so that ``get_overlay()`` can resolve the correct overlay even
+    when multiple overlays are installed.
+    """
+    env = _base_env()
+    if overlay_name:
+        env["T3_OVERLAY_NAME"] = overlay_name
+    env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+
+
 class OverlayAppBuilder:
     """Build a Typer sub-app for a single installed overlay."""
 
