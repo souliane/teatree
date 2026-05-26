@@ -595,3 +595,119 @@ class OverlayCredentialResolutionTests(TestCase):
             side_effect=RuntimeError("network failed at construction"),
         ):
             assert gitlab_api_for_overlay("") is None
+
+    def test_overlay_gitlab_credentials_returns_blank_when_loader_import_fails(self) -> None:
+        """``overlay_loader`` import failure → ``("", "")`` graceful fallback."""
+        import builtins  # noqa: PLC0415
+
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import _overlay_gitlab_credentials  # noqa: PLC0415
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name == "teatree.core.overlay_loader":
+                msg = "synthetic import block"
+                raise ImportError(msg)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_blocked):
+            assert _overlay_gitlab_credentials("x") == ("", "")
+
+    def test_overlay_gitlab_credentials_from_toml_blank_when_config_import_fails(self) -> None:
+        """``teatree.config`` import failure inside the TOML helper → blank pair."""
+        import builtins  # noqa: PLC0415
+
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
+            _overlay_gitlab_credentials_from_toml,
+        )
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name == "teatree.config":
+                msg = "config blocked"
+                raise ImportError(msg)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_blocked):
+            assert _overlay_gitlab_credentials_from_toml("x") == ("", "")
+
+    def test_github_token_from_toml_overlay_blank_when_imports_fail(self) -> None:
+        """Import failure inside the TOML GitHub token helper → empty string."""
+        import builtins  # noqa: PLC0415
+
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
+            _github_token_from_toml_overlay,
+        )
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name == "teatree.config":
+                msg = "config blocked"
+                raise ImportError(msg)
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=_blocked):
+            assert _github_token_from_toml_overlay("x") == ""
+
+    def test_gitlab_approve_verifier_returns_none_when_current_username_raises(self) -> None:
+        """``api.current_username()`` raising → ``None`` from the factory."""
+        from teatree.loop.scanners.outbound_audit_overlay_verifiers import (  # noqa: PLC0415
+            gitlab_approve_verifier_for_overlay,
+        )
+
+        fake_api = MagicMock()
+        fake_api.current_username.side_effect = RuntimeError("token expired")
+        with patch(
+            "teatree.loop.scanners.outbound_audit._gitlab_api_for_overlay",
+            return_value=fake_api,
+        ):
+            assert gitlab_approve_verifier_for_overlay("any") is None
+
+
+class DefaultVerifierForClaimGitlabApproveBranchTests(TestCase):
+    """The ``gitlab_approve`` branch of ``_default_verifier_for_claim``."""
+
+    def test_gitlab_approve_kind_dispatches_to_overlay_factory(self) -> None:
+        """A claim with ``kind="gitlab_approve"`` routes through the approve factory."""
+        from teatree.loop.scanners.outbound_audit import _default_verifier_for_claim  # noqa: PLC0415
+
+        claim = MagicMock()
+        claim.kind = "gitlab_approve"
+        claim.extra = {"overlay": "client-A"}
+
+        sentinel: object = object()
+        with patch(
+            "teatree.loop.scanners.outbound_audit._gitlab_approve_verifier_for_overlay",
+            return_value=sentinel,
+        ) as factory:
+            result = _default_verifier_for_claim(claim)
+
+        assert result is sentinel
+        factory.assert_called_once_with("client-A")
+
+
+class ResolveGithubTokenSecretsImportFailureTests(TestCase):
+    """``_resolve_github_token`` graceful handling when secrets import fails."""
+
+    def test_returns_blank_when_secrets_module_unimportable(self) -> None:
+        """No env token + ``teatree.utils.secrets`` unimportable → empty string."""
+        import builtins  # noqa: PLC0415
+        import os  # noqa: PLC0415
+
+        from teatree.loop.scanners.outbound_audit import _resolve_github_token  # noqa: PLC0415
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name == "teatree.utils.secrets":
+                msg = "secrets blocked"
+                raise ImportError(msg)
+            return real_import(name, *args, **kwargs)
+
+        with (
+            patch.dict(os.environ, {"GH_TOKEN": "", "GITHUB_TOKEN": ""}, clear=False),
+            patch("builtins.__import__", side_effect=_blocked),
+        ):
+            assert _resolve_github_token() == ""
