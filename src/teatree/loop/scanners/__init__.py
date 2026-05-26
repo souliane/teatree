@@ -27,6 +27,7 @@ from teatree.loop.scanners.pr_sweep import (
     PrSweepScanner,
     SlackMergeNotifier,
 )
+from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
@@ -62,6 +63,7 @@ __all__ = [
     "OutboundAuditScanner",
     "PendingTasksScanner",
     "PrSweepScanner",
+    "ProvisionSmokeScanner",
     "RedCardScanner",
     "ReviewNagScanner",
     "ReviewerPrsScanner",
