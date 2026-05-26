@@ -195,6 +195,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
+    "self_update_disabled": bool,
+    "self_update_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -347,6 +349,14 @@ class UserSettings:
     scanning_news_disabled: bool = False
     scanning_news_skill: str = "scanning-news"
     scanning_news_cadence_hours: int = 24
+    # #1249 Auto t3-update scanner — fast-forwards the editable teatree
+    # clone + every registered overlay clone to ``origin/<default>`` once
+    # the cadence has elapsed. Hourly default keeps the orchestrator
+    # current without spamming the upstream remote on every tick. Set
+    # ``self_update_disabled = true`` in ``[teatree]`` (or per-overlay)
+    # as the escape hatch.
+    self_update_disabled: bool = False
+    self_update_cadence_hours: int = 1
 
 
 @dataclass
@@ -406,6 +416,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        self_update_disabled=bool(teatree.get("self_update_disabled", False)),
+        self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
