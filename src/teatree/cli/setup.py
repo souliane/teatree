@@ -13,6 +13,7 @@ import typer
 
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
+from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
@@ -520,6 +521,23 @@ def run(
 
     if not skip_plugin:
         _install_claude_plugin(repo)
+
+    # Per-overlay Slack-bot IM provisioning (#1342) — open
+    # ``conversations.open`` once for every Slack-bot overlay that has no
+    # ``slack_dm_channel_id`` cached yet, then persist the resulting channel
+    # id back to ``~/.teatree.toml``. Without this step a freshly-registered
+    # per-overlay bot has no IM with the user, ``messaging_from_overlay``
+    # returns a backend that hits ``channel_not_found`` on first DM, and
+    # the post silently falls back through whichever bot already had an IM
+    # open — conflating per-overlay attribution.
+    #
+    # Re-derive the path from ``Path.home()`` (rather than importing the
+    # frozen ``CONFIG_PATH``) so tests that ``monkeypatch.setattr("pathlib.Path.home", ...)``
+    # see the redirected location and never reach the real filesystem.
+    provision_all_overlay_dm_channels(
+        config_path=Path.home() / ".teatree.toml",
+        echo=typer.echo,
+    )
 
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see

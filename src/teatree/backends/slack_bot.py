@@ -111,6 +111,7 @@ class SlackBotBackend:
         app_token: str = "",
         user_token: str = "",
         user_id: str = "",
+        dm_channel_id: str = "",
     ) -> None:
         # Runtime token-prefix validation — codex #1282 item 5, see
         # ``slack_token_validation``. The capture-time regex in
@@ -125,6 +126,16 @@ class SlackBotBackend:
         self._app_token = app_token
         self._user_token = user_token
         self._user_id = user_id
+        # Pre-provisioned IM channel id (#1342). When a per-overlay bot is
+        # registered through ``t3 setup``, the setup-time provisioner calls
+        # ``conversations.open`` once and persists the resulting channel id
+        # in ``~/.teatree.toml`` under ``[overlays.<name>] slack_dm_channel_id``.
+        # Threading it here short-circuits every subsequent ``open_dm(user_id)``
+        # for the configured user so DMs route through this bot's IM rather
+        # than failing ``channel_not_found`` (which previously caused silent
+        # fallback through whichever bot already had an IM with the user —
+        # the per-overlay attribution leak the issue reports).
+        self._dm_channel_id = dm_channel_id
         self._cached_bot_id: str | None = None
         # Per-channel Slack-Connect membership, resolved once via
         # ``conversations.info`` then reused by the token-selection policy.
@@ -148,6 +159,11 @@ class SlackBotBackend:
     @property
     def user_token(self) -> str:
         return self._user_token
+
+    @property
+    def dm_channel_id(self) -> str:
+        """Cached IM channel id for ``user_id``, or ``""`` when unprovisioned (#1342)."""
+        return self._dm_channel_id
 
     def resolve_channel_token(self, channel: str) -> str:
         """The token an outbound post to *channel* would use (#1084).
@@ -491,7 +507,19 @@ class SlackBotBackend:
         )
 
     def open_dm(self, user_id: str) -> str:
-        """Open a direct-message channel with *user_id* and return its channel id."""
+        """Open a direct-message channel with *user_id* and return its channel id.
+
+        Short-circuits on a setup-time provisioned channel id (#1342). When
+        ``user_id`` matches the configured ``user_id`` and a cached
+        ``dm_channel_id`` is set, return it directly without a Slack call —
+        the per-overlay bot's IM was already opened during ``t3 setup`` and
+        persisted in ``~/.teatree.toml`` under ``[overlays.<name>]
+        slack_dm_channel_id``. Falls back to a live ``conversations.open``
+        for any other user id, and for the configured user when no cache
+        was provisioned (legacy behaviour).
+        """
+        if user_id and user_id == self._user_id and self._dm_channel_id:
+            return self._dm_channel_id
         data = self._post("conversations.open", {"users": user_id})
         if not data.get("ok"):
             return ""
