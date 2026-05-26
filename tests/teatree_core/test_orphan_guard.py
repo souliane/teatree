@@ -1,11 +1,13 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.cleanup import BranchClassification, BranchCommit
 from teatree.core.models import Ticket, Worktree
 from teatree.core.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
+from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_classify = patch("teatree.core.orphan_guard.classify_branch_commits")
 _patch_tree_match = patch("teatree.core.orphan_guard._branch_tree_matches_squash")
@@ -188,3 +190,57 @@ class TestFindOrphansInWorkspace(TestCase):
 
         assert len(orphans) == 1
         assert mock_classify.call_count == 1
+
+
+class TestClassifyBranchRespectsRepoDefaultBranch:
+    """Real-git integration: ``classify_branch`` must use the repo's actual default branch.
+
+    ``classify_branch_commits`` defaults to ``target="origin/main"``; on a repo
+    whose default branch is ``master`` (or anything else), one-commit-ahead-of-
+    master was misclassified as SYNCED because the comparison was against the
+    non-existent ``origin/main``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_repo_with_master_default(self, tmp_path: Path) -> None:
+        self.origin = tmp_path / "origin.git"
+        _run_git("init", "-q", "--bare", "-b", "master", str(self.origin), cwd=tmp_path)
+
+        self.clone = tmp_path / "clone"
+        _run_git("clone", "-q", str(self.origin), str(self.clone), cwd=tmp_path)
+        _run_git("config", "user.email", "t@t", cwd=self.clone)
+        _run_git("config", "user.name", "t", cwd=self.clone)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial on master", cwd=self.clone)
+        _run_git("push", "-q", "origin", "master", cwd=self.clone)
+        _run_git("checkout", "-q", "-b", "feature-branch", cwd=self.clone)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat: new thing on feature", cwd=self.clone)
+
+    def test_one_commit_ahead_of_master_is_not_classified_as_synced(self) -> None:
+        report = classify_branch(str(self.clone), "feature-branch")
+        assert report.status is not BranchStatus.SYNCED, (
+            "Branch with one unpushed commit on top of origin/master must not "
+            "be classified as SYNCED (origin/main was hardcoded)"
+        )
+        assert report.ahead_count == 1
+        assert report.is_orphan
+
+    def test_falls_back_to_origin_main_when_default_branch_undetectable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Fallback path — ``git.default_branch`` raises, classifier still returns a report.
+
+        When the repo has no ``origin/HEAD`` and no known fallback name on the
+        remote, ``classify_branch`` must still return a valid report rather
+        than crashing — falls back to ``origin/main``.
+        """
+        from teatree.core import orphan_guard as og  # noqa: PLC0415
+
+        msg = "could not detect default branch"
+
+        def _raise(repo: str) -> str:
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(og.git, "default_branch", _raise)
+        report = classify_branch(str(self.clone), "feature-branch")
+        assert isinstance(report, BranchReport)
