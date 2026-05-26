@@ -367,6 +367,22 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
+    def get_dslr_tenant_for_variant(self, variant: str) -> str:
+        """Return the DSLR snapshot tenant name for *variant*.
+
+        Overlays whose DB-import strategy uses DSLR translate the
+        ``Ticket.variant`` string into the tenant suffix that appears in
+        DSLR snapshot names (e.g. an overlay may prefix the variant with
+        ``development-`` so the ``client-a`` variant becomes the tenant
+        ``development-client-a``). The default returns the variant
+        verbatim, which is correct for overlays that don't prefix the
+        tenant.
+
+        Used by ``workspace clean-all`` to compute the in-use tenant set
+        from active worktrees so the DSLR pruner can skip them (#1306).
+        """
+        return variant
+
     def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input, not poor design.
         self,
         worktree: "Worktree",

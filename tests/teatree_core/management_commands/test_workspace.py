@@ -905,6 +905,51 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_passes_in_use_tenants_from_active_worktrees(self) -> None:
+        """clean-all collects DSLR tenants from CREATED worktrees and skips them (#1306).
+
+        A worktree in ``CREATED`` state is mid-provision — its DB has not
+        yet been imported and it depends on the tenant's DSLR snapshot
+        remaining intact. Pre-fix clean-all pruned unconditionally and
+        destroyed snapshots that an in-flight worktree was about to
+        restore from. The fix collects active variants from CREATED
+        worktrees and passes them to ``prune_dslr_snapshots`` via the
+        new ``in_use_tenants`` kwarg.
+        """
+        captured: dict[str, object] = {}
+
+        def fake_prune(**kw: object) -> list[str]:
+            captured.update(kw)
+            return []
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch("teatree.utils.django_db.prune_dslr_snapshots", side_effect=fake_prune),
+        ):
+            ticket = Ticket.objects.create(
+                overlay="test", issue_url="https://example.com/issues/1306", variant="tenant-a"
+            )
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="ac-1306",
+                state=Worktree.State.CREATED,
+                extra={},
+            )
+            call_command("workspace", "clean-all")
+
+        # Default overlay returns the variant verbatim; the in-use tenant set
+        # carries the active variant string so the pruner skips it.
+        assert captured.get("in_use_tenants") == {"tenant-a"}
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

@@ -23,6 +23,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     prune_branches,
     resolve_unsynced_worktree,
 )
+from teatree.core.management.commands._workspace_dslr import dslr_tenants_in_use, prune_dslr_snapshots_skipping
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket import format_intake_summary
 from teatree.core.orphan_guard import find_orphans_in_workspace
@@ -450,8 +451,7 @@ class Command(TyperCommand):
                     self.stdout.write(f"  {repo} commits ({count}):\n    " + "\n    ".join(log.splitlines()))
 
                 if count > 1:
-                    if not message:
-                        message = log.splitlines()[0] if log else f"Squash {count} commits"
+                    message = message or (log.splitlines()[0] if log else f"Squash {count} commits")
                     git.soft_reset(repo_dir, base)
                     git.commit(repo_dir, message)
                     results.append(f"{repo}: squashed {count} commits")
@@ -569,6 +569,7 @@ class Command(TyperCommand):
         workspace = _workspace_dir()
         cleaned: list[str] = []
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
+        in_use = dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
                 cleaned.append(str(cleanup_worktree(wt)))
@@ -588,11 +589,7 @@ class Command(TyperCommand):
             cleaned.extend(prune_branches(str(repo_root)))
             cleaned.extend(drop_orphaned_stashes(str(repo_root)))
 
-        # Prune old DSLR snapshots
-        from teatree.utils.django_db import prune_dslr_snapshots  # noqa: PLC0415
-
-        pruned = prune_dslr_snapshots(keep=keep_dslr)
-        cleaned.extend(f"Pruned DSLR snapshot: {name}" for name in pruned)
+        cleaned.extend(prune_dslr_snapshots_skipping(keep=keep_dslr, in_use_tenants=in_use))
 
         _raise_on_cleanup_failures(cleaned, self.stdout.write, self.stderr.write)
         return cleaned

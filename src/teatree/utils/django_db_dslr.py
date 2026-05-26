@@ -108,10 +108,24 @@ def parse_dslr_snapshots(stdout: str) -> dict[str, list[str]]:
     return by_tenant
 
 
-def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_repo_path: str = "") -> list[str]:
+def prune_dslr_snapshots(
+    *,
+    keep: int = 1,
+    snapshot_tool: str = "dslr",
+    main_repo_path: str = "",
+    in_use_tenants: set[str] | None = None,
+) -> list[str]:
     """Delete old DSLR snapshots, keeping the *keep* newest per tenant.
 
     Returns a list of deleted snapshot names.
+
+    *in_use_tenants* (souliane/teatree#1306): tenants whose snapshots
+    must NOT be touched because an in-flight worktree depends on them.
+    A worktree mid-provision (state CREATED, DB not yet imported) needs
+    the snapshot to remain restorable until provisioning completes;
+    pruning unconditionally and globally destroys that with no way to
+    recover short of a fresh remote dump. Pass the set of tenant strings
+    (matching the DSLR snapshot suffix after the date) to skip entirely.
     """
     dslr_cmd = find_dslr_cmd(snapshot_tool, main_repo_path)
     if not dslr_cmd:
@@ -119,9 +133,13 @@ def prune_dslr_snapshots(*, keep: int = 1, snapshot_tool: str = "dslr", main_rep
     result = run_allowed_to_fail([*dslr_cmd, "list"], expected_codes=None)
     if result.returncode != 0:
         return []
+    in_use = in_use_tenants or set()
     by_tenant = parse_dslr_snapshots(result.stdout)
     deleted: list[str] = []
     for tenant, names in by_tenant.items():
+        if tenant in in_use:
+            sys.stdout.write(f"  Skipping DSLR prune for in-use tenant: {tenant}\n")
+            continue
         for old in names[keep:]:
             sys.stdout.write(f"  Pruning DSLR snapshot: {old} (tenant={tenant})\n")
             run_allowed_to_fail([*dslr_cmd, "delete", "-y", old], expected_codes=None)
