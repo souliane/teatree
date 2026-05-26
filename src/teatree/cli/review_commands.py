@@ -7,9 +7,14 @@ thin shims around :class:`teatree.cli.review.ReviewService`; the
 service class owns the gating + ledger logic.
 """
 
+from typing import TYPE_CHECKING
+
 import typer
 
 from teatree.cli.review import ReviewService, review_app
+
+if TYPE_CHECKING:
+    from teatree.cli.review_evidence_gate import FindingEvidence
 
 
 def _require_token() -> ReviewService:
@@ -31,8 +36,32 @@ def _require_token() -> ReviewService:
     return ReviewService(token)
 
 
+_EVIDENCE_JSON_HELP = (
+    "Structured-evidence record (JSON) for a 'missing/wrong/broken' "
+    "finding (souliane/teatree#1280). Required when the note asserts something "
+    "is missing/wrong/broken/stale or does not exist. JSON keys: "
+    "master_check_paths (list[str]), ticket_dep_refs (list[str]), "
+    "helper_indirection_paths (list[str]), recent_merge_sweep_query (str), "
+    "confidence ('verified'|'speculative'). Schema: "
+    "teatree.cli.review_evidence_gate.FindingEvidence."
+)
+
+
+def _parse_evidence(raw: str) -> "FindingEvidence | None":
+    """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
+    from teatree.cli.review_evidence_gate import FindingEvidence  # noqa: PLC0415
+
+    if not raw:
+        return None
+    try:
+        return FindingEvidence.from_json(raw)
+    except ValueError as e:
+        typer.echo(str(e))
+        raise typer.Exit(code=1) from e
+
+
 @review_app.command(name="post-draft-note")
-def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. The arg list IS the CLI contract, not an internal design smell (same rationale as ticket.clear / db.refresh / pr.create).
+def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
@@ -56,6 +85,7 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
             "(souliane/teatree#72)."
         ),
     ),
+    evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
 ) -> None:
     """Post a draft note on a GitLab MR (inline or general).
 
@@ -80,14 +110,15 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     )
     service = _require_token()
     validate_inline_or_general(file=file, line=line, general=general)
-    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0)
+    evidence = _parse_evidence(evidence_json)
+    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0, evidence=evidence)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
 
 
 @review_app.command(name="post-comment")
-def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207).
+def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public ``review post-comment`` surface (repo/mr/note/file/line/live/evidence-json). ``--live`` is load-bearing — its absence is the safe-by-default draft path (#1207). ``--evidence-json`` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
@@ -104,6 +135,7 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
             "(no flag) creates a DRAFT and DMs the user the link — safe-by-default."
         ),
     ),
+    evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
@@ -115,7 +147,8 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     for the MR (mint via ``t3 review approve-live-post``).
     """
     service = _require_token()
-    msg, code = service.post_comment(repo, mr, note, file=file, line=line, live=live)
+    evidence = _parse_evidence(evidence_json)
+    msg, code = service.post_comment(repo, mr, note, file=file, line=line, live=live, evidence=evidence)
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
