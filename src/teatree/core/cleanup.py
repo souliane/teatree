@@ -405,6 +405,15 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     if Path(wt_path).is_dir() and git.status_porcelain(wt_path):
         logger.warning("%s has uncommitted changes — cleaning anyway (PR merged)", worktree.repo_path)
 
+    # Stop the docker compose project FIRST so containers don't leak when
+    # this path is reached outside the WorktreeTeardownRunner (#1306) —
+    # the auto-merged-ticket teardown, `clean-merged`, `clean-all`, and
+    # sync backends all funnel through here. Idempotent: docker compose
+    # down on a project with no containers is a no-op.
+    from teatree.core.runners.worktree_start import compose_project, docker_compose_down  # noqa: PLC0415
+
+    docker_compose_down(compose_project(worktree))
+
     step_errors: list[str] = []
     for step in overlay.get_cleanup_steps(worktree):
         try:
