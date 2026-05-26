@@ -62,6 +62,21 @@ def _specs_with_fixtures() -> list[tuple[EvalSpec, Path | None, Path | None]]:
     return rows
 
 
+def _specs_with_noop_fixtures() -> list[tuple[EvalSpec, Path]]:
+    """Scenarios that ship a ``_noop`` fixture proving non-vacuity.
+
+    A ``_noop`` fixture captures an agent transcript with no tool calls
+    at all — a positive matcher that is genuinely required (vs. an
+    only-negative vacuous matcher) must report RED against this fixture.
+    """
+    rows: list[tuple[EvalSpec, Path]] = []
+    for spec in discover_specs():
+        noop = FIXTURES / f"{spec.name}_noop.stream.jsonl"
+        if noop.is_file():
+            rows.append((spec, noop))
+    return rows
+
+
 @pytest.mark.parametrize(
     ("spec", "fail_fixture", "pass_fixture"),
     _specs_with_fixtures(),
@@ -99,3 +114,25 @@ class TestScenarioFixtures:
             f"scenario {spec.name!r} went RED against {pass_fixture.name} — "
             "either the fixture violates the rule or the matchers over-fit."
         )
+
+
+@pytest.mark.parametrize(
+    ("spec", "noop_fixture"),
+    _specs_with_noop_fixtures(),
+    ids=lambda v: v.name if isinstance(v, EvalSpec) else (v.name if isinstance(v, Path) else "none"),
+)
+def test_noop_transcript_drives_scenario_red(spec: EvalSpec, noop_fixture: Path, tmp_path: Path) -> None:
+    """A scenario must FAIL against an empty-tool-call transcript.
+
+    Scenarios composed only of negative matchers (``no_tool_call_matching``)
+    are vacuously satisfied by a no-op agent transcript. Adding a positive
+    matcher closes that hole. This test asserts the positive matcher is
+    actually wired up — if it is omitted, the no-op transcript goes
+    silently green and the scenario is toothless.
+    """
+    passed = _run_against_fixture(spec, noop_fixture.read_text(encoding="utf-8"), tmp_path)
+    assert passed is False, (
+        f"scenario {spec.name!r} stayed GREEN against {noop_fixture.name} (no tool calls) — "
+        "the scenario is satisfied by a no-op agent and therefore vacuous. "
+        "Add a positive matcher that requires the expected tool call."
+    )

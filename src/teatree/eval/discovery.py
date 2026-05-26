@@ -58,19 +58,20 @@ def _discover_overlay_specs() -> list[EvalSpec]:
             continue
         try:
             scenarios_dir = getter()
+            if scenarios_dir is None:
+                continue
+            scenarios_path = Path(scenarios_dir)
+            if not scenarios_path.is_dir():
+                continue
+            yaml_paths = sorted(scenarios_path.glob("*.yaml"))
         except Exception:
             logger.debug(
-                "eval-discovery: overlay %r get_eval_scenarios_dir() raised",
+                "eval-discovery: overlay %r get_eval_scenarios_dir() failed",
                 name,
                 exc_info=True,
             )
             continue
-        if scenarios_dir is None:
-            continue
-        scenarios_path = Path(scenarios_dir)
-        if not scenarios_path.is_dir():
-            continue
-        for yaml_path in sorted(scenarios_path.glob("*.yaml")):
+        for yaml_path in yaml_paths:
             try:
                 specs.extend(load_eval_yaml(yaml_path))
             except Exception:

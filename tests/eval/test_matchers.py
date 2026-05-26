@@ -1,6 +1,6 @@
 import pytest
 
-from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains
+from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
 from teatree.eval.models import EvalRun, EvalToolCall
 
 
@@ -38,6 +38,29 @@ class TestAssertToolCallContains:
         with pytest.raises(AssertionError) as exc_info:
             assert_tool_call_contains(run, "Bash", "command", "x")
         assert "no tool calls captured" in str(exc_info.value)
+
+
+class TestAssertToolCallMatching:
+    def test_passes_when_pattern_present(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": "git worktree add ../wt-42 -b 42-fix main"}, turn=1)])
+        assert_tool_call_matching(run, "Bash", "command", r"git worktree add.*-b\s+[0-9]")
+
+    def test_raises_when_pattern_absent(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": "ls"}, turn=1)])
+        with pytest.raises(AssertionError) as exc_info:
+            assert_tool_call_matching(run, "Bash", "command", r"git worktree add")
+        assert "git worktree add" in str(exc_info.value)
+
+    def test_raises_when_no_tool_calls_captured(self) -> None:
+        run = _run([])
+        with pytest.raises(AssertionError) as exc_info:
+            assert_tool_call_matching(run, "Bash", "command", r"x")
+        assert "no tool calls captured" in str(exc_info.value)
+
+    def test_raises_when_only_other_tool_matches(self) -> None:
+        run = _run([EvalToolCall(name="Read", input={"command": "git worktree add"}, turn=1)])
+        with pytest.raises(AssertionError):
+            assert_tool_call_matching(run, "Bash", "command", r"git worktree add")
 
 
 class TestAssertNoToolCallMatching:

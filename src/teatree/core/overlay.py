@@ -500,6 +500,15 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         tenant-specific identities live in the relevant overlay and the
         core directory keeps only the cross-overlay invariants.
 
+        The returned path must be overlay-package-relative (e.g.
+        ``Path(__file__).parent / "eval" / "scenarios"``). The harness
+        trusts the overlay author — it walks whatever directory is
+        returned for ``*.yaml`` files without filesystem-scope checks —
+        so a misconfigured overlay pointing at ``/`` or ``~/.ssh`` would
+        cause the harness to try to load every YAML it finds there. This
+        matches the trust model of every other ``get_*`` extension hook
+        on ``OverlayBase``.
+
         Default returns ``None`` — overlays that do not ship scenarios
         opt out without action.
         """
