@@ -30,6 +30,7 @@ from teatree.cli.review_approval import identity_has_reviewed, identity_in_appro
 from teatree.cli.review_audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
+from teatree.cli.review_evidence_gate import FindingEvidence, check_finding_evidence
 from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
 from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.cli.review_shape_gate import check_review_shape
@@ -39,8 +40,13 @@ from teatree.utils.run import run_allowed_to_fail
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
 # after extraction to :mod:`teatree.cli.review_diff` /
 # :mod:`teatree.cli.review_on_behalf` for module-health LOC reasons.
+# ``resolve_inline_position`` is re-exported here so the existing
+# ``monkeypatch.setattr(review_mod, "resolve_inline_position", …)`` test
+# pattern keeps working after the impl bodies moved to
+# :mod:`teatree.cli.review_post_impl` (#1280).
 _find_added_line = find_added_line
 _on_behalf_gate_active = on_behalf_gate_active
+_resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
@@ -93,44 +99,21 @@ class ReviewService:
             return os.environ.get("GITLAB_URL", "https://gitlab.com/api/v4")
 
     def _post_draft_note_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
-        """The pre-gate-passed body of :meth:`post_draft_note` (see docstring)."""
-        api = self._get_api()
-        encoded = repo.replace("/", "%2F")
-        endpoint = f"projects/{encoded}/merge_requests/{mr}/draft_notes"
+        """The pre-gate-passed body of :meth:`post_draft_note` (extracted to :mod:`review_post_impl`)."""
+        from teatree.cli.review_post_impl import post_draft_note_impl  # noqa: PLC0415
 
-        if not (file and line):
-            result = api.post_json(endpoint, {"note": note})
-            if not result:
-                return "Failed to post draft note", 1
-            note_id = dict(result).get("id")
-            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes")
-            return f"OK draft_note_id={note_id}", 0
+        return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
-        position, error = resolve_inline_position(api, encoded, mr, file, line)
-        if position is None:
-            return error, 1
-
-        result = api.post_json(endpoint, {"note": note, "position": position})
-        if not result:
-            return "Failed to post draft note", 1
-        result_dict = dict(result) if isinstance(result, dict) else {}
-        note_id = result_dict.get("id")
-        line_code = result_dict.get("line_code")
-        if line_code:
-            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="draft_notes", file=file, line=line)
-            return f"OK draft_note_id={note_id}\nline_code={line_code}", 0
-
-        if isinstance(note_id, int):
-            api.delete(f"{endpoint}/{note_id}")
-        return (
-            f"GitLab refused to anchor the draft on {file}:{line} (line_code came back null). "
-            "This usually means the file diff is collapsed because of its size; the draft_notes "
-            "API cannot anchor on collapsed-diff files. Workaround: "
-            f"`t3 review post-comment {repo} {mr} ... --file {file} --line {line}` "
-            "(creates an immediate non-draft inline discussion)."
-        ), 1
-
-    def post_draft_note(self, repo: str, mr: int, note: str, *, file: str = "", line: int = 0) -> tuple[str, int]:
+    def post_draft_note(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-draft-note`` CLI flags; ``evidence`` is the #1280 structured-evidence record and must stay a kwarg on this surface.
+        self,
+        repo: str,
+        mr: int,
+        note: str,
+        *,
+        file: str = "",
+        line: int = 0,
+        evidence: FindingEvidence | None = None,
+    ) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code).
 
         For inline notes (file+line), validates that the target line is an added
@@ -139,95 +122,52 @@ class ReviewService:
         (anchor refused, usually because the file diff is collapsed) are
         deleted and surfaced as an error so they cannot be published silently.
 
-        Gated by ``on_behalf_post_mode`` (#960). Under
-        :attr:`~teatree.config.OnBehalfPostMode.IMMEDIATE` posts directly.
-        Under :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` (the
-        new default) posts the draft autonomously and DMs the user with
-        the publish/delete commands — drafts are colleague-invisible and
-        revocable, so the post proceeds without a recorded approval.
-        Under :attr:`~teatree.config.OnBehalfPostMode.ASK` the call is
-        refused without any GitLab side effect when no recorded
-        :class:`OnBehalfApproval` matches
-        ``(<repo>!<mr>, "post_draft_note")``.
+        Gated by the pre-publish chain in :meth:`_run_pre_publish_gates` —
+        ``on_behalf_post_mode`` (#960), colleague-MR shape (#1114), TODO-anchor
+        (#1186), and structured-evidence (#1280, requires ``evidence`` on
+        ``missing/wrong/broken`` finding bodies).
         """
-        blocked = check_on_behalf(repo, mr, "post_draft_note")
+        refusal = self._run_pre_publish_gates(
+            repo=repo, mr=mr, note=note, file=file, line=line, action="post_draft_note", evidence=evidence
+        )
+        if refusal:
+            return refusal, 1
+        return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+
+    def _run_pre_publish_gates(  # noqa: PLR0913
+        self,
+        *,
+        repo: str,
+        mr: int,
+        note: str,
+        file: str,
+        line: int,
+        action: str,
+        evidence: FindingEvidence | None,
+    ) -> str:
+        """Run on-behalf (#960) → shape (#1114) → TODO-anchor (#1186) → evidence (#1280); first refusal or ``""``."""
+        blocked = check_on_behalf(repo, mr, action)
         if blocked:
-            return blocked, 1
+            return blocked
         encoded = repo.replace("/", "%2F")
         api = self._get_api()
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line))
         if shape_error:
-            return shape_error, 1
+            return shape_error
         todo_error = check_todo_anchor(
             api=api, encoded_repo=encoded, mr=mr, body=note, anchor=InlineAnchor(file=file, line=line)
         )
         if todo_error:
-            return todo_error, 1
-        return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+            return todo_error
+        return check_finding_evidence(body=note, evidence=evidence)
 
-    def _post_comment_impl(
-        self,
-        repo: str,
-        mr: int,
-        note: str,
-        *,
-        file: str,
-        line: int,
-    ) -> tuple[str, int]:
-        """The pre-gate-passed body of :meth:`post_comment` (see docstring)."""
-        api = self._get_api()
-        encoded = repo.replace("/", "%2F")
+    def _post_comment_impl(self, repo: str, mr: int, note: str, *, file: str, line: int) -> tuple[str, int]:
+        """The pre-gate-passed body of :meth:`post_comment` (extracted to :mod:`review_post_impl`)."""
+        from teatree.cli.review_post_impl import post_comment_impl  # noqa: PLC0415
 
-        if not (file and line):
-            result = api.post_json(f"projects/{encoded}/merge_requests/{mr}/notes", {"body": note})
-            if not result:
-                return "Failed to post comment", 1
-            result_dict = dict(result) if isinstance(result, dict) else {}
-            note_id = result_dict.get("id")
-            record_note_claim(self._resolve_base_url, repo, mr, note_id, endpoint="notes")
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="post_comment",
-                    summary=f"posted comment note_id={note_id} on {repo}!{mr}",
-                    note_web_url=str(result_dict.get("web_url", "")),
-                ),
-            )
-            return f"OK note_id={note_id}", 0
+        return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
-        position, error = resolve_inline_position(api, encoded, mr, file, line)
-        if position is None:
-            return error, 1
-
-        result = api.post_json(
-            f"projects/{encoded}/merge_requests/{mr}/discussions",
-            {"body": note, "position": position},
-        )
-        if not result:
-            return "Failed to post comment", 1
-        result_dict = dict(result) if isinstance(result, dict) else {}
-        discussion_id = result_dict.get("id")
-        notes = result_dict.get("notes")
-        first_note = notes[0] if isinstance(notes, list) and notes else {}
-        note_type = first_note.get("type") if isinstance(first_note, dict) else None
-        if note_type != "DiffNote":
-            return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
-        record_note_claim(self._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
-        notify_review_after_receipt(
-            self._resolve_base_url,
-            repo,
-            mr,
-            review_action=ReviewAfterReceipt(
-                action="post_comment",
-                summary=f"posted inline comment discussion_id={discussion_id} on {repo}!{mr}",
-                note_web_url=str(first_note.get("web_url", "")) if isinstance(first_note, dict) else "",
-            ),
-        )
-        return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
-
-    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` is the load-bearing #1207 default-flip and must stay a kwarg on this surface.
+    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` (#1207 default-flip) and ``evidence`` (#1280) must stay kwargs on this surface.
         self,
         repo: str,
         mr: int,
@@ -236,32 +176,30 @@ class ReviewService:
         file: str = "",
         line: int = 0,
         live: bool = False,
+        evidence: FindingEvidence | None = None,
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
         Default path routes through :meth:`post_draft_note` (draft-form on-behalf carve-out).
         ``--live`` requires both a ``post_comment`` on-behalf approval and a LivePostApproval.
+
+        Also gated by the structured-evidence pre-publish gate (#1280):
+        when ``note`` matches an "X is missing/wrong/broken" pattern, the
+        ``evidence`` kwarg must carry a verified
+        :class:`~teatree.cli.review_evidence_gate.FindingEvidence` record.
         """
         from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
         if not live:
-            msg, code = self.post_draft_note(repo, mr, note, file=file, line=line)
+            msg, code = self.post_draft_note(repo, mr, note, file=file, line=line, evidence=evidence)
             if code == 0:
                 notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
             return msg, code
-        blocked = check_on_behalf(repo, mr, "post_comment")
-        if blocked:
-            return blocked, 1
-        encoded = repo.replace("/", "%2F")
-        api = self._get_api()
-        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line))
-        if shape_error:
-            return shape_error, 1
-        todo_error = check_todo_anchor(
-            api=api, encoded_repo=encoded, mr=mr, body=note, anchor=InlineAnchor(file=file, line=line)
+        refusal = self._run_pre_publish_gates(
+            repo=repo, mr=mr, note=note, file=file, line=line, action="post_comment", evidence=evidence
         )
-        if todo_error:
-            return todo_error, 1
+        if refusal:
+            return refusal, 1
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1

@@ -448,18 +448,31 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file           TEXT     File path for inline comment — REQUIRED unless     │
-│                           --general is passed.                               │
-│ --line           INTEGER  Line number in the new file (must be an added      │
-│                           line) — REQUIRED unless --general is passed.       │
-│ --general                 Post a general (MR-wide) note instead of an inline │
-│                           one. Mutually exclusive with --file/--line.        │
-│                           Without this flag, --file AND --line are both      │
-│                           required — omitting either is refused upfront so a │
-│                           missed-flag invocation can no longer silently      │
-│                           degrade an intended-inline draft into a general    │
-│                           note (souliane/teatree#72).                        │
-│ --help                    Show this message and exit.                        │
+│ --file                 TEXT     File path for inline comment — REQUIRED      │
+│                                 unless --general is passed.                  │
+│ --line                 INTEGER  Line number in the new file (must be an      │
+│                                 added line) — REQUIRED unless --general is   │
+│                                 passed.                                      │
+│ --general                       Post a general (MR-wide) note instead of an  │
+│                                 inline one. Mutually exclusive with          │
+│                                 --file/--line. Without this flag, --file AND │
+│                                 --line are both required — omitting either   │
+│                                 is refused upfront so a missed-flag          │
+│                                 invocation can no longer silently degrade an │
+│                                 intended-inline draft into a general note    │
+│                                 (souliane/teatree#72).                       │
+│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
+│                                 'missing/wrong/broken' finding               │
+│                                 (souliane/teatree#1280). Required when the   │
+│                                 note asserts something is                    │
+│                                 missing/wrong/broken/stale or does not       │
+│                                 exist. JSON keys: master_check_paths (list), │
+│                                 ticket_dep_refs (list),                      │
+│                                 helper_indirection_paths (list),             │
+│                                 recent_merge_sweep_query (str), confidence   │
+│                                 ('verified'|'speculative'). Schema:          │
+│                                 teatree.cli.review_evidence_gate.FindingEvi… │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -485,16 +498,30 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file        TEXT     File path for inline comment (omit for general note)  │
-│ --line        INTEGER  Line number in the new file (must be an added line)   │
-│                        [default: 0]                                          │
-│ --live                 Publish a colleague-visible comment directly instead  │
-│                        of creating a draft. Requires a single-use            │
-│                        Slack-recorded approval token minted via `t3 review   │
-│                        approve-live-post <mr-url> --slack-ts <ts>` (#1207).  │
-│                        The default (no flag) creates a DRAFT and DMs the     │
-│                        user the link — safe-by-default.                      │
-│ --help                 Show this message and exit.                           │
+│ --file                 TEXT     File path for inline comment (omit for       │
+│                                 general note)                                │
+│ --line                 INTEGER  Line number in the new file (must be an      │
+│                                 added line)                                  │
+│                                 [default: 0]                                 │
+│ --live                          Publish a colleague-visible comment directly │
+│                                 instead of creating a draft. Requires a      │
+│                                 single-use Slack-recorded approval token     │
+│                                 minted via `t3 review approve-live-post      │
+│                                 <mr-url> --slack-ts <ts>` (#1207). The       │
+│                                 default (no flag) creates a DRAFT and DMs    │
+│                                 the user the link — safe-by-default.         │
+│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
+│                                 'missing/wrong/broken' finding               │
+│                                 (souliane/teatree#1280). Required when the   │
+│                                 note asserts something is                    │
+│                                 missing/wrong/broken/stale or does not       │
+│                                 exist. JSON keys: master_check_paths (list), │
+│                                 ticket_dep_refs (list),                      │
+│                                 helper_indirection_paths (list),             │
+│                                 recent_merge_sweep_query (str), confidence   │
+│                                 ('verified'|'speculative'). Schema:          │
+│                                 teatree.cli.review_evidence_gate.FindingEvi… │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2764,6 +2791,13 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
  ``--target dev|local`` selects the dual-env target and is forwarded to
  whichever runner handles the overlay (see ``external`` for semantics).
 
+ ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo is not
+ DB-linked to the backend worktree (a frequent shape for
+ out-of-tree test repos), name the backend ticket explicitly so
+ frontend discovery, ``COMPOSE_PROJECT_NAME``, and the env cache
+ feeding ``get_e2e_env_extras`` all route at the linked stack.
+ ``0`` means "no link" (default — back-compat).
+
  Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
  explicit ``external`` subcommand to keep this entry point overlay-agnostic.
 
@@ -2772,15 +2806,16 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
 │                               URL) — the #794 keystone.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --test-path                                    TEXT                          │
-│ --at                                           TEXT                          │
-│ --target                                       TEXT                          │
-│ --headed              --no-headed                    [default: no-headed]    │
-│ --update-snapshots    --no-update-snapshots          [default:               │
-│                                                      no-update-snapshots]    │
-│ --docker              --no-docker                    [default: docker]       │
-│ --help                                               Show this message and   │
-│                                                      exit.                   │
+│ --test-path                                   TEXT                           │
+│ --at                                          TEXT                           │
+│ --target                                      TEXT                           │
+│ --headed              --no-headed                      [default: no-headed]  │
+│ --update-snapshots    --no-update-snapsho…             [default:             │
+│                                                        no-update-snapshots]  │
+│ --docker              --no-docker                      [default: docker]     │
+│ --linked-to                                   INTEGER  [default: 0]          │
+│ --help                                                 Show this message and │
+│                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2827,20 +2862,29 @@ Usage: t3 teatree e2e external [OPTIONS]
  Discovers the frontend port from docker-compose (or local process)
  and reads the tenant variant from the env cache.
 
+ ``--linked-to <ticket-pk>`` (#1322): when the e2e cache repo's
+ auto-registered worktree is not DB-linked to the backend stack
+ (``auto:<branch>`` ticket, different ticket, or no worktree row at
+ all), name the backend ticket explicitly. Discovery,
+ ``COMPOSE_PROJECT_NAME``, and the env cache feeding
+ ``get_e2e_env_extras`` all route at the linked stack. ``0`` means
+ "no link" (default — back-compat with the resolved-worktree path).
+
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
  120000"``
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --test-path                                    TEXT                          │
-│ --repo                                         TEXT                          │
-│ --target                                       TEXT                          │
-│ --headed              --no-headed                    [default: no-headed]    │
-│ --update-snapshots    --no-update-snapshots          [default:               │
-│                                                      no-update-snapshots]    │
-│ --playwright-args                              TEXT                          │
-│ --help                                               Show this message and   │
-│                                                      exit.                   │
+│ --test-path                                   TEXT                           │
+│ --repo                                        TEXT                           │
+│ --target                                      TEXT                           │
+│ --headed              --no-headed                      [default: no-headed]  │
+│ --update-snapshots    --no-update-snapsho…             [default:             │
+│                                                        no-update-snapshots]  │
+│ --playwright-args                             TEXT                           │
+│ --linked-to                                   INTEGER  [default: 0]          │
+│ --help                                                 Show this message and │
+│                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
