@@ -1,5 +1,6 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
+import os
 import sys
 
 import typer
@@ -12,9 +13,28 @@ from teatree.eval.runner import ClaudePRunner
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 
 
+def _bootstrap_django() -> None:
+    """Ensure Django is configured before overlay discovery runs.
+
+    The overlay loader (``teatree.core.overlay_loader.get_all_overlays``)
+    imports modules that touch Django models at import time, which raises
+    ``ImproperlyConfigured`` in an unbootstrapped process. ``t3 eval`` is
+    one of the few CLI surfaces that may run ahead of any other DB-touching
+    command, so we bootstrap explicitly here rather than relying on a
+    sibling command having warmed Django for us.
+    """
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    import django  # noqa: PLC0415
+    from django.apps import apps  # noqa: PLC0415
+
+    if not apps.ready:
+        django.setup()
+
+
 @eval_app.command("list")
 def list_scenarios() -> None:
     """List discovered eval scenarios."""
+    _bootstrap_django()
     specs = discover_specs()
     if not specs:
         typer.echo("(no scenarios discovered)")
@@ -34,6 +54,7 @@ def run(
     ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given."""
+    _bootstrap_django()
     specs = discover_specs() if name is None else [_require_spec(name)]
     runner = ClaudePRunner(max_turns_override=max_turns)
     results: list[ScenarioResult] = []

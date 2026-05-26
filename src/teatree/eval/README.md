@@ -69,18 +69,63 @@ Supported matcher operators:
 
 ## Adding a scenario
 
-1. Drop a YAML file under `src/teatree/eval/scenarios/`.
+1. Decide on the surface:
+   - **Core** (`src/teatree/eval/scenarios/`) — cross-overlay invariants.
+     Fixtures use placeholder identities (`widget-user`, `U_USER`,
+     `https://example.com/widget/example/pull/42`).
+   - **Overlay** (`<overlay>/eval/scenarios/`) — scenarios that reference
+     tenant identities, per-workspace channel ids, or overlay-specific
+     banned-jargon lists. The overlay class returns the directory from
+     `OverlayBase.get_eval_scenarios_dir()`.
 2. Pick the smallest `agent_path` that exhibits the behavior (a single
    `SKILL.md`, not a bundle).
 3. Keep prompts hermetic — no real network, no secrets — and keep
    `max_turns` low so a single run costs cents, not dollars.
-4. Run `t3 eval run <name>` locally and confirm the matchers behave on a
-   known-good and a known-bad agent definition.
+4. Ship at least a `<name>_fail.stream.jsonl` fixture under
+   `tests/eval/fixtures/`. Add a `<name>_pass.stream.jsonl` when the
+   behavior shape is binary. The `test_scenarios_anti_vacuous` pytest
+   parametrizes every shipped scenario against its fixtures and asserts
+   the fail fixture goes RED and the pass fixture goes GREEN — a
+   matcher-toothless scenario is caught at test time, not in production.
+5. Run `t3 eval list` to confirm the scenario shows up in both core and
+   overlay surfaces. Run `t3 eval run <name>` to invoke a live
+   `claude -p` session when you want to confirm the prompt fires the
+   intended behavior end-to-end.
 
-## Deferred (later MRs)
+## Overlay-contributed scenarios
 
-- Overlay-contributed scenario discovery (MR 2).
-- Negative-control scenario (MR 3).
-- Final-state matcher (MR 3).
+Overlays register a scenarios directory by overriding
+`OverlayBase.get_eval_scenarios_dir()` to return the absolute path of
+their `eval/scenarios/` directory. `discover_specs()` walks every
+installed overlay's directory after the core catalog. Discovery is
+isolated: a broken overlay (missing dir, malformed YAML, raising hook)
+is logged and skipped rather than failing the catalog.
+
+## Layered enforcement
+
+Behavioral rules fall into two layers:
+
+- **Layer 1 — integration tests.** When a rule is code-enforceable
+  (e.g. "scanner skips MRs the user authored", "Slack reaction path
+  short-circuits on `ticket.role == 'author'`"), pin it with a real
+  pytest test that mocks the boundary (Slack transport, GitLab API)
+  and asserts the side-effect is absent on the violating input. The
+  canonical reference is `tests/teatree_backends/test_slack_reactions.py`
+  (`test_skips_eyes_on_authored_ticket` — landed via PR #1329).
+- **Layer 2 — transcript scenarios** (this directory). For
+  LLM-output-only behaviors where the rule constrains what the agent
+  *says* or *invokes* rather than what a code path *does*
+  (e.g. "agent does not declare 'done' without artifact evidence",
+  "stakeholder messages avoid code jargon"), a YAML+JSONL scenario
+  captures the captured tool-call shape and applies matchers.
+
+Prefer Layer 1 every time it applies — code-level tests run in CI for
+free; eval scenarios require a paid Claude run. Layer 2 is for what
+Layer 1 cannot reach.
+
+## Deferred
+
+- Negative-control scenario.
+- Final-state matcher.
+- prek manual hook integration.
 - The remaining catalog from [teatree#1160](https://github.com/souliane/teatree/issues/1160).
-- prek manual hook integration (MR 2).

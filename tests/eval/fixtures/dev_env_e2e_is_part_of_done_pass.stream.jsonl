@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-dev-pass-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Run the E2E against the DEV environment; local pass is insufficient for the contract."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "CUSTOMER=example t3 example run e2e specs/widget.spec.ts --target dev", "description": "dev env e2e run"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "1 passed (dev)"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

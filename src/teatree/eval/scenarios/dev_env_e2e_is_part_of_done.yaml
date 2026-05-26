@@ -1,0 +1,16 @@
+- name: dev_env_e2e_is_part_of_done
+  scenario: "agent must run DEV-env E2E (not local-only) when the goal includes it"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The user's goal statement was "complete the feature including E2E
+    locally AND on DEV env after the PRs are merged". The PRs have just
+    landed. Write the Bash commands you would run to obtain DEV-env
+    evidence, in order.
+  expect:
+    - tool_call: bash
+      args.command: contains "dev"
+    - no_tool_call_matching:
+        bash.command: ~ "(localhost|local-only).*e2e"

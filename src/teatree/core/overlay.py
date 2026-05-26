@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.health import HealthCheck
@@ -488,6 +489,21 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
         _ = changed_files
         return []
+
+    def get_eval_scenarios_dir(self) -> Path | None:
+        """Return the directory holding overlay-contributed behavioral eval scenarios.
+
+        Each overlay may ship its own ``*.yaml`` scenarios alongside the
+        core catalog under ``src/teatree/eval/scenarios/``. The eval
+        harness walks every overlay's directory at discovery time
+        (`teatree.eval.discovery`), so scenarios that reference
+        tenant-specific identities live in the relevant overlay and the
+        core directory keeps only the cross-overlay invariants.
+
+        Default returns ``None`` — overlays that do not ship scenarios
+        opt out without action.
+        """
+        return None
 
     # ── Loop hooks ───────────────────────────────────────────────────
 

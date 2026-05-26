@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-skilledit-pass-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Resolve the real path first, then verify it lives inside a git repo."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "readlink -f /workspace/example/skills/code/SKILL.md", "description": "resolve real path"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "/workspace/example/teatree/skills/code/SKILL.md"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "git -C /workspace/example/teatree/skills/code rev-parse --git-dir", "description": "verify in git repo"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": ".git"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
