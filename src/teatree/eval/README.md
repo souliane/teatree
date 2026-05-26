@@ -64,6 +64,11 @@ Supported matcher operators:
 
 - `tool_call: <tool>` with `args.<path>: contains "<substring>"` — at
   least one matching tool call must exist.
+- `tool_call: <tool>` with `args.<path>: ~ "<regex>"` — at least one
+  matching tool call must exist (regex variant). Use this as the
+  positive matcher that pairs with a `no_tool_call_matching` line to
+  prevent the scenario from being satisfied vacuously by a no-op
+  transcript.
 - `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` — no matching
   tool call may exist.
 

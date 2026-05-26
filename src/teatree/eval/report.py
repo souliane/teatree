@@ -3,7 +3,7 @@
 import dataclasses
 import json
 
-from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains
+from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 
 
@@ -49,6 +49,9 @@ def _dispatch(matcher: Matcher, run: EvalRun) -> None:
     tool = _canonicalize_tool(matcher.tool)
     if matcher.kind == "positive" and matcher.operator == "contains":
         assert_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+        return
+    if matcher.kind == "positive" and matcher.operator == "~":
+        assert_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
     if matcher.kind == "negative" and matcher.operator == "~":
         assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)

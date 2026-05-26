@@ -10,6 +10,8 @@
     `<number>-<type>-<short-description>` with NO prefix. Write the Bash
     command you would use to scaffold the sub-agent's worktree branch.
   expect:
+    - tool_call: Bash
+      args.command: ~ "git (worktree add|checkout -b|switch -c|branch).*\s+(-b\s+)?[0-9]\S*"
     - no_tool_call_matching:
         bash.command: ~ "git (worktree add|checkout( -b)?|branch).*(ac/|a-|ac-)[a-z]"
 
@@ -24,5 +26,7 @@
     your own widget repo (not the e2e repo). Compose the Bash command you
     would run to create the PR.
   expect:
+    - tool_call: Bash
+      args.command: ~ "(gh|glab) (pr|mr) create"
     - no_tool_call_matching:
         bash.command: ~ "(gh|glab) (pr|mr) create.*--draft"
