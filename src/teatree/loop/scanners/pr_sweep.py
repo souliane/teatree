@@ -10,7 +10,10 @@ Decision ladder per open PR:
 
 1. ``draft: true`` → skip
 2. open ``CHANGES_REQUESTED`` review → skip
-3. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)`` → skip
+3. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
+    → skip (collaborative-overlay default) OR fall through to
+    ``gh pr merge --squash`` (solo-overlay carve-out, #1309 — see
+    ``solo_overlay`` on :class:`PrSweepScanner`)
 4. CI ``test(3.13)`` not green AND red checks include something
     other than ``uv-audit`` → skip
 5. only red check is ``uv-audit`` AND ``main`` is also red on
@@ -165,6 +168,26 @@ class PrSweepScanner:
     *overlay* tags emitted signals so a multi-overlay loop can attribute
     merges to the right overlay (private-overlay PRs run under a
     different code-host token).
+
+    *solo_overlay* opts the scanner into the dogfood-overlay bypass (#1309).
+    A solo overlay is a single-author repo whose user has explicitly opted
+    in via ``mode = "auto"`` + ``require_human_approval_to_merge = false``.
+    On such an overlay the maker / reviewer is the same human identity, and
+    :meth:`MergeClear.issue` mechanically refuses a self-attested CLEAR
+    (``is_non_reviewer_role`` guard) — no orchestrator can ever issue a
+    CLEAR for that PR. Without this bypass the sweep silently no-ops every
+    green+mergeable+clean PR on the dogfood overlay with reason
+    ``no_clear_for_head``, which is exactly the failure mode #1309
+    reports. When ``solo_overlay=True`` AND no actionable CLEAR exists for
+    the head, the scanner runs the same precondition checks (draft,
+    changes-requested, CI verdict) and — only if every gate is green —
+    falls back to a direct ``gh pr merge --squash`` via
+    :meth:`PrApiClient.merge_pr_squash`. The CLEAR contract is left
+    untouched for every overlay that did NOT explicitly opt in; this is
+    the conservative side of the two options on the table because it
+    keeps the cold-reviewer attestation as the default and only relaxes
+    it for the overlay configuration the user has already declared
+    "trust the agent end-to-end".
     """
 
     repos: tuple[str, ...]
@@ -172,6 +195,7 @@ class PrSweepScanner:
     keystone: MergeKeystone
     notifier: MergeNotifier
     overlay: str = ""
+    solo_overlay: bool = False
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -208,6 +232,8 @@ class PrSweepScanner:
             return _skip(pr, reason=skip_reason)
         clear = _find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
         if clear is None:
+            if self.solo_overlay:
+                return self._evaluate_solo_overlay(pr)
             return _skip(pr, reason="no_clear_for_head")
         check_verdict = _classify_checks(pr.checks)
         if check_verdict in {"failed", "pending"}:
@@ -216,6 +242,40 @@ class PrSweepScanner:
         if fallback and not self._main_uv_audit_red(slug=pr.slug):
             return _skip(pr, reason="uv_audit_red_but_clean_on_main")
         return self._merge(pr=pr, clear=clear, fallback=fallback)
+
+    def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
+        """Merge a green+clean PR on a solo overlay without a CLEAR (#1309).
+
+        Runs the same CI verdict gate as the CLEAR path so a red or pending
+        check still blocks. A green-only-but-uv-audit-red PR escalates the
+        same way (``main`` must also be red on uv-audit). Once the CI gate
+        passes, calls :meth:`PrApiClient.merge_pr_squash` directly — the
+        keystone path can't be used here because it requires a CLEAR row.
+        """
+        check_verdict = _classify_checks(pr.checks)
+        if check_verdict in {"failed", "pending"}:
+            return _skip(pr, reason="ci_red" if check_verdict == "failed" else "ci_pending")
+        fallback = check_verdict == "green_with_uv_audit_red"
+        if fallback and not self._main_uv_audit_red(slug=pr.slug):
+            return _skip(pr, reason="uv_audit_red_but_clean_on_main")
+        ok, merged_sha = self.api.merge_pr_squash(slug=pr.slug, pr_id=pr.number)
+        if not ok:
+            return MergeAttempt(
+                slug=pr.slug,
+                pr_id=pr.number,
+                decision="blocked",
+                reason="solo_overlay_gh_fallback_failed",
+            )
+        self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+        reason = "solo_overlay_no_clear_uv_audit" if fallback else "solo_overlay_no_clear"
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="merged",
+            merged=True,
+            merged_sha=merged_sha,
+            reason=reason,
+        )
 
     def _main_uv_audit_red(self, *, slug: str) -> bool:
         try:
