@@ -117,7 +117,7 @@ class TestItemFormatDescriptionAlwaysShown:
                 "ticket_number": "500",
                 "state": "started",
                 "issue_url": "https://example.com/tracker/500",
-                "title": "add new client-term-redacted guard",
+                "title": "add new scanner guard",
             },
         )
         zones = zones_for([action], colorize=False)
@@ -125,7 +125,7 @@ class TestItemFormatDescriptionAlwaysShown:
         render(zones, target=target, colorize=False)
         body = target.read_text()
         assert "#500" in body
-        assert "(add new client-term-redacted guard)" in body
+        assert "(add new scanner guard)" in body
 
 
 class TestNo404Links:
@@ -205,20 +205,28 @@ class TestDedupAcrossOverlays:
 
 
 class TestLiveLoopsAnchor:
-    """Refinement 5: one anchor line per live loop."""
+    """Refinement 5 (revised): one consolidated summary line for live loops.
 
-    def test_one_anchor_line_per_live_lease(self) -> None:
+    The original refinement returned one line per live loop. The user
+    asked instead for a single first-line summary with time-to-next-tick;
+    this rewrites the tests to lock the consolidated shape.
+    """
+
+    def test_returns_one_consolidated_summary_line(self) -> None:
         leases = [
             ("loop-tick", "sessA"),
             ("loop-slack-answer", "sessB"),
             ("loop-owner", "sessA"),
         ]
-        with patch("teatree.loop.statusline._live_loop_names", return_value=leases):
+        with (
+            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
+            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
+            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+        ):
             lines = live_loops_anchor()
-        assert len(lines) == 3
-        assert any("loop:tick" in line for line in lines)
-        assert any("loop:slack-answer" in line for line in lines)
-        assert any("loop:owner" in line for line in lines)
+        assert len(lines) == 1
+        assert lines[0].startswith("loop · ")
+        assert "3 loops live" in lines[0]
 
     def test_no_live_leases_returns_empty(self) -> None:
         # Empty list → no lines (no statusline noise when no loop is live).
@@ -233,16 +241,23 @@ class TestLiveLoopsAnchor:
 
 
 class TestZonesForIntegratesLoopsAnchor:
-    """``zones_for`` surfaces live loops in the anchors zone."""
+    """``zones_for`` surfaces the consolidated loop summary in the anchors zone."""
 
-    def test_zones_for_appends_live_loops(self, tmp_path: Path) -> None:
-        with patch(
-            "teatree.loop.statusline._live_loop_names",
-            return_value=[("loop-tick", "sessA"), ("loop-owner", "sessA")],
+    def test_zones_for_appends_consolidated_loop_line(self, tmp_path: Path) -> None:
+        with (
+            patch(
+                "teatree.loop.statusline._live_loop_names",
+                return_value=[("loop-tick", "sessA"), ("loop-owner", "sessA")],
+            ),
+            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
+            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
         ):
             zones: StatuslineZones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "loop:tick" in body
-        assert "loop:owner" in body
+        assert "loop · " in body
+        assert "2 loops live" in body
+        # Per-loop dump tokens absent.
+        assert "loop:tick" not in body
+        assert "loop:owner" not in body

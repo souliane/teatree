@@ -2,6 +2,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -207,6 +208,37 @@ def _live_loop_names() -> list[tuple[str, str]]:
     return [(row.name, row.session_id) for row in rows]
 
 
+def _loop_tick_acquired_at() -> datetime | None:
+    """Return the most recent ``acquired_at`` for the ``loop-tick`` lease.
+
+    Isolated as a thin DB-read seam (mirrors :func:`_live_loop_names`) so
+    :func:`live_loops_anchor` stays pure and tests stub this directly
+    rather than constructing LoopLease fixtures with timestamps.
+
+    Returns ``None`` when no row exists yet (no tick has ever fired) so
+    the renderer can render a ``last tick: never`` fallback instead of
+    pretending to know.
+    """
+    from django.apps import apps  # noqa: PLC0415
+
+    lease_model = apps.get_model("core", "LoopLease")
+    row = lease_model.objects.filter(name="loop-tick").values("acquired_at").first()
+    if row is None:
+        return None
+    return row.get("acquired_at")
+
+
+def _cadence_seconds() -> int:
+    """Return the resolved loop cadence in seconds.
+
+    Isolated as a seam so tests can stub it without spinning up the
+    full config layer; production reads :func:`teatree.config.cadence_seconds`.
+    """
+    from teatree.config import cadence_seconds  # noqa: PLC0415
+
+    return cadence_seconds()
+
+
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
     """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
@@ -233,22 +265,34 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
 
 
 def live_loops_anchor() -> list[str]:
-    """Return one dim anchor line per live :class:`LoopLease` row (#1163, #1156).
+    """Return one consolidated dim anchor line summarising live loops.
 
-    Five named loops run concurrently (``loop-owner``, ``loop-tick``,
-    ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot``); the
-    statusline anchors zone surfaces each LIVE row as ``loop:<short>
-    [<N tasks>]`` where ``<short>`` strips the ``loop-`` prefix and
-    ``<N tasks>`` is the count of CLAIMED ``Task`` rows for loops that
-    dispatch tasks (``tick``, ``self-improve``). The task-count chunk is
-    suppressed when zero or not applicable, so a quiet loop renders as a
-    single ``loop:tick`` token.
+    Single line, prepended at the top of the statusline so the user's
+    "where is the loop right now?" question is answered with one glance:
 
-    The DB read is delegated to :func:`_live_loop_names` so tests can stub
-    a single seam instead of building LoopLease fixtures.
+        ``loop · next tick in 3m12s · 5 loops live``
 
-    Fails open: any DB / import error degrades to ``[]`` so a broken
-    LoopLease read cannot blank the statusline.
+    Components, in order:
+
+    *   ``next tick in <duration>`` when the ``loop-tick`` lease has fired
+        at least once and a cadence is configured; the next-tick instant
+        is ``acquired_at + cadence_seconds``. ``next tick due`` when the
+        deadline has already passed (the next ``t3 loop tick`` is overdue
+        but no tick has acquired the lease yet, e.g. cron paused).
+        ``last tick: never`` when no row exists yet (no tick has fired).
+    *   ``<N loops live>`` — the headline number, deduped per-loop.
+        Replaces the prior one-line-per-loop dump (``loop:tick``,
+        ``loop:owner``, …) which the user explicitly did not want at the
+        top of the statusline.
+
+    Returns ``[]`` when no loop is live — silences the line entirely on
+    a quiet machine. Fails open: any DB / import error degrades to ``[]``
+    so a broken LoopLease read cannot blank the statusline.
+
+    Backward-compat: the return signature is unchanged (``list[str]``)
+    so :func:`_populate_live_loops_anchor` keeps appending whatever lines
+    we return; today it's at most one line, tomorrow it can grow without
+    a caller-side change.
     """
     try:
         live_names = _live_loop_names()
@@ -256,47 +300,56 @@ def live_loops_anchor() -> list[str]:
         return []
     if not live_names:
         return []
-    try:
-        task_counts = _claimed_task_counts_by_session(name_session_pairs=live_names)
-    except Exception:  # noqa: BLE001
-        task_counts = {}
-    lines: list[str] = []
-    for name, session_id in live_names:
-        short = name.removeprefix("loop-")
-        line = f"loop:{short}"
-        count = task_counts.get(session_id, 0) if name in _LOOPS_WITH_TASKS else 0
-        if count:
-            line += f" [{count} tasks]"
-        lines.append(line)
-    return lines
+
+    parts: list[str] = ["loop"]
+    parts.extend(_next_tick_parts())
+    parts.append(f"{len(live_names)} loops live")
+    return [" · ".join(parts)]
 
 
-# Loops that dispatch ``Task`` rows. Only these surface a ``[N tasks]``
-# chunk on the anchor line — the others don't own a queue.
-_LOOPS_WITH_TASKS: frozenset[str] = frozenset({"loop-tick", "loop-self-improve"})
+def _next_tick_parts() -> list[str]:
+    """Return the ``next tick in <duration>`` / fallback fragments.
 
-
-def _claimed_task_counts_by_session(*, name_session_pairs: list[tuple[str, str]]) -> dict[str, int]:
-    """Return ``{session_id: claimed_task_count}`` for sessions owning a relevant loop.
-
-    The dispatching loops (``loop-tick``, ``loop-self-improve``) share a
-    global pool of CLAIMED tasks — Sessions are scoped to tickets, not to
-    the loop that dispatched them. The count surfaced on the anchor line
-    is therefore the same global CLAIMED count for every dispatching
-    loop, computed once. Fails open (``{}``) on import or DB error so a
-    broken Task read doesn't blank the anchor line.
+    Empty list when nothing useful is queryable (no cadence, no tick
+    history). Fails open on every DB / config read — the line drops the
+    fragment rather than refusing to render.
     """
-    relevant_sessions = {session_id for name, session_id in name_session_pairs if name in _LOOPS_WITH_TASKS}
-    if not relevant_sessions:
-        return {}
     try:
-        from django.apps import apps  # noqa: PLC0415
-
-        task_model = apps.get_model("core", "Task")
-        total = task_model.objects.filter(status="claimed").count()
+        acquired_at = _loop_tick_acquired_at()
     except Exception:  # noqa: BLE001
-        return {}
-    return dict.fromkeys(relevant_sessions, total)
+        return []
+    if acquired_at is None:
+        return ["last tick: never"]
+    try:
+        cadence = _cadence_seconds()
+    except Exception:  # noqa: BLE001
+        return []
+    from django.utils import timezone  # noqa: PLC0415
+
+    now = timezone.now()
+    next_tick_at = acquired_at + timedelta(seconds=cadence)
+    delta_seconds = int((next_tick_at - now).total_seconds())
+    if delta_seconds <= 0:
+        return ["next tick due"]
+    return [f"next tick in {_format_duration(delta_seconds)}"]
+
+
+_SECONDS_PER_MINUTE = 60
+_SECONDS_PER_HOUR = 3600
+
+
+def _format_duration(seconds: int) -> str:
+    """Format ``seconds`` as a compact human duration (``3m12s``, ``45s``, ``1h05m``)."""
+    if seconds < _SECONDS_PER_MINUTE:
+        return f"{seconds}s"
+    if seconds < _SECONDS_PER_HOUR:
+        minutes, remainder = divmod(seconds, _SECONDS_PER_MINUTE)
+        if remainder:
+            return f"{minutes}m{remainder:02d}s"
+        return f"{minutes}m"
+    hours, remainder = divmod(seconds, _SECONDS_PER_HOUR)
+    minutes = remainder // _SECONDS_PER_MINUTE
+    return f"{hours}h{minutes:02d}m"
 
 
 def statusline_for_slack(*, path: Path | None = None) -> str:
