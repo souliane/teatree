@@ -290,6 +290,24 @@ def _dedup_active_tickets_across_overlays(
     return out
 
 
+def _drop_stale_already_on_active_line(
+    stale_by_overlay: dict[str, list[_IssueRef]],
+    active_by_overlay: dict[str, list[tuple[str, str, str, str]]],
+) -> dict[str, list[_IssueRef]]:
+    """Drop a stale ref when its ticket number already renders on the active line.
+
+    Every ticket in :data:`teatree.loop.scanners.stale_tickets._STALE_CANDIDATE_STATES`
+    is *also* an active ticket (#1324). Without this filter the renderer
+    shows the same ``#N`` on the dim anchor line AND on the red ``N stale:``
+    row — pure visual duplication.
+    """
+    out: dict[str, list[_IssueRef]] = {}
+    for overlay, refs in stale_by_overlay.items():
+        on_active = {num for num, _, _, _ in active_by_overlay.get(overlay, [])}
+        out[overlay] = [r for r in refs if r.label.lstrip("#") not in on_active]
+    return out
+
+
 def _dedup_classified(c: _ClassifiedActions) -> None:
     """Collapse duplicate refs in every per-overlay bucket.
 
@@ -307,6 +325,10 @@ def _dedup_classified(c: _ClassifiedActions) -> None:
     c.active_tickets = _dedup_active_tickets_across_overlays(c.active_tickets)
     for overlay, refs in list(c.stale_refs.items()):
         c.stale_refs[overlay] = _dedup_in_order(refs)
+    # #1324: drop stale refs whose ticket number already appears on the
+    # active anchor line for the same overlay. Stale is informational
+    # about an active ticket — surface it once.
+    c.stale_refs = _drop_stale_already_on_active_line(c.stale_refs, c.active_tickets)
     for overlay, refs in list(c.ready_refs.items()):
         c.ready_refs[overlay] = _dedup_in_order(refs)
     for overlay, refs in list(c.action_prs.items()):

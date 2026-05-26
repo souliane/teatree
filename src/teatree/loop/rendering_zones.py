@@ -185,8 +185,13 @@ def _render_action_line(
 
     parts: list[str] = _disposition_parts(action_refs, colorize=colorize)
     if action_refs.ready_refs:
+        # #1324: cap the ready: row at _MAX_PER_STATE and append (+N) overflow,
+        # matching the anchor state lines. Without the cap a backlog of
+        # assigned issues spills the entire list onto a single line.
         items: list[str] = []
-        for ref in action_refs.ready_refs:
+        shown_refs = action_refs.ready_refs[:_MAX_PER_STATE]
+        overflow = len(action_refs.ready_refs) - len(shown_refs)
+        for ref in shown_refs:
             number = ref.label.lstrip("#")
             prs = prs_by_ticket.get(number, [])
             items.append(
@@ -199,7 +204,10 @@ def _render_action_line(
                 ),
             )
             consumed_pr_urls.update(p.url for p in prs)
-        parts.append(f"ready: {' '.join(items)}")
+        ready_chunk = " ".join(items)
+        if overflow > 0:
+            ready_chunk += f" (+{overflow})"
+        parts.append(f"ready: {ready_chunk}")
     if action_refs.pr_refs:
         remaining = [r for r in action_refs.pr_refs if r.url not in consumed_pr_urls]
         if remaining:
