@@ -35,11 +35,45 @@ _NOISE_STATES = frozenset(
 )
 _MAX_PER_STATE = 5
 
+# The ``not_started`` backlog gets a tighter cap than active-work states —
+# the user almost never needs to read past the first few items on a 40+
+# deep backlog row, and the prior 5-item dump pushed actively-shipping
+# work off-screen.
+_MAX_NOT_STARTED = 3
+
 # Tickets whose ``issue_url`` matches one of these are treated as PR-backed.
 # A PR-backed ticket that doesn't appear in the live PR set (action_needed
 # or in_flight) is considered stale — its remote MR has likely been merged
 # or closed but the local FSM never advanced.
 _PR_URL_RE = re.compile(r"/(?:merge_requests|pull|pulls)/\d+/?$")
+
+# Anchor-line state-group rendering order. Actively-shipping work comes
+# first so the operator sees their in-flight tickets before the long
+# ``not_started`` backlog. States not listed here render in their
+# original insertion order after the listed ones.
+_STATE_PRIORITY: tuple[str, ...] = (
+    "started",
+    "in_review",
+    "ready",
+    "tested",
+    "scoped",
+    "not_started",
+)
+
+
+def _state_sort_key(state: str) -> tuple[int, str]:
+    """Sort key giving listed states their explicit priority order."""
+    try:
+        return (_STATE_PRIORITY.index(state), state)
+    except ValueError:
+        return (len(_STATE_PRIORITY), state)
+
+
+def _cap_for_state(state: str) -> int:
+    """Per-state item cap. ``not_started`` is tighter than the rest."""
+    if state == "not_started":
+        return _MAX_NOT_STARTED
+    return _MAX_PER_STATE
 
 
 def _link(text: str, url: object, *, colorize: bool) -> str:
@@ -134,12 +168,18 @@ def _render_ticket_line(
     if not by_state:
         return ""
     groups: list[str] = []
-    for state, items in by_state.items():
-        shown = items[:_MAX_PER_STATE]
+    # Priority order: actively-shipping work first (``started``, ``in_review``,
+    # ``ready``) before the long backlog (``not_started``). The user's
+    # eyeballs hit the top of the line first; the backlog has been pushed
+    # the actionable bits off-screen before this reorder.
+    for state in sorted(by_state, key=_state_sort_key):
+        items = by_state[state]
+        cap = _cap_for_state(state)
+        shown = items[:cap]
         overflow = len(items) - len(shown)
         label = " ".join(shown)
         if overflow > 0:
-            label += f" (+{overflow})"
+            label += f" (+{overflow} more)"
         groups.append(f"{state}: {label}")
     return f"{prefix}{' · '.join(groups)}"
 
@@ -185,9 +225,10 @@ def _render_action_line(
 
     parts: list[str] = _disposition_parts(action_refs, colorize=colorize)
     if action_refs.ready_refs:
-        # #1324: cap the ready: row at _MAX_PER_STATE and append (+N) overflow,
-        # matching the anchor state lines. Without the cap a backlog of
-        # assigned issues spills the entire list onto a single line.
+        # Cap the ready: row at _MAX_PER_STATE and append ``(+N more)``
+        # overflow, matching the anchor state lines. Without the cap a
+        # backlog of assigned issues spills the entire list onto a single
+        # line.
         items: list[str] = []
         shown_refs = action_refs.ready_refs[:_MAX_PER_STATE]
         overflow = len(action_refs.ready_refs) - len(shown_refs)
@@ -206,7 +247,7 @@ def _render_action_line(
             consumed_pr_urls.update(p.url for p in prs)
         ready_chunk = " ".join(items)
         if overflow > 0:
-            ready_chunk += f" (+{overflow})"
+            ready_chunk += f" (+{overflow} more)"
         parts.append(f"ready: {ready_chunk}")
     if action_refs.pr_refs:
         remaining = [r for r in action_refs.pr_refs if r.url not in consumed_pr_urls]

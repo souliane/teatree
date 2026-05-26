@@ -90,8 +90,8 @@ class TestReadyOverflowCap:
         n = _MAX_PER_STATE + 3
         actions = [_ready(str(i), url=f"https://example.com/issues/{i}") for i in range(n)]
         blob = _blob(actions)
-        # Five rendered, three folded into (+3).
-        assert "(+3)" in blob
+        # Five rendered, three folded into (+3 more).
+        assert "(+3 more)" in blob
         assert "#0" in blob
         assert f"#{_MAX_PER_STATE - 1}" in blob
         assert f"#{_MAX_PER_STATE}" not in blob  # the first overflowed item
