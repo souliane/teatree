@@ -136,14 +136,19 @@ class OutboundAuditScannerTests(TestCase):
         scanner.scan()
         assert calls == []
 
-    def test_unknown_kind_without_verifier_is_skipped(self) -> None:
+    def test_unknown_kind_without_verifier_emits_audit_skipped(self) -> None:
         _aged_claim(kind=OutboundClaim.Kind.NOTION_EDIT, key="unknown-kind")
 
         # No verifier configured for notion_edit and no production default
-        # registered — scanner skips silently rather than crashing.
+        # registered — scanner emits ``outbound.audit_skipped`` so the
+        # backlog is observable instead of silently growing (#1275).
+        # Never a drift signal: an unverifiable kind is not a missing
+        # artifact.
         scanner = OutboundAuditScanner(verifiers={})
         signals = scanner.scan()
-        assert signals == []
+        assert len(signals) == 1
+        assert signals[0].kind == "outbound.audit_skipped"
+        assert all(s.kind != "outbound.drift" for s in signals)
 
     def test_verifier_exception_does_not_break_tick(self) -> None:
         _aged_claim(kind=OutboundClaim.Kind.SLACK_DM, key="raises")

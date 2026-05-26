@@ -45,7 +45,12 @@ def record_note_claim(
     kind: str = "gitlab_note",
     **extra: str | int | bool,
 ) -> None:
-    """Audit one successful outward review action for the drift verifier."""
+    """Audit one successful outward review action for the drift verifier.
+
+    ``record_claim`` stamps ``extra["overlay"]`` from ``T3_OVERLAY_NAME``
+    so the audit scanner re-reads the artifact through the same overlay's
+    credentials that posted it (#1275).
+    """
     from teatree.outbound_claim import record_claim  # noqa: PLC0415
 
     record_claim(
