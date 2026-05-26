@@ -11,6 +11,9 @@ are asserted as a unit.
 """
 
 import json
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -393,6 +396,116 @@ class TestHookHandlerEndToEnd:
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert "heading-user-ask-verbatim" in out["permissionDecisionReason"]
+
+
+class TestHookHandlerFailOpenWithoutTeatreeImport:
+    """Regression for #1314.
+
+    The hook script is invoked from the user's session shell with no
+    guarantee that ``teatree`` is already importable on ``sys.path``.
+    A failure to import (or any other internal scanner error) must
+    fail open: the handler returns ``False`` (no block, no traceback)
+    so the tool use proceeds unchanged. A crashing PreToolUse hook
+    leaks the traceback to stderr on every Bash invocation and is
+    strictly worse than no scan.
+    """
+
+    def test_handler_returns_false_when_teatree_unimportable(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The test module's own ``from teatree.hooks import quote_scanner``
+        # at line 23 has already cached ``teatree``, ``teatree.hooks``, and
+        # ``teatree.hooks.quote_scanner`` in ``sys.modules``. Patching only
+        # ``sys.modules["teatree"] = None`` is a no-op because the
+        # production handler's ``from teatree.hooks import quote_scanner``
+        # resolves the submodule from cache without re-attempting the
+        # parent lookup. Wipe all three cache entries before re-patching
+        # the parent to ``None`` so the next ``from teatree.hooks import
+        # quote_scanner`` is forced to re-resolve and raises ImportError.
+        for mod in ("teatree.hooks.quote_scanner", "teatree.hooks", "teatree"):
+            monkeypatch.delitem(sys.modules, mod, raising=False)
+        monkeypatch.setitem(sys.modules, "teatree", None)
+        blocked = handle_quote_scanner_pretool(_bash("echo test"))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_handler_returns_false_on_arbitrary_internal_exception(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An internal scanner error (regex compile, ledger I/O,
+        # blocklist parse) must not crash the hook chain either.
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "synthetic"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(quote_scanner, "extract_publish_payload", _boom)
+        blocked = handle_quote_scanner_pretool(_bash('gh pr create --title t --body "foo"'))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+
+    def test_subprocess_invocation_without_teatree_on_path_does_not_traceback(self, tmp_path: Path) -> None:
+        # End-to-end reproducer for #1314: invoke the hook script as a
+        # fresh subprocess with an interpreter that does NOT have
+        # ``teatree`` installed. ``sys.executable`` cannot be used here
+        # because it points at the editable-install ``.venv`` python
+        # whose ``site-packages/teatree.pth`` puts ``teatree`` on
+        # ``sys.path`` at startup regardless of ``PYTHONPATH`` —
+        # stripping ``PYTHONPATH`` would not actually unimport teatree.
+        # ``uv run --isolated --no-project python`` gives us a clean
+        # interpreter with no editable install and no ``.pth`` for the
+        # project; the hook must bootstrap ``sys.path`` from
+        # ``parents[2] / src`` and exit cleanly without leaking a
+        # traceback.
+        uv = shutil.which("uv")
+        if uv is None:
+            pytest.skip("uv is not on PATH; no teatree-free interpreter available")
+        hook_script = Path(router.__file__).resolve()
+        payload = json.dumps(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {"command": "echo test"},
+                "session_id": "diag",
+            }
+        )
+        # Confirm the chosen interpreter genuinely lacks teatree before
+        # using it as the reproducer — otherwise the test would silently
+        # pass against the broken pre-fix code.
+        precheck = subprocess.run(
+            [uv, "run", "--isolated", "--no-project", "python", "-c", "import teatree"],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if precheck.returncode == 0:
+            pytest.skip("uv --isolated python still imports teatree; no reproducible env")
+        result = subprocess.run(
+            [
+                uv,
+                "run",
+                "--isolated",
+                "--no-project",
+                "python",
+                str(hook_script),
+                "--event",
+                "PreToolUse",
+            ],
+            input=payload,
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert result.returncode == 0, f"exit={result.returncode}, stderr={result.stderr!r}"
+        assert "Traceback" not in result.stderr
+        assert "ModuleNotFoundError" not in result.stderr
 
 
 class TestRound2BypassClosures:
