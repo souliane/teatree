@@ -126,6 +126,7 @@ class AssignedIssuesScanner:
                         "raw": issue,
                         "labels": labels,
                         "auto_start": self.auto_start,
+                        "overlay": self.overlay_name,
                     },
                 )
             )
