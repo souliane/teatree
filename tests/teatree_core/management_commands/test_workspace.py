@@ -1,6 +1,7 @@
 """Tests for the workspace and worktree management commands."""
 
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,7 +21,7 @@ import teatree.core.runners.provision as provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
-from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
+from teatree.core.management.commands.workspace import _branch_prefix, _build_branch_name, _workspace_dir
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
@@ -60,6 +61,87 @@ class TestBranchPrefix(TestCase):
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
             assert _branch_prefix() == "dev"
+
+
+class TestBuildBranchName(TestCase):
+    """#1323: branch names follow the flat ``<number>-<description>`` shape.
+
+    No initials prefix (``ac-``/``a-``), no repo segment — those pollute origin
+    with orphan refs and force agents into manual cross-branch pushes when the
+    local branch disagrees with the MR's source_branch.
+    """
+
+    def test_does_not_start_with_initials_or_repo(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["backend", "frontend"],
+            ticket_number="1323",
+            description="Fix workspace branch prefix",
+        )
+        assert not branch.startswith("a-")
+        assert not branch.startswith("ac-")
+        assert not branch.startswith("a/")
+        assert not branch.startswith("ac/")
+        assert not branch.startswith("backend-")
+        assert not branch.startswith("backend/")
+
+    def test_starts_with_ticket_number(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["backend"],
+            ticket_number="7485",
+            description="bot finding fix",
+        )
+        assert branch.startswith("7485-")
+
+    def test_no_repo_segment_anywhere(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["api-service", "web-client"],
+            ticket_number="8521",
+            description="add purpose types",
+        )
+        # The repo name must not appear as a segment in the branch.
+        segments = branch.split("-")
+        assert "api" not in segments
+        assert "service" not in segments
+        assert "web" not in segments
+        assert "client" not in segments
+
+    def test_only_lowercase_digits_and_dashes(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["backend"],
+            ticket_number="1234",
+            description="Add Login Page! With UPPERCASE & symbols",
+        )
+        assert re.fullmatch(r"[a-z0-9-]+", branch), f"branch {branch!r} contains illegal characters"
+
+    def test_unaffected_by_branch_prefix_env(self) -> None:
+        """T3_BRANCH_PREFIX must NOT bleed into the generated branch name (#1323)."""
+        with patch.dict("os.environ", {"T3_BRANCH_PREFIX": "ac"}):
+            branch = _build_branch_name(
+                repo_names=["backend"],
+                ticket_number="1323",
+                description="fix prefix",
+            )
+        assert not branch.startswith("ac-")
+        assert not branch.startswith("ac/")
+        assert branch.startswith("1323-")
+
+    def test_description_becomes_slug_after_ticket_number(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["backend"],
+            ticket_number="1322",
+            description="worktree db link",
+        )
+        assert branch == "1322-worktree-db-link"
+
+    def test_falls_back_when_description_empty(self) -> None:
+        branch = _build_branch_name(
+            repo_names=["backend"],
+            ticket_number="1322",
+            description="",
+        )
+        # Still starts with the ticket number and remains slug-shaped.
+        assert branch.startswith("1322-")
+        assert re.fullmatch(r"[a-z0-9-]+", branch)
 
 
 class TestWorkspaceDirHelper(TestCase):
@@ -279,9 +361,9 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "frontend").mkdir()
             (workspace / "frontend" / ".git").mkdir()
 
-            # Pre-create the ticket_dir/backend to simulate existing worktree
-            prefix = "ac"
-            branch = f"{prefix}-backend-82-ticket"
+            # Pre-create the ticket_dir/backend to simulate existing worktree.
+            # #1323: branches follow the flat ``<number>-<description>`` shape.
+            branch = "82-ticket"
             ticket_dir = workspace / branch
             ticket_dir.mkdir(parents=True)
             (ticket_dir / "backend").mkdir()
@@ -292,7 +374,6 @@ class TestWorkspaceTicket(TestCase):
             with (
                 patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
                 patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-                patch.object(workspace_mod, "_branch_prefix", return_value="ac"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
@@ -452,7 +533,7 @@ class TestWorkspaceTicket(TestCase):
     @_patch_overlays(NESTED_OVERLAY)
     @override_settings(**SETTINGS, T3_WORKSPACE_DIR="/tmp/ws-test")
     def test_nested_repo_paths(self) -> None:
-        """Repos in nested subdirectories (e.g. org/backend) are found and worktrees use basenames."""
+        """Repos in nested subdirectories (e.g. org/backend) are found; worktree branch follows #1323 convention."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -478,9 +559,12 @@ class TestWorkspaceTicket(TestCase):
             repo_paths = sorted(ticket.worktrees.values_list("repo_path", flat=True))
             assert repo_paths == ["org/backend", "org/frontend"]
 
+            # #1323: branch is ``<number>-<slug>``; the repo name is NOT embedded.
             branch = ticket.worktrees.first().branch
-            assert "/" not in branch.split("-")[1]
-            assert "backend" in branch
+            assert "/" not in branch
+            assert branch.startswith("90-")
+            assert "backend" not in branch.split("-")
+            assert "frontend" not in branch.split("-")
 
     @_patch_overlays(NESTED_OVERLAY)
     @override_settings(**SETTINGS)

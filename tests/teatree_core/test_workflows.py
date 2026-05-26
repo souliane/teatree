@@ -609,7 +609,8 @@ class TestRunBackend(TestCase):
         assert len(worktrees) == 2
         assert worktrees[0].repo_path == "backend"
         assert worktrees[1].repo_path == "frontend"
-        assert worktrees[0].branch == "ac-backend-999-ticket"
+        # #1323: branches follow the flat ``<number>-<slug>`` convention.
+        assert worktrees[0].branch == "999-ticket"
 
         for wt in worktrees:
             stored_path = (wt.extra or {}).get("worktree_path")
