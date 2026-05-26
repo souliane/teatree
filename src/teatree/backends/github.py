@@ -271,8 +271,14 @@ def _record_github_note_claim(
     race) is swallowed. The publish has already succeeded by the time we
     get here — failing to audit it must not turn that success into a
     user-visible failure.
+
+    Stamps ``extra["overlay"]`` from ``T3_OVERLAY_NAME`` (#1275) so the
+    audit verifier can re-read the comment through the same overlay's
+    GitHub token that posted it — not a process-global resolver that may
+    land on a different identity in multi-overlay setups.
     """
     import hashlib  # noqa: PLC0415 — stdlib, cheap, used only here
+    import os  # noqa: PLC0415 — defer stdlib import out of module load
 
     try:
         from django.db import (  # noqa: PLC0415 — keep Django out of module-load if bootstrap fails
@@ -286,6 +292,7 @@ def _record_github_note_claim(
         return
 
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    overlay_name = os.environ.get("T3_OVERLAY_NAME", "") or ""
     idempotency_key = f"github_note:{repo}#{target_number}:{comment_id}"
     try:
         with transaction.atomic():
@@ -299,6 +306,7 @@ def _record_github_note_claim(
                         "target_number": target_number,
                         "artifact_id": str(comment_id),
                         "payload_digest": digest,
+                        "overlay": overlay_name,
                     },
                 },
             )
