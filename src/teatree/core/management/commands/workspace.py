@@ -183,11 +183,10 @@ def _locked_get_or_create_ticket(issue_url: str, variant: str, repo_names: list[
 
 
 def _build_branch_name(repo_names: list[str], ticket_number: str, description: str) -> str:
-    """Build the git branch name from repo list, ticket number, and description."""
-    prefix = _branch_prefix()
-    first_repo = Path(repo_names[0]).name if repo_names else "repo"
+    """Build the flat ``<number>-<slug>`` branch name; legacy initials/repo prefix dropped (#1323)."""
+    del repo_names
     slug = _slugify(description) if description else "ticket"
-    return f"{prefix}-{first_repo}-{ticket_number}-{slug}"
+    return f"{ticket_number}-{slug}"
 
 
 class Command(TyperCommand):
