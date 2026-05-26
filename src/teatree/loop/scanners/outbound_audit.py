@@ -26,14 +26,38 @@ import datetime as dt
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from http import HTTPStatus
 from typing import TYPE_CHECKING, ClassVar, cast
 
-import httpx
 from django.apps import apps
 from django.utils import timezone
 
 from teatree.loop.scanners.base import ScanSignal
+
+# Overlay-aware verifier factories — defined in a sibling module so this
+# file stays under the module-health LOC cap. Re-exported here as
+# module-level names because the test suite patches them via the
+# ``teatree.loop.scanners.outbound_audit.<name>`` path, and the sibling
+# module's lazy ``from outbound_audit import _xxx`` imports therefore see
+# the patched values (#1275). The sibling defers its ``VerifyResult`` /
+# private-helper imports back to this module to avoid a cycle at import time.
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    github_note_verifier_for_overlay as _github_note_verifier_for_overlay,
+)
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    gitlab_api_for_overlay as _gitlab_api_for_overlay,  # noqa: F401 — re-exported for test patching
+)
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    gitlab_approve_verifier_for_overlay as _gitlab_approve_verifier_for_overlay,
+)
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    gitlab_note_verifier_for_overlay as _gitlab_note_verifier_for_overlay,
+)
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    resolve_github_token_for_overlay as _resolve_github_token_for_overlay,  # noqa: F401 — re-exported for test patching
+)
+from teatree.loop.scanners.outbound_audit_overlay_verifiers import (
+    slack_dm_verifier_for_overlay as _slack_dm_verifier_for_overlay,
+)
 
 if TYPE_CHECKING:
     from teatree.core.models import OutboundClaim as OutboundClaimModel
@@ -115,9 +139,15 @@ class OutboundAuditScanner:
         signals: list[ScanSignal] = []
         candidates = self._candidate_claims(model, now)
         for claim in candidates:
-            verifier = self.verifiers.get(claim.kind) or _default_verifier_for(claim.kind)
+            # Explicit injected verifier wins (test path); else resolve the
+            # production verifier bound to the overlay that posted the
+            # claim (#1275). Per-claim resolution is the load-bearing
+            # change: the same scanner instance now picks up the right
+            # backend for each row, not whichever credential a single
+            # global resolver landed on at scanner construction.
+            verifier = self.verifiers.get(claim.kind) or _default_verifier_for_claim(claim)
             if verifier is None:
-                logger.debug("No verifier for kind=%s — skipping claim %s", claim.kind, claim.pk)
+                signals.append(_audit_skipped_signal(claim))
                 continue
             try:
                 result = verifier(claim)
@@ -205,12 +235,12 @@ class OutboundAuditScanner:
 
 
 def _default_verifier_for(kind: str) -> Verifier | None:
-    """Lazy production-default verifiers built from overlay factory clients.
+    """Lazy production-default verifiers built from the default overlay.
 
     Returns ``None`` when no production verifier exists for the kind — the
-    scanner then skips the row (no alert). Tests inject explicit verifiers
-    via :class:`OutboundAuditScanner`'s ``verifiers`` dict, so the
-    production path here is intentionally minimal and never raises.
+    scanner then skips the row (no alert). Kept as the legacy single-
+    overlay entry point and exercised by the dispatcher tests; per-claim
+    overlay-bound resolution is :func:`_default_verifier_for_claim`.
     """
     if kind == "gitlab_note":
         return _gitlab_note_verifier()
@@ -223,37 +253,59 @@ def _default_verifier_for(kind: str) -> Verifier | None:
     return None
 
 
+def _default_verifier_for_claim(claim: "OutboundClaimModel") -> Verifier | None:
+    """Build a production verifier bound to the overlay that posted the claim.
+
+    Reads ``claim.extra["overlay"]`` and constructs the right backend
+    from THAT overlay's credentials (#1275). When the overlay name is
+    absent (legacy rows recorded before the overlay-stamping change), or
+    the credential pipeline for that overlay returns nothing, the result
+    is ``None`` — the scanner then emits ``outbound.audit_skipped`` so
+    the silent backlog is observable, never re-classified as drift.
+    """
+    overlay = str(claim.extra.get("overlay", ""))
+    kind = claim.kind
+    if kind == "slack_dm":
+        return _slack_dm_verifier_for_overlay(overlay)
+    if kind == "gitlab_note":
+        return _gitlab_note_verifier_for_overlay(overlay)
+    if kind == "gitlab_approve":
+        return _gitlab_approve_verifier_for_overlay(overlay)
+    if kind == "github_note":
+        return _github_note_verifier_for_overlay(overlay)
+    return None
+
+
+def _audit_skipped_signal(claim: "OutboundClaimModel") -> ScanSignal:
+    """Build an ``outbound.audit_skipped`` ScanSignal for an unverifiable claim.
+
+    Emitted when no verifier resolves for a claim's (kind, overlay) pair
+    — the credential is missing for the recorded overlay. Distinct from
+    ``outbound.drift`` so the dispatcher and statusline can surface the
+    backlog separately rather than mis-classifying a credential gap as
+    a missing artifact (#1275).
+    """
+    overlay = str(claim.extra.get("overlay", ""))
+    return ScanSignal(
+        kind="outbound.audit_skipped",
+        summary=f"No verifier for {claim.kind} overlay={overlay or '<default>'}",
+        payload={
+            "claim_id": claim.pk,
+            "claim_kind": claim.kind,
+            "overlay": overlay,
+            "target_url": claim.target_url,
+        },
+    )
+
+
 def _gitlab_note_verifier() -> Verifier | None:
-    """Build a GitLab-note verifier from the overlay's GitLab credentials."""
-    try:
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        api = GitLabAPI()
-    except Exception:  # noqa: BLE001
-        return None
+    """Legacy single-overlay GitLab-note verifier — delegates to the overlay-aware sibling.
 
-    def _verify(claim: "OutboundClaimModel") -> VerifyResult:
-        repo = str(claim.extra.get("repo", ""))
-        mr = claim.extra.get("mr")
-        artifact_id = str(claim.extra.get("artifact_id", ""))
-        endpoint = str(claim.extra.get("endpoint", "notes"))
-        if not (repo and isinstance(mr, int) and artifact_id):
-            return VerifyResult.ok()
-        encoded = repo.replace("/", "%2F")
-        sub = "draft_notes" if "draft_notes" in endpoint else "notes"
-        if not artifact_id.isdigit():
-            return VerifyResult.ok()
-        try:
-            api.get_json(f"projects/{encoded}/merge_requests/{mr}/{sub}/{artifact_id}")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == HTTPStatus.NOT_FOUND:
-                return VerifyResult.drift(f"GitLab note {artifact_id} not found on !{mr}")
-            raise
-        return VerifyResult.ok()
-
-    return _verify
+    Kept so existing patch-based tests pinning the factory's import-
+    guard and constructor-raise paths keep working. Production code
+    paths go through :func:`_default_verifier_for_claim` (#1275).
+    """
+    return _gitlab_note_verifier_for_overlay("")
 
 
 def _resolve_github_token() -> str:
@@ -283,61 +335,14 @@ def _resolve_github_token() -> str:
 
 
 def _github_note_verifier() -> Verifier | None:
-    """Build a GitHub-note verifier with the overlay's GitHub credentials (#1198).
+    """Legacy single-overlay GitHub-note verifier — delegates to the overlay-aware sibling.
 
-    Confirms via ``GET repos/<repo>/issues/comments/<id>`` that the
-    comment claimed in ``extra`` still exists and that its body hash
-    matches the recorded ``payload_digest``. The endpoint covers both PR
-    review comments and issue comments — GitHub returns the same shape
-    under ``issues/comments`` for both.
-
-    Mirrors :func:`_gitlab_note_verifier`'s error doctrine: a 404 → drift
-    (the comment is genuinely missing); any other transport-level error
-    is re-raised so the scanner can skip the row silently rather than
-    spamming DMs on a temporary GitHub-API outage.
-
-    Token-aware (#1198 codex finding): the verifier resolves the
-    posting token via :func:`_resolve_github_token` and passes it into
-    ``_gh_api_get``. Without an explicit token, ``gh api`` against a
-    private repo can return a 404 that is really "no auth", which the
-    verifier would otherwise mis-classify as drift. Empty-token →
-    return ``None`` and the scanner skips ``github_note`` rows silently.
+    Kept so existing patch-based tests pinning the factory's
+    import-guard, missing-token, and verifier-behaviour paths keep
+    working. Production code paths go through
+    :func:`_default_verifier_for_claim` (#1275).
     """
-    try:
-        from teatree.backends.github import _gh_api_get  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    token = _resolve_github_token()
-    if not token:
-        return None
-
-    def _verify(claim: "OutboundClaimModel") -> VerifyResult:
-        repo = str(claim.extra.get("repo", ""))
-        artifact_id = str(claim.extra.get("artifact_id", ""))
-        expected_digest = str(claim.extra.get("payload_digest", ""))
-        if not (repo and artifact_id and artifact_id.isdigit()):
-            return VerifyResult.ok()
-        try:
-            data = _gh_api_get(f"repos/{repo}/issues/comments/{artifact_id}", token=token)
-        except Exception as exc:
-            if _is_github_not_found(exc):
-                return VerifyResult.drift(
-                    f"GitHub comment {artifact_id} not found on {repo}",
-                )
-            raise
-        if not isinstance(data, dict):
-            return VerifyResult.drift(
-                f"GitHub comment {artifact_id} on {repo} returned non-dict payload",
-            )
-        if expected_digest:
-            actual_body = str(cast("RawAPIDict", data).get("body", ""))
-            if _hash_body(actual_body) != expected_digest:
-                return VerifyResult.drift(
-                    f"GitHub comment {artifact_id} body digest mismatch on {repo}",
-                )
-        return VerifyResult.ok()
-
-    return _verify
+    return _github_note_verifier_for_overlay("")
 
 
 def _is_github_not_found(exc: BaseException) -> bool:
@@ -384,87 +389,19 @@ def _usernames_from_approvers(approved_by: list[object]) -> set[str]:
 
 
 def _gitlab_approve_verifier() -> Verifier | None:
-    """Build a GitLab-approval verifier from the overlay's GitLab credentials."""
-    try:
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        api = GitLabAPI()
-        my_username = api.current_username()
-    except Exception:  # noqa: BLE001
-        return None
-    if not my_username:
-        return None
-
-    def _verify(claim: "OutboundClaimModel") -> VerifyResult:
-        repo = str(claim.extra.get("repo", ""))
-        mr = claim.extra.get("mr")
-        endpoint = str(claim.extra.get("endpoint", "approve"))
-        if not (repo and isinstance(mr, int)):
-            return VerifyResult.ok()
-        encoded = repo.replace("/", "%2F")
-        try:
-            approvals = api.get_json(f"projects/{encoded}/merge_requests/{mr}/approvals")
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == HTTPStatus.NOT_FOUND:
-                return VerifyResult.drift(f"GitLab MR !{mr} approvals endpoint 404")
-            raise
-        raw_approved = approvals.get("approved_by") if isinstance(approvals, dict) else None
-        approved_by: list[object] = list(raw_approved) if isinstance(raw_approved, list) else []
-        names = _usernames_from_approvers(approved_by)
-        present = my_username in names
-        if endpoint == "approve" and not present:
-            return VerifyResult.drift(
-                f"Approval by {my_username} not present on !{mr} (claimed approve)",
-            )
-        if endpoint == "unapprove" and present:
-            return VerifyResult.drift(
-                f"Approval by {my_username} still present on !{mr} (claimed unapprove)",
-            )
-        return VerifyResult.ok()
-
-    return _verify
+    """Legacy single-overlay GitLab-approve verifier — delegates to the overlay-aware sibling."""
+    return _gitlab_approve_verifier_for_overlay("")
 
 
 def _slack_dm_verifier() -> Verifier | None:
-    """Build a Slack-DM verifier from the overlay messaging backend.
+    """Build a Slack-DM verifier from the default overlay's messaging backend.
 
-    Confirms via ``chat.getPermalink`` that the ``(channel, ts)`` recorded
-    in the claim's ``extra`` still resolves to a permalink. Mirrors the
-    GitLab verifier's error doctrine:
-
-    - An empty permalink (the backend's "ok=false" / 404-equivalent
-        return shape: ``channel_not_found`` / ``message_not_found``)
-        → :class:`VerifyResult.drift` — the message did not land.
-    - Any transport-level exception (``httpx.HTTPStatusError`` for HTTP
-        5xx, ``httpx.NetworkError`` for connection failures, etc.)
-        → re-raise. ``scan()`` catches and skips the row silently so we
-        do not spam drift DMs on a temporary backend outage.
+    Legacy single-overlay entry. The overlay-bound sibling
+    :func:`_slack_dm_verifier_for_overlay` (#1275) supersedes this on the
+    per-claim path; tests still construct this directly to exercise the
+    underlying verifier behaviour.
     """
-    try:
-        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    backend = messaging_from_overlay()
-    if backend is None:
-        return None
-
-    def _verify(claim: "OutboundClaimModel") -> VerifyResult:
-        channel = str(claim.extra.get("channel", ""))
-        ts = str(claim.extra.get("ts", ""))
-        if not (channel and ts):
-            return VerifyResult.ok()
-        # Let httpx.* and any other transport-layer exception propagate
-        # so ``scan()`` can skip the row silently — drift is reserved for
-        # "the backend told us the artifact is gone", not "we could not
-        # reach the backend".
-        permalink = backend.get_permalink(channel=channel, ts=ts)
-        if not permalink:
-            return VerifyResult.drift(f"Slack message {ts} not found in {channel}")
-        return VerifyResult.ok()
-
-    return _verify
+    return _slack_dm_verifier_for_overlay("")
 
 
 __all__ = [
