@@ -389,3 +389,52 @@ def test_slack_user_reply_routes_only_to_its_real_consumer() -> None:
     """Routed mechanically (the drain/reactive loop), never as an agent/statusline."""
     actions = dispatch([_slack_user_reply_signal()])
     assert [(a.kind, a.zone) for a in actions] == [("mechanical", "slack_user_reply")]
+
+
+def test_codex_review_dispatch_standard_variant_routes_to_codex_review_agent() -> None:
+    """#1254: a ``codex_review.dispatch`` signal routes to the ``codex:review`` agent.
+
+    The agent zone matches the slash-command name so the runtime can
+    invoke the same agent the user would have invoked manually.
+    """
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="codex_review.dispatch",
+                summary="codex review PR",
+                payload={
+                    "slug": "souliane/teatree",
+                    "pr_id": 1254,
+                    "head_sha": "abc12345",
+                    "pr_url": "https://github.com/souliane/teatree/pull/1254",
+                    "variant": "codex:review",
+                },
+            ),
+        ],
+    )
+    agent_actions = [a for a in actions if a.kind == "agent"]
+    assert len(agent_actions) == 1
+    assert agent_actions[0].zone == "codex:review"
+    assert agent_actions[0].payload["pr_url"] == "https://github.com/souliane/teatree/pull/1254"
+
+
+def test_codex_review_dispatch_adversarial_variant_routes_to_hardened_agent() -> None:
+    """#1254: ``variant == codex:adversarial-review`` routes to the hardened agent."""
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="codex_review.dispatch",
+                summary="codex adversarial review PR",
+                payload={
+                    "slug": "souliane/teatree",
+                    "pr_id": 1254,
+                    "head_sha": "abc12345",
+                    "pr_url": "https://github.com/souliane/teatree/pull/1254",
+                    "variant": "codex:adversarial-review",
+                },
+            ),
+        ],
+    )
+    agent_actions = [a for a in actions if a.kind == "agent"]
+    assert len(agent_actions) == 1
+    assert agent_actions[0].zone == "codex:adversarial-review"

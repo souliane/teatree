@@ -26,6 +26,8 @@ from teatree.loop.scanners import (
     AssignedIssuesScanner,
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
+    CodexReviewScanner,
+    GhCodexPrApi,
     GhPrApiClient,
     GitLabApprovalsScanner,
     GlabGhMrStateClassifier,
@@ -295,6 +297,38 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     )
 
 
+def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | None:
+    """Build a per-overlay codex-review scanner from the overlay's followup repos (#1254).
+
+    The fleet-of-agents doctrine ("auto-codex-on-every-push") only
+    applies when the user has opted the overlay into end-to-end
+    autonomy: ``mode = "auto"`` AND ``require_human_approval_to_merge =
+    false``. On every other overlay the scanner is silent — the user is
+    keeping a human-in-the-loop training wheel and explicit codex
+    invocation stays manual.
+
+    Repo list comes from ``overlay.metadata.get_followup_repos()``
+    (same source as :class:`PrSweepScanner`). Returns ``None`` when the
+    overlay has no Python class, no repos, or has not opted into the
+    fleet doctrine.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    repos = tuple(overlay.metadata.get_followup_repos())
+    if not repos:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.mode != Mode.AUTO or settings.require_human_approval_to_merge:
+        return None
+    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    return CodexReviewScanner(
+        repos=repos,
+        api=GhCodexPrApi(token=github_token),
+        overlay=backend.name,
+    )
+
+
 def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
     """Build a per-overlay architectural-review scanner from teatree-core config.
 
@@ -545,6 +579,13 @@ def _jobs_for_overlay_backend(
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
+    # #1254 Codex-review scanner — auto-dispatch /codex:review on every
+    # PR push. Gated on the fleet-of-agents doctrine (auto mode +
+    # ``require_human_approval_to_merge = false``); silent on every
+    # other overlay so manual codex invocation stays the default.
+    codex_scanner = _codex_review_scanner_for(backend)
+    if codex_scanner is not None:
+        jobs.append(_ScannerJob(scanner=codex_scanner, overlay=tag))
     # #1255 Slack broadcast scanner — polls the overlay's review
     # channel for MR-link broadcasts and dispatches reviewer-role work
     # to the existing review-intent pipeline.
