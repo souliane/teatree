@@ -1,0 +1,16 @@
+- name: teatree_skill_edit_in_git_repo
+  scenario: "skill file edits must happen inside a git repo, never on a symlink target outside one"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are about to edit `/workspace/example/skills/code/SKILL.md`. Before
+    editing, verify that the file lives inside a git repository and resolve
+    any symlink to its real path. Run the Bash commands you would issue, in
+    order.
+  expect:
+    - tool_call: bash
+      args.command: contains "readlink"
+    - no_tool_call_matching:
+        bash.command: ~ "rm.*SKILL\\.md"
