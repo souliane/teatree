@@ -66,6 +66,7 @@ from django.apps import apps
 from django.db import transaction
 from django.utils import timezone
 
+from teatree.config import discover_overlays
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
@@ -322,6 +323,148 @@ def resolve_pr_repo_slug(clear: object) -> str:
         f"at the GitHub repo, or pass an owner/repo slug."
     )
     raise MergePreconditionError(msg)
+
+
+def _iter_candidate_repo_slugs() -> list[str]:
+    """Every ``owner/repo`` reachable from this machine's overlay registry (#1335).
+
+    Source set, de-duplicated preserving insertion order:
+
+    (1) the running clone's ``origin`` (the same value
+        :func:`_project_repo_slug` returns).
+    (2) the ``origin`` slug of every registered overlay's ``project_path``
+        (entry-point + TOML overlays via :func:`discover_overlays`).
+
+    Used by :func:`_probe_candidate_repos` to recover from the #1335
+    cross-repo confusion: a CLEAR issued from the teatree clone for a PR
+    in a downstream overlay's repo (e.g. ``downstream-org/downstream-overlay#159``)
+    used to resolve to ``souliane/teatree``'s same-numbered (unrelated)
+    PR. With this enumeration the probe can verify each candidate and
+    pick the one whose ``pulls/<N>`` head matches the reviewed SHA.
+
+    Probe-side failures (``discover_overlays`` raises, a project path
+    has no ``origin`` remote) are swallowed: the candidate set is best-
+    effort, never load-bearing for the happy path.
+    """
+    seen: set[str] = set()
+    candidates: list[str] = []
+
+    def _add(slug: str) -> None:
+        if slug and slug not in seen:
+            seen.add(slug)
+            candidates.append(slug)
+
+    _add(_project_repo_slug())
+
+    try:
+        entries = discover_overlays()
+    except Exception:  # noqa: BLE001 — overlay discovery is best-effort here
+        entries = []
+    for entry in entries:
+        path = getattr(entry, "project_path", None)
+        if path is None:
+            continue
+        try:
+            slug = git.remote_slug(repo=str(path))
+        except Exception:  # noqa: BLE001 — a missing remote must not block the probe
+            slug = ""
+        _add(slug)
+
+    return candidates
+
+
+def _reconcile_slug_against_reviewed_sha(
+    *,
+    initial_slug: str,
+    pr_id: int,
+    reviewed_sha: str,
+    host_kind: str,
+) -> str:
+    """Pick the right repo when *initial_slug*'s PR doesn't carry *reviewed_sha* (#1335).
+
+    The initial slug is what :func:`resolve_pr_repo_slug` returned: an
+    explicit ``owner/repo`` from the CLEAR, the ticket's ``issue_url``
+    repo, or — the #1335 trap — the running clone's ``origin`` for a
+    CLEAR with no ticket and a non-``owner/repo`` slug. When that initial
+    slug's PR head SHA matches *reviewed_sha* the merge proceeds against
+    it unchanged (the common path). When the SHAs disagree, the same
+    PR number may live in a downstream overlay's repo at the right SHA;
+    the probe enumerates :func:`_iter_candidate_repo_slugs` and returns
+    the first candidate whose ``pulls/<N>`` head matches.
+
+    No reviewed SHA, no probe (back-compat with legacy callers that did
+    not carry the SHA). No candidate match raises a
+    :class:`MergePreconditionError` whose message names every candidate
+    considered so the diagnosis is unambiguous — never the opaque "head
+    moved" escalation that hid the #1335 bug.
+    """
+    if not reviewed_sha:
+        return initial_slug
+    initial_live = fetch_live_head_sha(initial_slug, pr_id, host_kind=host_kind)
+    if initial_live == reviewed_sha:
+        return initial_slug
+    if not initial_live:
+        # The forge call failed (missing credentials, network) or returned an
+        # empty payload — that's a transient/auth condition, not a cross-repo
+        # confusion. Defer to ``assert_merge_preconditions``, which raises the
+        # established "could not resolve the live head" error against the
+        # initial slug.
+        return initial_slug
+    candidates = _iter_candidate_repo_slugs()
+    # The initial slug was already probed above — exclude it from the secondary
+    # set so the candidates list in the error message reflects what was probed.
+    other_candidates = [c for c in candidates if c != initial_slug]
+    match = _probe_candidate_repos(
+        pr_id=pr_id,
+        reviewed_sha=reviewed_sha,
+        candidates=other_candidates,
+        host_kind=host_kind,
+    )
+    if match:
+        logger.info(
+            "merge_execution: cross-repo recovery for #%s — initial slug %r "
+            "live=%s != reviewed=%s; probed %s, matched %r",
+            pr_id,
+            initial_slug,
+            initial_live or "(unresolved)",
+            reviewed_sha,
+            other_candidates,
+            match,
+        )
+        return match
+    considered = [initial_slug, *other_candidates]
+    msg = (
+        f"PR head moved: live={initial_live or '(unresolved)'} != "
+        f"reviewed={reviewed_sha} on the initial repo ({initial_slug!r}), and "
+        f"no other candidate repo's PR #{pr_id} carries that SHA either. "
+        f"Candidates considered: {considered}. This is either a genuine "
+        f"force-push / new commits on the PR, or the CLEAR was issued from a "
+        f"clone whose overlay registry doesn't include the target repo. "
+        f"Re-escalate; the loop never self-issues a replacement "
+        f"(§17.4.3 step 2 / #1335)."
+    )
+    raise MergePreconditionError(msg)
+
+
+def _probe_candidate_repos(
+    *,
+    pr_id: int,
+    reviewed_sha: str,
+    candidates: list[str],
+    host_kind: str,
+) -> str:
+    """Return the candidate ``owner/repo`` whose PR <pr_id> head == *reviewed_sha*.
+
+    Iterates candidates in order and returns the first whose live head
+    SHA matches *reviewed_sha* — the #1335 recovery path: when the
+    initially-resolved repo's PR is an unrelated same-numbered PR, this
+    finds the repo that actually owns the reviewed work. Returns ``""``
+    when no candidate matches (a real force-push or a truly stale CLEAR).
+    """
+    for slug in candidates:
+        if fetch_live_head_sha(slug, pr_id, host_kind=host_kind) == reviewed_sha:
+            return slug
+    return ""
 
 
 def fetch_live_head_sha(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
@@ -992,6 +1135,12 @@ def merge_ticket_pr(
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
     host_kind = _resolve_host_kind(clear)
+    slug = _reconcile_slug_against_reviewed_sha(
+        initial_slug=slug,
+        pr_id=pr_id,
+        reviewed_sha=str(getattr(clear, "reviewed_sha", "") or ""),
+        host_kind=host_kind,
+    )
     precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,
