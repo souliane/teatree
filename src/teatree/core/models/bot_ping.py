@@ -33,6 +33,20 @@ class BotPing(models.Model):
         NOOP = "noop", "Noop (no backend)"
         FAILED = "failed", "Failed"
 
+    class Transport(models.TextChoices):
+        """Which delivery path actually landed the DM (#1181).
+
+        ``PRIMARY`` is the canonical ``notify_user`` path; ``FALLBACK`` is
+        the direct, round-trip-verified messaging-backend send the wrapper
+        falls back to when the primary returns ``did not deliver`` (the
+        #1173 silent-rc=1 class). ``UNSET`` covers rows written by the
+        plain ``notify_user`` egress that does not go through the wrapper.
+        """
+
+        UNSET = "", "Unset (direct notify_user)"
+        PRIMARY = "primary", "Primary (notify_user)"
+        FALLBACK = "fallback", "Fallback (direct verified send)"
+
     idempotency_key = models.CharField(max_length=255, unique=True)
     kind = models.CharField(max_length=16, choices=Kind.choices)
     status = models.CharField(max_length=16, choices=Status.choices)
@@ -41,6 +55,7 @@ class BotPing(models.Model):
     posted_ts = models.CharField(max_length=64, blank=True)
     permalink = models.URLField(max_length=512, blank=True)
     error_message = models.TextField(blank=True)
+    transport = models.CharField(max_length=16, choices=Transport.choices, blank=True, default="")
     posted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:

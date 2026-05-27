@@ -60,7 +60,8 @@ from teatree.loop.tick_resolvers import (
     _identity_alias_groups_for_overlay,
     _web_origin_for_host,
 )
-from teatree.notify import NotifyKind, notify_user
+from teatree.messaging import notify_with_fallback
+from teatree.notify import NotifyKind
 
 logger = logging.getLogger(__name__)
 
@@ -581,9 +582,9 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     if exc.detail:
         text = f"{text}\n_{exc.detail}_"
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key)
     except Exception:
-        logger.exception("Scanner-error notify_user failed for %s", label)
+        logger.exception("Scanner-error notify_with_fallback failed for %s", label)
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:
