@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _T3_TEMP_PREFIX, handle_pre_compact, handle_track_todos
+from hooks.scripts.hook_router import _T3_TEMP_PREFIX, handle_pre_compact, handle_track_agents, handle_track_todos
 
 
 @pytest.fixture(autouse=True)
@@ -245,6 +245,107 @@ class TestTodoCaptureAndSnapshot:
         assert "Pending TODOs" in body
         assert "fix snapshot" in body
         assert "push PR" in body
+
+
+class TestAgentDispatchCaptureAndSnapshot:
+    """Background sub-agents dispatched via the Agent tool must survive compaction.
+
+    Issue #778 (reopened): the PreCompact snapshot captured the loop
+    tick-owner (#786 WS3) but NOT ad-hoc background sub-agents an
+    orchestrator dispatches via the ``Agent`` tool. Those agentIds — the
+    handle ``SendMessage`` needs to resume/steer/collect a running agent
+    — live only in the conversation and are lost on auto-compaction,
+    orphaning the running agents. Mirror the #970 ``TodoWrite`` capture:
+    a PostToolUse on ``Agent`` appends the dispatched agentId + its role
+    to ``<session>.agents`` so the snapshot can quote the roster back.
+    """
+
+    def test_agent_dispatch_captured_to_session_agents_file(self) -> None:
+        session_id = "sess-agent-capture"
+        handle_track_agents(
+            {
+                "session_id": session_id,
+                "tool_name": "Agent",
+                "tool_input": {"description": "implement #778 fix", "subagent_type": "t3-coder"},
+                "tool_response": {"agentId": "a1b2c3d4"},
+            }
+        )
+        agents_file = router.STATE_DIR / f"{session_id}.agents"
+        assert agents_file.is_file()
+        text = agents_file.read_text(encoding="utf-8")
+        assert "a1b2c3d4" in text
+        assert "implement #778 fix" in text
+
+    def test_non_agent_tool_does_not_write_agents_file(self) -> None:
+        session_id = "sess-agent-noclobber"
+        handle_track_agents({"session_id": session_id, "tool_name": "Read", "tool_input": {"file_path": "x"}})
+        assert not (router.STATE_DIR / f"{session_id}.agents").is_file()
+
+    def test_multiple_dispatches_accumulate_not_clobber(self) -> None:
+        session_id = "sess-agent-accumulate"
+        handle_track_agents(
+            {
+                "session_id": session_id,
+                "tool_name": "Agent",
+                "tool_input": {"description": "first agent"},
+                "tool_response": {"agentId": "aaaa1111"},
+            }
+        )
+        handle_track_agents(
+            {
+                "session_id": session_id,
+                "tool_name": "Agent",
+                "tool_input": {"description": "second agent"},
+                "tool_response": {"agentId": "bbbb2222"},
+            }
+        )
+        text = (router.STATE_DIR / f"{session_id}.agents").read_text(encoding="utf-8")
+        assert "aaaa1111" in text
+        assert "bbbb2222" in text
+        assert "first agent" in text
+        assert "second agent" in text
+
+    def test_snapshot_renders_dispatched_agents_roster(self) -> None:
+        session_id = "sess-agent-render"
+        handle_track_agents(
+            {
+                "session_id": session_id,
+                "tool_name": "Agent",
+                "tool_input": {"description": "fix snapshot regression", "subagent_type": "t3-coder"},
+                "tool_response": {"agentId": "deadbeef"},
+            }
+        )
+
+        handle_pre_compact({"session_id": session_id})
+
+        body = _snapshot_for(session_id).read_text(encoding="utf-8")
+        assert "deadbeef" in body
+        assert "fix snapshot regression" in body
+
+    def test_agent_dispatch_capture_falls_back_to_tasks_dir_id(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When the PostToolUse payload does not expose the agentId directly,
+        # the handler scans the harness tasks output dir for the newest
+        # ``a*``-prefixed id (the SendMessage handle).
+        session_id = "sess-agent-fallback"
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True)
+        (tasks_dir / "afeedface.output").write_text("running\n", encoding="utf-8")
+        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tasks_dir))
+
+        handle_track_agents(
+            {
+                "session_id": session_id,
+                "tool_name": "Agent",
+                "tool_input": {"description": "no-id agent"},
+                "tool_response": {},
+            }
+        )
+
+        text = (router.STATE_DIR / f"{session_id}.agents").read_text(encoding="utf-8")
+        assert "afeedface" in text
+        assert "no-id agent" in text
 
 
 class TestSnapshotResilience:
