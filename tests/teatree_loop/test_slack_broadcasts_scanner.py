@@ -178,6 +178,78 @@ class TestClassificationBehaviour(TestCase):
         assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
 
 
+class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
+    """Own-author MR broadcasts must not get the ``:eyes:`` review reaction (#1384).
+
+    The ``:eyes:`` reaction signals "I'm looking at this colleague's MR". On a
+    broadcast whose every open MR is authored by the current user it is
+    meaningless noise the user has to remove by hand. The scanner skips both
+    the reaction and the reviewer-dispatch signals when ``current_gitlab_username``
+    matches the author of every open MR in the broadcast (sibling of #1321's
+    review-sweep own-author exclusion). BINDING
+    ``feedback_no_eyes_react_on_own_mr_broadcasts``.
+    """
+
+    def test_sole_own_mr_broadcast_skips_eyes_and_dispatch(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="me")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert backend.react_calls == []
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        assert row.classification == ScannedBroadcast.Classification.PENDING
+
+    def test_colleague_mr_broadcast_still_reacts_eyes(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="colleague")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+    def test_mixed_authorship_open_subset_still_reacts_eyes(self) -> None:
+        # One own MR + one colleague MR open in the same broadcast: a
+        # colleague MR still needs review, so the broadcast is not "all mine"
+        # and the :eyes: react + dispatch for the colleague's MR must fire.
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"{MR_OPEN} {MR_OPEN_2}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="me"),
+            MR_OPEN_2: MrState(url=MR_OPEN_2, merged=False, approved=False, author_username="colleague"),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+
 class TestIdempotency(TestCase):
     def test_idempotent_rescan_is_a_noop(self) -> None:
         backend = FakeMessaging()
@@ -357,6 +429,75 @@ class TestGlabGhMrStateClassifierUsesRepoFlag:
         assert cmd[r_idx + 1] == "team/project"
         assert "7446" in cmd
         assert url not in cmd  # the full URL must NOT be passed as a positional
+
+
+class TestClassifierReadsAuthorUsername:
+    """``GlabGhMrStateClassifier`` surfaces the MR author username (#1384).
+
+    The own-MR ``:eyes:`` skip needs the author identity. GitLab JSON
+    carries it under ``author.username``; GitHub under ``author.login``.
+    A missing/malformed author block degrades to an empty username, which
+    the scanner treats as "not mine".
+    """
+
+    def test_gitlab_reads_author_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
+
+        def fake_run(cmd, *, expected_codes=None, env=None):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"state": "opened", "upvotes": 0, "author": {"username": "me"}}',
+                stderr="",
+            )
+
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
+        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
+
+        states = GlabGhMrStateClassifier(glab_token="glpat-fake")([url])
+
+        assert states[0].author_username == "me"
+        assert states[0].merged is False
+
+    def test_gitlab_missing_author_block_yields_empty_username(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
+
+        def fake_run(cmd, *, expected_codes=None, env=None):
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"state": "opened", "upvotes": 0}',
+                stderr="",
+            )
+
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
+        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/glab")
+
+        states = GlabGhMrStateClassifier(glab_token="glpat-fake")([url])
+
+        assert states[0].author_username == ""
+
+    def test_github_reads_author_login(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        url = "https://github.com/owner/repo/pull/42"
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, *, expected_codes=None, env=None):
+            captured.append(list(cmd))
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"state": "OPEN", "reviewDecision": "", "author": {"login": "me"}}',
+                stderr="",
+            )
+
+        monkeypatch.setattr("teatree.utils.run.run_allowed_to_fail", fake_run)
+        monkeypatch.setattr("shutil.which", lambda _arg: "/usr/bin/gh")
+
+        states = GlabGhMrStateClassifier(github_token="ghp-fake")([url])
+
+        assert states[0].author_username == "me"
+        # The author field must be in the requested json columns.
+        assert "state,reviewDecision,author" in captured[0]
 
 
 class TestScannerSkipsOnMissingMigration(TestCase):
