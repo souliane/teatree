@@ -24,6 +24,12 @@ via the injected :class:`MrStateClassifier`, persists a
     routes each signal to the ``t3:reviewer`` agent — no separate
     Task-model plumbing in this PR (see follow-up #1234 / #1235 — TODO,
     filed as part of #1131's smallest-atomic-slice scope decision).
+* **Every open MR authored by the current user** → skip both the
+    ``:eyes:`` reaction and the reviewer-dispatch signals (#1384). You
+    don't review your own MR; the reaction would be meaningless noise the
+    user has to remove by hand. Gated on ``current_gitlab_username`` being
+    set — empty leaves the filter off. Sibling of #1321's review-sweep
+    own-author exclusion.
 
 Idempotency
 -----------
