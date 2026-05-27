@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.paths import DATA_DIR, get_data_dir
+from teatree.types import SlackVoiceClassifierMode
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
@@ -201,6 +202,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -373,6 +375,17 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # #1395 Slack voice/token mismatch classifier. The pre-publish gate
+    # between ``chat.postMessage`` and the Slack API refuses (or warns)
+    # when the body's voice ("PR merged" / "evidence" → agent vs "please
+    # review" / "RR for" → user) and the token kind it would go out under
+    # (``xoxp-`` = user, ``xoxb-`` = bot) disagree on a confident case
+    # (the recurrence: agent-voice DM via the personal token to the user's
+    # own DM channel, which Slack does not notify on). ``warn`` is the
+    # backward-compat default — log the mismatch but allow the post;
+    # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
+    # ``off`` disables the classifier entirely.
+    slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
 
 
 @dataclass
@@ -438,9 +451,33 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
+
+
+def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceClassifierMode:
+    """Resolve ``slack_voice_classifier_mode`` from ``[teatree]`` (#1395).
+
+    Accepts either a flat key ``[teatree] slack_voice_classifier_mode``
+    or a nested ``[teatree.publish_gates] slack_voice_classifier_mode``
+    (the table the issue brief sketches for grouping future
+    pre-publish gates). The flat key wins when both are present;
+    falling back through the nested table then to the conservative
+    default keeps the backward-compat upgrade path clean — existing
+    configs that don't know about the gate inherit ``WARN`` (log the
+    mismatch, allow the post) rather than ``STRICT`` (refuse).
+    """
+    flat = teatree.get("slack_voice_classifier_mode")
+    if flat is not None:
+        return SlackVoiceClassifierMode.parse(flat)
+    nested = teatree.get("publish_gates")
+    if isinstance(nested, dict):
+        scoped = nested.get("slack_voice_classifier_mode")
+        if scoped is not None:
+            return SlackVoiceClassifierMode.parse(scoped)
+    return SlackVoiceClassifierMode.WARN
 
 
 def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:

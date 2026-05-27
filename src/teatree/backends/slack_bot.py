@@ -45,6 +45,7 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.slack_bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
 from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
 from teatree.backends.slack_token_policy import SlackOp, channel_token
 from teatree.backends.slack_token_validation import (
@@ -53,34 +54,19 @@ from teatree.backends.slack_token_validation import (
     assert_bot_token,
     assert_user_token,
 )
-from teatree.types import RawAPIDict, ScannerError, ScannerErrorClass
+from teatree.backends.slack_voice_classifier import ClassifierMode as VoiceClassifierMode
+from teatree.backends.slack_voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
+from teatree.types import RawAPIDict, ScannerError
 
 __all__ = [
     "SingleEmojiBodyRefusedError",
     "SlackBotBackend",
     "SlackOp",
+    "SlackVoiceMismatchError",
     "TokenSlotMismatchError",
+    "VoiceClassifierMode",
 ]
 
-
-# Slack ``ok:false`` error codes that indicate the bot/user TOKEN is
-# globally broken (auth, missing scope, rate limit, deactivated). For
-# these the scanner must raise — silent fall-through to ``[]`` masks the
-# entire workspace integration (#1287). Channel-scoped failures
-# (``channel_not_found``, ``not_in_channel``, ``is_archived``) are NOT in
-# this set: those legitimately degrade to "one channel unreachable" and
-# keep the rest of the scan running.
-_GLOBAL_TOKEN_FAILURES: dict[str, ScannerErrorClass] = {
-    "invalid_auth": ScannerErrorClass.AUTH,
-    "not_authed": ScannerErrorClass.AUTH,
-    "token_expired": ScannerErrorClass.AUTH,
-    "token_revoked": ScannerErrorClass.AUTH,
-    "account_inactive": ScannerErrorClass.AUTH,
-    "missing_scope": ScannerErrorClass.MISSING_SCOPE,
-    "no_permission": ScannerErrorClass.MISSING_SCOPE,
-    "ratelimited": ScannerErrorClass.RATE_LIMIT,
-    "rate_limited": ScannerErrorClass.RATE_LIMIT,
-}
 
 type SlackPayload = dict[str, object]
 
@@ -142,6 +128,8 @@ class SlackBotBackend:
         # fallback through whichever bot already had an IM with the user —
         # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
+        # #1395 voice/token gate; factory overrides via set_voice_classifier_mode.
+        self._voice_gate = VoiceTokenGate(mode=VoiceClassifierMode.WARN, dm_channel_id=dm_channel_id)
         self._cached_bot_id: str | None = None
         # Per-channel Slack-Connect membership, resolved once via
         # ``conversations.info`` then reused by the token-selection policy.
@@ -170,6 +158,10 @@ class SlackBotBackend:
     def dm_channel_id(self) -> str:
         """Cached IM channel id for ``user_id``, or ``""`` when unprovisioned (#1342)."""
         return self._dm_channel_id
+
+    def set_voice_classifier_mode(self, mode: VoiceClassifierMode) -> None:
+        """Override the voice/token classifier mode (#1395)."""
+        self._voice_gate.mode = mode
 
     def resolve_channel_token(self, channel: str) -> str:
         """The token an outbound post to *channel* would use (#1084).
@@ -495,18 +487,22 @@ class SlackBotBackend:
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         if is_single_emoji_body(text):
             raise SingleEmojiBodyRefusedError(text)
+        token = self._channel_token(channel, op=SlackOp.WRITE)
+        self._voice_gate.check(text=text, channel=channel, token=token)
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload, token=self._channel_token(channel, op=SlackOp.WRITE))
+        return self._post("chat.postMessage", payload, token=token)
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         if is_single_emoji_body(text):
             raise SingleEmojiBodyRefusedError(text)
+        token = self._channel_token(channel, op=SlackOp.WRITE)
+        self._voice_gate.check(text=text, channel=channel, token=token)
         return self._post(
             "chat.postMessage",
             {"channel": channel, "thread_ts": ts, "text": text},
-            token=self._channel_token(channel, op=SlackOp.WRITE),
+            token=token,
         )
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
