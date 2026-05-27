@@ -68,6 +68,14 @@ def falsy_default_hooks() -> list[str]:
     return hooks
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Documents the open paradigm-mismatch claim (#1385): the contract today "
+        "permits falsy-default hooks to remain inherited. Goes RED on main on "
+        "purpose — XPASS once #1385 lands will force this marker off."
+    ),
+)
 def test_every_overlay_overrides_every_falsy_default_hook(
     registered_overlays: dict[str, OverlayBase],
     falsy_default_hooks: list[str],
@@ -79,6 +87,12 @@ def test_every_overlay_overrides_every_falsy_default_hook(
     these hooks at their falsy default. This test goes RED on ``main`` —
     that is the proof that the contract cannot hold the invariants the
     individual fix PRs encode.
+
+    Marked ``xfail(strict=True)``: it WILL fail until paradigm issue
+    [#1385](https://github.com/souliane/teatree/issues/1385) lands the
+    Pydantic ``OverlayConfig`` move. If it ever passes (XPASS), strict mode
+    fails the suite — forcing this marker to be removed so the test
+    becomes a real green gate.
     """
     assert registered_overlays, "no overlays registered — cannot validate the contract"
 

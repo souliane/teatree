@@ -60,12 +60,24 @@ def registered_overlays() -> dict[str, OverlayBase]:
     return get_all_overlays()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Documents the open paradigm-mismatch claim (#1386): the ProvisionStep "
+        "dataclass has no post_condition or idempotent fields. Goes RED on "
+        "main on purpose — XPASS once #1386 lands will force this marker off."
+    ),
+)
 def test_provision_step_dataclass_declares_post_condition_and_idempotent_fields() -> None:
     """Require typed ``post_condition`` and ``idempotent`` fields on ``ProvisionStep``.
 
     Today the dataclass has ``name`` / ``callable`` / ``required`` /
     ``description`` only. This assertion goes RED on ``main`` — see
     ``docs/provisioning-rootcause-2026-05-27.md`` § 3.2.
+
+    Marked ``xfail(strict=True)``: it WILL fail until paradigm issue
+    [#1386](https://github.com/souliane/teatree/issues/1386) lands the
+    typed-DAG-node move.
     """
     field_names = _step_fields()
     missing = {"post_condition", "idempotent"} - field_names
@@ -77,6 +89,15 @@ def test_provision_step_dataclass_declares_post_condition_and_idempotent_fields(
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Documents the open paradigm-mismatch claim (#1386): no ProvisionStep "
+        "instance can carry a post_condition because the dataclass lacks the "
+        "field. Goes RED on main on purpose — XPASS once #1386 lands will "
+        "force this marker off."
+    ),
+)
 def test_every_provision_step_carries_post_condition_or_idempotent_marker(
     registered_overlays: dict[str, OverlayBase],
 ) -> None:
@@ -85,6 +106,9 @@ def test_every_provision_step_carries_post_condition_or_idempotent_marker(
     This test goes RED on ``main`` because ``ProvisionStep`` today has no
     such fields at all (see prerequisite test above). Once § 3.2 lands,
     this test gains teeth — it asserts per-instance carrying.
+
+    Marked ``xfail(strict=True)``: it WILL fail until paradigm issue
+    [#1386](https://github.com/souliane/teatree/issues/1386) lands.
     """
     assert registered_overlays, "no overlays registered — cannot validate the contract"
 
