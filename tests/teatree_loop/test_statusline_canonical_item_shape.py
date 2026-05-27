@@ -100,7 +100,10 @@ class TestAnchorCanonicalShape:
             colorize=False,
         )
         text = _blob(zones.anchors)
-        assert "coded: #10 " in text  # state group header preserved
+        # Terse format (#1377) drops the ``state:`` prefix — ``#10`` reads
+        # bare under the overlay tag.
+        assert "#10" in text
+        assert "coded:" not in text
         assert "(Add canonical item shape)" in text, repr(text)
 
     def test_anchor_truncates_long_titles(self) -> None:

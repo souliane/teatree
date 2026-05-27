@@ -62,6 +62,29 @@ def _host_port_published() -> bool:
     return bool(result.stdout.strip())
 
 
+def _non_teatree_squatters_on_host_port() -> list[str]:
+    """Return names of non-``teatree-redis`` containers publishing host 6379.
+
+    A legacy overlay-managed container from a ``docker-compose.yml``
+    predating the ``profiles: [disabled]`` reset keeps the host port
+    bound. Without eviction, ``_create()`` fails with
+    ``bind: address already in use`` and ``teatree-redis`` stays in
+    ``Created`` state — every worktree's cache/broker traffic 500s (#1373).
+    """
+    result = _docker_tolerant("ps", "--filter", f"publish={HOST_PORT}", "--format", "{{.Names}}")
+    if result.returncode != 0:
+        return []
+    return [name for name in result.stdout.splitlines() if name.strip() and name.strip() != CONTAINER_NAME]
+
+
+def _evict_squatters() -> None:
+    """Stop and remove any non-``teatree-redis`` container holding host 6379."""
+    for name in _non_teatree_squatters_on_host_port():
+        logger.info("Evicting legacy container %s squatting on host port %d", name, HOST_PORT)
+        _docker_tolerant("stop", name)
+        _docker_tolerant("rm", name)
+
+
 def _create(db_count: int) -> None:
     logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
     _docker_checked(
@@ -98,19 +121,24 @@ def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
     is reconciled (recreated), not left as-is. Without this, a container
     created by an older code path stays "running" forever while every
     worktree's ``host.docker.internal:6379`` is unreachable and every
-    cache/broker-touching request 500s.
+    cache/broker-touching request 500s. A non-``teatree-redis`` container
+    squatting on host port 6379 is evicted before any create/recreate so
+    ``docker run -p 6379:6379`` doesn't fail with ``address already in use``.
     """
     current = status()
     if current == "running":
         if not _host_port_published():
+            _evict_squatters()
             _recreate_with_port_publish(db_count)
         return
     if current == "missing":
+        _evict_squatters()
         _create(db_count)
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
     _docker_checked("start", CONTAINER_NAME)
     if not _host_port_published():
+        _evict_squatters()
         _recreate_with_port_publish(db_count)
 
 
