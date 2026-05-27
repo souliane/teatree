@@ -30,6 +30,13 @@ from django_typer.management import TyperCommand
 
 from teatree.loop.tick import TickReport
 
+# The persistent ``loop-owner`` claim TTL reader lives in
+# ``teatree.loop.tick_piggyback`` alongside its sibling per-loop cadence
+# readers so the statusline's per-loop next-tick countdown (#1400) can reach
+# it without ``teatree.loop`` importing back into ``teatree.core.management``.
+# Re-exported here so this command (and its tests) keep the original name.
+from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
+
 type ReportDict = dict[str, Any]
 
 
@@ -65,28 +72,6 @@ def _skipped_report_dict(started_at: dt.datetime, reason: str) -> ReportDict:
         "skipped": True,
         "skipped_reason": reason,
     }
-
-
-_LOOP_OWNER_TTL_DEFAULT = 1800
-
-
-def _loop_owner_ttl_seconds() -> int:
-    """The persistent ``loop-owner`` claim TTL (``T3_LOOP_OWNER_TTL``, default 1800s).
-
-    Parsed defensively like ``cli.loop._cadence_for_loop_slot``: a blank
-    or non-integer override degrades to the default rather than crashing
-    the tick; the floor of 60s keeps a fat-fingered tiny TTL from making
-    the owner lapse mid-tick.
-    """
-    import os  # noqa: PLC0415
-
-    raw = os.environ.get("T3_LOOP_OWNER_TTL", str(_LOOP_OWNER_TTL_DEFAULT)).strip()
-    if not raw:
-        return _LOOP_OWNER_TTL_DEFAULT
-    try:
-        return max(60, int(raw))
-    except ValueError:
-        return _LOOP_OWNER_TTL_DEFAULT
 
 
 class Command(TyperCommand):

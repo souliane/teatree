@@ -76,14 +76,14 @@ class TestShortDescriptionInScanner:
 
 
 class TestShortDescriptionTruncation:
-    """The canonical-item shape truncates description at the existing 40-char limit."""
+    """The canonical-item shape collapses the description to a terse topic."""
 
-    def test_description_truncated_at_40(self) -> None:
+    def test_description_collapsed_to_terse_topic(self) -> None:
         long_title = "a" * 80
         blob = _render_blob([_ticket_active_action(number="100", title=long_title)])
 
-        # Truncation budget is 40 chars including the ellipsis.
-        truncated = "a" * 39 + "…"
+        # Terse topic budget is 24 chars including the ellipsis.
+        truncated = "a" * 23 + "…"
         assert truncated in blob, repr(blob)
         # The full 80-char title must NOT appear.
         assert long_title not in blob, repr(blob)

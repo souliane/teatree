@@ -54,6 +54,29 @@ def _self_improve_cadence_seconds() -> int:
         return 1800
 
 
+_LOOP_OWNER_TTL_DEFAULT = 1800
+
+
+def _loop_owner_ttl_seconds() -> int:
+    """The persistent ``loop-owner`` claim TTL (``T3_LOOP_OWNER_TTL``, default 1800s, floor 60).
+
+    Lives here next to its sibling per-loop cadence readers (the
+    ``teatree.loop`` layer) so the statusline's per-loop next-tick
+    countdown (#1400) and the ``loop_tick`` owner-claim can both reach it
+    without ``teatree.loop`` importing back into ``teatree.core.management``.
+    A blank or non-integer override degrades to the default rather than
+    crashing the tick; the 60s floor keeps a fat-fingered tiny TTL from
+    making the owner lapse mid-tick.
+    """
+    raw = os.environ.get("T3_LOOP_OWNER_TTL", str(_LOOP_OWNER_TTL_DEFAULT)).strip()
+    if not raw:
+        return _LOOP_OWNER_TTL_DEFAULT
+    try:
+        return max(60, int(raw))
+    except ValueError:
+        return _LOOP_OWNER_TTL_DEFAULT
+
+
 def _piggyback_slack_answer() -> None:
     """Drive one reactive Slack-answer cycle behind the dedicated lease CAS."""
     from teatree.core.models import LoopLease  # noqa: PLC0415
