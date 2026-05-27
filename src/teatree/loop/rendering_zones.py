@@ -20,10 +20,12 @@ _DISPOSITION_LABELS: dict[str, str] = {
     "label_removed": "label-removed",
 }
 
-# States that should not surface as anchors: only TERMINAL post-PR states.
-# Rich work states (``not_started``, ``in_review``) intentionally surface so
-# the statusline shows the real lifecycle, not just the started/tested/ready
-# slice (#1163).  ``closed`` isn't a valid FSM value but turns up in old data.
+# States that should not surface as anchors. Terminal post-PR states never
+# surface; ``not_started`` and ``in_review`` are also filtered (#1377) — the
+# anchor row is for "what am I working on right now". In-review work
+# already surfaces via PR/MR chips in the in-flight zone, and the
+# ``not_started`` backlog is not user-actionable from the statusline.
+# ``closed`` isn't a valid FSM value but turns up in old data.
 _NOISE_STATES = frozenset(
     {
         "merged",
@@ -31,15 +33,11 @@ _NOISE_STATES = frozenset(
         "shipped",
         "retrospected",
         "closed",
+        "not_started",
+        "in_review",
     },
 )
 _MAX_PER_STATE = 5
-
-# The ``not_started`` backlog gets a tighter cap than active-work states —
-# the user almost never needs to read past the first few items on a 40+
-# deep backlog row, and the prior 5-item dump pushed actively-shipping
-# work off-screen.
-_MAX_NOT_STARTED = 3
 
 # Tickets whose ``issue_url`` matches one of these are treated as PR-backed.
 # A PR-backed ticket that doesn't appear in the live PR set (action_needed
@@ -48,16 +46,16 @@ _MAX_NOT_STARTED = 3
 _PR_URL_RE = re.compile(r"/(?:merge_requests|pull|pulls)/\d+/?$")
 
 # Anchor-line state-group rendering order. Actively-shipping work comes
-# first so the operator sees their in-flight tickets before the long
-# ``not_started`` backlog. States not listed here render in their
-# original insertion order after the listed ones.
+# first; states not listed here render in their original insertion order
+# after the listed ones. With ``not_started`` and ``in_review`` filtered
+# (#1377) the surviving anchor states are the actively-shipping ones.
 _STATE_PRIORITY: tuple[str, ...] = (
     "started",
-    "in_review",
-    "ready",
+    "coded",
     "tested",
+    "ready",
+    "reviewed",
     "scoped",
-    "not_started",
 )
 
 
@@ -67,13 +65,6 @@ def _state_sort_key(state: str) -> tuple[int, str]:
         return (_STATE_PRIORITY.index(state), state)
     except ValueError:
         return (len(_STATE_PRIORITY), state)
-
-
-def _cap_for_state(state: str) -> int:
-    """Per-state item cap. ``not_started`` is tighter than the rest."""
-    if state == "not_started":
-        return _MAX_NOT_STARTED
-    return _MAX_PER_STATE
 
 
 def _link(text: str, url: object, *, colorize: bool) -> str:
@@ -133,15 +124,17 @@ def _render_ticket_line(
     live_pr_urls: set[str] | None = None,
     colorize: bool,
 ) -> str:
-    """Render the per-overlay anchor line — one row per state group.
+    """Render the per-overlay anchor line in the terse format (#1377).
 
-    Every state line (``ready:``, ``started:``, ``tested:``, …) uses the
-    same canonical item shape: ``#N (short desc) (!M1, !M2)`` where the
-    description is the cached tracker title truncated to
-    ``_ITEM_DESC_LEN`` and the MR refs are comma-separated and clickable
-    (#1015). The PR group falls back to a space-separated form when no
-    description is present, but in the canonical path every number is a
-    hyperlink.
+    Bare canonical shape ``[overlay] #N (short desc) !M1 !M2 …`` — the
+    state-group prefix (``started:``) is dropped because filtering
+    ``not_started`` and ``in_review`` into ``_NOISE_STATES`` reduces the
+    anchor row to the actively-shipping slice the user actually wants to
+    see at a glance.
+
+    State groups still render in priority order when multiple
+    actively-shipping states coexist (rare), but the ``state:`` label is
+    suppressed — the row reads as a flat list of canonical items.
 
     ``pr_map`` is the overlay's MR-iid → child-refs map; entries appear
     here either because the MR's iid equals the ticket number (legacy
@@ -167,21 +160,15 @@ def _render_ticket_line(
         )
     if not by_state:
         return ""
-    groups: list[str] = []
-    # Priority order: actively-shipping work first (``started``, ``in_review``,
-    # ``ready``) before the long backlog (``not_started``). The user's
-    # eyeballs hit the top of the line first; the backlog has been pushed
-    # the actionable bits off-screen before this reorder.
+    items: list[str] = []
     for state in sorted(by_state, key=_state_sort_key):
-        items = by_state[state]
-        cap = _cap_for_state(state)
-        shown = items[:cap]
-        overflow = len(items) - len(shown)
-        label = " ".join(shown)
+        bucket = by_state[state]
+        shown = bucket[:_MAX_PER_STATE]
+        overflow = len(bucket) - len(shown)
+        items.extend(shown)
         if overflow > 0:
-            label += f" (+{overflow} more)"
-        groups.append(f"{state}: {label}")
-    return f"{prefix}{' · '.join(groups)}"
+            items.append(f"(+{overflow} more)")
+    return f"{prefix}{' '.join(items)}"
 
 
 def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> list[str]:

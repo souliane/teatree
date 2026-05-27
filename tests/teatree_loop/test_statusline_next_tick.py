@@ -134,28 +134,12 @@ class TestFormatDuration:
 class TestAnchorStatePriorityOrder:
     """Anchor state groups render in priority order, not insertion order."""
 
-    def test_in_review_renders_before_not_started(self, tmp_path: Path) -> None:
-        # Reverse-insertion order so we know the renderer is sorting, not
-        # echoing input order: not_started first in input, in_review last.
+    def test_started_renders_before_coded(self, tmp_path: Path) -> None:
+        # With ``not_started`` and ``in_review`` filtered out of the anchor
+        # row (#1377), priority is asserted on the surviving
+        # actively-shipping states: ``started`` before ``coded``.
         actions = [
-            _active_ticket("1", "not_started", overlay="ov"),
-            _active_ticket("2", "not_started", overlay="ov"),
-            _active_ticket("100", "in_review", overlay="ov"),
-        ]
-        # Suppress the loop anchor — we are only asserting overlay-row order.
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
-            zones = zones_for(actions, colorize=False)
-        target = tmp_path / "statusline.txt"
-        render(zones, target=target, colorize=False)
-        body = target.read_text()
-        # ``in_review:`` block must appear in the line before ``not_started:``.
-        in_review_idx = body.index("in_review:")
-        not_started_idx = body.index("not_started:")
-        assert in_review_idx < not_started_idx, body
-
-    def test_started_renders_before_in_review(self, tmp_path: Path) -> None:
-        actions = [
-            _active_ticket("100", "in_review", overlay="ov"),
+            _active_ticket("100", "coded", overlay="ov"),
             _active_ticket("200", "started", overlay="ov"),
         ]
         with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
@@ -163,39 +147,26 @@ class TestAnchorStatePriorityOrder:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        started_idx = body.index("started:")
-        in_review_idx = body.index("in_review:")
-        assert started_idx < in_review_idx, body
+        # Terse format has no ``state:`` labels — assert on item order.
+        idx_200 = body.index("#200")
+        idx_100 = body.index("#100")
+        assert idx_200 < idx_100, body
 
 
-class TestNotStartedTightCap:
-    """``not_started`` caps at 3, with ``(+N more)`` overflow phrasing."""
+class TestActiveStateOverflowCap:
+    """Active-state items cap at 5 with ``(+N more)`` overflow phrasing."""
 
-    def test_not_started_caps_at_three(self, tmp_path: Path) -> None:
-        actions = [_active_ticket(str(i), "not_started", overlay="ov") for i in range(1, 11)]
+    def test_started_caps_at_five(self, tmp_path: Path) -> None:
+        actions = [_active_ticket(str(i), "started", overlay="ov") for i in range(1, 11)]
         with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        # First three IDs visible, 4th IS overflowed.
+        # First five IDs visible, 5 overflowed.
         assert "#1" in body
-        assert "#2" in body
-        assert "#3" in body
-        # Fourth not_started item is in the overflow tail, NOT inline.
-        # (#4 must NOT appear as a standalone token; the +N number does.)
-        # Overflow phrasing is the new ``(+N more)`` shape.
-        assert "(+7 more)" in body, body
-
-    def test_in_review_keeps_five_item_cap(self, tmp_path: Path) -> None:
-        actions = [_active_ticket(str(i), "in_review", overlay="ov") for i in range(1, 9)]
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
-            zones = zones_for(actions, colorize=False)
-        target = tmp_path / "statusline.txt"
-        render(zones, target=target, colorize=False)
-        body = target.read_text()
-        # 5 items visible, 3 overflowed.
-        assert "(+3 more)" in body, body
+        assert "#5" in body
+        assert "(+5 more)" in body, body
 
 
 class TestReadyOverflowPhrasing:

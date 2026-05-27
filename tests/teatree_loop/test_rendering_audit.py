@@ -89,21 +89,24 @@ def _my_pr(iid: int, *, overlay: str = "teatree", zone: str = "in_flight", **ext
 
 
 class TestActiveTicketAnchors:
-    """Anchors render one ``[ov] state: #N`` line per overlay, deduped."""
+    """Anchors render one terse line per overlay, deduped (#1377)."""
 
-    def test_renders_active_tickets_grouped_by_state(self) -> None:
+    def test_renders_active_tickets_in_terse_format(self) -> None:
         zones = zones_for(
             [_active("10", "coded"), _active("11", "coded"), _active("12", "started")],
             colorize=False,
         )
         text = _blob(zones.anchors)
         assert "[teatree]" in text
-        # NO_COLOR embeds the URL as ``#N <url>``; assert the two tickets
-        # appear under the same state group in order.
-        assert "coded: #10 " in text
+        # Terse format drops the ``state:`` prefix — all surviving actively-
+        # shipping items appear on the same line as bare ``#N`` tokens.
+        assert "#10" in text
         assert "#11" in text
-        assert "started: #12" in text
-        # Both states present in one line per overlay.
+        assert "#12" in text
+        # State-group prefix dropped (#1377).
+        assert "coded:" not in text
+        assert "started:" not in text
+        # One line per overlay.
         assert text.count("[teatree]") == 1
 
     def test_anchor_skips_noise_states(self) -> None:
