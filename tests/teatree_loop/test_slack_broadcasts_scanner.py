@@ -494,6 +494,136 @@ class TestClassifierExposesAuthorUsername(TestCase):
         assert states[0].merged is False
 
 
+class TestAutoAssignReviewerOnColleagueBroadcast(TestCase):
+    """Scanner emits ``review_request_in_slack`` per colleague open MR (#1384 scope).
+
+    The ``:eyes:`` reaction signals to other potential reviewers that the
+    user is claiming the MR — but without also assigning the user as
+    reviewer on the MR, no one picks it up and the author is blocked.
+    The scanner now emits the mechanical-assign signal alongside the
+    ``slack.review_intent`` dispatch signal on every colleague open MR,
+    skipping own MRs (per the author==self filter from the original #1384
+    fix). The existing mechanical handler
+    ``assign_gitlab_reviewer`` consumes the signal and calls
+    ``GitLabCodeHost.assign_reviewer`` idempotently.
+    """
+
+    CURRENT_USER = "adrien.cossa"
+    COLLEAGUE = "colleague.dev"
+
+    def test_colleague_broadcast_emits_assign_signal(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.COLLEAGUE),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        kinds = [s.kind for s in signals]
+        assert "slack.review_intent" in kinds
+        assert "review_request_in_slack" in kinds
+        assign_signals = [s for s in signals if s.kind == "review_request_in_slack"]
+        assert len(assign_signals) == 1
+        assert assign_signals[0].payload["mr_url"] == MR_OPEN
+        assert assign_signals[0].payload["reviewer_username"] == self.CURRENT_USER
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+    def test_own_broadcast_emits_no_assign_signal(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"my MR {MR_OPEN}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == []
+        assert backend.react_calls == []
+
+    def test_mixed_broadcast_assigns_only_colleague_mr(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"mixed: {MR_OPEN} {MR_OPEN_2}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+            MR_OPEN_2: MrState(url=MR_OPEN_2, merged=False, approved=False, author_username=self.COLLEAGUE),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        assign_signals = [s for s in signals if s.kind == "review_request_in_slack"]
+        assert len(assign_signals) == 1
+        assert assign_signals[0].payload["mr_url"] == MR_OPEN_2
+        # Both MRs still get review-intent dispatch — the t3:reviewer
+        # agent applies its own author==self skip before any review work.
+        review_intents = [s for s in signals if s.kind == "slack.review_intent"]
+        assert {s.payload["mr_url"] for s in review_intents} == {MR_OPEN, MR_OPEN_2}
+
+    def test_assign_signal_skipped_when_current_user_missing(self) -> None:
+        # Without a configured forge-side username, the scanner cannot
+        # know who to assign; the assign signal is suppressed and only
+        # the legacy review-intent dispatch fires.
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.COLLEAGUE),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user="",
+        )
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["slack.review_intent"]
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+    def test_all_merged_broadcast_emits_no_assign_signal(self) -> None:
+        # Merged broadcasts are acknowledged with white_check_mark and
+        # never need an assign — the work is done.
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"already shipped {MR_MERGED}", TS_A)]}
+        states = {
+            MR_MERGED: MrState(url=MR_MERGED, merged=True, approved=True, author_username=self.COLLEAGUE),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals if s.kind == "review_request_in_slack"] == []
+        assert backend.react_calls == [(CHANNEL, TS_A, "white_check_mark")]
+
+
 class TestScannerSkipsOnMissingMigration(TestCase):
     """Scanner skips gracefully when core migration 0028 hasn't been run (#1260).
 

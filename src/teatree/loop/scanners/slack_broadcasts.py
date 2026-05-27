@@ -365,7 +365,36 @@ class SlackBroadcastsScanner:
         ):
             return []
         self._react(row.channel, row.slack_ts, "eyes")
-        return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states]
+        signals: list[ScanSignal] = [
+            _signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states
+        ]
+        # #1384 scope: pair the ``:eyes:`` claim with a mechanical
+        # assign-as-reviewer on every colleague open MR. Without the
+        # assign, the ``:eyes:`` blocks other potential reviewers ("I'm
+        # on it") but no reviewer is actually attached to the MR and the
+        # author stalls. The existing mechanical handler
+        # ``assign_gitlab_reviewer`` (dispatch routes ``review_request_in_slack``
+        # → ``mechanical/assign_gitlab_reviewer``) preserves the existing
+        # reviewer list, so re-firing on a re-tick is a no-op.
+        if self.current_user:
+            signals.extend(
+                ScanSignal(
+                    kind="review_request_in_slack",
+                    summary=f"Auto-assign reviewer from broadcast: {state.url}",
+                    payload={
+                        "url": state.url,
+                        "mr_url": state.url,
+                        "channel": row.channel,
+                        "ts": row.slack_ts,
+                        "reviewer_username": self.current_user,
+                        "overlay": self.overlay,
+                        "broadcast_id": row.pk,
+                    },
+                )
+                for state in open_states
+                if state.author_username != self.current_user
+            )
+        return signals
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
