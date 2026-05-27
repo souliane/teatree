@@ -90,6 +90,7 @@ class TestEnsureRunning:
     def test_creates_container_when_missing(self) -> None:
         with (
             patch.object(redis_container, "status", return_value="missing"),
+            patch.object(redis_container, "_docker_tolerant", return_value=_completed()),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
             redis_container.ensure_running(db_count=24)
@@ -103,6 +104,7 @@ class TestEnsureRunning:
         with (
             patch.object(redis_container, "status", return_value="exited"),
             patch.object(redis_container, "_host_port_published", return_value=True),
+            patch.object(redis_container, "_docker_tolerant", return_value=_completed()),
             patch.object(redis_container, "_docker_checked") as mock,
         ):
             redis_container.ensure_running()
