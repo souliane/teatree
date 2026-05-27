@@ -539,10 +539,19 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         credentials missing), the operator can re-call ``ship()`` to retry.
         The worker's own state guard skips duplicate work if push already
         succeeded.
+
+        Two preflight guards run before any scheduling side effect, mirroring
+        each other: ``_refuse_if_worktree_dirty`` (#884) and the #88 DoD gate
+        (``check_local_e2e_dod`` — a UI-visible ticket must have a green
+        local-stack E2E artifact, or an explicit recorded override). Both
+        raise a :class:`InvalidTransitionError` subclass so the loop's outer
+        atomic rolls the advance back and the FSM stays put.
         """
+        from teatree.core.dod_gate import check_local_e2e_dod  # noqa: PLC0415
         from teatree.core.tasks import execute_ship  # noqa: PLC0415
 
         self._refuse_if_worktree_dirty("shipping")
+        check_local_e2e_dod(self)
         self._consume_pending_phase_tasks("shipping")
         ticket_pk = int(self.pk)
         transaction.on_commit(lambda: execute_ship.enqueue(ticket_pk))
