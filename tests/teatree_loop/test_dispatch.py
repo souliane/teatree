@@ -134,6 +134,22 @@ def test_unknown_kind_falls_back_to_in_flight() -> None:
     assert actions[0].zone == "in_flight"
 
 
+def test_outbound_audit_skipped_does_not_render_to_statusline() -> None:
+    """``outbound.audit_skipped`` is a credential-gap diagnostic, not user-actionable.
+
+    Without the drop, every unverifiable claim renders one statusline row per
+    tick — at scale, the in_flight zone fills with N copies of "No verifier
+    for <kind> overlay=<overlay>" and crowds out real signal (#1372).
+    """
+    signal = ScanSignal(
+        kind="outbound.audit_skipped",
+        summary="No verifier for slack_dm overlay=<default>",
+        payload={"claim_id": 1, "claim_kind": "slack_dm", "overlay": ""},
+    )
+    actions = dispatch([signal])
+    assert actions == []
+
+
 def test_payload_propagates_through_dispatch() -> None:
     payload: dict[str, object] = {"url": "https://example.com/mr/1"}
     actions = dispatch([ScanSignal(kind="reviewer_pr.new_sha", summary="x", payload=payload)])
