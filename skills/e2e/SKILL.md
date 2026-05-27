@@ -104,11 +104,30 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
 - Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory.
 
-## Post Testing Evidence on PR
+## Post Testing Evidence on the Ticket
 
-**Use `t3 <overlay> pr post-evidence` first.** If the CLI command handles uploading and posting, use it instead of manual API calls.
+**Use `t3 <overlay> e2e post-evidence` first.** It posts ONE structured comment on the **ticket** (work item / bug) — never on the MR, even when MRs are open. The deployed-environment proof belongs to the issue the work closes and stays attached after the MR merges.
 
-After confirming a feature works, embed screenshot(s) and video(s) **directly in the test plan comment** — not as a separate comment.
+The command refuses bad evidence before any upload or post:
+
+- missing `--before` / `--after` artifact
+- identical before == after (same path, or two paths with byte-identical contents)
+- `--env` outside `{dev, local}`
+- an unknown commit, or a dirty working tree (uncommitted changes ⇒ not reproducible)
+
+Flags (all keyword-only):
+
+| Flag | Required | Auto-detection |
+|---|---|---|
+| `--ticket` | no | pk / issue number / issue URL; falls back to the resolved worktree's ticket |
+| `--env` | yes | none — must be `dev` or `local` |
+| `--commit` | no | `git HEAD` of the resolved worktree |
+| `--before` | yes | none — path to the before artifact |
+| `--after` | yes | none — path to the after artifact |
+| `--video` | no | none — optional video artifact |
+| `--assertion` | yes | none — the feature claim the evidence proves |
+
+After confirming a feature works, embed screenshot(s) and video(s) **directly in the evidence comment** — not as a separate comment.
 
 ### Visual Comparison Format
 
@@ -135,12 +154,14 @@ With a design mockup available, use 3 columns:
 - Screenshots go below the section they verify, not at the bottom.
 - Write in first person, casual tone ("Tested on local...", "Works as expected").
 - Evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
-- **Update the existing test plan** — never post a second evidence comment.
+- **Idempotent on `(ticket, env, commit)`.** Each comment carries a hidden marker `<!-- t3-e2e-evidence env=<env> commit=<sha> -->` (renders invisibly). Re-running with the same env + commit edits that comment in place; a different commit or env posts a new comment. You never have to hand-dedup — the marker does it.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
 
 ### Evidence Source Integrity (Non-Negotiable)
 
 Evidence posted on tickets or MRs MUST come from the **deployed environment** (dev/staging), never from local builds. Violation is grounds for termination — it exposes the team to compliance and trust failures.
+
+The `dev`/`local` gate is now **machine-enforced** by `t3 <overlay> e2e post-evidence`: an `--env` outside `{dev, local}`, a missing/identical before-after pair, or an unknown/dirty commit is refused before any upload or post — so a fake or mislabelled evidence pair never reaches the ticket.
 
 **Prohibited evidence sources:**
 

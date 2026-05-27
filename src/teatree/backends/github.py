@@ -494,6 +494,43 @@ class GitHubCodeHost:
             )
         return result
 
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+        """List the comments on a GitHub issue.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns an empty list when the URL is not a recognised GitHub issue
+        URL — the caller treats "no comments" and "unresolvable" identically.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return []
+
+        repo = f"{match['owner']}/{match['repo']}"
+        data = _gh_api_get(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
+        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
+
+    def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+        """Edit an existing GitHub issue comment in place.
+
+        GitHub issue-comment ids are globally unique within a repo, edited
+        via ``/repos/{repo}/issues/comments/{id}`` (the issue number is not
+        part of the path). Returns ``{"error": ...}`` when the URL is not a
+        recognised GitHub issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        repo = f"{match['owner']}/{match['repo']}"
+        data = _gh_api_patch(
+            f"repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
     @staticmethod
     def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:
         """Out of scope for #936 — GitLab-only approval polling for now.
