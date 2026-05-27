@@ -84,6 +84,14 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.recorded": "in_flight",
 }
 
+# Diagnostic signal kinds that intentionally do NOT render to the statusline.
+# ``outbound.audit_skipped`` is emitted once per unverifiable claim per tick —
+# without this drop, N unverifiable claims fill the in_flight zone with N
+# identical rows ("No verifier for <kind> overlay=<overlay>") and crowd out
+# real signal (#1372). The signal is still emitted so internal counts work;
+# only the statusline rendering is suppressed.
+_STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
+
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
 
 
@@ -315,6 +323,8 @@ def _claim_red_mr_fix(signal: ScanSignal) -> bool:
 
 
 def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
+    if signal.kind in _STATUSLINE_DROP_KINDS:
+        return []
     conditional = _conditional_dispatch(signal)
     if conditional is not None:
         return conditional
