@@ -122,11 +122,19 @@ class MrState:
     surface; everything else (CI status, draft flag, reviewer list) is
     out of scope for #1131 — the existing reviewer-agent pipeline
     handles those once the URL reaches it.
+
+    ``author_username`` is the forge-side author handle (#1384) — GitLab
+    ``author.username`` or GitHub ``user.login``. The scanner compares it
+    to the configured ``current_user`` to skip ``:eyes:`` on broadcasts
+    whose open MRs are authored by the current user (own MRs do not need
+    the "I'm looking" signal to the review queue). Empty string when the
+    classifier cannot determine the author.
     """
 
     url: str
     merged: bool
     approved: bool
+    author_username: str = ""
 
 
 MrStateClassifier = Callable[[Sequence[str]], list[MrState]]
@@ -230,6 +238,13 @@ class SlackBroadcastsScanner:
     # disables auto-pickup so legacy callers keep their previous behaviour.
     user_slack_id: str = ""
     reviewer_username: str = ""
+    # #1384: forge-side username of the loop operator (GitLab/GitHub).
+    # When set, broadcasts whose open MRs are *all* authored by this user
+    # skip the ``:eyes:`` reaction and review-intent dispatch — own-MR
+    # broadcasts do not need the "I'm looking" queue signal. Resolved by
+    # the tick-jobs builder from ``overlay.config.get_gitlab_username()``.
+    # Empty string preserves legacy behaviour (no own-MR filter).
+    current_user: str = ""
     name: str = field(default="slack_broadcasts", init=False)
 
     def scan(self) -> list[ScanSignal]:
@@ -335,8 +350,22 @@ class SlackBroadcastsScanner:
             # where the reaction is already present.
             self._sweep_white_check_mark(row, states)
             return []
+        open_states = _open_subset(states)
+        # #1384: own-MR broadcasts get no ``:eyes:`` reaction and no
+        # review-intent dispatch. The ``:eyes:`` is a queue signal
+        # ("I'm looking at this colleague's MR") — meaningless on the
+        # user's own MRs and removed manually every time. The filter is
+        # all-or-nothing per broadcast: if even one open MR is by someone
+        # else, the broadcast still routes through the normal eyes+dispatch
+        # path so the colleague's MR isn't dropped.
+        if (
+            self.current_user
+            and open_states
+            and all(state.author_username == self.current_user for state in open_states)
+        ):
+            return []
         self._react(row.channel, row.slack_ts, "eyes")
-        return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in _open_subset(states)]
+        return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states]
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
@@ -470,7 +499,13 @@ class GlabGhMrStateClassifier:
         merged = state in {"merged", "closed_as_merged"}
         upvotes = int(data.get("upvotes", 0) or 0)
         approved = upvotes > 0 or merged
-        return MrState(url=url, merged=merged, approved=approved)
+        author_username = ""
+        author = data.get("author")
+        if isinstance(author, dict):
+            raw_username = author.get("username")
+            if isinstance(raw_username, str):
+                author_username = raw_username
+        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
     def _classify_github(self, url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
@@ -479,7 +514,7 @@ class GlabGhMrStateClassifier:
         env = {**os.environ, "GH_TOKEN": self.github_token} if self.github_token else None
         try:
             result = run_allowed_to_fail(
-                [gh, "pr", "view", url, "--json", "state,reviewDecision"],
+                [gh, "pr", "view", url, "--json", "state,reviewDecision,author"],
                 expected_codes=None,
                 env=env,
             )
@@ -497,7 +532,16 @@ class GlabGhMrStateClassifier:
         review_decision = str(data.get("reviewDecision", "")).upper()
         merged = state == "MERGED"
         approved = review_decision == "APPROVED" or merged
-        return MrState(url=url, merged=merged, approved=approved)
+        author_username = ""
+        author = data.get("author")
+        if isinstance(author, dict):
+            # ``gh pr view --json author`` returns ``{"login": ..., "id": ...}``
+            # (the GraphQL ``Actor`` interface); ``login`` is the GitHub
+            # handle the scanner needs to compare against ``current_user``.
+            raw_login = author.get("login")
+            if isinstance(raw_login, str):
+                author_username = raw_login
+        return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
 
 def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:

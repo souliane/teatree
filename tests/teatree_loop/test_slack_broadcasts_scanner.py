@@ -359,6 +359,141 @@ class TestGlabGhMrStateClassifierUsesRepoFlag:
         assert url not in cmd  # the full URL must NOT be passed as a positional
 
 
+class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
+    """Scanner skips ``:eyes:`` + dispatch when every open MR is authored by ``current_user`` (#1384).
+
+    The ``:eyes:`` reaction is a queue signal to colleagues that the
+    current user is reviewing their MR. On the user's own MR broadcasts
+    it is meaningless noise — the user removes it manually every time.
+    The fix filters at react-time: when every open MR in the broadcast
+    is authored by the configured ``current_user``, the scanner emits no
+    reaction and no ``slack.review_intent`` signal.
+    """
+
+    CURRENT_USER = "adrien.cossa"
+    COLLEAGUE = "colleague.dev"
+
+    def test_skips_eyes_when_sole_open_mr_is_own(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert backend.react_calls == []
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        assert row.classification == ScannedBroadcast.Classification.PENDING
+
+    def test_skips_eyes_when_all_open_mrs_are_own(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"my MRs: {MR_OPEN} {MR_OPEN_2}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+            MR_OPEN_2: MrState(url=MR_OPEN_2, merged=False, approved=False, author_username=self.CURRENT_USER),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert backend.react_calls == []
+
+    def test_reacts_eyes_when_any_open_mr_is_colleague(self) -> None:
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"mixed: {MR_OPEN} {MR_OPEN_2}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+            MR_OPEN_2: MrState(url=MR_OPEN_2, merged=False, approved=False, author_username=self.COLLEAGUE),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user=self.CURRENT_USER,
+        )
+
+        signals = scanner.scan()
+
+        # One own MR + one colleague MR — the colleague MR forces the
+        # broadcast through the normal eyes+dispatch path. Both signals
+        # emit so the dispatcher can apply its own per-MR filter.
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
+
+    def test_legacy_no_current_user_still_reacts_eyes(self) -> None:
+        # Empty ``current_user`` preserves pre-#1384 behaviour so an
+        # overlay that hasn't configured a username keeps emitting the
+        # queue signal on every pending broadcast.
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {
+            MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username=self.CURRENT_USER),
+        }
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_user="",
+        )
+
+        signals = scanner.scan()
+
+        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert len(signals) == 1
+
+
+class TestClassifierExposesAuthorUsername(TestCase):
+    """``GlabGhMrStateClassifier`` reads ``author.username`` from glab JSON (#1384).
+
+    The scanner's own-MR filter needs forge-side identity. The classifier
+    is the single ingestion point — anything that doesn't surface
+    ``author.username`` here cannot be filtered downstream.
+    """
+
+    def test_gitlab_classifier_surfaces_author_username(
+        self,
+    ) -> None:
+        url = "https://gitlab.example.com/team/project/-/merge_requests/7446"
+
+        def fake_run(cmd, *, expected_codes=None, env=None):
+            _ = (expected_codes, env)
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=0,
+                stdout='{"state": "opened", "upvotes": 0, "author": {"username": "adrien.cossa"}}',
+                stderr="",
+            )
+
+        with (
+            patch("teatree.utils.run.run_allowed_to_fail", side_effect=fake_run),
+            patch("shutil.which", return_value="/usr/bin/glab"),
+        ):
+            classifier = GlabGhMrStateClassifier(glab_token="glpat-fake")
+            states = classifier([url])
+
+        assert len(states) == 1
+        assert states[0].author_username == "adrien.cossa"
+        assert states[0].merged is False
+
+
 class TestScannerSkipsOnMissingMigration(TestCase):
     """Scanner skips gracefully when core migration 0028 hasn't been run (#1260).
 
