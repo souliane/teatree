@@ -119,6 +119,7 @@ class TestTicketTransitions(TestCase):
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
+    @pytest.mark.timeout(30)
     def test_persist_delivery_state(self) -> None:
         ticket = Ticket.objects.create()
         _attach_shippable_worktree(ticket, self._tmp_path)
