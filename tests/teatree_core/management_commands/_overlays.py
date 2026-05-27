@@ -144,6 +144,21 @@ class ForbidCloseKeywordsOverlay(FullOverlay):
         self.config.forbid_close_keywords = True
 
 
+class CloseTicketOverlay(FullOverlay):
+    """teatree-style overlay that auto-closes its issue via ``Closes #N``.
+
+    Sets ``config.mr_close_ticket`` so the closes-issue cross-check gate (#83)
+    enforces. ``FullOverlay`` leaves it at the ``False`` default, so the gate
+    is a no-op there.
+    """
+
+    config = OverlayConfig()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config.mr_close_ticket = True
+
+
 class _MinimalMetadata(OverlayMetadata):
     def get_tool_commands(self) -> list[ToolCommand]:
         return []
@@ -304,6 +319,9 @@ FULL_OVERLAY = "tests.teatree_core.management_commands._overlays.FullOverlay"
 
 
 FORBID_CLOSE_KEYWORDS_OVERLAY = "tests.teatree_core.management_commands._overlays.ForbidCloseKeywordsOverlay"
+
+
+CLOSE_TICKET_OVERLAY = "tests.teatree_core.management_commands._overlays.CloseTicketOverlay"
 
 
 NESTED_OVERLAY = "tests.teatree_core.management_commands._overlays.NestedRepoOverlay"
