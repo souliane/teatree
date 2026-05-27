@@ -621,8 +621,10 @@ def test_active_tickets_shown_in_anchors() -> None:
     zones = _zones_for(actions)
     anchor_texts = [a if isinstance(a, str) else a.text for a in zones.anchors]
     assert len(anchor_texts) == 1
-    assert "started: #123" in anchor_texts[0]
-    assert "coded: #456" in anchor_texts[0]
+    # Terse format (#1377): state-group prefix dropped, all surviving items
+    # render flat under the overlay tag.
+    assert "#123" in anchor_texts[0]
+    assert "#456" in anchor_texts[0]
     assert "[acme]" in anchor_texts[0]
 
 

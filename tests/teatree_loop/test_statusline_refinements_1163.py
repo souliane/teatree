@@ -43,9 +43,15 @@ def _statusline_action(spec: dict[str, str | bool]) -> DispatchAction:
 
 
 class TestRichStateCoverage:
-    """Refinement 2: rich state coverage (drop only terminal states)."""
+    """Refinement 2 (pre-#1377): rich state coverage included ``in_review`` and ``not_started``.
 
-    def test_in_review_state_surfaces(self, tmp_path: Path) -> None:
+    #1377 reverses that decision — the anchor row is now strictly the
+    actively-shipping slice (``not_started`` and ``in_review`` moved into
+    ``_NOISE_STATES``). The new contract is pinned in
+    ``test_statusline_terse_format``; this class now pins the inverse.
+    """
+
+    def test_in_review_state_filtered_out(self, tmp_path: Path) -> None:
         action = _statusline_action(
             {
                 "overlay": "overlay-a",
@@ -59,10 +65,10 @@ class TestRichStateCoverage:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "in_review:" in body or "in_review" in body
-        assert "#100" in body
+        assert "in_review" not in body
+        assert "#100" not in body
 
-    def test_not_started_state_surfaces(self, tmp_path: Path) -> None:
+    def test_not_started_state_filtered_out(self, tmp_path: Path) -> None:
         action = _statusline_action(
             {
                 "overlay": "overlay-a",
@@ -76,7 +82,7 @@ class TestRichStateCoverage:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "#200" in body
+        assert "#200" not in body
 
     def test_terminal_states_still_filtered(self, tmp_path: Path) -> None:
         # ``delivered`` / ``merged`` / ``shipped`` / ``retrospected`` /
@@ -100,11 +106,11 @@ class TestRichStateCoverage:
         for n in range(300, 305):
             assert f"#{n}" not in body
 
-    def test_noise_states_no_longer_includes_in_review_or_not_started(self) -> None:
-        # The constant declares the renderer's filter — pin its contents so
-        # we don't silently regress to dropping rich states again.
-        assert "in_review" not in _NOISE_STATES
-        assert "not_started" not in _NOISE_STATES
+    def test_noise_states_includes_in_review_and_not_started(self) -> None:
+        # #1377 moved both states into the noise set so the anchor row stays
+        # the actively-shipping slice. Inverse of the pre-#1377 contract.
+        assert "in_review" in _NOISE_STATES
+        assert "not_started" in _NOISE_STATES
 
 
 class TestItemFormatDescriptionAlwaysShown:
