@@ -437,6 +437,128 @@ def test_post_issue_comment_returns_empty_dict_when_post_returns_none() -> None:
     assert result == {}
 
 
+def test_list_issue_comments_hits_notes_endpoint() -> None:
+    """list_issue_comments GETs the issue notes endpoint with per_page=100."""
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = [{"id": 1, "body": "a"}, {"id": 2, "body": "b"}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
+
+    assert result == [{"id": 1, "body": "a"}, {"id": 2, "body": "b"}]
+    client.get_json.assert_called_once_with("projects/42/issues/7/notes?per_page=100")
+
+
+def test_list_issue_comments_supports_work_items_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_issue_comments(issue_url="https://gitlab.com/group/sub/repo/-/work_items/469")
+
+    assert result == []
+    client.resolve_project.assert_called_once_with("group/sub/repo")
+    client.get_json.assert_called_once_with("projects/42/issues/469/notes?per_page=100")
+
+
+def test_list_issue_comments_returns_empty_on_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/merge_requests/12")
+
+    assert result == []
+    client.get_json.assert_not_called()
+
+
+def test_list_issue_comments_returns_empty_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
+
+    assert result == []
+    client.get_json.assert_not_called()
+
+
+def test_list_issue_comments_returns_empty_when_get_returns_non_list() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"error": "boom"}
+    host = GitLabCodeHost(client=client)
+
+    result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
+
+    assert result == []
+
+
+def test_update_issue_comment_puts_to_note_endpoint() -> None:
+    """update_issue_comment PUTs the new body to the note's endpoint."""
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"id": 55, "body": "new"}
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        comment_id=55,
+        body="new",
+    )
+
+    assert result == {"id": 55, "body": "new"}
+    client.put_json.assert_called_once_with(
+        "projects/42/issues/7/notes/55",
+        {"body": "new"},
+    )
+
+
+def test_update_issue_comment_rejects_non_issue_url() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/merge_requests/12",
+        comment_id=55,
+        body="new",
+    )
+
+    assert result == {"error": "Not a GitLab issue URL: https://gitlab.com/org/repo/-/merge_requests/12"}
+    client.put_json.assert_not_called()
+
+
+def test_update_issue_comment_returns_error_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        comment_id=55,
+        body="new",
+    )
+
+    assert result == {"error": "Could not resolve project: org/repo"}
+    client.put_json.assert_not_called()
+
+
+def test_update_issue_comment_returns_empty_dict_when_put_returns_none() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    result = host.update_issue_comment(
+        issue_url="https://gitlab.com/org/repo/-/issues/7",
+        comment_id=55,
+        body="new",
+    )
+
+    assert result == {}
+
+
 def test_get_pr_open_state_maps_opened_to_open() -> None:
     from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
 
