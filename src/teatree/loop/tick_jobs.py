@@ -497,6 +497,11 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     :func:`teatree.config.discover_active_overlay` rather than baked
     into the scanner module. Falls back to the canonical post-0027
     overlay name (``t3-teatree``) when no overlay is registered.
+
+    #1391: ``ask_before_creating_news_tickets`` (default true) is the
+    ask-gate flag threaded into the scanner so the queued task instructs
+    the skill to record candidates for approval instead of auto-filing
+    issues.
     """
     settings = load_config().user
     if settings.scanning_news_disabled:
@@ -507,6 +512,7 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
         overlay_name=overlay_name,
         skill=settings.scanning_news_skill,
         cadence_hours=settings.scanning_news_cadence_hours,
+        require_approval=settings.ask_before_creating_news_tickets,
     )
 
 
