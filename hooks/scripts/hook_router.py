@@ -1146,6 +1146,80 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
+
+
+def handle_banned_terms_pretool(data: dict) -> bool:
+    """Refuse a non-commit publish whose body carries a banned term.
+
+    Sibling of the #1213 quote-scanner gate. The commit-only
+    ``check-banned-terms.sh`` pre-commit hook misses ``gh issue/pr
+    create|edit|comment``, ``glab mr|issue note|create`` and the
+    ``gh api`` / ``glab api`` REST posting paths — exactly where
+    overlay/customer terms have leaked on this PUBLIC repo. This gate
+    reuses the #1213 ``_command_parser`` publish-surface detection + body
+    extraction, then delegates the matching to the SAME
+    ``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list
+    (no new term config, no reimplemented matching).
+
+    A banned-term match ⇒ refuse via ``permissionDecision: deny`` + a
+    reason naming the matched term and pointing at the
+    ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override.
+
+    Fail-open on any internal error: a crashing hook is worse than no
+    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
+    the sibling ``src/`` directory (the hook script runs in the user's
+    session shell with no guarantee that ``teatree`` is already
+    importable, #1314) and swallows any exception, returning ``False``.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_banned_terms_pretool(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_banned_terms_pretool(data: dict) -> bool:
+    """Banned-terms inner body — assumes ``teatree`` is already importable."""
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
+
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    if banned_terms_scanner.has_override(tool_name, tool_input):
+        return False
+
+    term = banned_terms_scanner.scan_text(payload)
+    if term is None:
+        return False
+
+    json.dump(
+        {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": banned_terms_scanner.format_block_message(term),
+        },
+        sys.stdout,
+    )
+    return True
+
+
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
 #
 # Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -4203,6 +4277,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
         handle_quote_scanner_pretool,
+        handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,

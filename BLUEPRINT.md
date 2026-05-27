@@ -403,6 +403,7 @@ graph TD
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
+    teatree.hooks --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.repo_mode --> teatree.paths
     teatree.repo_mode --> teatree.utils
@@ -492,7 +493,6 @@ graph TD
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
-    teatree.hooks
     teatree.skill_schema
     teatree.slack_mrkdwn
     teatree.skill_deps
