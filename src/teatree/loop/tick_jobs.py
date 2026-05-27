@@ -256,12 +256,19 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
         return None
     glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
     github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    # #1384: pass the user's forge username so the scanner skips :eyes: on
+    # their own-author MR broadcasts. Empty (no getter / unconfigured) leaves
+    # the filter off, preserving react-on-every-pending for legacy overlays.
+    current_gitlab_username = (
+        overlay.config.get_gitlab_username() if hasattr(overlay.config, "get_gitlab_username") else ""
+    )
     return SlackBroadcastsScanner(
         backend=backend.messaging,
         channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
         classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
         overlay=backend.name,
+        current_gitlab_username=current_gitlab_username,
     )
 
 
