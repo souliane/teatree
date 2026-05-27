@@ -202,6 +202,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "pull_main_clone_disabled": bool,
+    "pull_main_clone_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -381,6 +383,15 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
+    # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
+    # has elapsed, so a clone never drifts behind after a merge and
+    # poisons ``git show`` / ``grep`` investigations. Hourly default keeps
+    # the clones current without spamming each work repo's remote on every
+    # tick. Set ``pull_main_clone_disabled = true`` in ``[teatree]`` (or
+    # per-overlay) as the escape hatch.
+    pull_main_clone_disabled: bool = False
+    pull_main_clone_cadence_hours: int = 1
 
 
 @dataclass
@@ -447,6 +458,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
+        pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
