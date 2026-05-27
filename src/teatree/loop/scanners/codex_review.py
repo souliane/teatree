@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
 from teatree.core.models.codex_review_marker import CodexReviewMarker
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -275,19 +275,7 @@ def _as_str(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _classify_gh_stderr(stderr: str) -> ScannerErrorClass:
-    """Classify a non-zero ``gh`` stderr — mirrors :func:`pr_sweep._classify_gh_stderr`."""
-    lower = stderr.lower()
-    rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
-    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
-    network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
-    if any(marker in lower for marker in rate_limit_markers):
-        return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower for marker in auth_markers):
-        return ScannerErrorClass.AUTH
-    if any(marker in lower for marker in network_markers):
-        return ScannerErrorClass.NETWORK
-    return ScannerErrorClass.UNKNOWN
+_classify_gh_stderr = classify_gh_stderr
 
 
 __all__ = [
