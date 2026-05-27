@@ -22,6 +22,7 @@ statusline_chain = []                      # extra statusline scripts (glob patt
 repo_mode = ""                             # solo/collaborative working mode (#550 item 4); "" = auto-detect from git shortlog history
 claude_chrome = true                       # spawn `claude` with --chrome so sessions can drive the browser
 agent_signature = false                    # never append agent identity (Co-Authored-By, "Sent using …") to user-on-behalf posts
+max_concurrent_local_stacks = 0            # #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded, default)
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -113,6 +114,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — registered as overridable, but the live scanner reads the global `[teatree]` value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay overrides are accepted in the registry but not yet consumed by `_scanning_news_scanner` in `loop/tick_jobs.py`) |
 | `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as `scanning_news_disabled` above |
 | `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as `scanning_news_disabled` above |
+| `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into

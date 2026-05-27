@@ -15,6 +15,7 @@ from django_typer.management import TyperCommand, command
 from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
+from teatree.core.local_stack_gate import refuse_if_limit_exceeded
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
     _die,
@@ -332,6 +333,7 @@ class Command(TyperCommand):
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
         failures: list[str] = []
+        refuse_if_limit_exceeded(next(iter(worktrees), None), write_err=self.stderr.write)
         for wt in worktrees:
             self.stdout.write(f"  Starting {wt.repo_path}…")
             commands = list(overlay.get_run_commands(wt))
@@ -345,8 +347,7 @@ class Command(TyperCommand):
         if failures:
             _die(self.stderr.write, f"  Failed: {', '.join(failures)}")
 
-        total = 0
-        total_failures = 0
+        total, total_failures = 0, 0
         for wt in worktrees:
             probes = overlay.get_readiness_probes(wt)
             if not probes:
