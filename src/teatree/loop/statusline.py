@@ -3,6 +3,7 @@ import re
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import starmap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -192,47 +193,53 @@ def availability_anchor(mode: str, queued: int) -> str:
     return "mode=away"
 
 
-def _live_loop_names() -> list[tuple[str, str]]:
-    """Return ``(loop_name, session_id)`` for every currently-live LoopLease.
+def _live_loop_leases() -> list[tuple[str, datetime | None]]:
+    """Return ``(loop_name, acquired_at)`` for every currently-live LoopLease.
 
     Isolated as a thin DB-read seam so :func:`live_loops_anchor` stays a
     pure formatter — tests stub this function rather than constructing
     LoopLease fixtures, and the renderer keeps a single try/except gate
-    around it for fail-open semantics.
+    around it for fail-open semantics. ``acquired_at`` is ``None`` for a
+    lease row that has never recorded an acquire (no tick yet); the
+    renderer then drops the per-loop countdown for that loop.
     """
     from django.apps import apps  # noqa: PLC0415
     from django.utils import timezone  # noqa: PLC0415
 
     lease_model = apps.get_model("core", "LoopLease")
-    rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id").order_by("name")
-    return [(row.name, row.session_id) for row in rows]
+    rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
+    return [(row.name, row.acquired_at) for row in rows]
 
 
-def _loop_tick_acquired_at() -> datetime | None:
-    """Return the most recent ``acquired_at`` for the ``loop-tick`` lease.
+# Per-loop cadence resolution (#1400). Each named loop ticks on its own
+# schedule, so the next-tick countdown is ``acquired_at + cadence`` with the
+# loop's own cadence — not a single shared value. Unknown / future loops fall
+# back to the ``loop-tick`` cadence so a newly-added loop surfaces without a
+# code change here. The per-loop cadence readers live next to each loop's
+# owning module; this is the single place that maps a loop name to its reader.
+def _cadence_for_loop(name: str) -> int:
+    """Return the cadence in seconds for the named loop (``loop-tick`` fallback)."""
+    if name == "loop-slack-answer":
+        from teatree.loop.tick_piggyback import _slack_answer_cadence_seconds  # noqa: PLC0415
 
-    Isolated as a thin DB-read seam (mirrors :func:`_live_loop_names`) so
-    :func:`live_loops_anchor` stays pure and tests stub this directly
-    rather than constructing LoopLease fixtures with timestamps.
+        return _slack_answer_cadence_seconds()
+    if name == "loop-self-improve":
+        from teatree.loop.tick_piggyback import _self_improve_cadence_seconds  # noqa: PLC0415
 
-    Returns ``None`` when no row exists yet (no tick has ever fired) so
-    the renderer can render a ``last tick: never`` fallback instead of
-    pretending to know.
-    """
-    from django.apps import apps  # noqa: PLC0415
+        return _self_improve_cadence_seconds()
+    if name == "loop-owner":
+        from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds  # noqa: PLC0415
 
-    lease_model = apps.get_model("core", "LoopLease")
-    row = lease_model.objects.filter(name="loop-tick").values("acquired_at").first()
-    if row is None:
-        return None
-    return row.get("acquired_at")
+        return _loop_owner_ttl_seconds()
+    return _cadence_seconds()
 
 
 def _cadence_seconds() -> int:
-    """Return the resolved loop cadence in seconds.
+    """Return the resolved ``loop-tick`` cadence in seconds.
 
     Isolated as a seam so tests can stub it without spinning up the
     full config layer; production reads :func:`teatree.config.cadence_seconds`.
+    Doubles as the fallback cadence for loops with no dedicated reader.
     """
     from teatree.config import cadence_seconds  # noqa: PLC0415
 
@@ -265,25 +272,31 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
 
 
 def live_loops_anchor() -> list[str]:
-    """Return one consolidated dim anchor line summarising live loops.
+    """Return one dedicated dim anchor line listing every live loop (#1400).
 
     Single line, prepended at the top of the statusline so the user's
-    "where is the loop right now?" question is answered with one glance:
+    "which loops are live and when do they tick?" question is answered
+    with one glance:
 
-        ``loop · next tick in 3m12s · 5 loops live``
+        ``loop · my-prs 11m · tickets 11m · slack-answer 1m``
 
-    Components, in order:
+    Each live :class:`~teatree.core.models.LoopLease` contributes one
+    ``<short-name> <next-tick>`` chunk:
 
-    *   ``next tick in <duration>`` when the ``loop-tick`` lease has fired
-        at least once and a cadence is configured; the next-tick instant
-        is ``acquired_at + cadence_seconds``. ``next tick due`` when the
-        deadline has already passed (the next ``t3 loop tick`` is overdue
-        but no tick has acquired the lease yet, e.g. cron paused).
-        ``last tick: never`` when no row exists yet (no tick has fired).
-    *   ``<N loops live>`` — the headline number, deduped per-loop.
-        Replaces the prior one-line-per-loop dump (``loop:tick``,
-        ``loop:owner``, …) which the user explicitly did not want at the
-        top of the statusline.
+    *   ``<short-name>`` — the lease name with its ``loop-`` prefix
+        stripped (``loop-my-prs`` → ``my-prs``), so the user reads which
+        loops are running, not an opaque count.
+    *   ``<next-tick>`` — the time until that loop's next tick as a
+        RELATIVE duration in whole minutes (``11m``), never a clock time.
+        Each loop has its own cadence (:func:`_cadence_for_loop`), so a
+        fast reactive loop and a slow self-improve loop show different
+        countdowns. The chunk is name-only when the lease has no recorded
+        ``acquired_at`` yet (no tick fired) so we never invent a number we
+        can't compute. ``due`` replaces the duration when overdue.
+
+    The prior ``next tick in <duration> · N loops live`` shape is gone:
+    the bare count said neither *which* loops nor *when* they tick, and the
+    single duration sat detached from the loops it described.
 
     Returns ``[]`` when no loop is live — silences the line entirely on
     a quiet machine. Fails open: any DB / import error degrades to ``[]``
@@ -295,43 +308,50 @@ def live_loops_anchor() -> list[str]:
     a caller-side change.
     """
     try:
-        live_names = _live_loop_names()
+        leases = _live_loop_leases()
     except Exception:  # noqa: BLE001
         return []
-    if not live_names:
+    if not leases:
         return []
 
-    parts: list[str] = ["loop"]
-    parts.extend(_next_tick_parts())
-    parts.append(f"{len(live_names)} loops live")
-    return [" · ".join(parts)]
+    chunks = list(starmap(_loop_chunk, leases))
+    return [" · ".join(["loop", *chunks])]
 
 
-def _next_tick_parts() -> list[str]:
-    """Return the ``next tick in <duration>`` / fallback fragments.
+def _short_loop_name(name: str) -> str:
+    """Strip the ``loop-`` prefix so ``loop-my-prs`` reads as ``my-prs``."""
+    return name.removeprefix("loop-")
 
-    Empty list when nothing useful is queryable (no cadence, no tick
-    history). Fails open on every DB / config read — the line drops the
-    fragment rather than refusing to render.
+
+def _loop_chunk(name: str, acquired_at: datetime | None) -> str:
+    """Render one ``<short-name> <next-tick>`` chunk for a live loop."""
+    tick = _next_tick_minutes(name, acquired_at)
+    suffix = f" {tick}" if tick else ""
+    return f"{_short_loop_name(name)}{suffix}"
+
+
+def _next_tick_minutes(name: str, acquired_at: datetime | None) -> str:
+    """Return *name*'s relative next-tick as whole minutes (``11m`` / ``due``).
+
+    Empty string when nothing useful is queryable (no acquire timestamp, no
+    resolvable cadence) — the caller then renders a name-only chunk rather
+    than invent a duration. Fails open on every config read.
     """
-    try:
-        acquired_at = _loop_tick_acquired_at()
-    except Exception:  # noqa: BLE001
-        return []
     if acquired_at is None:
-        return ["last tick: never"]
+        return ""
     try:
-        cadence = _cadence_seconds()
+        cadence = _cadence_for_loop(name)
     except Exception:  # noqa: BLE001
-        return []
+        return ""
     from django.utils import timezone  # noqa: PLC0415
 
     now = timezone.now()
     next_tick_at = acquired_at + timedelta(seconds=cadence)
     delta_seconds = int((next_tick_at - now).total_seconds())
     if delta_seconds <= 0:
-        return ["next tick due"]
-    return [f"next tick in {_format_duration(delta_seconds)}"]
+        return "due"
+    minutes = max(1, round(delta_seconds / _SECONDS_PER_MINUTE))
+    return f"{minutes}m"
 
 
 _SECONDS_PER_MINUTE = 60
