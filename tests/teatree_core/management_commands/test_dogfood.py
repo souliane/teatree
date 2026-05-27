@@ -237,10 +237,11 @@ class TestNotifyFailureBody:
 class TestNotifyFailureRouting:
     """Exercise the ``_notify_failure`` helper itself (#1308)."""
 
-    def test_notify_failure_routes_to_notify_user(self) -> None:
+    def test_notify_failure_routes_to_verified_delivery_wrapper(self) -> None:
+        """The smoke-failure DM goes through the #1181 verified-delivery wrapper."""
         from teatree.core.management.commands.dogfood import _notify_failure  # noqa: PLC0415
 
-        with patch("teatree.core.notify.notify_user") as mock_notify:
+        with patch("teatree.messaging.notify_with_fallback") as mock_notify:
             _notify_failure(
                 summary_text="dogfood smoke provision_failed",
                 failing_step="worktree_provision",
@@ -256,7 +257,7 @@ class TestNotifyFailureRouting:
     def test_notify_failure_swallows_notify_exception(self) -> None:
         from teatree.core.management.commands.dogfood import _notify_failure  # noqa: PLC0415
 
-        with patch("teatree.core.notify.notify_user", side_effect=RuntimeError("slack down")):
+        with patch("teatree.messaging.notify_with_fallback", side_effect=RuntimeError("slack down")):
             # Best-effort — the helper must not propagate notify failures.
             _notify_failure(
                 summary_text="dogfood smoke provision_failed",

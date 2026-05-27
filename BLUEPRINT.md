@@ -216,6 +216,8 @@ Review threads are classified `waiting_reviewer` / `needs_reply` / `addressed`. 
 
 Posting discipline (#1207): `t3 review post-comment` defaults to creating a DRAFT and DMs the user the link; the colleague-visible `--live` path is gated on a single-use, MR-URL-scoped `LivePostApproval` minted by `t3 review approve-live-post <mr-url> --slack-ts <ts>` after the Slack DM at that timestamp is verified (from the user, recent within 15 min, contains an explicit approval phrase). The historical immediate-post default is retired; CLI enforces draft-by-default rather than relying on prose discipline.
 
+Verified-delivery notify wrapper ([#1181](https://github.com/souliane/teatree/issues/1181)): `teatree.messaging.notify_with_fallback` is the resilient bot→user DM egress — it tries the canonical `notify_user` path first and, on a transport `FAILED` (the silent-rc=1 class under [#1173](https://github.com/souliane/teatree/issues/1173)), falls back to a direct messaging-backend send that is round-trip verified via `fetch_message` before being treated as delivered. A `NOOP` (nothing configured) is not recoverable and does not fall back. The `BotPing.transport` field records which path landed the DM (`primary`/`fallback`); `t3 <overlay> notify send` surfaces the recorded failure reason on rc=1 so delivery failures stay diagnosable at the CLI edge. The loop/CLI bot→user INFO call sites route through this wrapper; `teatree.core` callers stay on `notify_user` (the module graph forbids a `core → messaging` edge).
+
 Review-shape audit (#1206): `t3 review run <MR_URL>` is the read-only entry point reviewer sub-agents call before scanning a diff. It fetches MR metadata, classifies complexity, counts existing-review state (open discussions + draft notes + approvals), and emits a structured JSON summary so every reviewer starts from the same shape rather than improvising. The command never publishes — it stays outside the on-behalf surface. GitHub PR URLs return `unsupported_forge` (exit 2) deterministically until a parallel GitHub backend lands.
 
 Structured-evidence gate (#1280): `t3 review post-comment` and `post-draft-note` refuse a finding whose body matches an "X is missing/wrong/broken/stale" pattern unless an accompanying `FindingEvidence` record (passed via `--evidence-json '{...}'`) carries verified receipts. The schema fields are `master_check_paths`, `ticket_dep_refs`, `helper_indirection_paths`, `recent_merge_sweep_query`, and `confidence` (`verified` | `speculative`); the gate passes only when `confidence='verified'` AND at least one of `master_check_paths` or `ticket_dep_refs` is non-empty. Implemented in `teatree.cli.review_evidence_gate`; runs alongside the on-behalf (#960), colleague-MR shape (#1114), and TODO-anchor (#1186) sibling gates inside `ReviewService._run_pre_publish_gates`.
@@ -456,6 +458,7 @@ graph TD
     teatree.cli --> teatree.memory_audit
     teatree.cli --> teatree.on_behalf_gate
     teatree.cli --> teatree.outbound_claim
+    teatree.cli --> teatree.messaging
     teatree.eval --> teatree.core
     teatree.eval --> teatree.utils
     teatree.core.management --> teatree.core
@@ -464,6 +467,7 @@ graph TD
     teatree.core.management --> teatree.config
     teatree.core.management --> teatree.docker
     teatree.core.management --> teatree.loop
+    teatree.core.management --> teatree.messaging
     teatree.core.management --> teatree.paths
     teatree.core.management --> teatree.types
     teatree.core.management --> teatree.utils
@@ -475,6 +479,7 @@ graph TD
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
     teatree.loop --> teatree.notify
+    teatree.loop --> teatree.messaging
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
@@ -482,6 +487,9 @@ graph TD
     teatree.identity --> teatree.config
     teatree.on_behalf_gate --> teatree.config
     teatree.notify --> teatree.core
+    teatree.messaging --> teatree.core
+    teatree.messaging --> teatree.notify
+    teatree.messaging --> teatree.backends
     teatree.outbound_claim --> teatree.core
     teatree.settings --> teatree.config
     teatree.settings --> teatree.paths
