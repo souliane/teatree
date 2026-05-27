@@ -42,7 +42,7 @@ depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.hooks"
-depends_on = []
+depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.timeouts"
