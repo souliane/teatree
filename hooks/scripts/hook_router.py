@@ -1669,6 +1669,98 @@ def handle_track_todos(data: dict) -> None:
     todos_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+# ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
+#
+# Issue #778 (reopened): the PreCompact snapshot pinned the loop
+# tick-owner (#786 WS3) but NOT ad-hoc background sub-agents an
+# orchestrator dispatches via the ``Agent`` tool. The dispatched
+# agentId is the handle ``SendMessage`` needs to resume/steer/collect a
+# running agent; it lives only in the conversation and is lost on
+# auto-compaction, orphaning the agent. Mirror the #970 ``TodoWrite``
+# capture: on every ``Agent`` PostToolUse, append the agentId + its
+# role/description to ``<session>.agents`` so the snapshot can quote the
+# roster back. Each line is ``<agentId>\t<role>`` — append-only, deduped
+# on agentId, so a multi-agent fan-out accumulates rather than clobbers.
+
+
+_AGENT_ID_KEYS = ("agentId", "agent_id", "id")
+
+
+def _agent_id_from_response(tool_response: object) -> str:
+    """Extract the dispatched agentId from an ``Agent`` PostToolUse payload.
+
+    The harness response shape is not contractually fixed, so probe the
+    known id-bearing keys on a dict response (``agentId`` / ``agent_id``
+    / ``id``). Returns ``""`` when none is present — the caller then
+    falls back to scanning the harness tasks dir.
+    """
+    from typing import cast  # noqa: PLC0415
+
+    if not isinstance(tool_response, dict):
+        return ""
+    response = cast("dict[str, object]", tool_response)
+    for key in _AGENT_ID_KEYS:
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _newest_task_agent_id() -> str:
+    """Scan the harness tasks output dir for the newest ``a*`` task id.
+
+    Fallback used only when the PostToolUse payload does not expose the
+    agentId. The harness writes one ``<agentId>.output`` file per
+    dispatched task under ``CLAUDE_TASKS_DIR`` (or
+    ``~/.claude/tasks``); the dispatched sub-agent's id is ``a``-prefixed.
+    Returns the most-recently-modified match, or ``""`` when the dir is
+    absent / has no match. Never raises — capture must never block the
+    orchestrator.
+    """
+    tasks_dir = Path(os.environ.get("CLAUDE_TASKS_DIR", str(Path.home() / ".claude" / "tasks")))
+    try:
+        candidates = [p for p in tasks_dir.glob("a*.output") if p.is_file()]
+    except OSError:
+        return ""
+    if not candidates:
+        return ""
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return newest.stem
+
+
+def handle_track_agents(data: dict) -> None:
+    """Persist a dispatched ``Agent`` sub-agent's id + role to ``<session>.agents``.
+
+    No-op for any other tool name. Prefers the agentId carried on the
+    PostToolUse ``tool_response`` (``tool_result`` as a secondary
+    payload key); falls back to the newest ``a*`` id under the harness
+    tasks dir when the payload omits it. Append-only and deduped on
+    agentId so a parallel fan-out of sub-agents all survive compaction.
+    """
+    if data.get("tool_name") != "Agent":
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    agent_id = _agent_id_from_response(data.get("tool_response"))
+    if not agent_id:
+        agent_id = _agent_id_from_response(data.get("tool_result"))
+    if not agent_id:
+        agent_id = _newest_task_agent_id()
+    if not agent_id:
+        return
+
+    tool_input = data.get("tool_input", {})
+    role = str(tool_input.get("description") or tool_input.get("subagent_type") or "(no description)").strip()
+
+    _ensure_state_dir()
+    agents_file = _state_file(session_id, "agents")
+    if any(line.split("\t", 1)[0] == agent_id for line in _read_lines(agents_file)):
+        return
+    _append_line(agents_file, f"{agent_id}\t{role}")
+
+
 # ── PreCompact: retro-before-compact ──────────────────────────────
 
 
@@ -1848,6 +1940,22 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
         for _name, entry in sorted(owned):
             agent_id = entry.get("agent_id") or "(agent id not recorded)"
             lines.append(f"- tick-owner agentId `{agent_id}` (pid {entry.get('pid', '?')})")
+
+    dispatched = _read_lines(_state_file(session_id, "agents"))
+    if dispatched:
+        lines += [
+            "",
+            "## Dispatched background sub-agents",
+            (
+                "Ad-hoc `Agent`-tool sub-agents dispatched this session "
+                "(#778). Their agentIds are the handle `SendMessage` needs "
+                "to resume / steer / collect a still-running agent — reuse "
+                "them rather than re-dispatching duplicate work."
+            ),
+        ]
+        for line in dispatched:
+            agent_id, _, role = line.partition("\t")
+            lines.append(f"- agentId `{agent_id}` — {role or '(no description)'}")
 
     todos = _read_lines(_state_file(session_id, "todos"))
     if todos:
@@ -4218,6 +4326,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_todos,
+        handle_track_agents,
         handle_track_plan_invocation,
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
