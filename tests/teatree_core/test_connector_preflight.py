@@ -8,12 +8,57 @@ WHICH connector is down.
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.core.connector_preflight import run_connector_preflight
+from teatree.backends import slack_bot
+from teatree.backends.slack_bot import SlackBotBackend
+from teatree.core.connector_preflight import assert_slack_scope, run_connector_preflight
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
+
+
+def _fake_auth_test_post(header_value: str | None):
+    """Return an ``httpx.post`` stub whose ``auth.test`` carries *header_value*.
+
+    The granted scopes are supplied ONLY through the ``X-OAuth-Scopes``
+    response header — never a fabricated JSON ``scopes`` field — so the guard
+    is exercised against the same surface Slack actually uses in production.
+    A ``None`` header value models a response with no scope header at all.
+    """
+    headers = {} if header_value is None else {"X-OAuth-Scopes": header_value}
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=headers,
+            json={"ok": True, "user_id": "UBOT", "bot_id": "BBOT"},
+            request=httpx.Request("POST", url),
+        )
+
+    return fake_post
+
+
+class TestAssertSlackScope(TestCase):
+    def test_passes_when_scope_present_in_header(self) -> None:
+        with patch.object(slack_bot.httpx, "post", _fake_auth_test_post("chat:write,reactions:write,users:read")):
+            assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")
+
+    def test_fires_when_scope_missing_from_header(self) -> None:
+        with (
+            patch.object(slack_bot.httpx, "post", _fake_auth_test_post("chat:write,users:read")),
+            pytest.raises(RuntimeError) as excinfo,
+        ):
+            assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")
+        assert "reactions:write" in str(excinfo.value)
+
+    def test_fires_when_header_absent_entirely(self) -> None:
+        with (
+            patch.object(slack_bot.httpx, "post", _fake_auth_test_post(None)),
+            pytest.raises(RuntimeError),
+        ):
+            assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")
 
 
 class _NoOpOverlay(OverlayBase):
