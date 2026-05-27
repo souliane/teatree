@@ -82,6 +82,23 @@ class TestSlackLinkifyMarkdownLinks:
         out = slack_linkify("see [the PR](https://example.com/pr/1)")
         assert out == "see <https://example.com/pr/1|the PR>"
 
+    def test_bare_token_inside_link_label_is_not_rewritten(self) -> None:
+        # A ``#N`` / ``!N`` inside a markdown link label must survive verbatim:
+        # the freshly-built ``<url|label>`` link is protected before the bare-
+        # token resolvers run, so the label is never corrupted into a nested
+        # ``<url|… <url|#5>>`` link Slack renders as garbage.
+        out = slack_linkify(
+            "See [issue #1011](https://example.com/issues/1011) now",
+            issue_resolver=_issue,
+        )
+        assert out == "See <https://example.com/issues/1011|issue #1011> now"
+
+    def test_bare_token_outside_link_still_resolved_with_md_link_present(self) -> None:
+        out = slack_linkify("fixes #1011 in [the PR](https://example.com/pr/1)", issue_resolver=_issue)
+        assert out == (
+            "fixes <https://github.com/souliane/teatree/issues/1011|#1011> in <https://example.com/pr/1|the PR>"
+        )
+
     def test_label_with_pipe_inside_is_escaped(self) -> None:
         # Slack mrkdwn doesn't support pipes in labels; the helper substitutes
         # them with a unicode bar so the label stays readable rather than the
