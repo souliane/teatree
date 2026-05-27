@@ -9,6 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from teatree.backends.types import dig
 from teatree.utils import git
 
 type RawMR = dict[str, object]
@@ -189,6 +190,36 @@ class GitLabHTTPClient:
         return cast("dict[str, object]", response.json())
 
 
+def _status_from_work_item_payload(data: object) -> str | None:
+    """Extract the Status-widget name from a work-item GraphQL payload.
+
+    Returns ``None`` for any missing/null hop. GraphQL returns ``null`` (not
+    an empty object) for a project the token cannot see / that no longer
+    exists, and likewise for an absent ``workItems`` — a chained
+    ``.get(..., {})`` does NOT substitute the default when the key is
+    present-but-null, so each hop must be isinstance-guarded or ``None.get``
+    would crash the whole label sync.
+    """
+    nodes = dig(data, "data", "project", "workItems", "nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return None
+    first_node = nodes[0]
+    if not isinstance(first_node, Mapping):
+        return None
+    widgets = cast("Mapping[str, object]", first_node).get("widgets", [])
+    if not isinstance(widgets, list):
+        return None
+    for widget in widgets:
+        if not isinstance(widget, Mapping):
+            continue
+        widget_dict = cast("Mapping[str, object]", widget)
+        if widget_dict.get("type") == "STATUS":
+            status = widget_dict.get("status")
+            if isinstance(status, Mapping):
+                return str(cast("Mapping[str, object]", status).get("name", ""))
+    return None
+
+
 class GitLabAPI(GitLabHTTPClient):
     def get_work_item_status(self, project_path: str, iid: int) -> str | None:
         """Fetch the Status widget value for a GitLab work item via GraphQL."""
@@ -197,28 +228,9 @@ class GitLabAPI(GitLabHTTPClient):
         if cached is not None:
             return cached  # type: ignore[return-value]
         data = self.graphql(_WORK_ITEM_STATUS_QUERY, {"projectPath": project_path, "iid": str(iid)})
-        if not isinstance(data, dict):
-            self._set_cached(cache_key, None)
-            return None
-        nodes = (
-            data.get("data", {}).get("project", {}).get("workItems", {}).get("nodes", [])  # type: ignore[union-attr]
-        )
-        if not isinstance(nodes, list) or not nodes:
-            self._set_cached(cache_key, None)
-            return None
-        widgets = nodes[0].get("widgets", [])
-        if not isinstance(widgets, list):
-            self._set_cached(cache_key, None)
-            return None
-        for widget in widgets:
-            if isinstance(widget, dict) and widget.get("type") == "STATUS":
-                status = widget.get("status")
-                if isinstance(status, dict):
-                    result = str(status.get("name", ""))
-                    self._set_cached(cache_key, result)
-                    return result
-        self._set_cached(cache_key, None)
-        return None
+        result = _status_from_work_item_payload(data)
+        self._set_cached(cache_key, result)
+        return result
 
     def resolve_project(self, repo_path: str) -> ProjectInfo | None:
         if repo_path in self._project_cache:

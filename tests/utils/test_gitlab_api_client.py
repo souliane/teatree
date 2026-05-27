@@ -246,6 +246,27 @@ def test_get_work_item_status_returns_none_when_widgets_not_a_list(monkeypatch: 
     assert result is None
 
 
+@pytest.mark.parametrize(
+    "graphql_response",
+    [
+        {"data": {"project": None}},
+        {"data": {"project": {"workItems": None}}},
+        {"data": {"project": {"workItems": {"nodes": None}}}},
+        {"data": {"project": {"workItems": {"nodes": ["not-a-dict"]}}}},
+        {"data": None},
+        {},
+    ],
+)
+def test_get_work_item_status_returns_none_when_graphql_hop_is_null(
+    graphql_response: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "graphql", lambda query, variables: graphql_response)
+
+    assert client.get_work_item_status("org/repo", 42) is None
+
+
 def test_get_work_item_status_returns_none_when_status_value_not_dict(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(

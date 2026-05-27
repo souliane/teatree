@@ -99,7 +99,15 @@ def slack_linkify(
     text = _INLINE_CODE_RE.sub(_stash, text)
     text = _MRKDWN_LINK_RE.sub(_stash, text)
 
-    text = _MD_LINK_RE.sub(_rewrite_md_link, text)
+    # Stash each rewritten ``[label](url)`` → ``<url|label>`` link immediately:
+    # without protection a bare ``#N`` / ``!N`` inside the label (e.g.
+    # ``[issue #5](url)``) would be matched by the bare-token resolvers below
+    # and corrupted into a nested ``<url|… <url|#5>>`` link.
+    def _stash_md_link(match: re.Match[str]) -> str:
+        protected.append(_rewrite_md_link(match))
+        return f"\x00{len(protected) - 1}\x00"
+
+    text = _MD_LINK_RE.sub(_stash_md_link, text)
 
     if mr_resolver is not None:
         text = _BARE_MR_RE.sub(_make_token_rewriter("!", mr_resolver), text)
