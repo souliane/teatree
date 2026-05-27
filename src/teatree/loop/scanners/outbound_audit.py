@@ -101,13 +101,18 @@ type Verifier = Callable[[OutboundClaimModel], VerifyResult]
 
 
 def _default_notifier(alert_text: str, idempotency_key: str) -> None:
-    """Production drift-notifier: post via the overlay bot, idempotent on key."""
-    from teatree.notify import (  # noqa: PLC0415 — lazy keeps import side-effects out of module load
-        NotifyKind,
-        notify_user,
-    )
+    """Production drift-notifier: post via the overlay bot, idempotent on key.
 
-    notify_user(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+    Uses the verified-delivery wrapper (#1181) so a silent primary
+    ``notify_user`` failure (the #1173 class) auto-falls back to a direct,
+    round-trip-verified send instead of dropping the drift alert.
+    """
+    from teatree.messaging import (  # noqa: PLC0415 — lazy keeps import side-effects out of module load
+        notify_with_fallback,
+    )
+    from teatree.notify import NotifyKind  # noqa: PLC0415
+
+    notify_with_fallback(alert_text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
 
 
 @dataclass(slots=True)

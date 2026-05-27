@@ -47,15 +47,13 @@ def _notify_failure(*, summary_text: str, failing_step: str, command_str: str, s
     swallowed so a notify failure never propagates out of the smoke
     command (the CLI exit code already carries the verdict).
     """
-    # Import from ``teatree.core.notify`` directly — ``teatree.notify`` is
-    # the user-facing re-export but tach forbids ``teatree.core.management``
-    # depending on the top-level ``teatree.notify`` module.
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415
+    from teatree.messaging import notify_with_fallback  # noqa: PLC0415
 
     body = _dm_failure_body(summary_text, failing_step=failing_step, command_str=command_str, stderr=stderr)
     key = f"dogfood_smoke:{failing_step}"
     try:
-        notify_user(body, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(body, kind=NotifyKind.INFO, idempotency_key=key)
     except Exception:
         import logging  # noqa: PLC0415
 

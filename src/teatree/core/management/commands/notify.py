@@ -91,6 +91,15 @@ class Command(TyperCommand):
                     os.environ["T3_OVERLAY_NAME"] = previous_overlay
 
         if not delivered:
-            self.stderr.write(f"notify_user did not deliver for key={idempotency_key}")
+            # Surface *why* delivery failed instead of a bare rc=1 (#1181):
+            # the recorded BotPing row distinguishes a NOOP (no backend /
+            # user_id configured) from a FAILED transport error and carries
+            # the error detail, so the #1173 silent-rc=1 class is diagnosable
+            # at the CLI edge and a wrapper can decide whether to fall back.
+            from teatree.core.models import BotPing  # noqa: PLC0415
+
+            row = BotPing.objects.filter(idempotency_key=idempotency_key).first()
+            reason = (row.error_message or row.status) if row is not None else "no audit row recorded"
+            self.stderr.write(f"notify_user did not deliver for key={idempotency_key}: {reason}")
             raise SystemExit(1)
         return f"sent ({idempotency_key})."
