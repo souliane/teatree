@@ -17,6 +17,7 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
+from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion, PendingArticleSuggestionError
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
@@ -65,6 +66,8 @@ __all__ = [
     "OnBehalfApprovalError",
     "OnBehalfAudit",
     "OutboundClaim",
+    "PendingArticleSuggestion",
+    "PendingArticleSuggestionError",
     "PendingChatInjection",
     "Ports",
     "PullRequest",

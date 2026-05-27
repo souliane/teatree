@@ -195,6 +195,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
+    "ask_before_creating_news_tickets": bool,
     "dogfood_smoke_disabled": bool,
     "dogfood_smoke_skill": str,
     "dogfood_smoke_cadence_hours": int,
@@ -353,6 +354,13 @@ class UserSettings:
     scanning_news_disabled: bool = False
     scanning_news_skill: str = "scanning-news"
     scanning_news_cadence_hours: int = 24
+    # #1391 Per-article ask gate for the scanning-news scanner (and any
+    # sibling third-party-prose scanner). When True, scanners queue
+    # candidate articles into ``PendingArticleSuggestion`` rows + DM
+    # the user the batch instead of auto-filing issues. Approval flow
+    # is ``t3 manage news approve <id>`` / ``... news reject <id>``.
+    # Default ON — the user pilots the backlog (BINDING 2026-05-27).
+    ask_before_creating_news_tickets: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
     # window so the loop exercises the active overlay's provision path
@@ -432,6 +440,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
         dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
         dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
         dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),

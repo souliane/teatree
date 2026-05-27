@@ -20,23 +20,32 @@ metadata:
 
 ## Non-Negotiables
 
-1. **Date-of-edition verification is mandatory.** Before processing any newsletter, read the issue date verbatim from the page header and compare it to today's workspace date. If they do not match, do not proceed — either re-fetch with a stricter prompt, fall back to the latest published edition, or abort that source. Never silently treat yesterday's edition as today's.
-2. **Aggregator-detection is mandatory.** TLDR's `tldr.tech/<track>/<date>` page can return a kitchen-sink summary that lists stories from every TLDR track (Tech, AI, Dev, Product, IT, Marketing, Design, Infosec, Crypto, Founders, DevOps, Data, Fintech). The real per-issue newsletter is 5–9 stories grouped under named sections. If the fetch returns >15 stories or contains track-names that are not the requested track, the prompt drifted — re-fetch with the stricter prompt before continuing.
-3. **Dedupe tickets by source URL** before filing. Existing `from-news-scan` issues already cite the article URL in their body.
-4. **No AI signature** on issues or DMs (per `t3:rules`).
-5. **Never invent stories.** If a source fetch fails, omit that source from the DM and note the failure.
+1. **Per-article ask gate is mandatory (#1391).** Never call `gh issue create` directly for a scanned article. Every candidate goes through `teatree.core.article_ingestion_gate.enqueue_candidates_and_notify`, which records a `PendingArticleSuggestion` row, sends the user a batch DM, and waits for explicit approval via `t3 manage news approve <id>`. The user pilots the backlog — silent ticket creation from any third-party-prose scanner is banned.
+2. **Date-of-edition verification is mandatory.** Before processing any newsletter, read the issue date verbatim from the page header and compare it to today's workspace date. If they do not match, do not proceed — either re-fetch with a stricter prompt, fall back to the latest published edition, or abort that source. Never silently treat yesterday's edition as today's.
+3. **Aggregator-detection is mandatory.** TLDR's `tldr.tech/<track>/<date>` page can return a kitchen-sink summary that lists stories from every TLDR track (Tech, AI, Dev, Product, IT, Marketing, Design, Infosec, Crypto, Founders, DevOps, Data, Fintech). The real per-issue newsletter is 5–9 stories grouped under named sections. If the fetch returns >15 stories or contains track-names that are not the requested track, the prompt drifted — re-fetch with the stricter prompt before continuing.
+4. **Idempotency via `url_hash`.** The ask-gate skips already-queued URLs. A second scan of the same edition is a no-op.
+5. **No AI signature** on issues or DMs (per `t3:rules`).
+6. **Never invent stories.** If a source fetch fails, omit that source from the DM and note the failure.
 
 ## Command Reference
 
 ```bash
-# Issue creation
-gh --repo souliane/teatree issue create --title "<title>" --body "<body>" --label "from-news-scan"
+# Enqueue candidates (the only sanctioned path — replaces direct gh issue create)
+python -c "
+import django; django.setup()
+from teatree.core.article_ingestion_gate import enqueue_candidates_and_notify, ArticleCandidate
+enqueue_candidates_and_notify([
+    ArticleCandidate(url='<url>', title='<title>', summary='<why-interesting>', source='tldr-ai'),
+])
+"
 
-# Dedupe check
+# Inspect / decide
+t3 manage news pending
+t3 manage news approve <id>
+t3 manage news reject <id> --reason "<one-line>"
+
+# Dedupe check (still useful before enqueueing — gate is idempotent on URL hash)
 gh --repo souliane/teatree issue list --label from-news-scan --state all --search "<article URL>"
-
-# Slack DM via overlay router (teatree bot)
-python -c "from teatree.messaging import messaging_from_overlay; m = messaging_from_overlay(overlay_name='teatree'); m.dm_owner('<text>')"
 ```
 
 ## Workflow
@@ -85,21 +94,21 @@ For each deep-read article, ask: *is there a concrete, scoped change to teatree 
 
 Bias toward filing in borderline cases — duplicates are triaged later, missed ideas vanish.
 
-### 7. File tickets
+### 7. Enqueue candidates (NOT file tickets)
 
-After the dedupe check returns no match, file the issue using the body template in `references/ticket-template.md`. One issue per *idea*, not per article — three articles inspiring one idea collapse to one issue citing all three URLs.
+For each relevant idea, build an `ArticleCandidate(url, title, summary, source)` and pass the batch through `enqueue_candidates_and_notify(...)`. The gate writes one `PendingArticleSuggestion` per new URL and DMs the user the batch. **Do not call `gh issue create` from this skill.** One suggestion per *idea*, not per article — three articles inspiring one idea collapse to one suggestion citing all three URLs in the summary.
 
 ### 8. Post the Slack DM
 
-Format defined in `references/slack-format.md`. Always post even when zero items are interesting — a "0 items, 0 tickets" DM is the honest signal that the scan ran.
+The batch DM is sent by the gate itself (`enqueue_candidates_and_notify`). When zero candidates are interesting, post a separate "0 items, 0 suggestions" DM directly so the honest signal still fires.
 
 ## Periodic Mode
 
 When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or cron):
 
-- Non-interactive — no user confirmation prompts.
-- Ticket filing automatic (dedupe gate prevents spam).
-- DM automatic.
+- Non-interactive — no user confirmation prompts inside the scan itself.
+- Candidates are queued via the ask gate (never auto-filed).
+- DM listing the batch is automatic; ticket creation waits on `t3 manage news approve <id>`.
 - Print a summary to stdout for log capture.
 
 ## Scheduling via the teatree main loop
@@ -119,9 +128,9 @@ If the loop scanner is not yet wired on an older install, the fallback path is d
 
 ## Rules
 
-- Dedupe before filing.
-- One issue per idea.
-- Label every filed issue `from-news-scan`.
+- Route every candidate through `enqueue_candidates_and_notify` — never `gh issue create` directly.
+- One suggestion per idea.
+- The gate labels every approved issue `from-news-scan` automatically.
 - Use the workspace clock; never trust a date interpolated by an upstream caller.
 - No AI signature on posts.
 
