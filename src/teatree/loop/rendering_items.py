@@ -12,6 +12,7 @@ the same look without each render path re-implementing description truncation
 or comma joining.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -20,27 +21,41 @@ class _LinkFn(Protocol):
     def __call__(self, text: str, url: object, *, colorize: bool) -> str: ...
 
 
-# Canonical item-shape description width (#1015): ``#N (short desc) (!M)``.
-# 40 chars is wide enough for a useful title chunk on a single-line
-# statusline but narrow enough that three tickets per state line still
-# fit a typical terminal. Truncated descriptions are tail-elided with a
-# single-codepoint Unicode ellipsis so the visible width stays predictable.
-_ITEM_DESC_LEN = 40
+# Canonical statusline chip shape: ``#N (terse topic) !M1 !M2``. The
+# ``(topic)`` chunk is a 2-3 word gist, not the full commit subject —
+# a chip is a glance-target, not a changelog. The full title still lives
+# on the OSC-8 hyperlink target, so nothing is lost.
+_TOPIC_WORDS = 3
+_TOPIC_MAX_LEN = 24
+
+# Conventional-commit / scoped prefix (``fix:``, ``feat(loop):``,
+# ``techdebt:``) carries no topic signal on a chip — every chip is already
+# work-in-flight — so it is stripped before the word budget is applied.
+_CC_PREFIX_RE = re.compile(r"^[a-z][\w-]*(?:\([^)]*\))?!?:\s*", re.IGNORECASE)
 
 
 def _short_desc(title: str) -> str:
-    """Return *title* truncated to the canonical item-shape width.
+    """Return a terse 2-3 word topic for *title* (the chip ``(topic)`` chunk).
 
     Empty input → empty output (caller suppresses the ``(desc)`` chunk).
-    Titles within budget pass through verbatim; longer ones are tail-elided
-    with a Unicode ellipsis so the rendered width never exceeds
-    ``_ITEM_DESC_LEN``.
+    The leading conventional-commit prefix (``fix:``, ``feat(loop):``,
+    ``techdebt:``) is dropped, then the first :data:`_TOPIC_WORDS` words are
+    kept and capped at :data:`_TOPIC_MAX_LEN` chars with a single-codepoint
+    Unicode ellipsis — so a long commit subject like
+    ``techdebt: refactor PLW0717 try-clause-too-long across modules``
+    collapses to ``refactor PLW0717 try-clause-…`` rather than a 40-char
+    slice of the whole subject.
     """
     if not title:
         return ""
-    if len(title) <= _ITEM_DESC_LEN:
-        return title
-    return title[: _ITEM_DESC_LEN - 1] + "…"
+    stripped = _CC_PREFIX_RE.sub("", title, count=1).strip()
+    if not stripped:
+        stripped = title.strip()
+    words = stripped.split()
+    topic = " ".join(words[:_TOPIC_WORDS])
+    if len(topic) > _TOPIC_MAX_LEN:
+        return topic[: _TOPIC_MAX_LEN - 1].rstrip() + "…"
+    return topic
 
 
 @dataclass(frozen=True, slots=True)
