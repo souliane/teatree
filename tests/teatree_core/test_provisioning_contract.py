@@ -364,8 +364,8 @@ class E2eEnvMergeContractTests(TestCase):
 
     def _build(self) -> dict[str, str]:
         with (
-            patch("teatree.core.management.commands.e2e.get_overlay", return_value=_FixedExtrasOverlay()),
-            patch("teatree.core.management.commands.e2e._find_env_cache", return_value=None),
+            patch("teatree.core.management.commands._e2e_runners.get_overlay", return_value=_FixedExtrasOverlay()),
+            patch("teatree.core.management.commands._e2e_runners._find_env_cache", return_value=None),
         ):
             return _build_e2e_env(None, headed=False, target="local")
 

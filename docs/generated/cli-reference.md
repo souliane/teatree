@@ -2840,12 +2840,14 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run         Run E2E tests — dispatches to project or external runner based   │
-│             on overlay config.                                               │
-│ trigger-ci  Trigger E2E tests on a remote CI pipeline.                       │
-│ external    Run Playwright tests from the external test repo                 │
-│             (T3_PRIVATE_TESTS).                                              │
-│ project     Run E2E tests from the project's own test directory.             │
+│ run            Run E2E tests — dispatches to project or external runner      │
+│                based on overlay config.                                      │
+│ trigger-ci     Trigger E2E tests on a remote CI pipeline.                    │
+│ external       Run Playwright tests from the external test repo              │
+│                (T3_PRIVATE_TESTS).                                           │
+│ project        Run E2E tests from the project's own test directory.          │
+│ post-evidence  Post structured E2E evidence on the ticket (validation-gated, │
+│                idempotent on env+commit).                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2997,6 +2999,33 @@ Usage: t3 teatree e2e project [OPTIONS]
 │                                                      no-update-snapshots]    │
 │ --help                                               Show this message and   │
 │                                                      exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e post-evidence`
+
+```
+Usage: t3 teatree e2e post-evidence [OPTIONS]
+
+ Post structured E2E evidence on the **ticket** (work item / bug), never the
+ MR.
+
+ Validation-gated (env ∈ {dev, local}, before ≠ after anti-fake,
+ commit known + tree clean, ticket resolvable) and idempotent on the
+ hidden ``(env, commit)`` marker — a re-run on the same env + commit
+ edits in place, a different env/commit posts anew. ``--ticket`` and
+ ``--commit`` auto-detect from the worktree. See
+ :mod:`._e2e_evidence` for the validators and the SKILL for usage.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ticket           TEXT                                                      │
+│ --env              TEXT                                                      │
+│ --commit           TEXT                                                      │
+│ --before           TEXT                                                      │
+│ --after            TEXT                                                      │
+│ --video            TEXT                                                      │
+│ --assertion        TEXT                                                      │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

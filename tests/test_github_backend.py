@@ -447,6 +447,39 @@ class TestGitHubCodeHost:
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == []
 
+    def test_list_issue_comments_returns_payload(self) -> None:
+        notes = [{"id": 1, "body": "x"}]
+        with patch.object(github_mod, "_gh_api_get", return_value=notes) as mock_get:
+            host = GitHubCodeHost()
+            result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
+        assert result == notes
+        assert "repos/souliane/teatree/issues/7/comments" in mock_get.call_args.args[0]
+
+    def test_list_issue_comments_returns_empty_for_non_issue_url(self) -> None:
+        host = GitHubCodeHost()
+        result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/pull/7")
+        assert result == []
+
+    def test_update_issue_comment_patches_comment_endpoint(self) -> None:
+        with patch.object(github_mod, "_gh_api_patch", return_value={"id": 99}) as mock_patch:
+            host = GitHubCodeHost()
+            result = host.update_issue_comment(
+                issue_url="https://github.com/souliane/teatree/issues/7",
+                comment_id=99,
+                body="new",
+            )
+        assert result == {"id": 99}
+        assert mock_patch.call_args.args[0] == "repos/souliane/teatree/issues/comments/99"
+
+    def test_update_issue_comment_rejects_non_issue_url(self) -> None:
+        host = GitHubCodeHost()
+        result = host.update_issue_comment(
+            issue_url="https://github.com/souliane/teatree/pull/7",
+            comment_id=99,
+            body="new",
+        )
+        assert "error" in result
+
     def test_upload_file_raises(self) -> None:
         host = GitHubCodeHost()
         import pytest  # noqa: PLC0415

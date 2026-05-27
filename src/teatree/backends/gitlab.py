@@ -322,6 +322,55 @@ class GitLabCodeHost:
             or {}
         )
 
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+        """List the notes on a GitLab issue or work item.
+
+        Accepts the same ``…/-/issues/<iid>`` and ``…/-/work_items/<iid>``
+        forms as :meth:`post_issue_comment` (GitLab serves the same iid and
+        notes API under both). Returns an empty list when the URL is not a
+        recognised GitLab issue URL or the project cannot be resolved — the
+        caller treats "no comments" and "unresolvable" identically (it will
+        create a fresh comment either way).
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
+        if match is None:
+            return []
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return []
+
+        data = self._client.get_json(
+            f"projects/{project.project_id}/issues/{int(match['iid'])}/notes?per_page=100",
+        )
+        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
+
+    def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+        """Edit an existing note on a GitLab issue or work item in place.
+
+        Used by ``e2e post-evidence`` to keep a single evidence comment
+        per ``(ticket, env, commit)`` rather than appending a new one on
+        re-run. Returns ``{"error": ...}`` when the URL is not a recognised
+        GitLab issue URL or the project cannot be resolved.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_OR_WORKITEM_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+
+        return (
+            self._client.put_json(
+                f"projects/{project.project_id}/issues/{int(match['iid'])}/notes/{comment_id}",
+                {"body": body},
+            )
+            or {}
+        )
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         """Return the approval state for an MR — used by ``GitLabApprovalsScanner`` (#936).
 

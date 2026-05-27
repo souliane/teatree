@@ -91,6 +91,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("trigger-ci", "Trigger E2E tests on a remote CI pipeline."),
             ("external", "Run Playwright tests from the external test repo (T3_PRIVATE_TESTS)."),
             ("project", "Run E2E tests from the project's own test directory."),
+            (
+                "post-evidence",
+                "Post structured E2E evidence on the ticket (validation-gated, idempotent on env+commit).",
+            ),
         ],
     ),
     "db": DjangoGroup(

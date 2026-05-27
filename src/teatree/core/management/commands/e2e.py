@@ -8,14 +8,17 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import E2ERepo, load_e2e_repos
+from teatree.config import load_e2e_repos
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.management.commands import _e2e_discovery as _disc
+from teatree.core.management.commands import _e2e_evidence as _evidence
+from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.models import Ticket
+from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file, resolve_worktree
+from teatree.core.resolve import resolve_worktree
 from teatree.core.runners.worktree_start import compose_project
-from teatree.paths import get_data_dir
-from teatree.utils.run import run_checked, run_streamed
+from teatree.utils.run import run_streamed
 
 # Re-exports for back-compat with tests and external callers (#1322 split).
 _ticket_frontend_projects = _disc.ticket_frontend_projects
@@ -24,6 +27,9 @@ _resolve_linked_worktree = _disc.resolve_linked_worktree
 _linked_env_cache = _disc.linked_env_cache
 _compose_frontend_port = _disc.compose_frontend_port
 _detect_local_port = _disc.detect_local_port
+_clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
+_resolve_private_tests_path = _runners.resolve_private_tests_path
+_build_e2e_env = _runners.build_e2e_env
 
 
 @dataclass
@@ -62,92 +68,6 @@ class PlaywrightOptions:
             args.append("--headed")
         args.extend(self.extra)
         return args
-
-
-def _clone_or_update_e2e_repo(repo: E2ERepo) -> Path:
-    """Clone or update an external E2E repo to the local cache and return the playwright root.
-
-    On first run: ``git clone --branch <branch> --depth 1 <url> <cache_path>``.
-    On subsequent runs: ``git fetch origin <branch>`` + ``git reset --hard FETCH_HEAD``.
-
-    Returns ``cache_path / repo.e2e_dir`` — the directory passed as ``cwd`` to Playwright.
-    """
-    cache_path = get_data_dir("e2e-repos") / repo.name
-    if not cache_path.exists():
-        run_checked(
-            ["git", "clone", "--branch", repo.branch, "--depth", "1", repo.url, str(cache_path)],
-        )
-    else:
-        run_checked(["git", "-C", str(cache_path), "fetch", "origin", repo.branch])
-        run_checked(["git", "-C", str(cache_path), "reset", "--hard", "FETCH_HEAD"])
-    return cache_path / repo.e2e_dir
-
-
-def _resolve_private_tests_path() -> Path | None:
-    """Resolve the private tests directory from env or config."""
-    from teatree.config import load_config  # noqa: PLC0415
-
-    private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
-    if not private_tests:
-        private_tests = load_config().raw.get("teatree", {}).get("private_tests", "")
-    if not private_tests:
-        return None
-    path = Path(private_tests).expanduser()
-    return path if path.is_dir() else None
-
-
-def _build_e2e_env(
-    frontend_url: str | None = None,
-    *,
-    headed: bool,
-    target: str,
-    compose_project: str | None = None,
-    env_cache_override: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Build environment dict for Playwright: ``BASE_URL``, overlay extras, ``CI``.
-
-    When *frontend_url* is given it overrides ``BASE_URL``.
-    When it is ``None`` the existing ``BASE_URL`` env var is preserved (DEV / staging mode).
-
-    *target* is the resolved dual-env target (``"dev"`` or ``"local"``); it is
-    exported as ``T3_E2E_TARGET`` so a single dual-mode spec can branch on
-    ``process.env.T3_E2E_TARGET === 'dev'`` instead of re-deriving the target
-    from a ``BASE_URL`` host regex.
-
-    *compose_project* is the teatree-managed docker-compose project of the
-    resolved worktree (``compose_project(worktree)``) for a local target. It
-    is exported as ``COMPOSE_PROJECT_NAME`` — the variable ``docker compose``
-    natively honours — so a spec that resolves the backend via a bare
-    ``docker compose port web 8000`` / ``docker compose exec -T web`` (run
-    from the backend repo dir, no ``-p``) deterministically targets the
-    teatree stack whose ``web`` container has the restored-Postgres
-    ``DATABASE_URL`` injected, instead of defaulting to the directory
-    basename and missing it. ``None`` (dev target) leaves it unset.
-
-    Overlay-specific env vars (e.g. ``CUSTOMER``) come from
-    :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``,
-    ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME`` and ``CI``.
-    """
-    env = {**os.environ}
-    if frontend_url is not None:
-        env["BASE_URL"] = frontend_url
-    env["T3_E2E_TARGET"] = target
-    if compose_project:
-        env["COMPOSE_PROJECT_NAME"] = compose_project
-
-    if env_cache_override is not None:
-        env_cache = env_cache_override
-    else:
-        envfile = _find_env_cache(_get_user_cwd())
-        env_cache = _parse_env_file(envfile) if envfile is not None else {}
-    for key, value in get_overlay().get_e2e_env_extras(env_cache).items():
-        env.setdefault(key, value)
-
-    if headed:
-        env.pop("CI", None)
-    else:
-        env["CI"] = "1"
-    return env
 
 
 class Command(TyperCommand):
@@ -571,3 +491,41 @@ class Command(TyperCommand):
             return "E2E passed."
         self.stderr.write(f"E2E failed (exit {rc}).")
         raise SystemExit(rc)
+
+    @command(name="post-evidence")
+    def post_evidence(  # noqa: PLR0913
+        self,
+        *,
+        ticket: str = "",
+        env: str = "",
+        commit: str = "",
+        before: str = "",
+        after: str = "",
+        video: str = "",
+        assertion: str = "",
+    ) -> _evidence.PostEvidenceResult:
+        """Post structured E2E evidence on the **ticket** (work item / bug), never the MR.
+
+        Validation-gated (env ∈ {dev, local}, before ≠ after anti-fake,
+        commit known + tree clean, ticket resolvable) and idempotent on the
+        hidden ``(env, commit)`` marker — a re-run on the same env + commit
+        edits in place, a different env/commit posts anew. ``--ticket`` and
+        ``--commit`` auto-detect from the worktree. See
+        :mod:`._e2e_evidence` for the validators and the SKILL for usage.
+        """
+        host = code_host_from_overlay()
+        if host is None:
+            self.stderr.write("No code host configured (check overlay GitLab/GitHub token).")
+            raise SystemExit(1)
+
+        flags = _evidence.EvidenceFlags(
+            ticket=ticket, env=env, commit=commit, before=before, after=after, video=video, assertion=assertion
+        )
+        try:
+            post = _evidence.build_validated_post(flags)
+            result = _evidence.post_evidence_comment(host, post)
+        except (_evidence.EvidenceValidationError, OnBehalfPostBlockedError) as err:
+            self.stderr.write(str(err))
+            raise SystemExit(1) from err
+        self.stdout.write(f"  Evidence {result['action']} on {post.issue_url} (comment {result['comment_id']}).")
+        return result
