@@ -1,7 +1,10 @@
-"""Tests for the ``!N (MR title)`` rendering (#1156).
+"""Tests for the ``!N (terse topic)`` rendering (#1156).
 
 Pre-#1156: bare ``!1234`` ref, comma-joined when multiple.
 Post-#1156: ``!1234 (MR title)`` ref, space-separated when multiple.
+Later: the ``(…)`` chunk is a terse 2-3 word topic, not the full commit
+subject — the conventional-commit prefix is stripped and only the first
+few words are kept. The full subject still lives on the OSC-8 link target.
 """
 
 import pytest
@@ -32,7 +35,7 @@ def _render_blob(actions: list[DispatchAction]) -> str:
 
 
 class TestMrLineIncludesTitle:
-    def test_mr_line_includes_title(self) -> None:
+    def test_mr_line_includes_terse_topic(self) -> None:
         actions = [
             _pr_action(
                 url="https://example.com/p/1/merge_requests/123",
@@ -42,13 +45,14 @@ class TestMrLineIncludesTitle:
         ]
         blob = _render_blob(actions)
 
-        # The MR ref now carries its title — under NO_COLOR the rendered
-        # form is ``!N <url> (title)`` because the iid is wrapped in the
-        # plain-text URL fallback.
+        # The MR ref carries a terse topic — the ``feat(loop):`` prefix is
+        # stripped and the first three words kept.
         assert "!123" in blob, repr(blob)
-        assert "(feat(loop): add multi-loop anchors)" in blob, repr(blob)
-        # The title chunk must come *after* the iid.
-        assert blob.index("!123") < blob.index("(feat(loop): add multi-loop anchors)"), repr(blob)
+        assert "(add multi-loop anchors)" in blob, repr(blob)
+        # The full conventional-commit prefix must NOT render on the chip.
+        assert "feat(loop):" not in blob, repr(blob)
+        # The topic chunk must come *after* the iid.
+        assert blob.index("!123") < blob.index("(add multi-loop anchors)"), repr(blob)
 
     def test_multiple_open_mrs_space_separated(self) -> None:
         actions = [
@@ -79,9 +83,10 @@ class TestMrLineIncludesTitle:
         )
         blob = _render_blob([action])
 
-        # Title appears alongside the existing annotation.
+        # Terse topic (``wip:`` prefix stripped) appears alongside the
+        # existing annotation.
         assert "!200" in blob, repr(blob)
-        assert "wip: experimental" in blob, repr(blob)
+        assert "(experimental)" in blob, repr(blob)
 
 
 @pytest.mark.django_db

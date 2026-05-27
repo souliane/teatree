@@ -6,9 +6,12 @@ History:
     or ``loop-owner=unclaimed`` line plus the foreign-hijack RED line.
 *   #1156 collapsed the dim doctrine into one line per LIVE LoopLease row
     (``loop:tick``, ``loop:owner``, …).
-*   This refit replaces that per-loop dump with a single consolidated
-    summary line that surfaces time-to-next-tick. The user explicitly
-    asked for "time to next tick" on the first line, not a per-loop list.
+*   A later refit replaced that per-loop dump with a single consolidated
+    ``loop · next tick in <d> · N loops live`` summary line.
+*   This refit drops the useless ``N loops live`` count: each live loop
+    now lists its short name + next tick as a relative duration in minutes
+    (``loop · my-prs 11m · tickets 11m``). The user explicitly opted out of
+    the bare count — it said neither which loops nor when they tick.
 
 The #1073 foreign-hijack RED line is preserved unchanged through every
 refit — it is a different code path (``loop_owner_anchor``) and a
@@ -36,9 +39,9 @@ def _make_lease(name: str, *, expires_in: timedelta, session_id: str = "sess-A")
 
 @pytest.mark.django_db
 class TestLiveLoopsAnchor:
-    """``live_loops_anchor()`` returns one consolidated summary line."""
+    """``live_loops_anchor()`` returns one per-loop-named summary line."""
 
-    def test_one_consolidated_line_with_loop_count(self) -> None:
+    def test_one_line_lists_each_live_loop_by_name(self) -> None:
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
         _make_lease("loop-slack-answer", expires_in=timedelta(minutes=30))
@@ -48,18 +51,24 @@ class TestLiveLoopsAnchor:
         assert len(lines) == 1, repr(lines)
         line = lines[0]
         assert line.startswith("loop · "), line
-        assert "3 loops live" in line, line
+        # The useless headline count is gone; each loop's short name appears.
+        assert "loops live" not in line, line
+        assert "tick" in line, line
+        assert "self-improve" in line, line
+        assert "slack-answer" in line, line
 
-    def test_expired_loops_omitted_from_count(self) -> None:
+    def test_expired_loops_omitted(self) -> None:
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
-        # Expired — must not be counted.
+        # Expired — must not appear in the line.
         _make_lease("loop-slack-answer", expires_in=timedelta(seconds=-5))
 
         lines = live_loops_anchor()
 
         assert len(lines) == 1, repr(lines)
-        assert "2 loops live" in lines[0], lines[0]
+        assert "slack-answer" not in lines[0], lines[0]
+        assert "tick" in lines[0], lines[0]
+        assert "self-improve" in lines[0], lines[0]
 
     def test_per_loop_dump_format_gone(self) -> None:
         """The pre-refit per-loop dump (``loop:tick`` / ``loop:owner``) is gone."""
@@ -107,7 +116,10 @@ class TestPopulateLoopsAnchorIntegration:
 
         joined = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
         assert "loop · " in joined, repr(joined)
-        assert "2 loops live" in joined, repr(joined)
+        # Each live loop is named; the bare count is gone.
+        assert "loops live" not in joined, repr(joined)
+        assert "tick" in joined, repr(joined)
+        assert "self-improve" in joined, repr(joined)
         # Verbose dim owner lines must NOT appear.
         assert "loop-owner=THIS session" not in joined, repr(joined)
         assert "loop-owner=unclaimed" not in joined, repr(joined)
