@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config
+from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config, workspace_dir
+from teatree.core.clone_paths import find_clone_path
 
 if TYPE_CHECKING:
     from teatree.config import UserSettings
@@ -38,6 +39,7 @@ from teatree.loop.scanners import (
     OutboundAuditScanner,
     PendingTasksScanner,
     PrSweepScanner,
+    PullMainCloneScanner,
     RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
@@ -303,6 +305,42 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         notifier=notifier,
         overlay=backend.name,
         solo_overlay=solo_overlay,
+    )
+
+
+def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScanner | None:
+    """Build a per-overlay pull-main-clone scanner from the overlay's workspace repos.
+
+    Repo list comes from ``overlay.get_workspace_repos()``; each name is
+    resolved to its on-disk main clone under ``$T3_WORKSPACE_DIR`` via
+    :func:`teatree.core.clone_paths.find_clone_path` (the same namespace-
+    aware resolver provisioning/cleanup use). A repo with no clone on disk
+    is dropped — there is nothing to pull. The marker/signal label is
+    namespaced ``"<overlay>:<repo>"`` so two overlays that share a repo
+    basename keep independent cadence ledgers.
+
+    Returns ``None`` when the overlay has no Python class, when
+    ``pull_main_clone_disabled = true`` (the escape hatch), or when no
+    workspace repo resolves to a clone.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.pull_main_clone_disabled:
+        return None
+    workspace = workspace_dir()
+    repos: list[tuple[str, Path]] = []
+    for repo_name in overlay.get_workspace_repos():
+        clone = find_clone_path(workspace, repo_name)
+        if clone is None:
+            continue
+        repos.append((f"{backend.name}:{repo_name}", clone))
+    if not repos:
+        return None
+    return PullMainCloneScanner(
+        repos=tuple(repos),
+        cadence_hours=settings.pull_main_clone_cadence_hours,
     )
 
 
@@ -699,6 +737,13 @@ def _jobs_for_overlay_backend(
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
+    # Pull-main-clone scanner — after a merge advances ``origin/<default>``,
+    # fast-forward each work-repo main clone under ``$T3_WORKSPACE_DIR`` so a
+    # stale clone never poisons ``git show`` / ``grep`` investigations. Wired
+    # per-overlay because the workspace-repo set is overlay-scoped.
+    pull_clone_scanner = _pull_main_clone_scanner_for(backend)
+    if pull_clone_scanner is not None:
+        jobs.append(_ScannerJob(scanner=pull_clone_scanner, overlay=tag))
     # #1254 Codex-review scanner — auto-dispatch /codex:review on every
     # PR push. Gated on the fleet-of-agents doctrine (auto mode +
     # ``require_human_approval_to_merge = false``); silent on every
