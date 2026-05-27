@@ -206,6 +206,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
         ],
     ),
+    "news": DjangoGroup(
+        "Manage the news-scan ask-gate queue (#1391).",
+        [
+            ("pending", "List undecided article suggestions, oldest first."),
+            ("approve", "Approve a suggestion — files the GitHub issue and stamps the row."),
+            ("reject", "Reject a suggestion — no issue is created."),
+        ],
+    ),
 }
 
 

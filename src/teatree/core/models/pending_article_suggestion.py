@@ -9,8 +9,8 @@ directly after triaging an edition. That auto-create pattern treats
 This model is the durable buffer between **scanner triage** and
 **ticket creation**: a scanner records one
 :class:`PendingArticleSuggestion` per candidate article, the user reviews
-the batch (via DM or ``t3 news pending``), and only the user-approved
-suggestions become real GitHub issues — via ``t3 news approve <id>``.
+the batch (via DM or ``t3 teatree news pending``), and only the user-approved
+suggestions become real GitHub issues — via ``t3 teatree news approve <id>``.
 
 The model mirrors the ``DeferredQuestion`` / ``OnBehalfApproval`` shape:
 

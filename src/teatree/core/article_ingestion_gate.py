@@ -11,7 +11,7 @@ The flow:
     ``url_hash``) and DMs the user the batch via
     :func:`teatree.core.notify.notify_user`.
 3. The user reviews the batch and calls
-    ``t3 manage news approve <id>`` / ``t3 manage news reject <id>``
+    ``t3 teatree news approve <id>`` / ``t3 teatree news reject <id>``
     to act on individual suggestions.
 4. ``approve`` is the only path that calls ``gh issue create`` on
     ``souliane/teatree`` with the ``from-news-scan`` label.
@@ -82,7 +82,7 @@ def enqueue_candidates_and_notify(
     URLs whose ``url_hash`` is already on file are reported as
     ``skipped_duplicate_urls`` (no second DM, no second row). The DM
     listing names every newly-recorded suggestion by id + title with a
-    pointer to ``t3 manage news approve <id>`` / ``... reject <id>``.
+    pointer to ``t3 teatree news approve <id>`` / ``... reject <id>``.
     """
     new_ids: list[int] = []
     skipped: list[str] = []
@@ -128,7 +128,7 @@ def _format_batch_dm(suggestion_ids: list[int]) -> str:
     lines.extend(
         [
             "",
-            "Approve: `t3 manage news approve <id>` — Reject: `t3 manage news reject <id>`",
+            "Approve: `t3 teatree news approve <id>` — Reject: `t3 teatree news reject <id>`",
         ],
     )
     return "\n".join(lines)

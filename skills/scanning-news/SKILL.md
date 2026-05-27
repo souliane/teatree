@@ -20,7 +20,7 @@ metadata:
 
 ## Non-Negotiables
 
-1. **Per-article ask gate is mandatory (#1391).** Never call `gh issue create` directly for a scanned article. Every candidate goes through `teatree.core.article_ingestion_gate.enqueue_candidates_and_notify`, which records a `PendingArticleSuggestion` row, sends the user a batch DM, and waits for explicit approval via `t3 manage news approve <id>`. The user pilots the backlog — silent ticket creation from any third-party-prose scanner is banned.
+1. **Per-article ask gate is mandatory (#1391).** Never call `gh issue create` directly for a scanned article. Every candidate goes through `teatree.core.article_ingestion_gate.enqueue_candidates_and_notify`, which records a `PendingArticleSuggestion` row, sends the user a batch DM, and waits for explicit approval via `t3 teatree news approve <id>`. The user pilots the backlog — silent ticket creation from any third-party-prose scanner is banned.
 2. **Date-of-edition verification is mandatory.** Before processing any newsletter, read the issue date verbatim from the page header and compare it to today's workspace date. If they do not match, do not proceed — either re-fetch with a stricter prompt, fall back to the latest published edition, or abort that source. Never silently treat yesterday's edition as today's.
 3. **Aggregator-detection is mandatory.** TLDR's `tldr.tech/<track>/<date>` page can return a kitchen-sink summary that lists stories from every TLDR track (Tech, AI, Dev, Product, IT, Marketing, Design, Infosec, Crypto, Founders, DevOps, Data, Fintech). The real per-issue newsletter is 5–9 stories grouped under named sections. If the fetch returns >15 stories or contains track-names that are not the requested track, the prompt drifted — re-fetch with the stricter prompt before continuing.
 4. **Idempotency via `url_hash`.** The ask-gate skips already-queued URLs. A second scan of the same edition is a no-op.
@@ -40,9 +40,9 @@ enqueue_candidates_and_notify([
 "
 
 # Inspect / decide
-t3 manage news pending
-t3 manage news approve <id>
-t3 manage news reject <id> --reason "<one-line>"
+t3 teatree news pending
+t3 teatree news approve <id>
+t3 teatree news reject <id> --reason "<one-line>"
 
 # Dedupe check (still useful before enqueueing — gate is idempotent on URL hash)
 gh --repo souliane/teatree issue list --label from-news-scan --state all --search "<article URL>"
@@ -108,7 +108,7 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 - Non-interactive — no user confirmation prompts inside the scan itself.
 - Candidates are queued via the ask gate (never auto-filed).
-- DM listing the batch is automatic; ticket creation waits on `t3 manage news approve <id>`.
+- DM listing the batch is automatic; ticket creation waits on `t3 teatree news approve <id>`.
 - Print a summary to stdout for log capture.
 
 ## Scheduling via the teatree main loop

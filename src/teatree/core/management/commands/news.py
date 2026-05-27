@@ -43,7 +43,7 @@ def _format_row(row: PendingArticleSuggestion) -> str:
 class Command(TyperCommand):
     @initialize()
     def init(self) -> None:
-        """``t3 manage news`` group root."""
+        """``t3 teatree news`` group root."""
 
     @command(name="pending")
     def list_pending(

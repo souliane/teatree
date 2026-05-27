@@ -2210,6 +2210,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 │ notify        Bot→user Slack DM from the shell (#1030).                      │
+│ news          Manage the news-scan ask-gate queue (#1391).                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4322,5 +4323,72 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
 │                                   (per-overlay bot routing).                 │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree news`
+
+```
+Usage: t3 teatree news [OPTIONS] COMMAND [ARGS]...
+
+ Manage the news-scan ask-gate queue (#1391).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ pending  List undecided article suggestions, oldest first.                   │
+│ approve  Approve a suggestion — files the GitHub issue and stamps the row.   │
+│ reject   Reject a suggestion — no issue is created.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree news pending`
+
+```
+Usage: t3 teatree news pending [OPTIONS]
+
+ List news-scan suggestions awaiting user decision.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --all     --pending      Include approved/rejected rows. [default: pending]  │
+│ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree news approve`
+
+```
+Usage: t3 teatree news approve [OPTIONS] SUGGESTION_ID
+
+ Approve a pending suggestion — files the GitHub issue.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    suggestion_id      INTEGER  [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --decider        TEXT  Identity of the approver (audit trail).               │
+│ --repo           TEXT  GitHub repo for the new issue.                        │
+│                        [default: souliane/teatree]                           │
+│ --label          TEXT  Issue label. [default: from-news-scan]                │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree news reject`
+
+```
+Usage: t3 teatree news reject [OPTIONS] SUGGESTION_ID
+
+ Reject a pending suggestion — no issue is created.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    suggestion_id      INTEGER  [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reason         TEXT  Why the candidate is dropped (audit trail).           │
+│                        [default: not relevant]                               │
+│ --decider        TEXT  Identity of the rejecter (audit trail).               │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
