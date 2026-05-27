@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from teatree.backends.types import dig
+from teatree.backends.gitlab_payloads import WORK_ITEM_STATUS_QUERY, status_from_work_item_payload
 from teatree.utils import git
 
 type RawMR = dict[str, object]
@@ -26,30 +26,17 @@ _TTL_USERNAME = 3600
 _HTTP_OK_LOW = 200
 _HTTP_OK_HIGH = 300
 
+# Upper bound on pages walked for an offset-paginated list endpoint. GitLab
+# serves at most 100 items per page; this cap stops a runaway loop if the API
+# ever returns a malformed ``x-next-page`` that never empties.
+_MAX_PAGES = 100
+
 
 class _ReviewerEntry(TypedDict, total=False):
     """Subset of the GitLab reviewer payload teatree reads (#1295 cap B)."""
 
     id: int
     username: str
-
-
-_WORK_ITEM_STATUS_QUERY = """\
-query($projectPath: ID!, $iid: String!) {
-    project(fullPath: $projectPath) {
-        workItems(iids: [$iid]) {
-            nodes {
-                widgets {
-                    type
-                    ... on WorkItemWidgetStatus {
-                        status { name }
-                    }
-                }
-            }
-        }
-    }
-}
-"""
 
 
 def _as_int(value: object) -> int:
@@ -106,6 +93,39 @@ class GitLabHTTPClient:
         )
         response.raise_for_status()
         return cast("dict[str, object] | list[dict[str, object]]", response.json())
+
+    def get_json_paginated(self, endpoint: str) -> list[RawMR]:
+        """Fetch every page of an offset-paginated GitLab list endpoint.
+
+        GitLab returns each list page's continuation in the ``x-next-page``
+        response header — the next page number, or empty on the last page.
+        ``get_json`` reads only the first page, silently truncating any result
+        set larger than ``per_page``; this follows ``x-next-page`` until empty,
+        accumulating every page's items. Returns an empty list when there is no
+        token or a page body is not a JSON array. *endpoint* should already
+        carry the query string; the ``page`` parameter is appended per request.
+        """
+        if not self.token:
+            return []
+        sep = "&" if "?" in endpoint else "?"
+        items: list[RawMR] = []
+        page = 1
+        for _ in range(_MAX_PAGES):
+            response = httpx.get(
+                f"{self.base_url}/{endpoint.lstrip('/')}{sep}page={page}",
+                headers=self._headers(),
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, list):
+                break
+            items.extend(cast("list[RawMR]", body))
+            next_page = response.headers.get("x-next-page", "")
+            if not next_page:
+                break
+            page = int(next_page)
+        return items
 
     def post_json(self, endpoint: str, payload: dict[str, object] | None = None) -> dict[str, object] | None:
         if not self.token:
@@ -190,36 +210,6 @@ class GitLabHTTPClient:
         return cast("dict[str, object]", response.json())
 
 
-def _status_from_work_item_payload(data: object) -> str | None:
-    """Extract the Status-widget name from a work-item GraphQL payload.
-
-    Returns ``None`` for any missing/null hop. GraphQL returns ``null`` (not
-    an empty object) for a project the token cannot see / that no longer
-    exists, and likewise for an absent ``workItems`` — a chained
-    ``.get(..., {})`` does NOT substitute the default when the key is
-    present-but-null, so each hop must be isinstance-guarded or ``None.get``
-    would crash the whole label sync.
-    """
-    nodes = dig(data, "data", "project", "workItems", "nodes")
-    if not isinstance(nodes, list) or not nodes:
-        return None
-    first_node = nodes[0]
-    if not isinstance(first_node, Mapping):
-        return None
-    widgets = cast("Mapping[str, object]", first_node).get("widgets", [])
-    if not isinstance(widgets, list):
-        return None
-    for widget in widgets:
-        if not isinstance(widget, Mapping):
-            continue
-        widget_dict = cast("Mapping[str, object]", widget)
-        if widget_dict.get("type") == "STATUS":
-            status = widget_dict.get("status")
-            if isinstance(status, Mapping):
-                return str(cast("Mapping[str, object]", status).get("name", ""))
-    return None
-
-
 class GitLabAPI(GitLabHTTPClient):
     def get_work_item_status(self, project_path: str, iid: int) -> str | None:
         """Fetch the Status widget value for a GitLab work item via GraphQL."""
@@ -227,8 +217,8 @@ class GitLabAPI(GitLabHTTPClient):
         cached = self._get_cached(cache_key, _TTL_WORK_ITEM)
         if cached is not None:
             return cached  # type: ignore[return-value]
-        data = self.graphql(_WORK_ITEM_STATUS_QUERY, {"projectPath": project_path, "iid": str(iid)})
-        result = _status_from_work_item_payload(data)
+        data = self.graphql(WORK_ITEM_STATUS_QUERY, {"projectPath": project_path, "iid": str(iid)})
+        result = status_from_work_item_payload(data)
         self._set_cached(cache_key, result)
         return result
 
@@ -278,9 +268,7 @@ class GitLabAPI(GitLabHTTPClient):
         if updated_after:
             query["updated_after"] = updated_after
         params = urlencode(query)
-        data = self.get_json(f"merge_requests?{params}")
-        if not isinstance(data, list):
-            return []
+        data = self.get_json_paginated(f"merge_requests?{params}")
         if include_draft:
             return data
         return [mr for mr in data if not mr.get("draft")]
@@ -302,8 +290,7 @@ class GitLabAPI(GitLabHTTPClient):
         if updated_after:
             query["updated_after"] = updated_after
         params = urlencode(query)
-        data = self.get_json(f"issues?{params}")
-        return data if isinstance(data, list) else []
+        return self.get_json_paginated(f"issues?{params}")
 
     def list_open_mrs_as_reviewer(
         self,
@@ -323,10 +310,7 @@ class GitLabAPI(GitLabHTTPClient):
         if updated_after:
             query["updated_after"] = updated_after
         params = urlencode(query)
-        data = self.get_json(f"merge_requests?{params}")
-        if not isinstance(data, list):
-            return []
-        return data
+        return self.get_json_paginated(f"merge_requests?{params}")
 
     def list_recently_merged_mrs(
         self,
@@ -374,10 +358,7 @@ class GitLabAPI(GitLabHTTPClient):
         if updated_after:
             query["updated_after"] = updated_after
         params = urlencode(query)
-        data = self.get_json(f"merge_requests?{params}")
-        if not isinstance(data, list):
-            return []
-        return data
+        return self.get_json_paginated(f"merge_requests?{params}")
 
     def get_mr_pipeline(self, project_id: int, mr_iid: int) -> dict[str, str | None]:
         """Return the latest pipeline status and URL for an MR."""

@@ -37,6 +37,9 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
         requests.append(url)
 
         class Response:
+            def __init__(self) -> None:
+                self.headers = {"x-next-page": ""}
+
             def raise_for_status(self) -> None:
                 return None
 
@@ -82,7 +85,7 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
     assert client.list_all_open_mrs("adrien") == [{"iid": 1, "draft": False}, {"iid": 2, "draft": True}]
     assert client.list_all_open_mrs("adrien", include_draft=False) == [{"iid": 1, "draft": False}]
     assert client.cancel_pipelines(42, "feature") == [101, 101]
-    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+    monkeypatch.setattr(client, "get_json_paginated", lambda endpoint: [])
     assert client.list_all_open_mrs("adrien") == []
     monkeypatch.setattr(client, "get_json", lambda endpoint: {"oops": "bad"})
     assert client.cancel_pipelines(42, "feature") == []
