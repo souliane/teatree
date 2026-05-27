@@ -394,14 +394,15 @@ class TestDispatcherHandlesScannerError:
         bad = _AuthFailingScanner()
         statusline = tmp_path / "statusline.txt"
 
-        with patch("teatree.loop.tick_jobs.notify_user") as mock_notify:
+        with patch("teatree.loop.tick_jobs.notify_with_fallback") as mock_notify:
             run_tick(TickRequest(scanners=[bad]), statusline_path=statusline)
             run_tick(TickRequest(scanners=[bad]), statusline_path=statusline)
 
-        # Both ticks called notify_user; idempotency happens INSIDE notify_user
-        # (via BotPing). The contract here is only that the dispatcher invokes
-        # the helper with a stable key per (scanner, class, day) — actual
-        # dedup is notify_user's job and already covered by its own tests.
+        # Both ticks called the verified-delivery wrapper; idempotency happens
+        # INSIDE the notify path (via BotPing). The contract here is only that
+        # the dispatcher invokes the helper with a stable key per (scanner,
+        # class, day) — actual dedup is the notify path's job and already
+        # covered by its own tests.
         assert mock_notify.call_count >= 1
         first_call = mock_notify.call_args_list[0]
         idempotency_key = first_call.kwargs.get("idempotency_key", "")

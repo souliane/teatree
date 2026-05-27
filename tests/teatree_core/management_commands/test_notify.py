@@ -126,6 +126,33 @@ class TestNotifySendSubcommand:
         assert code == 1
         assert BotPing.objects.get(idempotency_key="k-fail").status == BotPing.Status.NOOP
 
+    def test_failed_delivery_surfaces_recorded_reason_on_stderr(self) -> None:
+        """rc=1 carries *why* delivery failed, not a bare key (#1181)."""
+        err = StringIO()
+        code = 0
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
+            try:
+                call_command(
+                    "notify",
+                    "send",
+                    "no backend",
+                    "--user-id",
+                    "U_ME",
+                    "--kind",
+                    "info",
+                    "--idempotency-key",
+                    "k-reason",
+                    stderr=err,
+                )
+            except SystemExit as exc:
+                code = int(exc.code or 0)
+
+        assert code == 1
+        message = err.getvalue()
+        assert "k-reason" in message
+        # The NOOP reason recorded on the BotPing row is echoed verbatim.
+        assert "no messaging backend or user_id configured" in message
+
     def test_missing_idempotency_key_is_required(self) -> None:
         with pytest.raises((SystemExit, CommandError)):
             _call("notify", "send", "body", "--user-id", "U_ME", "--kind", "info")
