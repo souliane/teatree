@@ -24,6 +24,7 @@ import multiprocessing
 import multiprocessing.synchronize
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -190,19 +191,23 @@ class TestRegistryWritesAreFlockSerialized:
 def _race_round(
     reg_dir: str,
     session_id: str,
-    start_evt: "multiprocessing.synchronize.Event",
-    result_path: str,
-) -> None:
-    """Child: one brand-new session running the SessionStart bootstrap.
+    barrier: "multiprocessing.synchronize.Barrier",
+) -> str:
+    """Worker call: one brand-new session running the SessionStart bootstrap.
 
-    Both children block on a shared start event so they fire as
-    simultaneously as the OS scheduler allows. Pre-fix (#718
-    write-only-lock) the read sits OUTSIDE the flock, so both children
-    read the empty registry, both decide "fresh", and BOTH become
-    tick-owner → two competing tick-owners. Post-fix the
-    read->decide->write is one flock transaction: the second child blocks
-    until the first commits, re-reads, sees the live owner, and emits the
-    NON-owner ("stay idle") directive.
+    Both workers block on a shared barrier so they fire as simultaneously
+    as the OS scheduler allows. Pre-fix (#718 write-only-lock) the read
+    sits OUTSIDE the flock, so both workers read the empty registry, both
+    decide "fresh", and BOTH become tick-owner → two competing
+    tick-owners. Post-fix the read->decide->write is one flock
+    transaction: the second worker blocks until the first commits,
+    re-reads, sees the live owner, and emits the NON-owner ("stay idle")
+    directive.
+
+    The two workers are persistent across rounds (ProcessPoolExecutor),
+    so module import and Django settings load are paid once per worker —
+    not 2N times. Per-round re-isolation goes through the env var +
+    ``importlib.reload`` so each round sees a fresh registry dir.
     """
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
     import importlib  # noqa: PLC0415
@@ -212,13 +217,12 @@ def _race_round(
     import hooks.scripts.hook_router as r  # noqa: PLC0415
 
     importlib.reload(r)
-    start_evt.wait(timeout=10)
+    barrier.wait(timeout=10)
     buf = io.StringIO()
     with redirect_stdout(buf):
         r.handle_session_start_bootstrap({"session_id": session_id, "agent_id": f"a-{session_id}"})
     out = buf.getvalue().strip()
-    context = json.loads(out)["additionalContext"] if out else ""
-    Path(result_path).write_text(context, encoding="utf-8")
+    return json.loads(out)["additionalContext"] if out else ""
 
 
 def _is_owner_directive(ctx: str) -> bool:
@@ -247,35 +251,40 @@ class TestConcurrentFreshClaimIsAtomic:
 
     def test_simultaneous_fresh_starts_never_both_claim(self, tmp_path: Path) -> None:
         rounds = 12
-        for rnd in range(rounds):
-            reg_dir = str(tmp_path / f"data-{rnd}")
-            Path(reg_dir).mkdir(parents=True, exist_ok=True)
-            start_evt = multiprocessing.Event()
-            res_a = str(tmp_path / f"ctx-A-{rnd}.txt")
-            res_b = str(tmp_path / f"ctx-B-{rnd}.txt")
+        # Persistent pool of two workers across all rounds: Python startup
+        # and ``hook_router`` import are paid ONCE per worker, not 2N times.
+        # Without this, ``spawn`` on macOS + Django settings load in each
+        # of 24 children pushes the test wall-clock past the 10s
+        # ``pytest-timeout`` under Docker/CI load, flaking the pre-push
+        # hook. Race correctness is preserved: real OS-level concurrency,
+        # shared ``Barrier`` start gate, fresh registry dir per round +
+        # ``importlib.reload`` to re-isolate module state.
+        ctx = multiprocessing.get_context("spawn")
+        manager = ctx.Manager()
+        try:
+            with ProcessPoolExecutor(max_workers=2, mp_context=ctx) as pool:
+                for rnd in range(rounds):
+                    reg_dir = str(tmp_path / f"data-{rnd}")
+                    Path(reg_dir).mkdir(parents=True, exist_ok=True)
+                    barrier = manager.Barrier(2)
 
-            procs = [
-                multiprocessing.Process(target=_race_round, args=(reg_dir, "sessionA", start_evt, res_a)),
-                multiprocessing.Process(target=_race_round, args=(reg_dir, "sessionB", start_evt, res_b)),
-            ]
-            for p in procs:
-                p.start()
-            start_evt.set()
-            for p in procs:
-                p.join(timeout=25)
-                assert p.exitcode == 0, f"round {rnd}: child crashed"
+                    fut_a = pool.submit(_race_round, reg_dir, "sessionA", barrier)
+                    fut_b = pool.submit(_race_round, reg_dir, "sessionB", barrier)
+                    ctx_a = fut_a.result(timeout=20)
+                    ctx_b = fut_b.result(timeout=20)
 
-            ctx_a = Path(res_a).read_text(encoding="utf-8")
-            ctx_b = Path(res_b).read_text(encoding="utf-8")
-            owners = [c for c in (ctx_a, ctx_b) if _is_owner_directive(c)]
-            idlers = [c for c in (ctx_a, ctx_b) if _is_non_owner_directive(c)]
+                    owners = [c for c in (ctx_a, ctx_b) if _is_owner_directive(c)]
+                    idlers = [c for c in (ctx_a, ctx_b) if _is_non_owner_directive(c)]
 
-            assert len(owners) == 1, (
-                f"round {rnd}: double-claim — {len(owners)} owner directives (A={ctx_a[:50]!r} B={ctx_b[:50]!r})"
-            )
-            assert len(idlers) == 1, f"round {rnd}: loser must stay idle, not claim"
+                    assert len(owners) == 1, (
+                        f"round {rnd}: double-claim — {len(owners)} owner directives "
+                        f"(A={ctx_a[:50]!r} B={ctx_b[:50]!r})"
+                    )
+                    assert len(idlers) == 1, f"round {rnd}: loser must stay idle, not claim"
 
-            data = json.loads((Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8"))
-            session_ids = {entry["session_id"] for entry in data.values()}
-            assert len(session_ids) == 1, f"round {rnd}: mixed ownership {session_ids}"
-            assert session_ids <= {"sessionA", "sessionB"}
+                    data = json.loads((Path(reg_dir) / "loop-registry.json").read_text(encoding="utf-8"))
+                    session_ids = {entry["session_id"] for entry in data.values()}
+                    assert len(session_ids) == 1, f"round {rnd}: mixed ownership {session_ids}"
+                    assert session_ids <= {"sessionA", "sessionB"}
+        finally:
+            manager.shutdown()
