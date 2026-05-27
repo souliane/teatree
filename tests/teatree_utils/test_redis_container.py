@@ -108,6 +108,39 @@ class TestEnsureRunning:
             redis_container.ensure_running()
         mock.assert_called_once_with("start", "teatree-redis")
 
+    def test_evicts_non_teatree_squatter_holding_6379_before_create(self) -> None:
+        # Regression (#1373): a legacy overlay-managed container squats on
+        # host port 6379 (a docker-compose.yml predating `profiles: [disabled]`
+        # left a redis service publishing the port). The canonical
+        # teatree-redis is missing, so `_create()` would
+        # `bind: address already in use` and silently leave teatree-redis in
+        # Created state. Reconciliation must stop+remove the squatter first,
+        # then create teatree-redis.
+        calls: list[tuple[str, ...]] = []
+
+        def fake_tolerant(*args: str) -> CompletedProcess[str]:
+            calls.append(args)
+            if args[:2] == ("ps", "--filter"):
+                return _completed(stdout="legacy-redis-squatter\n")
+            return _completed()
+
+        def fake_checked(*args: str) -> CompletedProcess[str]:
+            calls.append(args)
+            return _completed()
+
+        with (
+            patch.object(redis_container, "status", return_value="missing"),
+            patch.object(redis_container, "_docker_tolerant", side_effect=fake_tolerant),
+            patch.object(redis_container, "_docker_checked", side_effect=fake_checked),
+        ):
+            redis_container.ensure_running(db_count=16)
+
+        assert ("stop", "legacy-redis-squatter") in calls
+        assert ("rm", "legacy-redis-squatter") in calls
+        run_call = next(c for c in calls if c and c[0] == "run")
+        assert "teatree-redis" in run_call
+        assert "6379:6379" in run_call
+
     def test_recreates_after_start_when_port_not_published(self) -> None:
         # A previously-`docker stop`ped container that was originally created
         # without the publish: `docker start` brings it back still
