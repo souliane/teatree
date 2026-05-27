@@ -6,9 +6,11 @@ History:
     or ``loop-owner=unclaimed`` line plus the foreign-hijack RED line.
 *   #1156 collapsed the dim doctrine into one line per LIVE LoopLease row
     (``loop:tick``, ``loop:owner``, …).
-*   This refit replaces that per-loop dump with a single consolidated
-    summary line that surfaces time-to-next-tick. The user explicitly
-    asked for "time to next tick" on the first line, not a per-loop list.
+*   #1163 replaced that per-loop dump with a single consolidated summary
+    line carrying time-to-next-tick.
+*   #1400 re-expanded to one dedicated line per live loop, each with its
+    own per-loop next-tick countdown — the consolidated count hid the
+    per-loop schedule once multiple loops were configured.
 
 The #1073 foreign-hijack RED line is preserved unchanged through every
 refit — it is a different code path (``loop_owner_anchor``) and a
@@ -36,44 +38,54 @@ def _make_lease(name: str, *, expires_in: timedelta, session_id: str = "sess-A")
 
 @pytest.mark.django_db
 class TestLiveLoopsAnchor:
-    """``live_loops_anchor()`` returns one consolidated summary line."""
+    """``live_loops_anchor()`` returns one dedicated line per live loop."""
 
-    def test_one_consolidated_line_with_loop_count(self) -> None:
+    def test_one_line_per_live_loop(self) -> None:
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
         _make_lease("loop-slack-answer", expires_in=timedelta(minutes=30))
 
         lines = live_loops_anchor()
 
-        assert len(lines) == 1, repr(lines)
-        line = lines[0]
-        assert line.startswith("loop · "), line
-        assert "3 loops live" in line, line
+        assert len(lines) == 3, repr(lines)
+        joined = "\n".join(lines)
+        assert "loop-tick" in joined
+        assert "loop-self-improve" in joined
+        assert "loop-slack-answer" in joined
 
-    def test_expired_loops_omitted_from_count(self) -> None:
+    def test_expired_loops_omitted(self) -> None:
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
         _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
-        # Expired — must not be counted.
+        # Expired — must not appear in the output.
         _make_lease("loop-slack-answer", expires_in=timedelta(seconds=-5))
 
         lines = live_loops_anchor()
 
-        assert len(lines) == 1, repr(lines)
-        assert "2 loops live" in lines[0], lines[0]
+        assert len(lines) == 2, repr(lines)
+        joined = "\n".join(lines)
+        assert "loop-slack-answer" not in joined
 
     def test_per_loop_dump_format_gone(self) -> None:
-        """The pre-refit per-loop dump (``loop:tick`` / ``loop:owner``) is gone."""
+        """The pre-#1156 verbose lines are still gone."""
         _make_lease("loop-owner", expires_in=timedelta(minutes=30), session_id="sess-A")
         _make_lease("loop-tick", expires_in=timedelta(minutes=30), session_id="sess-A")
 
         lines = live_loops_anchor()
         joined = "\n".join(lines)
-        # The verbose pre-#1156 lines are still gone.
         assert "loop-owner=THIS session" not in joined, repr(joined)
         assert "loop-owner=unclaimed" not in joined, repr(joined)
-        # The per-loop dump (``loop:tick`` / ``loop:owner``) is gone too.
+        # ``loop:owner`` / ``loop:tick`` colon-prefixed dump shape.
         assert "loop:tick" not in joined, repr(joined)
         assert "loop:owner" not in joined, repr(joined)
+
+    def test_each_line_carries_next_tick_fragment(self) -> None:
+        _make_lease("loop-tick", expires_in=timedelta(minutes=30))
+        _make_lease("loop-self-improve", expires_in=timedelta(minutes=30))
+
+        lines = live_loops_anchor()
+
+        for line in lines:
+            assert "next " in line, line
 
 
 @pytest.mark.django_db
@@ -94,9 +106,9 @@ class TestForeignHijackStillRed:
 
 @pytest.mark.django_db
 class TestPopulateLoopsAnchorIntegration:
-    """The rendering layer emits the consolidated line for live LoopLease rows."""
+    """The rendering layer emits one anchor line per live LoopLease row."""
 
-    def test_emits_consolidated_line_when_loops_live(self) -> None:
+    def test_emits_one_line_per_loop_when_loops_live(self) -> None:
         from teatree.loop.rendering import _populate_live_loops_anchor  # noqa: PLC0415
 
         _make_lease("loop-tick", expires_in=timedelta(minutes=30))
@@ -105,11 +117,12 @@ class TestPopulateLoopsAnchorIntegration:
         zones = StatuslineZones()
         _populate_live_loops_anchor(zones)
 
-        joined = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
-        assert "loop · " in joined, repr(joined)
-        assert "2 loops live" in joined, repr(joined)
+        texts = [item if isinstance(item, str) else item.text for item in zones.anchors]
+        joined = "\n".join(texts)
+        assert "loop-tick" in joined, repr(joined)
+        assert "loop-self-improve" in joined, repr(joined)
         # Verbose dim owner lines must NOT appear.
         assert "loop-owner=THIS session" not in joined, repr(joined)
         assert "loop-owner=unclaimed" not in joined, repr(joined)
-        # Per-loop dump form also gone.
+        # Per-loop colon-prefixed dump form also gone.
         assert "loop:tick" not in joined, repr(joined)

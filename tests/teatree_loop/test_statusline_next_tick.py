@@ -1,10 +1,7 @@
-"""Statusline renderer refit — consolidated loop line + state-priority reorder.
+"""Statusline renderer refit — state-priority reorder + anchor cap shape.
 
 Three behaviours regression-locked here:
 
-*   Line 1 of the statusline is the **consolidated loop summary**, not a
-    per-loop dump (``loop:owner``, ``loop:self-improve``, ``loop:tick``).
-    The user explicitly asked for "time to next tick" on the first line.
 *   Anchor state groups render in priority order — actively-shipping work
     first (``started``, ``in_review``, ``ready``) before the long
     ``not_started`` backlog. A 41-deep ``not_started`` no longer pushes
@@ -12,6 +9,8 @@ Three behaviours regression-locked here:
 *   The ``not_started`` cap tightens to 3 with a clear ``(+N more)``
     overflow marker; ``ready:`` and the rest keep the standard
     ``_MAX_PER_STATE`` cap with the same overflow wording.
+*   The per-loop anchor lines (#1400) lead the anchors zone — one line
+    per live loop with its own next-tick countdown.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -50,61 +49,52 @@ def _ready(num: str, *, overlay: str = "ov") -> DispatchAction:
     )
 
 
-class TestConsolidatedLoopAnchor:
-    """Line 1 = ``loop · next tick in <duration> · N loops live``."""
+class TestPerLoopAnchor:
+    """One anchor line per live loop, with a per-loop next-tick countdown (#1400)."""
 
-    def test_includes_time_to_next_tick_when_acquired_at_known(self) -> None:
+    def test_one_line_per_loop_with_next_tick(self) -> None:
         leases = [("loop-tick", "sessA"), ("loop-owner", "sessA")]
-        # Last tick fired 2 minutes ago; cadence 720s → next tick in 10m.
-        acquired_at = datetime.now(UTC) - timedelta(seconds=120)
+        now = datetime.now(UTC)
+        acquired_ats = {
+            "loop-tick": now - timedelta(seconds=120),
+            "loop-owner": now - timedelta(seconds=60),
+        }
         with (
             patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._loop_acquired_ats", return_value=acquired_ats),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert len(lines) == 1, repr(lines)
-        line = lines[0]
-        assert line.startswith("loop · "), line
-        assert "next tick in " in line, line
-        assert "2 loops live" in line, line
+        assert len(lines) == 2, repr(lines)
+        joined = "\n".join(lines)
+        assert "loop-tick" in joined
+        assert "loop-owner" in joined
+        for line in lines:
+            assert "next " in line, line
 
     def test_falls_back_to_last_tick_never_when_no_lease_history(self) -> None:
         leases = [("loop-tick", "sessA")]
         with (
             patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._loop_acquired_ats", return_value={}),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · last tick: never · 1 loops live"], repr(lines)
+        assert lines == ["loop-tick · last tick: never"], repr(lines)
 
-    def test_reports_next_tick_due_when_overdue(self) -> None:
+    def test_reports_due_when_overdue(self) -> None:
         leases = [("loop-tick", "sessA")]
-        # Last tick was 1 hour ago; cadence 12 minutes → due now.
         acquired_at = datetime.now(UTC) - timedelta(hours=1)
         with (
             patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch(
+                "teatree.loop.statusline._loop_acquired_ats",
+                return_value={"loop-tick": acquired_at},
+            ),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · next tick due · 1 loops live"], repr(lines)
-
-    def test_no_per_loop_lines_anymore(self) -> None:
-        """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
-        leases = [("loop-tick", "sessA"), ("loop-owner", "sessA"), ("loop-self-improve", "sessA")]
-        with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
-        ):
-            lines = live_loops_anchor()
-        assert len(lines) == 1, repr(lines)
-        # No ``loop:owner`` / ``loop:tick`` / ``loop:self-improve`` tokens.
-        assert "loop:owner" not in lines[0], lines[0]
-        assert "loop:tick" not in lines[0], lines[0]
-        assert "loop:self-improve" not in lines[0], lines[0]
+        assert lines == ["loop-tick · next: due"], repr(lines)
 
     def test_empty_when_no_loops_live(self) -> None:
         with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
@@ -183,24 +173,26 @@ class TestReadyOverflowPhrasing:
 
 
 class TestZonesForIntegration:
-    """End-to-end: ``zones_for`` + ``render`` produces the new top-line shape."""
+    """End-to-end: ``zones_for`` + ``render`` produces one anchor line per loop."""
 
-    def test_line_one_is_consolidated_loop_summary(self, tmp_path: Path) -> None:
+    def test_loop_lines_lead_anchors_zone(self, tmp_path: Path) -> None:
         leases = [("loop-tick", "sessA"), ("loop-owner", "sessA")]
-        acquired_at = datetime.now(UTC) - timedelta(seconds=60)
+        now = datetime.now(UTC)
+        acquired_ats = {
+            "loop-tick": now - timedelta(seconds=60),
+            "loop-owner": now - timedelta(seconds=30),
+        }
         with (
             patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._loop_acquired_ats", return_value=acquired_ats),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             zones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        first_line = body.splitlines()[0]
-        assert first_line.startswith("loop · "), repr(first_line)
-        assert "next tick in " in first_line, first_line
-        assert "2 loops live" in first_line, first_line
-        # Per-loop tokens removed at the top.
+        assert "loop-tick" in body
+        assert "loop-owner" in body
+        # ``loop:tick`` / ``loop:owner`` colon-prefixed dump form gone.
         assert "\nloop:tick" not in body
         assert "\nloop:owner" not in body
