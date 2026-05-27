@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
 from teatree.core.models.merge_clear import MergeClear
-from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
+from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -404,28 +404,7 @@ def _as_str(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _classify_gh_stderr(stderr: str) -> ScannerErrorClass:
-    """Classify a non-zero ``gh`` stderr into a :class:`ScannerErrorClass` (#1287).
-
-    The classifier reads gh's well-known error wording: auth-required
-    prompts (``gh auth login``, ``GH_TOKEN``, ``Bad credentials``, ``401``),
-    GitHub rate-limit messages (``API rate limit exceeded``, ``rate
-    limit``, ``secondary rate limit``), and network failures (``dial
-    tcp``, ``no such host``, ``Could not resolve``). Anything else falls
-    through to :attr:`ScannerErrorClass.UNKNOWN` so the dispatcher still
-    surfaces the failure rather than masking it.
-    """
-    lower = stderr.lower()
-    rate_limit_markers = ("rate limit", "rate-limit", "secondary rate")
-    auth_markers = ("gh auth login", "gh_token", "bad credentials", "401")
-    network_markers = ("no such host", "could not resolve", "dial tcp", "network is unreachable")
-    if any(marker in lower for marker in rate_limit_markers):
-        return ScannerErrorClass.RATE_LIMIT
-    if any(marker in lower for marker in auth_markers):
-        return ScannerErrorClass.AUTH
-    if any(marker in lower for marker in network_markers):
-        return ScannerErrorClass.NETWORK
-    return ScannerErrorClass.UNKNOWN
+_classify_gh_stderr = classify_gh_stderr
 
 
 def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
