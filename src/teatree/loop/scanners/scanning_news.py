@@ -67,11 +67,22 @@ class ScanningNewsScanner:
     placeholder ticket (#1267). The scanner never reads or assumes the
     name — it stamps whatever value the wiring layer hands it. The
     canonical post-0027 default in production is ``"t3-teatree"``.
+
+    ``require_approval`` (#1391) is the ask-gate flag, resolved from
+    ``ask_before_creating_news_tickets`` at the wiring layer. When true
+    (the default), the queued task's directive instructs the dispatched
+    skill to record each candidate article as a
+    :class:`teatree.core.models.pending_article_suggestion.PendingArticleSuggestion`
+    and surface the batch for explicit user approval — it must NOT
+    auto-create issues. The scanner never creates issues itself; this
+    flag is the contract it stamps onto the task so the skill cannot
+    silently fall back to mass-filing.
     """
 
     overlay_name: str
     skill: str = "scanning-news"
     cadence_hours: int = 24
+    require_approval: bool = True
     name: str = "scanning_news"
 
     def scan(self) -> list[ScanSignal]:
@@ -97,6 +108,7 @@ class ScanningNewsScanner:
                     "phase": SCANNING_NEWS_PHASE,
                     "task_id": task.pk,
                     "trigger": trigger,
+                    "require_approval": self.require_approval,
                 },
             ),
         ]
@@ -176,11 +188,29 @@ class ScanningNewsScanner:
                     session=session,
                     phase=SCANNING_NEWS_PHASE,
                     execution_target=task_model.ExecutionTarget.HEADLESS,
-                    execution_reason=f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}",
+                    execution_reason=self._execution_reason(trigger),
                 )
         except Exception:
             logger.exception("ScanningNewsScanner: failed to queue scanning-news task")
             return None
+
+    def _execution_reason(self, trigger: str) -> str:
+        """Build the dispatcher directive, embedding the ask-gate contract (#1391).
+
+        When ``require_approval`` is on (the default), the directive
+        carries an explicit instruction that the skill must record each
+        candidate as a ``PendingArticleSuggestion`` and surface the batch
+        for user approval — it must NOT auto-create issues. The marker
+        substring is load-bearing: it is the channel the dispatched skill
+        reads to know the gate is active.
+        """
+        base = f"Periodic scanning-news scan ({trigger}) via skill: {self.skill}"
+        if self.require_approval:
+            return (
+                f"{base} | ASK-GATE: do NOT auto-create issues — record each candidate as a "
+                f"PendingArticleSuggestion and surface the batch for explicit user approval (#1391)"
+            )
+        return base
 
     def _placeholder_issue_url(self) -> str:
         """Stable synthetic URL for the overlay-anchored placeholder ticket."""
