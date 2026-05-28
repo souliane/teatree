@@ -1446,11 +1446,41 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     hands that implement. Fails open when the transcript cannot
     distinguish the agent (documented limitation), never blocking on an
     ambiguous signal.
+
+    Extension (#1442): the main agent must dispatch ``Agent`` calls with
+    ``run_in_background: true`` — a foreground dispatch blocks the
+    orchestrator for the entire sub-agent runtime (often 30+ min) and is
+    the source of a recurring failure (memory rule
+    ``feedback_always_run_in_background_for_sub_agent_dispatch``). The
+    guard denies main-agent Agent calls when ``run_in_background`` is
+    not ``True``; sub-agents may still dispatch foreground (sidechain
+    sees the unblocked default).
     """
+    tool_name = data.get("tool_name", "")
+    if tool_name == "Agent":
+        sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
+        if sidechain is False and data.get("tool_input", {}).get("run_in_background") is not True:
+            json.dump(
+                {
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "[main-agent-orchestration-guard] Foreground Agent dispatch "
+                        "DENIED in main agent context.\n"
+                        "Pass `run_in_background: true` to every Agent invocation "
+                        "from the main agent.\n"
+                        "Memory rule: "
+                        "feedback_always_run_in_background_for_sub_agent_dispatch "
+                        "(RED CARD recurrence)."
+                    ),
+                },
+                sys.stdout,
+            )
+            return True
+        return False
+
     if _is_orchestration_action(data):
         return False
 
-    tool_name = data.get("tool_name", "")
     is_non_orch = tool_name in _NON_ORCHESTRATION_TOOLS or tool_name == "Bash"
     if not is_non_orch:
         return False
