@@ -206,6 +206,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
+    "review_nag_enabled": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -412,6 +413,13 @@ class UserSettings:
     # per-overlay) as the escape hatch.
     pull_main_clone_disabled: bool = False
     pull_main_clone_cadence_hours: int = 1
+    # Fibonacci review-channel nag scanner (#1038). Ships DISABLED: a
+    # concurrent-tick race on ``ReviewRequestPost.last_nag_step`` let two
+    # sessions double-post bump replies into the colleague review channel,
+    # including against already-merged MRs. Re-enable per-overlay via
+    # ``[overlays.<name>].review_nag_enabled = true`` only after the
+    # concurrency + merged-MR fixes are validated.
+    review_nag_enabled: bool = False
 
 
 @dataclass
@@ -488,6 +496,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
+        review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)

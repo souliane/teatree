@@ -797,7 +797,11 @@ def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_Sca
         # ``:no_entry_sign:`` plus the literal phrase in DMs.
         _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
         _ScannerJob(
-            scanner=ReviewNagScanner(messaging=messaging, user_slack_id=_user_slack_id_for_overlay(tag)),
+            scanner=ReviewNagScanner(
+                messaging=messaging,
+                user_slack_id=_user_slack_id_for_overlay(tag),
+                host=backend.host,
+            ),
             overlay=tag,
         ),
     ]
