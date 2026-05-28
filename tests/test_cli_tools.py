@@ -1,9 +1,11 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 import teatree.cli as teatree_cli
@@ -141,6 +143,50 @@ class TestToolCommands:
             result = runner.invoke(app, ["tool", "analyze-video", "/path/to/video.mp4"])
             assert result.exit_code == 0
             mock.assert_called_once_with("analyze_video", "/path/to/video.mp4")
+
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+    def test_analyze_video_script_extracts_frames(self, tmp_path):
+        """The script actually decomposes a video into frames when invoked.
+
+        Regression for the script having no ``__main__`` entrypoint: it
+        imported cleanly, exited 0, and produced zero frames — silently
+        defeating every caller. Drives the real script over a generated
+        test clip rather than mocking ``run_script``.
+        """
+        ffmpeg = shutil.which("ffmpeg")
+        assert ffmpeg is not None
+        video = tmp_path / "clip.mp4"
+        subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=4:size=320x240:rate=24",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                str(video),
+                "-y",
+            ],
+            check=True,
+        )
+        out_dir = tmp_path / "frames"
+        script = ToolRunner.scripts_dir() / "analyze_video.py"
+        result = subprocess.run(
+            [sys.executable, str(script), str(video), "--output", str(out_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        frames = sorted(out_dir.glob("frame_*.png"))
+        assert frames, f"no frames extracted\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        assert "Frames extracted:" in result.stdout
 
     def test_bump_deps(self):
         with patch.object(ToolRunner, "run_script") as mock:
