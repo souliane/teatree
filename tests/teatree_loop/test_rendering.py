@@ -523,13 +523,14 @@ class TestTicketExtraPrsResolvesMrToTicket:
 
 
 @pytest.mark.django_db
-class TestPostedReviewRequestPermalink:
-    """#1113 enhancement — a posted review-request renders a clickable link.
+class TestPostedReviewRequestPermalinkNotInChip:
+    """#1377: the chip is bare — review-permalink suffix removed from the chip.
 
-    A ``ReviewRequestPost`` row records the review-channel post's channel +
-    thread ts. The ticket whose MR was posted should surface the clickable
-    Slack permalink as an extra ref chunk. Pre-fix nothing reads
-    ``ReviewRequestPost`` into the render path.
+    A ``ReviewRequestPost`` row still records the review-channel post's
+    channel + thread ts (the data path is unchanged), but the statusline
+    chip no longer surfaces the permalink in-line. Per the binding spec
+    the chip is just ``!<iid>``; richer per-MR signal belongs in
+    dedicated zones, not on the chip.
     """
 
     URL = "https://gitlab.com/souliane/teatree/-/merge_requests/145"
@@ -560,10 +561,13 @@ class TestPostedReviewRequestPermalink:
             ),
         ]
 
-    def test_posted_review_request_surfaces_clickable_permalink(self) -> None:
+    def test_chip_has_no_slack_permalink_suffix(self) -> None:
         self._seed()
         blob = _render_blob(self._actions())
-        assert "slack.com/archives/C9" in blob, repr(blob)
+        assert "!145" in blob, repr(blob)
+        # Slack permalink suffix removed from the chip in #1377.
+        assert "slack.com/archives/C9" not in blob, repr(blob)
+        assert "(review" not in blob, repr(blob)
 
 
 @pytest.mark.django_db
@@ -603,11 +607,13 @@ class TestNoAgentsLineInInFlight:
         assert "agents:" not in blob, repr(blob)
 
 
-def test_canonical_item_renders_review_permalink_chunk() -> None:
-    """Canonical item appends a ``(review)`` chunk per child MR with a permalink.
+def test_canonical_item_drops_review_permalink_chunk() -> None:
+    """#1377: canonical item omits the ``(review)`` permalink suffix.
 
-    When a state-line item's child MR has a recorded permalink, the
-    canonical item shape adds the clickable ``(review)`` chunk.
+    Even when a child MR has a ``review_permalink`` recorded, the chip
+    renders as a bare ``!<iid>`` — the Slack permalink does not appear
+    on the chip. Per the binding spec the chip is just the number;
+    richer per-MR signal belongs in dedicated zones.
     """
     from teatree.loop.rendering_items import _LinkCtx, _PRRef, _render_canonical_item  # noqa: PLC0415
 
@@ -629,4 +635,6 @@ def test_canonical_item_renders_review_permalink_chunk() -> None:
         ],
         ctx=_LinkCtx(colorize=False, link=_link),
     )
-    assert "review !145 <https://slack.com/archives/C9/p17790001>" in rendered, rendered
+    assert "!145 <https://x/mr/145>" in rendered, rendered
+    assert "slack.com" not in rendered, rendered
+    assert "review !145" not in rendered, rendered

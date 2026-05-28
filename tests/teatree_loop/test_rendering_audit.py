@@ -237,13 +237,13 @@ class TestInflightPrRows:
         text = _blob(zones.in_flight)
         assert text.count("!123") == 1, repr(text)
 
-    def test_in_flight_pr_failed_annotation_renders_once(self) -> None:
+    def test_in_flight_pr_failed_renders_bare_chip_no_annotation(self) -> None:
+        """Per #1377 the chip is bare ``!N`` — ``(pipeline failed)`` removed."""
         zones = zones_for([_my_pr(456, zone="action_needed", status="failed")], colorize=False)
         text = _blob(zones.action_needed)
-        # #1156: NO_COLOR renders ``!N <url>`` plus the annotation chunk.
         assert "!456" in text, repr(text)
-        assert "(pipeline failed)" in text, repr(text)
-        assert text.count("(pipeline failed)") == 1, repr(text)
+        # Annotation decoration removed by #1377.
+        assert "(pipeline failed)" not in text, repr(text)
 
 
 class TestNoRunningTasksLine(django.test.TestCase):
