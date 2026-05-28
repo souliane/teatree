@@ -74,6 +74,40 @@ Key variables used by this skill (see `/t3:setup` for the full config reference)
 | `T3_AUTO_SQUASH` | No | Auto-squash related unpushed commits before push (default: `false`) |
 | `T3_SHARE_DB_SERVER` | No | Share one Postgres server across worktrees (default: `true`). Each worktree gets its own DB name but connects to the same server. When `false`, each worktree starts its own Postgres container. |
 
+### Concurrent Local Stacks (`max_concurrent_local_stacks`, #1397)
+
+A locally-running worktree (state `services_up` or `ready`) holds a
+docker stack, language servers, browsers, and CI processes. On a memory-
+constrained host, running two stacks in parallel can OOM the machine and
+abort both. The setting `max_concurrent_local_stacks` in `~/.teatree.toml`
+caps how many distinct tickets can be in those states at once for a
+given overlay:
+
+```toml
+[teatree]
+max_concurrent_local_stacks = 1   # 0 = unbounded (default, no behaviour change)
+
+[overlays.heavy-overlay]
+max_concurrent_local_stacks = 1   # per-overlay override is supported
+```
+
+When the cap is set and the limit would be exceeded, `t3 <overlay>
+worktree start` and `t3 <overlay> workspace start` refuse with an
+error naming each blocking worktree path. Resolve by tearing the
+blocker down first:
+
+```bash
+t3 <overlay> worktree teardown <path-from-the-error>
+# then re-run start on the new worktree
+```
+
+Sibling worktrees of the *same* ticket (a multi-repo workspace) count
+as one logical stack; the cap is per distinct ticket, not per worktree
+row. Re-firing `start` against an already-running worktree is allowed
+(the candidate row is excluded from its own count, preserving FSM
+idempotence). The cap is scoped per overlay, so a heavy overlay can
+cap to `1` while a cheap dogfood overlay stays unbounded.
+
 ### Data Directory (XDG-Compliant)
 
 Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
