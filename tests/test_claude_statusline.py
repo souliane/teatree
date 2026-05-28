@@ -108,6 +108,42 @@ class TestStatuslineHook:
         assert "model=Claude Sonnet" in plain
         assert "ctx=41%" in plain
 
+    def test_renders_free_disk_segment_after_ram(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {"session_id": "s-disk", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        match = re.search(r"disk=\d+% \d+G free", plain)
+        assert match is not None, plain
+        # The disk segment follows the RAM segment within the resource group.
+        assert plain.index("ram=") < match.start()
+
+    def test_disk_segment_omitted_when_df_target_unreadable(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        env = os.environ.copy()
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["HOME"] = str(tmp_path / "does-not-exist")
+
+        result = subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": "s-nodisk", "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "disk=" not in _strip_ansi(result.stdout)
+
     def test_appends_pre_rendered_loop_zones_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
