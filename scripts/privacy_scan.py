@@ -13,6 +13,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
 
@@ -122,6 +124,17 @@ def main(
         all_findings.extend(
             {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, banned_re)
         )
+
+    # Diff-aware pass: self-referential bookkeeping (MR/ticket/workstream
+    # tags and process-narration asides) left in code comments on added
+    # lines. It needs the unified-diff structure (file headers + ``+``
+    # markers) and the file's comment syntax, so it runs over the whole
+    # text rather than per line. Docs/markdown are exempt — they
+    # legitimately cite trackers.
+    all_findings.extend(
+        {"line": lineno, "category": category, "match": match} for lineno, category, match in _scan_diff_comments(text)
+    )
+    all_findings.sort(key=lambda f: int(f["line"]))
 
     if json_output:
         print(json.dumps(all_findings, indent=2))
