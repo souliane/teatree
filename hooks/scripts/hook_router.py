@@ -2577,6 +2577,46 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
+def _evict_stale_db_lease_owner(session_id: str) -> None:
+    """Orphan any ``LoopLease`` ``loop-owner`` row not held by ``session_id``.
+
+    #1380 (#1107 follow-up). Context compaction rotates the Claude
+    ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
+    rewritten to the new id, but the DB ``LoopLease`` row name=
+    ``loop-owner`` still carries the OLD id with an unexpired
+    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    subprocesses (#1107) so the next ``t3 loop tick`` resolves the NEW
+    id via the registry fallback and the ``claim_ownership`` CAS fails
+    (DB row's session != new session, lease not expired) — the same
+    session can never own its own loop until ``t3 loop claim
+    --take-over`` runs manually.
+
+    Compaction is the natural eviction point. Whenever the SessionStart
+    handler records a new session as the tick-owner, any stale DB row
+    (session_id != new id, including the empty-string baseline) is
+    orphaned so the new session's next tick CAS-claims it cleanly. The
+    lease stays the authoritative liveness source; the registry is the
+    discovery channel.
+
+    Best-effort: any Django bootstrap / DB error fails open. The hook
+    must never block the SessionStart directive over a DB hiccup.
+    """
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        LoopLease.objects.filter(name="loop-owner").exclude(session_id=session_id).update(
+            session_id="",
+            acquired_at=None,
+            lease_expires_at=None,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
@@ -2635,6 +2675,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     agent_id = data.get("agent_id", "")
 
+    became_owner_after_rotation = False
     with _loop_registry_txn() as box:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
@@ -2652,9 +2693,27 @@ def handle_session_start_bootstrap(data: dict) -> None:
             # No live owner, or this session already owns it (incl. the
             # post-compaction same-session restart — nothing to re-spawn,
             # the cron keeps ticking). This session is the tick-owner.
+            # ``owner is None`` here = a fresh machine OR a dead-owner
+            # prune; both can leave a stale DB lease behind. The
+            # ``same-session refresh`` case (``owner.session_id ==
+            # session_id``) does not need eviction — gating on this flag
+            # spares those SessionStarts the Django startup cost.
+            became_owner_after_rotation = owner is None
             box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
             context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
+
+    # #1380: orphan any stale DB ``loop-owner`` row from a rotated session
+    # (compaction rotated the Claude ``session_id``, leaving the DB lease
+    # under the previous id with an unexpired ``lease_expires_at``). The
+    # lease stays the authoritative liveness source; this aligns it with
+    # the file registry we just rewrote so the new session's next
+    # ``t3 loop tick`` CAS-claims cleanly without ``--take-over``. Outside
+    # the flock — the DB has its own CAS serialization; holding the
+    # registry flock across a Django bootstrap would needlessly stall
+    # sibling SessionStart hooks.
+    if became_owner_after_rotation:
+        _evict_stale_db_lease_owner(session_id)
 
     # OSC write is a tty side effect, not registry state — keep it out of
     # the flock critical section.
