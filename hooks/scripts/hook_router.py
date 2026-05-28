@@ -182,6 +182,45 @@ def _read_input() -> dict:
         return {}
 
 
+def emit_pretooluse_deny(reason: str) -> bool:
+    """Emit a PreToolUse deny in the modern nested ``hookSpecificOutput`` schema.
+
+    Claude Code 2.1.146 honours deny payloads only when (a) the JSON
+    envelope places ``permissionDecision`` inside ``hookSpecificOutput``
+    (the modern SDK schema in
+    ``claude_agent_sdk.types.PreToolUseHookSpecificOutput``), AND (b)
+    the router exits with code 2 (the changelog fix: "Fixed
+    ``PreToolUse`` hooks that emit JSON to stdout and exit with code 2
+    not correctly blocking the tool call").
+
+    This helper centralises the schema so adding a new deny gate cannot
+    drift back to the legacy flat shape. The legacy top-level
+    ``permissionDecision`` / ``permissionDecisionReason`` keys are
+    written alongside the nested envelope for backward-compat with
+    in-process tests that read ``out["permissionDecision"]`` directly.
+
+    The caller still returns ``True`` to short-circuit the handler chain
+    in ``main()``; ``main()`` translates that into ``sys.exit(2)``.
+
+    Returns ``True`` so handlers can ``return emit_pretooluse_deny(...)``.
+    """
+    payload = {
+        # Legacy flat shape — kept for in-process consumers (existing
+        # handler tests). Harmless to the harness because it ignores
+        # unknown top-level keys.
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+        # Modern shape — the one the harness actually reads.
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+    json.dump(payload, sys.stdout)
+    return True
+
+
 def _state_file(session_id: str, suffix: str) -> Path:
     return STATE_DIR / f"{session_id}.{suffix}"
 
@@ -399,8 +438,7 @@ def handle_enforce_loop_registration(data: dict) -> bool:
         f"Please call CronCreate with "
         f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
@@ -454,8 +492,7 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
@@ -603,8 +640,7 @@ def handle_enforce_plan_gate(data: dict) -> bool:
         "before Edit. (Plan-gate is opt-in per overlay via "
         "`[overlays.<name>] plan_gate = true`.)"
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: enforce-agent-plan-gate (#1302) ──────────────────────
@@ -741,8 +777,7 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
         "`[skip-plan-gate: trivial-bug-fix]`. "
         "Override the window via `TEATREE_PLAN_GATE_WINDOW_MINUTES`. (#1302)"
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -791,17 +826,9 @@ def handle_protect_default_branch(data: dict) -> bool:
         return False
 
     if branch in _load_protected_branches():
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    f"BLOCKED: file is on protected branch '{branch}'. "
-                    "Create a worktree first with `t3 workspace ticket`."
-                ),
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            f"BLOCKED: file is on protected branch '{branch}'. Create a worktree first with `t3 workspace ticket`."
         )
-        return True
     return False
 
 
@@ -881,15 +908,9 @@ def handle_validate_mr_metadata(data: dict) -> bool:
         return False
 
     if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (result.stderr or result.stdout or "").strip()
-                or "MR title/description failed overlay validation.",
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            (result.stderr or result.stdout or "").strip() or "MR title/description failed overlay validation."
         )
-        return True
     return False
 
 
@@ -1018,18 +1039,11 @@ def handle_block_ai_signature(data: dict) -> bool:
         return False
 
     if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
-                    "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
-                    + (result.stdout or result.stderr or "").strip()
-                ),
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
+            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
+            + (result.stdout or result.stderr or "").strip()
         )
-        return True
     return False
 
 
@@ -1118,14 +1132,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
             result=result,
             override=False,
         )
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": quote_scanner.format_block_message(result),
-            },
-            sys.stdout,
-        )
-        return True
+        return emit_pretooluse_deny(quote_scanner.format_block_message(result))
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
@@ -1210,14 +1217,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if term is None:
         return False
 
-    json.dump(
-        {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": banned_terms_scanner.format_block_message(term),
-        },
-        sys.stdout,
-    )
-    return True
+    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
@@ -1300,20 +1300,13 @@ def handle_block_uncovered_diff(data: dict) -> bool:
         return False
 
     if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-                    "An added production line is uncovered or a changed symbol is not "
-                    "referenced by a changed test. Cover/reference it, then re-mark the "
-                    "PR ready (resolve the finding before re-requesting review).\n"
-                    + (result.stdout or result.stderr or "").strip()
-                ),
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
+            "An added production line is uncovered or a changed symbol is not "
+            "referenced by a changed test. Cover/reference it, then re-mark the "
+            "PR ready (resolve the finding before re-requesting review).\n"
+            + (result.stdout or result.stderr or "").strip()
         )
-        return True
     return False
 
 
@@ -1460,22 +1453,15 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     if tool_name == "Agent":
         sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
         if sidechain is False and data.get("tool_input", {}).get("run_in_background") is not True:
-            json.dump(
-                {
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        "[main-agent-orchestration-guard] Foreground Agent dispatch "
-                        "DENIED in main agent context.\n"
-                        "Pass `run_in_background: true` to every Agent invocation "
-                        "from the main agent.\n"
-                        "Memory rule: "
-                        "feedback_always_run_in_background_for_sub_agent_dispatch "
-                        "(RED CARD recurrence)."
-                    ),
-                },
-                sys.stdout,
+            return emit_pretooluse_deny(
+                "[main-agent-orchestration-guard] Foreground Agent dispatch "
+                "DENIED in main agent context.\n"
+                "Pass `run_in_background: true` to every Agent invocation "
+                "from the main agent.\n"
+                "Memory rule: "
+                "feedback_always_run_in_background_for_sub_agent_dispatch "
+                "(RED CARD recurrence)."
             )
-            return True
         return False
 
     if _is_orchestration_action(data):
@@ -1491,22 +1477,15 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     if sidechain is not False:
         return False
 
-    json.dump(
-        {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"BLOCKED: the orchestrator (main agent) invoked `{tool_name}` — a "
-                "non-orchestration investigative/implementation action. The "
-                "orchestrator is delegate-only (BLUEPRINT §17.4 / §17.8 / §17.6 "
-                "gate 2): it dispatches sub-agents and makes merge/clear "
-                "decisions; it does not itself Edit/Write/Read-sweep/Grep or run "
-                "mutating Bash. Dispatch a sub-agent to do this work (the Task/"
-                "Agent tools), or use a sanctioned orchestration verb."
-            ),
-        },
-        sys.stdout,
+    return emit_pretooluse_deny(
+        f"BLOCKED: the orchestrator (main agent) invoked `{tool_name}` — a "
+        "non-orchestration investigative/implementation action. The "
+        "orchestrator is delegate-only (BLUEPRINT §17.4 / §17.8 / §17.6 "
+        "gate 2): it dispatches sub-agents and makes merge/clear "
+        "decisions; it does not itself Edit/Write/Read-sweep/Grep or run "
+        "mutating Bash. Dispatch a sub-agent to do this work (the Task/"
+        "Agent tools), or use a sanctioned orchestration verb."
     )
-    return True
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────
@@ -3578,8 +3557,7 @@ def handle_block_direct_commands(data: dict) -> bool:
     reason = _deny_match(command)
     if reason is None:
         return False
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
@@ -3838,8 +3816,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
         "Proceed with any work that does not depend on the answer; the response will surface "
         "in a future turn's additionalContext when the user resolves it."
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── UserPromptSubmit: inject pending-question backlog into context ────────────
@@ -4463,11 +4440,20 @@ def main() -> None:
     if not data:
         return
 
+    deny_emitted = False
     for handler in handlers:
         # Handlers that return True emitted a deny — stop the chain to avoid
         # writing multiple JSON objects to stdout (which would be invalid JSON).
         if handler(data) is True:
+            deny_emitted = True
             break
+
+    # Claude Code 2.1.146 changelog: PreToolUse hooks that emit deny JSON
+    # are only honoured when the process exits with code 2. An exit-0 deny
+    # is silently dropped and falls through to the auto-mode classifier.
+    # See #1447.
+    if deny_emitted:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
