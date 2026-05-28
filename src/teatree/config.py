@@ -203,6 +203,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "max_concurrent_local_stacks": int,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
@@ -386,6 +387,19 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # #1397 Cap on concurrent locally-running stacks for a single overlay.
+    # Each running worktree (``services_up``/``ready``) holds docker
+    # containers, browsers, language servers, and CI processes — on a
+    # memory-constrained host (one OOM observed 2026-05-27 when two stacks
+    # ran in parallel), one stack at a time is the workable limit. The
+    # ``t3 <overlay> worktree start`` / ``workspace start`` gate refuses to
+    # advance a second stack into ``SERVICES_UP`` while another is already
+    # there, naming the blockers and pointing at ``worktree teardown``.
+    # Default ``0`` keeps the legacy unbounded behaviour so the gate is
+    # opt-in; set ``1`` (or any positive integer) to enforce the cap.
+    # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
+    # cheap dogfood overlay stays unbounded.
+    max_concurrent_local_stacks: int = 0
     # #1395 Slack voice/token mismatch classifier. The pre-publish gate
     # between ``chat.postMessage`` and the Slack API refuses (or warns)
     # when the body's voice ("PR merged" / "evidence" → agent vs "please
@@ -492,6 +506,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
