@@ -402,6 +402,7 @@ A pre-commit gate (`scripts/hooks/check_blueprint_size.py`, [#1180](https://gith
 ```mermaid
 graph TD
     teatree.config --> teatree.paths
+    teatree.config --> teatree.types
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check
     teatree.update_check --> teatree.paths
