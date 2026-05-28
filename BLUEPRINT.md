@@ -222,6 +222,8 @@ Review-shape audit (#1206): `t3 review run <MR_URL>` is the read-only entry poin
 
 Structured-evidence gate (#1280): `t3 review post-comment` and `post-draft-note` refuse a finding whose body matches an "X is missing/wrong/broken/stale" pattern unless an accompanying `FindingEvidence` record (passed via `--evidence-json '{...}'`) carries verified receipts. The schema fields are `master_check_paths`, `ticket_dep_refs`, `helper_indirection_paths`, `recent_merge_sweep_query`, and `confidence` (`verified` | `speculative`); the gate passes only when `confidence='verified'` AND at least one of `master_check_paths` or `ticket_dep_refs` is non-empty. Implemented in `teatree.cli.review_evidence_gate`; runs alongside the on-behalf (#960), colleague-MR shape (#1114), and TODO-anchor (#1186) sibling gates inside `ReviewService._run_pre_publish_gates`.
 
+Close-trailer scanner (#1398): `[teatree.publish_gates] ban_close_trailers_on_namespaces` lists fnmatch patterns over `namespace/repo`. When the target PR/MR's repo matches a pattern and the body carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR. Implemented in `teatree.core.close_trailer_scanner` (`strip_close_trailers`, `namespace_is_banned`, `apply_publish_gate`). Distinct from the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish; this scanner cleans the body and lets the publish proceed.
+
 ---
 
 ## 10. Configuration
@@ -400,6 +402,7 @@ A pre-commit gate (`scripts/hooks/check_blueprint_size.py`, [#1180](https://gith
 ```mermaid
 graph TD
     teatree.config --> teatree.paths
+    teatree.config --> teatree.types
     teatree.config --> teatree.utils
     teatree.config --> teatree.update_check
     teatree.update_check --> teatree.paths
@@ -480,6 +483,11 @@ graph TD
     teatree.loop --> teatree.backends
     teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
+    teatree.loops --> teatree.config
+    teatree.loops --> teatree.core
+    teatree.loops --> teatree.loop
+    teatree.loops --> teatree.messaging
+    teatree.loops --> teatree.notify
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core

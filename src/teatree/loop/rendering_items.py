@@ -123,6 +123,16 @@ class _OverlayActionRefs:
     stale_refs: list[_IssueRef] = field(default_factory=list)
 
 
+def _chip_prefix(url: str) -> str:
+    """Return ``#`` for GitHub PR URLs, ``!`` otherwise (#1377).
+
+    GitHub PR URLs contain ``/pull/`` or ``/pulls/``; everything else
+    (GitLab MRs, unknown / blank URLs) gets the ``!`` default so the
+    pre-existing GitLab behaviour is preserved when the URL is missing.
+    """
+    return "#" if "/pull/" in url or "/pulls/" in url else "!"
+
+
 def _render_canonical_item(
     *,
     label: str,
@@ -131,51 +141,31 @@ def _render_canonical_item(
     child_refs: list[_PRRef],
     ctx: _LinkCtx,
 ) -> str:
-    """Render one item in the canonical statusline shape (#1015, #1156).
+    """Render one item in the terse statusline shape (#1377, binding spec).
 
-    ``#N (short desc) !M1 (MR1 title) !M2 (MR2 title)`` — every number
-    is a hyperlink, the description is omitted when empty, each MR
-    carries its title (#1156), and MRs are space-separated. The MRs are
-    no longer wrapped in an outer ``(…)`` group — the per-MR title chunk
-    is already parenthesised, so an outer group would double-bracket.
-
-    *ctx* bundles the renderer-side link formatter (OSC-8 vs.
-    ``text <url>`` fallback) with the ``colorize`` flag, so this module
-    stays free of the rendering module's colorize toggling.
+    ``#N (topic !M1 !M2 …)`` — every number is a hyperlink, topic and
+    chips share one pair of parens, and the parens are suppressed when
+    both topic and chips are absent so a bare ticket reads ``#N`` with no
+    trailing decoration. GitHub PRs render with the ``#`` chip prefix;
+    GitLab MRs keep ``!``. Per the binding spec the renderer adds no
+    per-MR title, no annotation chunk, and no review-permalink suffix —
+    richer per-MR signal belongs in dedicated zones.
     """
     text = ctx.link(label, url, colorize=ctx.colorize)
-    desc = _short_desc(title)
-    if desc:
-        text += f" ({desc})"
-    if child_refs:
-        text += " " + " ".join(_format_mr_ref(r, ctx) for r in child_refs)
-    # #1113 enhancement: append a clickable Slack permalink chunk per child
-    # MR whose ``ReviewRequestPost`` row recorded a thread post, so the
-    # operator can jump from the statusline straight to the review thread.
-    review_links = [
-        ctx.link(f"review !{r.iid}", r.review_permalink, colorize=ctx.colorize)
-        for r in child_refs
-        if r.review_permalink
-    ]
-    if review_links:
-        text += f" ({', '.join(review_links)})"
+    topic = _short_desc(title)
+    chips = " ".join(_format_mr_ref(r, ctx) for r in child_refs)
+    inner = " ".join(part for part in (topic, chips) if part)
+    if inner:
+        text += f" ({inner})"
     return text
 
 
 def _format_mr_ref(ref: _PRRef, ctx: _LinkCtx) -> str:
-    """Render one MR ref in the ``!N (title)`` shape (#1156).
+    """Render one MR/PR chip as a bare clickable ``!<iid>`` or ``#<iid>`` (#1377).
 
-    The ``(title)`` chunk is appended *outside* the clickable ``!N`` so the
-    hyperlink target stays small and the title is readable when ANSI
-    sequences are stripped. ``title`` is truncated to the canonical 40-char
-    budget via :func:`_short_desc`. The legacy annotation (``draft_count``,
-    ``pipeline status``) survives as a separate ``(annotation)`` chunk so a
-    titled draft renders as ``!N (title) (1 notes)``.
+    Per the binding spec the chip is just the number — no title, no
+    annotation, no Slack permalink suffix. GitHub PR URLs render with
+    the ``#`` prefix; GitLab MR URLs render with ``!``.
     """
-    rendered = ctx.link(f"!{ref.iid}", ref.url, colorize=ctx.colorize)
-    title = _short_desc(ref.title)
-    if title:
-        rendered += f" ({title})"
-    if ref.annotation:
-        rendered += f" ({ref.annotation})"
-    return rendered
+    chip = f"{_chip_prefix(ref.url)}{ref.iid}"
+    return ctx.link(chip, ref.url, colorize=ctx.colorize)

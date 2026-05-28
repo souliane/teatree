@@ -12,9 +12,12 @@ owner-only / interactive-TTY-gated.
 
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
+from django.utils import timezone
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
@@ -416,3 +419,109 @@ class TestAutocompactAdvisoryIntegration:
 
         payload = json.loads(capsys.readouterr().out)
         assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["hookSpecificOutput"]["additionalContext"]
+
+
+# ── Issue #1380: evict stale LoopLease owner on session rotation (#1107 follow-up) ──
+
+
+class TestStaleLeaseEvictionOnSessionRotation(TestCase):
+    """SessionStart evicts a stale ``LoopLease`` owner on rotation.
+
+    Compaction rotates the session id. The hook updates the file
+    registry to the new id, but the live ``LoopLease`` row name=
+    ``loop-owner`` still carries the OLD id with an unexpired
+    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    subprocesses (#1107), so the next ``t3 loop tick`` resolves the new
+    id via the file registry and the CAS in ``claim_ownership`` fails:
+    DB session != new session, lease not expired. The session can never
+    own its own loop until ``t3 loop claim --take-over`` runs manually.
+
+    Fix: when ``handle_session_start_bootstrap`` records a new session as
+    the tick-owner, orphan any stale DB row (``session_id != new_id``)
+    so the next tick CAS-claims it cleanly.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _hook_isolation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg_dir = tmp_path / "data"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
+        monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
+
+    def test_new_session_evicts_stale_db_lease(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="old-session")
+        assert LoopLease.objects.get(name="loop-owner").session_id == "old-session"
+
+        handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
+
+        # The stale lease is orphaned so the next tick from the new
+        # session CAS-claims it cleanly.
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == ""
+        assert row.acquired_at is None
+        assert row.lease_expires_at is None
+
+    def test_same_session_restart_does_not_evict_own_lease(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-1")
+        expiry_before = LoopLease.objects.get(name="loop-owner").lease_expires_at
+
+        handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "a"})
+
+        # Same-session restart (post-compaction-same-id, or hook re-fire):
+        # the session keeps its own claim, no orphaning.
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "owner-1"
+        assert row.lease_expires_at == expiry_before
+
+    def test_non_owner_session_does_not_touch_db_lease(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        # A different live session already holds the file-registry owner
+        # slot. The new session is told to stay idle — it must NOT
+        # orphan the DB row (only an *owner* writes the DB).
+        _write_loop_registry({_OWNER_LOOP: {"session_id": "live-owner", "agent_id": "a", "pid": os.getpid()}})
+        LoopLease.objects.claim_ownership("loop-owner", session_id="live-owner")
+
+        handle_session_start_bootstrap({"session_id": "outsider", "agent_id": "b"})
+
+        # Non-owner branch fired (registry shows the existing owner) —
+        # the DB row is untouched.
+        assert LoopLease.objects.get(name="loop-owner").session_id == "live-owner"
+
+    def test_eviction_after_rotation_unblocks_claim_ownership(self) -> None:
+        """End-to-end repro of the #1107 follow-up bug.
+
+        Pre-fix sequence:
+
+        1. ``old-session`` holds an unexpired DB ``loop-owner`` claim.
+        2. Compaction rotates the live session id to ``new-session``.
+        3. ``SessionStart`` writes the new id to the file registry.
+        4. ``t3 loop tick`` resolves ``new-session`` via the registry
+            fallback (#1107) and calls
+            ``claim_ownership("loop-owner", session_id="new-session")``
+            — DB still says ``old-session``, lease unexpired, CAS fails.
+        5. Tick skips ("loop not owned by this session"); the user must
+            run ``t3 loop claim --take-over`` to recover.
+
+        Post-fix: step 3 also orphans the DB row, so step 4 wins.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        # (1) old session is the DB lease holder, unexpired
+        LoopLease.objects.claim_ownership("loop-owner", session_id="old-session", ttl_seconds=1800)
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "old-session"
+        assert row.lease_expires_at is not None
+        assert row.lease_expires_at > timezone.now() + timedelta(seconds=60)
+
+        # (3) hook records the new session as tick-owner
+        handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
+
+        # (4) new session's first tick CAS-claims cleanly (no take-over)
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="new-session")
+        assert won is True
+        assert owner == "new-session"

@@ -18,7 +18,7 @@ depends_on = []
 
 [[modules]]
 path = "teatree.config"
-depends_on = ["teatree.paths", "teatree.utils", "teatree.update_check"]
+depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check"]
 
 [[modules]]
 path = "teatree.update_check"
@@ -156,6 +156,16 @@ depends_on = [
   "teatree.backends",
   "teatree.notify",
   "teatree.messaging"
+]
+
+[[modules]]
+path = "teatree.loops"
+depends_on = [
+  "teatree.config",
+  "teatree.core",
+  "teatree.loop",
+  "teatree.messaging",
+  "teatree.notify"
 ]
 
 [[modules]]
