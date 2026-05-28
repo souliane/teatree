@@ -758,6 +758,87 @@ class TestWorkspaceStartTeardownExitCodes(TestCase):
             assert exc_info.value.code == 1
 
 
+class TestWorkspaceStartMixedState(TestCase):
+    """``workspace start`` tolerates a mixed-state worktree set.
+
+    The command iterates every worktree in the ticket and fires
+    ``Worktree.start_services()``. That transition only accepts the
+    ``[PROVISIONED, SERVICES_UP, READY]`` source states; a worktree still
+    in ``CREATED`` (e.g. a sibling repo whose provision failed/has not run)
+    is not a valid source. Pre-fix the unconditional transition raised
+    ``django_fsm.TransitionNotAllowed`` on the first CREATED worktree and
+    crashed the whole command, leaving the already-startable worktrees in
+    whatever partial state the loop had reached. The fix skips worktrees
+    that are not in a valid source state and starts the rest.
+    """
+
+    def _ticket_with_mixed_worktrees(self, tmp: str) -> tuple[Ticket, Worktree, Worktree, Path]:
+        ticket_dir = Path(tmp) / "1234-feature"
+        ticket_dir.mkdir()
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1234")
+
+        be_dir = ticket_dir / "backend"
+        be_dir.mkdir()
+        provisioned = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="1234-feature",
+            extra={"worktree_path": str(be_dir)},
+            state=Worktree.State.PROVISIONED,
+        )
+
+        fe_dir = ticket_dir / "frontend"
+        fe_dir.mkdir()
+        created = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="frontend",
+            branch="1234-feature",
+            extra={"worktree_path": str(fe_dir)},
+            state=Worktree.State.CREATED,
+        )
+        return ticket, provisioned, created, be_dir
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_start_skips_created_worktree_and_starts_the_rest(self) -> None:
+        """A CREATED sibling must not crash start; the PROVISIONED one still starts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _ticket, provisioned, created, be_dir = self._ticket_with_mixed_worktrees(tmp)
+            ok = MagicMock()
+            ok.run.return_value = RunnerResult(ok=True, detail="ok")
+            with patch.object(workspace_mod, "WorktreeStartRunner", return_value=ok):
+                # Pre-fix: raises TransitionNotAllowed on the CREATED worktree.
+                call_command("workspace", "start", path=str(be_dir))
+
+            provisioned.refresh_from_db()
+            created.refresh_from_db()
+            # The valid-source worktree DID transition.
+            assert provisioned.state == Worktree.State.SERVICES_UP
+            # The CREATED worktree was skipped, not transitioned or crashed.
+            assert created.state == Worktree.State.CREATED
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_start_does_not_run_start_runner_for_skipped_worktree(self) -> None:
+        """The skipped CREATED worktree must not be handed to the start runner."""
+        with tempfile.TemporaryDirectory() as tmp:
+            _ticket, _provisioned, _created, be_dir = self._ticket_with_mixed_worktrees(tmp)
+            started_repos: list[str] = []
+
+            def _runner_factory(worktree: Worktree, **_kwargs: object) -> MagicMock:
+                started_repos.append(worktree.repo_path)
+                instance = MagicMock()
+                instance.run.return_value = RunnerResult(ok=True, detail="ok")
+                return instance
+
+            with patch.object(workspace_mod, "WorktreeStartRunner", side_effect=_runner_factory):
+                call_command("workspace", "start", path=str(be_dir))
+
+            assert started_repos == ["backend"]
+
+
 class TestWorkspaceMultiOverlayResolution(TestCase):
     """#1310: workspace subcommands disambiguate overlays from the ticket row.
 

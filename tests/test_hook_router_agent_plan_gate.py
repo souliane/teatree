@@ -48,8 +48,7 @@ def gate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
     monkeypatch.delenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", raising=False)
 
-    ts_file = xdg / "teatree" / "last-plan-skill-ts"
-    yield ts_file
+    yield xdg / "teatree" / "last-plan-skill-ts"
 
     router.STATE_DIR = original_state
 

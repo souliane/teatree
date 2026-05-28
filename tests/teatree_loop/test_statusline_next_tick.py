@@ -51,53 +51,52 @@ def _ready(num: str, *, overlay: str = "ov") -> DispatchAction:
 
 
 class TestConsolidatedLoopAnchor:
-    """Line 1 = ``loop · next tick in <duration> · N loops live``."""
+    """Line 1 = ``loop · <name> <Nm> · <name> <Nm>`` (per-loop relative ticks)."""
 
-    def test_includes_time_to_next_tick_when_acquired_at_known(self) -> None:
-        leases = [("loop-tick", "sessA"), ("loop-owner", "sessA")]
-        # Last tick fired 2 minutes ago; cadence 720s → next tick in 10m.
+    def test_includes_relative_minutes_when_acquired_at_known(self) -> None:
+        # Each lease carries its own acquire instant; 2 minutes elapsed of
+        # the 720s cadence → next tick in 10m.
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
+        leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
         line = lines[0]
         assert line.startswith("loop · "), line
-        assert "next tick in " in line, line
-        assert "2 loops live" in line, line
+        # Per-loop name + relative minutes, no headline count.
+        assert "loops live" not in line, line
+        assert "tick 10m" in line, line
+        assert "owner 10m" in line, line
 
-    def test_falls_back_to_last_tick_never_when_no_lease_history(self) -> None:
-        leases = [("loop-tick", "sessA")]
+    def test_names_only_when_no_lease_history(self) -> None:
+        leases = [("loop-tick", None)]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · last tick: never · 1 loops live"], repr(lines)
+        assert lines == ["loop · tick"], repr(lines)
 
-    def test_reports_next_tick_due_when_overdue(self) -> None:
-        leases = [("loop-tick", "sessA")]
-        # Last tick was 1 hour ago; cadence 12 minutes → due now.
+    def test_reports_due_when_overdue(self) -> None:
+        # Acquired 1 hour ago; cadence 12 minutes → due now.
         acquired_at = datetime.now(UTC) - timedelta(hours=1)
+        leases = [("loop-tick", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · next tick due · 1 loops live"], repr(lines)
+        assert lines == ["loop · tick due"], repr(lines)
 
     def test_no_per_loop_lines_anymore(self) -> None:
         """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
-        leases = [("loop-tick", "sessA"), ("loop-owner", "sessA"), ("loop-self-improve", "sessA")]
+        leases = [("loop-tick", None), ("loop-owner", None), ("loop-self-improve", None)]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -107,11 +106,11 @@ class TestConsolidatedLoopAnchor:
         assert "loop:self-improve" not in lines[0], lines[0]
 
     def test_empty_when_no_loops_live(self) -> None:
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
+        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
             assert live_loops_anchor() == []
 
     def test_fails_open_on_db_error(self) -> None:
-        with patch("teatree.loop.statusline._live_loop_names", side_effect=RuntimeError("db down")):
+        with patch("teatree.loop.statusline._live_loop_leases", side_effect=RuntimeError("db down")):
             assert live_loops_anchor() == []
 
 
@@ -142,7 +141,7 @@ class TestAnchorStatePriorityOrder:
             _active_ticket("100", "coded", overlay="ov"),
             _active_ticket("200", "started", overlay="ov"),
         ]
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
+        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -158,7 +157,7 @@ class TestActiveStateOverflowCap:
 
     def test_started_caps_at_five(self, tmp_path: Path) -> None:
         actions = [_active_ticket(str(i), "started", overlay="ov") for i in range(1, 11)]
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
+        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -174,7 +173,7 @@ class TestReadyOverflowPhrasing:
 
     def test_ready_overflow_says_more(self, tmp_path: Path) -> None:
         actions = [_ready(str(i), overlay="ov") for i in range(10)]
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
+        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
             zones = zones_for(actions, colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
@@ -185,13 +184,12 @@ class TestReadyOverflowPhrasing:
 class TestZonesForIntegration:
     """End-to-end: ``zones_for`` + ``render`` produces the new top-line shape."""
 
-    def test_line_one_is_consolidated_loop_summary(self, tmp_path: Path) -> None:
-        leases = [("loop-tick", "sessA"), ("loop-owner", "sessA")]
+    def test_line_one_is_per_loop_summary(self, tmp_path: Path) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
+        leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=acquired_at),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             zones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
@@ -199,8 +197,10 @@ class TestZonesForIntegration:
         body = target.read_text()
         first_line = body.splitlines()[0]
         assert first_line.startswith("loop · "), repr(first_line)
-        assert "next tick in " in first_line, first_line
-        assert "2 loops live" in first_line, first_line
+        # 60s elapsed of 720s → next tick in 11m; each loop named.
+        assert "tick 11m" in first_line, first_line
+        assert "owner 11m" in first_line, first_line
+        assert "loops live" not in first_line, first_line
         # Per-loop tokens removed at the top.
         assert "\nloop:tick" not in body
         assert "\nloop:owner" not in body

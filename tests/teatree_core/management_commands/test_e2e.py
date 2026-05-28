@@ -17,6 +17,7 @@ from django.utils.module_loading import import_string
 import teatree.config as config_mod
 import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.management.commands._e2e_discovery as e2e_disc_mod
+import teatree.core.management.commands._e2e_runners as e2e_runners_mod
 import teatree.core.management.commands.e2e as e2e_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Ticket, Worktree
@@ -914,7 +915,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             cache_path = tmp_path / "e2e-repos" / "demo-svc"
 
             with (
-                patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run,
             ):
                 e2e_mod._clone_or_update_e2e_repo(self._make_repo())
@@ -938,7 +939,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
                 return MagicMock(returncode=0)
 
             with (
-                patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=capture_run),
             ):
                 e2e_mod._clone_or_update_e2e_repo(self._make_repo())
@@ -953,7 +954,7 @@ class TestCloneOrUpdateE2eRepo(TestCase):
             (tmp_path / "e2e-repos" / "demo-svc").mkdir(parents=True)
 
             with (
-                patch.object(e2e_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
+                patch.object(e2e_runners_mod, "get_data_dir", return_value=tmp_path / "e2e-repos"),
                 patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)),
             ):
                 result = e2e_mod._clone_or_update_e2e_repo(self._make_repo(e2e_dir="playwright"))
@@ -1051,8 +1052,8 @@ class TestE2EResolveTarget(TestCase):
 
     def test_build_env_exports_t3_e2e_target(self) -> None:
         with (
-            patch.object(e2e_mod, "get_overlay") as get_overlay,
-            patch.object(e2e_mod, "_find_env_cache", return_value=None),
+            patch.object(e2e_runners_mod, "get_overlay") as get_overlay,
+            patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
             get_overlay.return_value.get_e2e_env_extras.return_value = {}
             env = e2e_mod._build_e2e_env("http://localhost:4200", headed=False, target="local")

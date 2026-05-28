@@ -1,0 +1,11 @@
+# skills — local conventions
+
+See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This is the source-of-truth skills tree (`plugins/t3/skills` is a symlink to here). This file adds only what is specific to skill authoring.
+
+- **One skill per directory**, each with a `SKILL.md`. Frontmatter keys: `name`, `description`, `compatibility`, `metadata` (with `version`, `subagent_safe`) — plus the relationship keys:
+  - `requires:` — skills auto-loaded *with* this one (hard dependency).
+  - `companions:` — generic methodology skills loaded alongside (e.g. `test-driven-development`).
+  - `triggers:` — phrases that auto-load the skill via the `UserPromptSubmit` hook.
+- **Never slim a skill.** Don't move SKILL.md prose into `references/` to save tokens — agents don't reliably load reference files on demand. Add a `references/` file only for genuinely optional deep-dive material; keep load-bearing rules inline. (`/t3:rules` § "Never Slim Skills".)
+- **`subagent_safe: true`** only for pure methodology that needs no shell functions, MCP, or cross-skill state.
+- Skill-system spec: BLUEPRINT.md § 11.
