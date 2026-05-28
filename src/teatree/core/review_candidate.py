@@ -18,12 +18,25 @@ shapes, plus the heterogeneous ``approvers`` list (strings or
 ``{"username": ...}`` / ``{"login": ...}`` dicts).
 """
 
+from collections.abc import Iterable
 from typing import cast
 
 from teatree.types import RawAPIDict
 
 _MERGED_STATES = ("merged",)
 _CLOSED_STATES = ("closed",)
+
+
+def _self_identity_set(current_user: str, self_identities: Iterable[str]) -> set[str]:
+    """Union of every identity that counts as the user (#1321).
+
+    The user owns more than one identity (a gitlab username plus one or
+    more github logins). The self-conditions (author / approver / note)
+    must match ANY of them, not only the primary ``current_user`` — an MR
+    authored under a secondary alias is still the user's own work and must
+    not dispatch ``t3:reviewer``.
+    """
+    return {name for name in (current_user, *self_identities) if name}
 
 
 def _author_username(mr: RawAPIDict) -> str:
@@ -55,7 +68,7 @@ def _approver_usernames(mr: RawAPIDict) -> list[str]:
     return names
 
 
-def _self_has_non_system_note(mr: RawAPIDict, current_user: str) -> bool:
+def _self_has_non_system_note(mr: RawAPIDict, identities: set[str]) -> bool:
     notes = mr.get("notes")
     if not isinstance(notes, list):
         return False
@@ -69,7 +82,7 @@ def _self_has_non_system_note(mr: RawAPIDict, current_user: str) -> bool:
         if isinstance(author, dict):
             author_dict = cast("RawAPIDict", author)
             username = author_dict.get("username") or author_dict.get("login")
-            if isinstance(username, str) and username == current_user:
+            if isinstance(username, str) and username in identities:
                 return True
     return False
 
@@ -94,16 +107,25 @@ def should_review_candidate_reasons(
     mr: RawAPIDict,
     *,
     current_user: str,
+    self_identities: Iterable[str] = (),
     broadcast: RawAPIDict | None = None,
 ) -> list[str]:
-    """Return the ordered list of skip reasons; empty list means the MR is a candidate."""
+    """Return the ordered list of skip reasons; empty list means the MR is a candidate.
+
+    ``self_identities`` carries the user's full identity set (gitlab
+    username + every github login). The self-conditions match ANY of them
+    so an MR authored / approved / commented under a secondary alias is
+    recognised as the user's own work (#1321). ``current_user`` alone is
+    honoured when no aliases are supplied (legacy single-identity callers).
+    """
+    identities = _self_identity_set(current_user, self_identities)
     reasons: list[str] = []
-    if current_user and _author_username(mr) == current_user:
+    if identities and _author_username(mr) in identities:
         reasons.append("author_is_self")
     approvers = _approver_usernames(mr)
-    if current_user and current_user in approvers:
+    if identities and identities.intersection(approvers):
         reasons.append("already_approved_by_self")
-    if current_user and _self_has_non_system_note(mr, current_user):
+    if identities and _self_has_non_system_note(mr, identities):
         reasons.append("has_self_note")
     state = mr.get("state")
     if isinstance(state, str):
@@ -120,13 +142,20 @@ def should_review_candidate(
     mr: RawAPIDict,
     *,
     current_user: str,
+    self_identities: Iterable[str] = (),
     broadcast: RawAPIDict | None = None,
 ) -> bool:
     """Apply the 4 skip-conditions; True iff the MR is a review candidate.
 
-    See module docstring for the canonical list. ``broadcast`` is the
-    originating Slack-broadcast message dict (``reactions`` list); pass
-    ``None`` when no broadcast applies (e.g. the GitLab/GitHub discover
-    path).
+    See module docstring for the canonical list. ``self_identities`` is the
+    user's full identity set (see :func:`should_review_candidate_reasons`).
+    ``broadcast`` is the originating Slack-broadcast message dict
+    (``reactions`` list); pass ``None`` when no broadcast applies (e.g. the
+    GitLab/GitHub discover path).
     """
-    return not should_review_candidate_reasons(mr, current_user=current_user, broadcast=broadcast)
+    return not should_review_candidate_reasons(
+        mr,
+        current_user=current_user,
+        self_identities=self_identities,
+        broadcast=broadcast,
+    )
