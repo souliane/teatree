@@ -8,6 +8,8 @@ Each tick runs three stages:
 2. **Dispatch** — the tick decides what each signal means and either acts inline (mechanical fix-and-push, n8n webhook trigger, statusline note) or delegates to one of the seven phase agents shipped with the plugin (§ 11.2). Phase agents are invoked via the standard Task tool the same way `t3:orchestrator` invokes them today; the loop is just one more caller.
 3. **Render** — `teatree.loop.statusline.render` writes `${XDG_DATA_HOME:-$HOME/.local/share}/teatree/statusline.txt` with three zones (§ 5.6.1). The reader-side hook (`hooks/scripts/statusline.sh`) honours `$TEATREE_STATUSLINE_FILE` for tests and overrides; the renderer itself always writes to the default path so the hook and writer can never disagree on location.
 
+**Mini-loops ([#1432](https://github.com/souliane/teatree/issues/1432)).** `teatree.loops.<domain>`; `Orchestrator` discovers via `pkgutil`, gates via `LoopsConfig` + `MiniLoopMarker`, isolates errors. `run_tick` stays wire-compatible.
+
 **Scanners (`teatree.loop.scanners.*`):**
 
 | Scanner | Signal collected | Typical action |

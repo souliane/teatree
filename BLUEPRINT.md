@@ -480,6 +480,11 @@ graph TD
     teatree.loop --> teatree.backends
     teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
+    teatree.loops --> teatree.config
+    teatree.loops --> teatree.core
+    teatree.loops --> teatree.loop
+    teatree.loops --> teatree.messaging
+    teatree.loops --> teatree.notify
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
