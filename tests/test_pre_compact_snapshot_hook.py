@@ -152,6 +152,52 @@ class TestPreCompactSnapshotFromDurableState:
         assert session_id in snapshot.read_text(encoding="utf-8")
 
 
+class TestSessionStartUsesHookSpecificOutputEnvelope:
+    """#1452: SessionStart hook output MUST be nested under ``hookSpecificOutput``.
+
+    The Claude Code harness silently drops the legacy flat top-level
+    ``{"additionalContext": ...}`` form for SessionStart events; the
+    documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
+    requires ``{"hookSpecificOutput": {"hookEventName": "SessionStart",
+    "additionalContext": ...}}``. Empirical evidence: 24 compactions in
+    session ``a1e3d2d8-…`` emitted the recovery payload via the flat form
+    and zero of them resulted in the snapshot text reaching the model.
+    """
+
+    def test_compact_recovery_emits_nested_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+        session_id = "envelope-compact"
+        _write_loop_registry(
+            {
+                _OWNER_LOOP: {
+                    "session_id": session_id,
+                    "agent_id": "agent-env-1",
+                    "pid": os.getppid(),
+                    "heartbeat_ts": 1,
+                }
+            }
+        )
+
+        handle_pre_compact({"session_id": session_id})
+        capsys.readouterr()
+        handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
+
+        output = json.loads(capsys.readouterr().out)
+        assert "additionalContext" not in output, "flat top-level form is silently dropped by the harness"
+        assert "hookSpecificOutput" in output
+        hook_specific = output["hookSpecificOutput"]
+        assert hook_specific["hookEventName"] == "SessionStart"
+        assert "additionalContext" in hook_specific
+
+    def test_non_compact_session_start_also_uses_nested_envelope(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Same schema applies to the regular SessionStart path, not just source=compact."""
+        handle_session_start_bootstrap({"session_id": "envelope-fresh", "source": "startup"})
+
+        output = json.loads(capsys.readouterr().out)
+        assert "additionalContext" not in output
+        assert output["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "additionalContext" in output["hookSpecificOutput"]
+
+
 class TestPreCompactSessionStartRoundTrip:
     def test_sessionstart_compact_reinjects_the_precompact_snapshot_for_subagent(
         self, capsys: pytest.CaptureFixture[str]
@@ -173,8 +219,8 @@ class TestPreCompactSessionStartRoundTrip:
         handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
 
         output = json.loads(capsys.readouterr().out)
-        assert "additionalContext" in output
-        ctx = output["additionalContext"]
+        # #1452: recovery context lives under hookSpecificOutput, not at top level.
+        ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "xrev-7" in ctx
         assert "loop-tick OWNER" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
