@@ -4,8 +4,10 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from teatree.backends.protocols import PullRequestSpec
+from teatree.config import load_config
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.branch_currency import branch_behind_target
+from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
@@ -38,6 +40,16 @@ def sanitize_close_keywords(description: str, *, close_ticket: bool) -> str:
     if close_ticket:
         return description
     return CLOSE_KEYWORD_RE.sub(r"Relates to \g<ref>", description)
+
+
+def get_overlay_publish_gates() -> list[str]:
+    """Return ``ban_close_trailers_on_namespaces`` from ``~/.teatree.toml``.
+
+    Empty list when the setting is absent. Read fresh on each ``pr create``
+    so a user edit to the config takes effect on the next invocation
+    without restarting the process.
+    """
+    return list(load_config().user.ban_close_trailers_on_namespaces)
 
 
 def should_close_ticket(extra: Mapping[str, object] | None, *, setting_enabled: bool) -> bool:
@@ -270,6 +282,11 @@ class ShipExecutor(RunnerBase):
             setting_enabled=get_overlay().config.mr_close_ticket,
         )
         description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
+        description = apply_publish_gate(
+            description,
+            repo=repo_path,
+            patterns=get_overlay_publish_gates(),
+        )
         assignee = host.current_user() or git.config_value(key="user.name")
         return PullRequestSpec(
             repo=repo_path,
