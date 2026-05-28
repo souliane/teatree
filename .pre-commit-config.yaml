@@ -293,6 +293,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [push]
+      - id: doc-update-gate
+        name: README/BLUEPRINT update gate (#1461)
+        language: system
+        entry: uv run python scripts/hooks/check_doc_update.py
+        pass_filenames: false
+        always_run: true
+        stages: [push]
       - id: ensure-pr
         name: ensure PR exists (no-orphan invariant)
         language: system

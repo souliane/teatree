@@ -81,6 +81,40 @@ If the changes touch architecture, add new modules, rename commands, or change e
 2. If it doesn't, update it **before** pushing. Ask the user before modifying.
 3. This applies to all repos that have a `BLUEPRINT.md`.
 
+### 3a1. Documentation Discipline (Non-Negotiable)
+
+Before creating the PR, ask: did this diff change anything a user or colleague would learn from the README, BLUEPRINT, or any skill file?
+
+Common triggers (not exhaustive):
+
+- New `t3` command, flag, or env var
+- Renamed or removed public symbol, command, or setting
+- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name, a new `MiniLoopMarker` name)
+- New `SKILL.md` added, or one removed
+- User-observable behaviour change (default flips, UI flow, error message shape, response payload)
+- New feature flag
+
+**If YES:** the same MR includes the doc update — README for user-facing changes, BLUEPRINT for architectural ones, the relevant `SKILL.md` for skill behaviour changes.
+
+**If NO:** the MR description carries this line on its own:
+
+```text
+docs: n/a — <one-line reason>
+```
+
+Examples:
+
+- `docs: n/a — internal refactor, no user-visible change`
+- `docs: n/a — bug fix preserving existing contract`
+- `docs: n/a — test-only change`
+- `docs: n/a — generated-doc regeneration, source unchanged`
+
+The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
+
+**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` / `MiniLoopMarker` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+
+Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
+
 ### 3b. Self-Review Against Repo Rules
 
 **Before every push**, run the self-review gate from [`../review/SKILL.md`](../review/SKILL.md) § "Active Verification Against Repo Rules":
@@ -188,6 +222,17 @@ The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by 
 - Set `Ticket.extra['more_prs_coming'] = True` before `pr create` so `should_close_ticket` rewrites the body keyword to `Relates-to #N` and the issue stays open.
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
+
+#### Per-Namespace Close-Trailer Gate (`[teatree.publish_gates]`)
+
+Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. Configure those namespaces in `~/.teatree.toml`:
+
+```toml
+[teatree.publish_gates]
+ban_close_trailers_on_namespaces = ["my-group/*"]
+```
+
+When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
 
 **STOP — resolve the ticket URL before typing the glab command.**
 

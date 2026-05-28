@@ -131,12 +131,12 @@ class TestAnchorCanonicalShape:
         # Ensure no "()" (empty desc) bug.
         assert "()" not in text, repr(text)
 
-    def test_anchor_emits_canonical_pr_chunk_space_separated(self) -> None:
-        """Multiple MRs claiming a ticket render space-separated (#1156).
+    def test_anchor_renders_topic_and_chips_inside_one_paren_group(self) -> None:
+        """#1377 binding spec: topic AND chips share ONE pair of parens.
 
-        #1156 swapped the pre-existing comma join for a single space —
-        each MR now carries its own ``(title)`` chunk so a comma would
-        visually collide with the parens.
+        ``[overlay] #N (topic !M1 !M2)`` — not ``#N (topic) !M1 !M2``.
+        Per the user-spec, every chip is a bare ``!<iid>`` — no per-MR
+        title chunk, no annotation, no comma separator.
         """
         # ``build_ticket_index`` parses ``Closes #N`` from the MR
         # description (nested under ``payload['raw']['description']`` — the
@@ -167,14 +167,16 @@ class TestAnchorCanonicalShape:
         zones = zones_for([action_active, action_pr1, action_pr2], colorize=False)
         anchor = _blob(zones.anchors)
         assert "#44" in anchor, repr(anchor)
-        assert "(Tickety tick)" in anchor, repr(anchor)
-        # Both MRs render, and the comma join is gone.
+        # Topic and chips share ONE pair of parens — ``(Tickety tick) !1``
+        # (chips outside) is the banned shape.
+        assert "(Tickety tick) !1" not in anchor, repr(anchor)
+        assert "(Tickety tick !1" in anchor, repr(anchor)
         assert "!1" in anchor, repr(anchor)
         assert "!2" in anchor, repr(anchor)
         assert ", !2" not in anchor, repr(anchor)
 
     def test_anchor_renders_canonical_shape_under_colorize(self) -> None:
-        """Under OSC8 the MR chunk also uses space separation (#1156)."""
+        """Under OSC8 the chips stay inside the topic parens (#1377)."""
         action_active = _active("44", "coded", title="Tickety tick")
         action_pr1 = DispatchAction(
             kind="statusline",
@@ -217,7 +219,7 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
     behaviours turns this RED.
     """
 
-    def test_full_canonical_shape_with_clickable_numbers_and_space_mrs(self) -> None:
+    def test_full_canonical_shape_with_clickable_numbers_and_inner_chips(self) -> None:
         import re  # noqa: PLC0415
 
         zones = zones_for(
@@ -256,10 +258,10 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/1\033\\" in anchor, repr(anchor)
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/2\033\\" in anchor, repr(anchor)
         # (3) Strip OSC8 sequences to recover the visible text and pin the
-        #     #1156 canonical shape: ``#44 (Tickety tick) !1 !2`` —
-        #     description in single parens, MRs space-joined (no outer parens).
+        #     #1377 terse shape: ``#44 (Tickety tick !1 !2)`` — topic and
+        #     chips share ONE pair of parens.
         visible = re.sub(r"\033]8;;[^\033]*\033\\", "", anchor)
-        assert re.search(r"#44 \(Tickety tick\) !1 !2", visible), repr(visible)
+        assert re.search(r"#44 \(Tickety tick !1 !2\)", visible), repr(visible)
 
     def test_description_chunk_omitted_when_title_empty(self) -> None:
         import re  # noqa: PLC0415

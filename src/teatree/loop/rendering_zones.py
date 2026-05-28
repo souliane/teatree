@@ -99,20 +99,12 @@ def _render_pr_group(
 
     ctx = _LinkCtx(colorize=colorize, link=_link)
 
-    def _label(ref: _PRRef) -> str:
-        rendered = _format_mr_ref(ref, ctx)
-        # #1113 enhancement: surface the review-channel post permalink so the
-        # operator can jump from the statusline straight to the thread.
-        if ref.review_permalink:
-            rendered += " " + _link("(review)", ref.review_permalink, colorize=colorize)
-        return rendered
-
     chunks: list[str] = []
     for tnum in sorted(by_ticket):
-        bucket = " ".join(_label(r) for r in by_ticket[tnum])
+        bucket = " ".join(_format_mr_ref(r, ctx) for r in by_ticket[tnum])
         chunks.append(f"#{tnum}: {bucket}")
     if orphans:
-        chunks.append(" ".join(_label(r) for r in orphans))
+        chunks.append(" ".join(_format_mr_ref(r, ctx) for r in orphans))
     return f"{prefix}{' · '.join(chunks)}"
 
 

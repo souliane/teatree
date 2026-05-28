@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-doc-refactor-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Thinking, no action."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

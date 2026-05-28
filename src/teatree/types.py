@@ -13,6 +13,33 @@ from pathlib import Path
 from typing import TypedDict
 
 
+class SlackVoiceClassifierMode(enum.StrEnum):
+    """Strictness of the Slack voice/token mismatch classifier (#1395).
+
+    Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config`
+    can parse the ``[teatree] slack_voice_classifier_mode`` setting
+    without importing the classifier implementation in
+    :mod:`teatree.backends.slack_voice_classifier` (the
+    ``teatree.backends → teatree.config`` direction is forbidden by
+    the tach module boundary, but ``teatree.config → teatree.types``
+    is allowed).
+    """
+
+    STRICT = "strict"
+    WARN = "warn"
+    OFF = "off"
+
+    @classmethod
+    def parse(cls, value: str) -> "SlackVoiceClassifierMode":
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            message = f"Invalid slack_voice_classifier_mode {value!r}; valid values: {valid}"
+            raise ValueError(message) from exc
+
+
 class ScannerErrorClass(enum.StrEnum):
     """Classes of recoverable scanner failure surfaced to the dispatcher (#1287).
 
