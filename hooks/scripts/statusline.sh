@@ -207,7 +207,25 @@ elif [ -r /proc/meminfo ]; then
     _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total_kb / 1048576}")
     _ram_segment="${_LBL}ram=${_RST}$(color_pct "$_ram_pct")${_LBL} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
 fi
+
+# Free disk space on the volume holding $HOME (cross-platform via POSIX df).
+# Colored by used% so it goes red as the disk fills, mirroring the RAM segment.
+_disk_segment=""
+_df_out=$(df -Pk "$HOME" 2>/dev/null)
+if [ -n "$_df_out" ]; then
+    _disk_avail_kb=$(awk 'NR==2{print $4}' <<< "$_df_out")
+    _disk_used_pct=$(awk 'NR==2{gsub(/%/,"",$5); print $5}' <<< "$_df_out")
+    if [[ "$_disk_avail_kb" =~ ^[0-9]+$ ]] && [[ "$_disk_used_pct" =~ ^[0-9]+$ ]]; then
+        _disk_free_gb=$(awk "BEGIN{printf \"%.0f\", $_disk_avail_kb / 1048576}")
+        _disk_segment="${_LBL}disk=${_RST}$(color_pct "$_disk_used_pct")${_LBL} ${_disk_free_gb}G free${_RST}"
+    fi
+fi
+
 g_resource="$_ram_segment"
+if [ -n "$_disk_segment" ]; then
+    [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
+    g_resource="${g_resource}${_disk_segment}"
+fi
 
 # Next tick countdown from tick-meta.json
 _tick_meta="${target%.txt}-meta.json"
