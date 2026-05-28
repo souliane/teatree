@@ -9,13 +9,30 @@ it DMs the user and marks the row done.
 import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import TeaTreeConfig, UserSettings
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_nag import ReviewNagScanner, fibonacci_step_for_age
 from teatree.types import RawAPIDict
+
+
+class _EnableReviewNagMixin:
+    """Flip ``review_nag_enabled`` ON for the duration of each test.
+
+    The scanner ships DISABLED (default ``review_nag_enabled = False``), so
+    every behaviour test that asserts a post must opt the gate back on.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
+        patcher = patch("teatree.config.load_config", return_value=enabled)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 @dataclass
@@ -96,7 +113,7 @@ class TestFibonacciStepCalculation(TestCase):
         assert fibonacci_step_for_age(dt.timedelta(days=6)) == 4
 
 
-class TestReviewNagScanner(TestCase):
+class TestReviewNagScanner(_EnableReviewNagMixin, TestCase):
     """Behaviour tests for the fibonacci nag scanner.
 
     All tests pre-create ``ReviewRequestPost`` rows directly — production
@@ -326,7 +343,7 @@ class TestReviewNagScanner(TestCase):
         assert post.last_nag_step == 2
 
 
-class TestReviewNagScannerCustomNow(TestCase):
+class TestReviewNagScannerCustomNow(_EnableReviewNagMixin, TestCase):
     """Inject a custom ``now`` to test absolute time without flake."""
 
     def test_now_override_is_respected(self) -> None:
@@ -349,7 +366,7 @@ class TestReviewNagScannerCustomNow(TestCase):
         assert post.last_nag_step == 2
 
 
-class TestNagConsultsDedupGuard(TestCase):
+class TestNagConsultsDedupGuard(_EnableReviewNagMixin, TestCase):
     """Before nagging, the scanner live-reads for an out-of-band post (#1084).
 
     If the review was requested again / picked up out-of-band, the row is
@@ -422,3 +439,156 @@ class TestNagConsultsDedupGuard(TestCase):
         ):
             ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
         assert len(slack.posts) == 1
+
+
+@dataclass
+class FakeHost:
+    """In-memory ``CodeHostBackend`` returning a fixed open-state."""
+
+    open_state: "Any"
+    raise_on_lookup: Exception | None = None
+
+    def get_pr_open_state(self, *, pr_url: str) -> "Any":
+        _ = pr_url
+        if self.raise_on_lookup is not None:
+            raise self.raise_on_lookup
+        return self.open_state
+
+
+class TestConcurrentTickPostsExactlyOnce(_EnableReviewNagMixin, TestCase):
+    """Two concurrent ticks against the same row post EXACTLY one nag.
+
+    Models the production race: both ticks load the row at the same
+    ``last_nag_step`` (the stale in-memory snapshot a parallel loop holds)
+    before either posts. The atomic conditional claim lets exactly one
+    tick win the ``UPDATE`` and post; the loser's claim matches zero rows
+    and it skips silently. Revert the claim (post-then-save) → both ticks
+    post and this asserts 2 → RED.
+    """
+
+    def test_two_ticks_same_row_post_once(self) -> None:
+        from teatree.loop.scanners.review_nag import _post_thread_nag  # noqa: PLC0415
+
+        created_at = timezone.now() - dt.timedelta(days=1, hours=5)  # +1d → step 1 due
+        ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/77",
+            slack_channel_id="C0AM3TENTLK",
+            slack_thread_ts="ts.77",
+            created_at=created_at,
+            last_nag_step=0,
+        )
+
+        # Two independent in-memory snapshots, both at last_nag_step==0 —
+        # the exact state two parallel ticks hold before either claims.
+        post_tick_a = ReviewRequestPost.objects.get(slack_thread_ts="ts.77")
+        post_tick_b = ReviewRequestPost.objects.get(slack_thread_ts="ts.77")
+        assert post_tick_a.last_nag_step == 0
+        assert post_tick_b.last_nag_step == 0
+
+        slack = FakeSlack()
+        signal_a = _post_thread_nag(post_tick_a, slack, target_step=1)
+        signal_b = _post_thread_nag(post_tick_b, slack, target_step=1)
+
+        # Exactly one nag posted; the losing tick skipped silently (None).
+        assert len(slack.posts) == 1
+        kinds = [s.kind for s in (signal_a, signal_b) if s is not None]
+        assert kinds == ["review_nag.ping"]
+
+        row = ReviewRequestPost.objects.get(slack_thread_ts="ts.77")
+        assert row.last_nag_step == 1
+
+
+class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
+    """A merged/closed MR is marked done and never nagged."""
+
+    def _due_post(self) -> ReviewRequestPost:
+        return ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/5",
+            slack_channel_id="C0AM3TENTLK",
+            slack_thread_ts="ts.5",
+            created_at=timezone.now() - dt.timedelta(days=1, hours=5),
+            last_nag_step=0,
+        )
+
+    def test_merged_mr_is_not_nagged_and_row_closed(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        post = self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.MERGED)
+        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.done_at is not None
+        assert post.last_nag_step == 0
+        assert [s.kind for s in signals] == ["review_nag.mr_closed"]
+
+    def test_closed_mr_is_not_nagged_and_row_closed(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        post = self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.CLOSED)
+        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.done_at is not None
+        assert [s.kind for s in signals] == ["review_nag.mr_closed"]
+
+    def test_open_mr_still_nags(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.OPEN)
+        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+
+        assert len(slack.posts) == 1
+        assert [s.kind for s in signals] == ["review_nag.ping"]
+
+    def test_unknown_state_fails_open_and_nags(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.UNKNOWN)
+        ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+        assert len(slack.posts) == 1
+
+    def test_lookup_failure_fails_open_and_nags(self) -> None:
+        self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=None, raise_on_lookup=RuntimeError("gitlab 500"))
+        ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+        assert len(slack.posts) == 1
+
+    def test_no_host_fails_open_and_nags(self) -> None:
+        self._due_post()
+        slack = FakeSlack()
+        ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=None).scan()
+        assert len(slack.posts) == 1
+
+
+class TestReviewNagDisabledByDefault(TestCase):
+    """The scanner is a no-op unless ``review_nag_enabled`` is true."""
+
+    def test_disabled_flag_makes_scan_a_noop(self) -> None:
+        # No _EnableReviewNagMixin here — the default config (flag OFF) stands.
+        disabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=False))
+        ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/9",
+            slack_channel_id="C0AM3TENTLK",
+            slack_thread_ts="ts.9",
+            created_at=timezone.now() - dt.timedelta(days=1, hours=5),
+            last_nag_step=0,
+        )
+        slack = FakeSlack()
+        with patch("teatree.config.load_config", return_value=disabled):
+            signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
+        assert signals == []
+        assert slack.posts == []
+
+    def test_default_user_settings_disable_the_nag(self) -> None:
+        assert UserSettings().review_nag_enabled is False
