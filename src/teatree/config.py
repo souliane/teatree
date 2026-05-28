@@ -383,6 +383,13 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
+    # ``namespace/repo``: when an MR/PR target repo matches one of these
+    # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
+    # the trailer line is silently stripped before publishing. Default
+    # empty preserves legacy behaviour. Parsed from
+    # ``[teatree.publish_gates] ban_close_trailers_on_namespaces``.
+    ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
     # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
     # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
     # has elapsed, so a clone never drifts behind after a merge and
@@ -421,6 +428,12 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
 
     on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
 
+    publish_gates = teatree.get("publish_gates", {}) if isinstance(teatree, dict) else {}
+    raw_ban = publish_gates.get("ban_close_trailers_on_namespaces", []) if isinstance(publish_gates, dict) else []
+    ban_close_trailers_on_namespaces = (
+        [str(p) for p in raw_ban if isinstance(p, str) and p] if isinstance(raw_ban, list) else []
+    )
+
     user = UserSettings(
         workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
@@ -458,6 +471,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
     )

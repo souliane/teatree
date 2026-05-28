@@ -189,6 +189,17 @@ The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by 
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 
+#### Per-Namespace Close-Trailer Gate (`[teatree.publish_gates]`)
+
+Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. Configure those namespaces in `~/.teatree.toml`:
+
+```toml
+[teatree.publish_gates]
+ban_close_trailers_on_namespaces = ["my-group/*"]
+```
+
+When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
+
 **STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
