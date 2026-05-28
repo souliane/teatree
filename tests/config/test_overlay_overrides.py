@@ -288,3 +288,36 @@ notify_on_post_on_behalf = false
         )
 
         assert get_effective_settings().notify_on_post_on_behalf is False
+
+    def test_overlay_can_override_max_concurrent_local_stacks(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1397: per-overlay cap on concurrent local stacks.
+
+        A heavy overlay caps to ``1`` while the global default stays
+        unbounded (``0``). Runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry so the gate (which
+        reads ``get_effective_settings().max_concurrent_local_stacks``)
+        picks up the per-overlay value when ``T3_OVERLAY_NAME`` is set.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "heavy")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+max_concurrent_local_stacks = 0
+
+[overlays.heavy]
+class = "x.y:Z"
+max_concurrent_local_stacks = 1
+""",
+        )
+
+        assert get_effective_settings().max_concurrent_local_stacks == 1
