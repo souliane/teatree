@@ -58,6 +58,7 @@ def _review_nag_jobs(backend: Any) -> list[Any]:  # noqa: ANN401
             scanner=ReviewNagScanner(
                 messaging=backend.messaging,
                 user_slack_id=_user_slack_id_for_overlay(backend.name),
+                host=backend.host,
             ),
             overlay=backend.name,
         ),

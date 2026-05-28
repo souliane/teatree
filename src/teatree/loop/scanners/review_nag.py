@@ -1,7 +1,7 @@
 """Fibonacci nag scanner for unreviewed MRs in the review channel (#1038).
 
-The user posts MRs to ``#the-review-team``; the bot tracks each post in a
-``ReviewRequestPost`` row. This scanner walks those rows on every tick
+The user posts MRs to the overlay's review channel; the bot tracks each
+post in a ``ReviewRequestPost`` row. This scanner walks those rows on every tick
 and, when an MR is still unreviewed, posts a thread reply nagging the
 ``@engineers`` user group at +1, +2, +3, and +5 days. At +5 days with no
 pickup, the scanner DMs the user a long-stale warning and marks the row
@@ -19,6 +19,23 @@ Slack-Connect failure: ``post_message`` against a channel the bot isn't
 in raises ``not_in_channel``. The scanner catches the exception, surfaces
 it as a ``review_nag.post_failed`` signal, and leaves the row alone so a
 future re-invitation can let the nag finally land.
+
+Disabled by default: the scanner only runs when ``review_nag_enabled`` is
+``true`` (global or per-overlay). It ships OFF after a concurrent-tick race
+double-posted bumps into the colleague review channel (see below).
+
+Concurrency: two loop ticks running against the same row both read the
+same ``last_nag_step`` and would each post. The nag is claimed with an
+atomic conditional ``UPDATE`` (``last_nag_step`` advanced only if it still
+equals the value this tick observed) *before* the Slack post — the tick
+that loses the claim skips silently, so exactly one nag is posted per
+fibonacci window even under concurrency.
+
+Merged/closed safety: before posting, the MR's open-state is checked via
+the code-host backend. A merged or closed MR is marked done (no post,
+``review_nag.mr_closed`` signal) so the nag train never bumps a request
+that no longer needs review. An ``UNKNOWN`` state (no backend, auth/network
+failure, unparsable URL) fails open and the nag proceeds as before.
 """
 
 import datetime as dt
@@ -27,7 +44,7 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.base import ScanSignal
 
@@ -67,10 +84,15 @@ class ReviewNagScanner:
 
     messaging: MessagingBackend | None
     user_slack_id: str
+    host: CodeHostBackend | None = None
     now: dt.datetime | None = None
     name: str = "review_nag"
 
     def scan(self) -> list[ScanSignal]:
+        from teatree.config import load_config  # noqa: PLC0415
+
+        if not load_config().user.review_nag_enabled:
+            return []
         messaging = self.messaging
         if messaging is None:
             return []
@@ -111,7 +133,41 @@ class ReviewNagScanner:
         if target_step <= post.last_nag_step:
             return None
 
+        # Never nag a merged/closed MR — mark done and skip the post.
+        closed = self._close_if_mr_not_open(post, right_now)
+        if closed is not None:
+            return closed
+
         return _post_thread_nag(post, messaging, target_step)
+
+    def _close_if_mr_not_open(
+        self,
+        post: ReviewRequestPost,
+        right_now: dt.datetime,
+    ) -> ScanSignal | None:
+        """Mark the row done when the MR is merged/closed (no nag posted).
+
+        Fails open: no code-host backend, or an ``UNKNOWN`` open-state
+        (auth/network failure, unparsable URL), returns ``None`` and the
+        nag proceeds — the merged-MR guard must never wedge the train on
+        an unverifiable state.
+        """
+        if self.host is None:
+            return None
+        try:
+            open_state = self.host.get_pr_open_state(pr_url=post.mr_url)
+        except Exception as exc:  # noqa: BLE001 — backend lookup must never crash a tick.
+            logger.warning("review_nag: open-state lookup failed for %s: %s", post.mr_url, exc)
+            return None
+        if open_state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
+            return None
+        post.done_at = right_now
+        post.save(update_fields=["done_at"])
+        return ScanSignal(
+            kind="review_nag.mr_closed",
+            summary=f"Review-request post for {post.mr_url} closed — MR is {open_state.value}",
+            payload={"mr_url": post.mr_url, "post_id": post.pk, "open_state": open_state.value},
+        )
 
     def _dm_user_and_close(
         self,
@@ -180,10 +236,24 @@ def _post_thread_nag(
     post: ReviewRequestPost,
     messaging: MessagingBackend,
     target_step: int,
-) -> ScanSignal:
+) -> ScanSignal | None:
     reconciled = _consult_guard_before_nag(post)
     if reconciled is not None:
         return reconciled
+
+    # Atomic claim BEFORE posting: advance ``last_nag_step`` only if it
+    # still equals the value this tick observed. The single winning tick
+    # gets ``updated == 1`` and posts; a concurrent tick that already
+    # claimed this step gets ``0`` and skips silently — exactly one nag
+    # per fibonacci window even under concurrency. Lock-free (no
+    # ``select_for_update``); the conditional ``UPDATE`` is the lock.
+    claimed_from = post.last_nag_step
+    updated = ReviewRequestPost.objects.filter(pk=post.pk, last_nag_step=claimed_from).update(
+        last_nag_step=target_step,
+    )
+    if updated != 1:
+        return None
+
     day_number = _FIBONACCI_DAYS[target_step - 1]
     text = _nag_text(messaging, post.mr_url, day_number)
     try:
@@ -193,6 +263,10 @@ def _post_thread_nag(
             thread_ts=post.slack_thread_ts,
         )
     except Exception as exc:  # noqa: BLE001 — Slack-Connect not_in_channel etc.
+        # Release the claim so a future re-invitation retries the post.
+        ReviewRequestPost.objects.filter(pk=post.pk, last_nag_step=target_step).update(
+            last_nag_step=claimed_from,
+        )
         logger.warning(
             "review_nag: post failed for %s on %s/%s: %s",
             post.mr_url,
@@ -207,7 +281,6 @@ def _post_thread_nag(
         )
 
     post.last_nag_step = target_step
-    post.save(update_fields=["last_nag_step"])
     return ScanSignal(
         kind="review_nag.ping",
         summary=f"Pinged @engineers for {post.mr_url} (day {day_number} of 5)",
