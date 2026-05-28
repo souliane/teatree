@@ -209,6 +209,53 @@ class TestShapeTolerance:
         assert should_review_candidate(mr, current_user="alice") is True
 
 
+_IDENTITIES = ("user-gl", "user-gh-a", "user-gh-b")
+
+
+class TestSkipSelfAuthorAcrossIdentities:
+    """The self-author skip must match ANY of the user's configured identities (#1321).
+
+    A user owns more than one identity (a gitlab username plus one or more
+    github logins). A primary-identity-only check lets an MR authored under
+    a SECONDARY self-identity slip through as a colleague MR and dispatch
+    ``t3:reviewer`` on the user's own work.
+    """
+
+    def test_skip_when_author_is_secondary_self_identity(self) -> None:
+        mr = {"author": {"username": "user-gh-b"}, "state": "opened", "notes": []}
+        reasons = should_review_candidate_reasons(mr, current_user="user-gl", self_identities=_IDENTITIES)
+        assert "author_is_self" in reasons
+        assert should_review_candidate(mr, current_user="user-gl", self_identities=_IDENTITIES) is False
+
+    def test_skip_when_github_secondary_identity_logins(self) -> None:
+        mr = {"user": {"login": "user-gh-a"}, "state": "open"}
+        assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    def test_already_approved_matches_any_self_identity(self) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "approvers": [{"username": "user-gh-a"}],
+        }
+        assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    def test_self_note_matches_any_self_identity(self) -> None:
+        mr = {
+            "author": {"username": "bob"},
+            "state": "opened",
+            "notes": [{"author": {"username": "user-gh-a"}, "system": False, "body": "engaged"}],
+        }
+        assert should_review_candidate(mr, current_user="user-gl", self_identities=("user-gl", "user-gh-a")) is False
+
+    def test_colleague_mr_still_candidate_with_multiple_identities(self) -> None:
+        mr = {"author": {"username": "bob"}, "state": "opened", "notes": []}
+        assert should_review_candidate(mr, current_user="user-gl", self_identities=_IDENTITIES) is True
+
+    def test_current_user_still_honoured_without_explicit_identities(self) -> None:
+        mr = {"author": {"username": "user-gl"}, "state": "opened", "notes": []}
+        assert should_review_candidate(mr, current_user="user-gl") is False
+
+
 class TestReasonsAccumulate:
     def test_multiple_skip_reasons_returned(self) -> None:
         mr = {
