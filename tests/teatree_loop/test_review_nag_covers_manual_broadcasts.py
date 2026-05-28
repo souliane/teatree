@@ -13,10 +13,12 @@ for every open MR it ingests, so both paths feed the same nag pipeline.
 import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import TeaTreeConfig, UserSettings
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
@@ -98,6 +100,13 @@ def _classifier(states: dict[str, MrState]):
 
 class TestReviewNagCoversBothPaths(TestCase):
     """Both bot-tracked AND manually-broadcast rows must get nagged."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
+        patcher = patch("teatree.config.load_config", return_value=enabled)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_nag_fires_on_bot_tracked_and_manually_broadcast_mr(self) -> None:
         # --- 1. Bot-created row (the existing path) ---
