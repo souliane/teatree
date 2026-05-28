@@ -2677,7 +2677,21 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if advisory:
         context = f"{context}\n\n---\n\n{advisory}"
 
-    json.dump({"additionalContext": context}, sys.stdout)
+    # #1452: the harness silently drops the legacy flat top-level
+    # ``{"additionalContext": ...}`` form for SessionStart events; the
+    # documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
+    # requires the nested envelope. Confirmed empirically: 24 compactions
+    # in session a1e3d2d8-… emitted the flat form and zero of them
+    # injected the snapshot text into the post-compact model context.
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            },
+        },
+        sys.stdout,
+    )
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
