@@ -169,7 +169,11 @@ class DuplicateFinder:
         return matches
 
 
-_ISSUE_REF_IN_TITLE = re.compile(r"\(#(\d+)\)")
+# Matches a ``#N`` issue reference anywhere in a PR title — the canonical
+# parenthesized ``(#N)`` form *and* loose mentions like "fixes #N". The
+# parenthesized form drives the high-confidence verdict (see
+# ``ResolvedIssue.confidence``).
+_ISSUE_REF_IN_TITLE = re.compile(r"(?<![\w/])#(\d+)\b")
 
 
 @dataclass(frozen=True)
@@ -181,7 +185,8 @@ class ResolvedIssue:
 
     @property
     def confidence(self) -> str:
-        return "high" if f"#{self.issue_number})" in self.pr_title else "medium"
+        canonical = f"(#{self.issue_number})"
+        return "high" if canonical in self.pr_title else "medium"
 
 
 @dataclass(frozen=True)
@@ -253,18 +258,17 @@ class TriageScanner:
 
         resolved: list[ResolvedIssue] = []
         for pr in prs:
-            for match in _ISSUE_REF_IN_TITLE.finditer(pr["title"]):
-                ref_number = int(match.group(1))
-                if ref_number in issue_numbers:
-                    issue = issue_by_number[ref_number]
-                    resolved.append(
-                        ResolvedIssue(
-                            issue_number=ref_number,
-                            issue_title=issue["title"],
-                            pr_number=pr["number"],
-                            pr_title=pr["title"],
-                        )
+            ref_numbers = {int(m.group(1)) for m in _ISSUE_REF_IN_TITLE.finditer(pr["title"])}
+            for ref_number in sorted(ref_numbers & issue_numbers):
+                issue = issue_by_number[ref_number]
+                resolved.append(
+                    ResolvedIssue(
+                        issue_number=ref_number,
+                        issue_title=issue["title"],
+                        pr_number=pr["number"],
+                        pr_title=pr["title"],
                     )
+                )
         resolved.sort(key=lambda r: r.issue_number)
         return resolved
 

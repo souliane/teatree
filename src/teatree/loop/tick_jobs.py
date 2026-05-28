@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config
+from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config, workspace_dir
+from teatree.core.clone_paths import find_clone_path
 
 if TYPE_CHECKING:
     from teatree.config import UserSettings
@@ -38,6 +39,7 @@ from teatree.loop.scanners import (
     OutboundAuditScanner,
     PendingTasksScanner,
     PrSweepScanner,
+    PullMainCloneScanner,
     RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
@@ -60,7 +62,8 @@ from teatree.loop.tick_resolvers import (
     _identity_alias_groups_for_overlay,
     _web_origin_for_host,
 )
-from teatree.notify import NotifyKind, notify_user
+from teatree.messaging import notify_with_fallback
+from teatree.notify import NotifyKind
 
 logger = logging.getLogger(__name__)
 
@@ -255,12 +258,19 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
         return None
     glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
     github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    # #1384: pass the user's forge username so the scanner skips :eyes: on
+    # their own-author MR broadcasts. Empty (no getter / unconfigured) leaves
+    # the filter off, preserving react-on-every-pending for legacy overlays.
+    current_gitlab_username = (
+        overlay.config.get_gitlab_username() if hasattr(overlay.config, "get_gitlab_username") else ""
+    )
     return SlackBroadcastsScanner(
         backend=backend.messaging,
         channels=channel_ids,
         fetch_channel_history=BackendChannelHistoryFetcher(backend=backend.messaging),
         classify_mrs=GlabGhMrStateClassifier(glab_token=glab_token, github_token=github_token),
         overlay=backend.name,
+        current_gitlab_username=current_gitlab_username,
     )
 
 
@@ -295,6 +305,42 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         notifier=notifier,
         overlay=backend.name,
         solo_overlay=solo_overlay,
+    )
+
+
+def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScanner | None:
+    """Build a per-overlay pull-main-clone scanner from the overlay's workspace repos.
+
+    Repo list comes from ``overlay.get_workspace_repos()``; each name is
+    resolved to its on-disk main clone under ``$T3_WORKSPACE_DIR`` via
+    :func:`teatree.core.clone_paths.find_clone_path` (the same namespace-
+    aware resolver provisioning/cleanup use). A repo with no clone on disk
+    is dropped — there is nothing to pull. The marker/signal label is
+    namespaced ``"<overlay>:<repo>"`` so two overlays that share a repo
+    basename keep independent cadence ledgers.
+
+    Returns ``None`` when the overlay has no Python class, when
+    ``pull_main_clone_disabled = true`` (the escape hatch), or when no
+    workspace repo resolves to a clone.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.pull_main_clone_disabled:
+        return None
+    workspace = workspace_dir()
+    repos: list[tuple[str, Path]] = []
+    for repo_name in overlay.get_workspace_repos():
+        clone = find_clone_path(workspace, repo_name)
+        if clone is None:
+            continue
+        repos.append((f"{backend.name}:{repo_name}", clone))
+    if not repos:
+        return None
+    return PullMainCloneScanner(
+        repos=tuple(repos),
+        cadence_hours=settings.pull_main_clone_cadence_hours,
     )
 
 
@@ -489,6 +535,11 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     :func:`teatree.config.discover_active_overlay` rather than baked
     into the scanner module. Falls back to the canonical post-0027
     overlay name (``t3-teatree``) when no overlay is registered.
+
+    #1391: ``ask_before_creating_news_tickets`` (default true) is the
+    ask-gate flag threaded into the scanner so the queued task instructs
+    the skill to record candidates for approval instead of auto-filing
+    issues.
     """
     settings = load_config().user
     if settings.scanning_news_disabled:
@@ -499,6 +550,7 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
         overlay_name=overlay_name,
         skill=settings.scanning_news_skill,
         cadence_hours=settings.scanning_news_cadence_hours,
+        require_approval=settings.ask_before_creating_news_tickets,
     )
 
 
@@ -581,9 +633,9 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     if exc.detail:
         text = f"{text}\n_{exc.detail}_"
     try:
-        notify_user(text, kind=NotifyKind.INFO, idempotency_key=key)
+        notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=key)
     except Exception:
-        logger.exception("Scanner-error notify_user failed for %s", label)
+        logger.exception("Scanner-error notify_with_fallback failed for %s", label)
 
 
 def _user_slack_id_for_overlay(overlay_name: str) -> str:
@@ -685,6 +737,13 @@ def _jobs_for_overlay_backend(
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
+    # Pull-main-clone scanner — after a merge advances ``origin/<default>``,
+    # fast-forward each work-repo main clone under ``$T3_WORKSPACE_DIR`` so a
+    # stale clone never poisons ``git show`` / ``grep`` investigations. Wired
+    # per-overlay because the workspace-repo set is overlay-scoped.
+    pull_clone_scanner = _pull_main_clone_scanner_for(backend)
+    if pull_clone_scanner is not None:
+        jobs.append(_ScannerJob(scanner=pull_clone_scanner, overlay=tag))
     # #1254 Codex-review scanner — auto-dispatch /codex:review on every
     # PR push. Gated on the fleet-of-agents doctrine (auto mode +
     # ``require_human_approval_to_merge = false``); silent on every

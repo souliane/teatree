@@ -1,7 +1,8 @@
-"""Tests for the ``!N (MR title)`` rendering (#1156).
+"""Tests for the bare ``!N`` / ``#N`` chip rendering (#1377).
 
-Pre-#1156: bare ``!1234`` ref, comma-joined when multiple.
-Post-#1156: ``!1234 (MR title)`` ref, space-separated when multiple.
+Per the binding spec the chip is just the number — no per-MR title
+chunk, no annotation, no review-permalink suffix. Earlier shapes
+(``!N (title)``, ``!N (title) (1 notes)``) are gone.
 """
 
 import pytest
@@ -31,8 +32,8 @@ def _render_blob(actions: list[DispatchAction]) -> str:
     )
 
 
-class TestMrLineIncludesTitle:
-    def test_mr_line_includes_title(self) -> None:
+class TestMrChipIsBare:
+    def test_chip_is_bare_iid_no_title_chunk(self) -> None:
         actions = [
             _pr_action(
                 url="https://example.com/p/1/merge_requests/123",
@@ -42,13 +43,10 @@ class TestMrLineIncludesTitle:
         ]
         blob = _render_blob(actions)
 
-        # The MR ref now carries its title — under NO_COLOR the rendered
-        # form is ``!N <url> (title)`` because the iid is wrapped in the
-        # plain-text URL fallback.
         assert "!123" in blob, repr(blob)
-        assert "(feat(loop): add multi-loop anchors)" in blob, repr(blob)
-        # The title chunk must come *after* the iid.
-        assert blob.index("!123") < blob.index("(feat(loop): add multi-loop anchors)"), repr(blob)
+        # Per #1377 the title chunk is removed from the chip — no decoration.
+        assert "(add multi-loop anchors)" not in blob, repr(blob)
+        assert "feat(loop):" not in blob, repr(blob)
 
     def test_multiple_open_mrs_space_separated(self) -> None:
         actions = [
@@ -57,14 +55,16 @@ class TestMrLineIncludesTitle:
         ]
         blob = _render_blob(actions)
 
-        # Both MRs render with their title. They are joined by a single
-        # space, never ``, `` (comma-joining was the pre-#1156 form).
-        assert "(alpha) !101" in blob, repr(blob)
-        # Comma-joining must be gone (no ``, !101``).
+        assert "!100" in blob, repr(blob)
+        assert "!101" in blob, repr(blob)
+        # Comma-joining stayed gone; chips space-separated.
         assert ", !101" not in blob, repr(blob)
+        # Per #1377 no per-MR title chunks.
+        assert "(alpha)" not in blob, repr(blob)
+        assert "(beta)" not in blob, repr(blob)
 
-    def test_drafts_included(self) -> None:
-        """A draft MR (annotation present) still renders with its title."""
+    def test_draft_chip_has_no_annotation(self) -> None:
+        """A draft MR's ``(N notes)`` annotation is gone per #1377."""
         action = DispatchAction(
             kind="statusline",
             zone="in_flight",
@@ -79,9 +79,10 @@ class TestMrLineIncludesTitle:
         )
         blob = _render_blob([action])
 
-        # Title appears alongside the existing annotation.
         assert "!200" in blob, repr(blob)
-        assert "wip: experimental" in blob, repr(blob)
+        # Annotation chunk and title chunk both gone per #1377.
+        assert "(experimental)" not in blob, repr(blob)
+        assert "(1 notes)" not in blob, repr(blob)
 
 
 @pytest.mark.django_db

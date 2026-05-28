@@ -131,7 +131,8 @@ class TestItemFormatDescriptionAlwaysShown:
         render(zones, target=target, colorize=False)
         body = target.read_text()
         assert "#500" in body
-        assert "(add new scanner guard)" in body
+        # Terse topic keeps the first three words of the title.
+        assert "(add new scanner)" in body
 
 
 class TestNo404Links:
@@ -211,38 +212,41 @@ class TestDedupAcrossOverlays:
 
 
 class TestLiveLoopsAnchor:
-    """Refinement 5 (revised): one consolidated summary line for live loops.
+    """Refinement 5 (revised): one per-loop-named summary line for live loops.
 
-    The original refinement returned one line per live loop. The user
-    asked instead for a single first-line summary with time-to-next-tick;
-    this rewrites the tests to lock the consolidated shape.
+    The original refinement returned one line per live loop, then a later
+    refit collapsed to a single ``… · N loops live`` count. The user asked
+    instead for one line that names each live loop with its next tick; this
+    locks that shape (the bare count is gone).
     """
 
-    def test_returns_one_consolidated_summary_line(self) -> None:
+    def test_returns_one_line_naming_each_loop(self) -> None:
         leases = [
-            ("loop-tick", "sessA"),
-            ("loop-slack-answer", "sessB"),
-            ("loop-owner", "sessA"),
+            ("loop-tick", None),
+            ("loop-slack-answer", None),
+            ("loop-owner", None),
         ]
         with (
-            patch("teatree.loop.statusline._live_loop_names", return_value=leases),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1
         assert lines[0].startswith("loop · ")
-        assert "3 loops live" in lines[0]
+        assert "loops live" not in lines[0]
+        assert "tick" in lines[0]
+        assert "slack-answer" in lines[0]
+        assert "owner" in lines[0]
 
     def test_no_live_leases_returns_empty(self) -> None:
         # Empty list → no lines (no statusline noise when no loop is live).
-        with patch("teatree.loop.statusline._live_loop_names", return_value=[]):
+        with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
             assert live_loops_anchor() == []
 
     def test_fails_open_on_query_error(self) -> None:
         # When the underlying DB read raises, callers see [] — a broken
         # LoopLease query must never blank the statusline.
-        with patch("teatree.loop.statusline._live_loop_names", side_effect=RuntimeError("db down")):
+        with patch("teatree.loop.statusline._live_loop_leases", side_effect=RuntimeError("db down")):
             assert live_loops_anchor() == []
 
 
@@ -252,18 +256,19 @@ class TestZonesForIntegratesLoopsAnchor:
     def test_zones_for_appends_consolidated_loop_line(self, tmp_path: Path) -> None:
         with (
             patch(
-                "teatree.loop.statusline._live_loop_names",
-                return_value=[("loop-tick", "sessA"), ("loop-owner", "sessA")],
+                "teatree.loop.statusline._live_loop_leases",
+                return_value=[("loop-tick", None), ("loop-owner", None)],
             ),
-            patch("teatree.loop.statusline._loop_tick_acquired_at", return_value=None),
-            patch("teatree.loop.statusline._cadence_seconds", return_value=720),
+            patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             zones: StatuslineZones = zones_for([], colorize=False)
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
         assert "loop · " in body
-        assert "2 loops live" in body
+        assert "loops live" not in body
+        assert "tick" in body
+        assert "owner" in body
         # Per-loop dump tokens absent.
         assert "loop:tick" not in body
         assert "loop:owner" not in body

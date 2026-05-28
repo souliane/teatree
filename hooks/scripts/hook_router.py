@@ -1146,6 +1146,80 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
+
+
+def handle_banned_terms_pretool(data: dict) -> bool:
+    """Refuse a non-commit publish whose body carries a banned term.
+
+    Sibling of the #1213 quote-scanner gate. The commit-only
+    ``check-banned-terms.sh`` pre-commit hook misses ``gh issue/pr
+    create|edit|comment``, ``glab mr|issue note|create`` and the
+    ``gh api`` / ``glab api`` REST posting paths — exactly where
+    overlay/customer terms have leaked on this PUBLIC repo. This gate
+    reuses the #1213 ``_command_parser`` publish-surface detection + body
+    extraction, then delegates the matching to the SAME
+    ``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list
+    (no new term config, no reimplemented matching).
+
+    A banned-term match ⇒ refuse via ``permissionDecision: deny`` + a
+    reason naming the matched term and pointing at the
+    ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override.
+
+    Fail-open on any internal error: a crashing hook is worse than no
+    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
+    the sibling ``src/`` directory (the hook script runs in the user's
+    session shell with no guarantee that ``teatree`` is already
+    importable, #1314) and swallows any exception, returning ``False``.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_banned_terms_pretool(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_banned_terms_pretool(data: dict) -> bool:
+    """Banned-terms inner body — assumes ``teatree`` is already importable."""
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
+
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    if banned_terms_scanner.has_override(tool_name, tool_input):
+        return False
+
+    term = banned_terms_scanner.scan_text(payload)
+    if term is None:
+        return False
+
+    json.dump(
+        {
+            "permissionDecision": "deny",
+            "permissionDecisionReason": banned_terms_scanner.format_block_message(term),
+        },
+        sys.stdout,
+    )
+    return True
+
+
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
 #
 # Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -1372,11 +1446,41 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     hands that implement. Fails open when the transcript cannot
     distinguish the agent (documented limitation), never blocking on an
     ambiguous signal.
+
+    Extension (#1442): the main agent must dispatch ``Agent`` calls with
+    ``run_in_background: true`` — a foreground dispatch blocks the
+    orchestrator for the entire sub-agent runtime (often 30+ min) and is
+    the source of a recurring failure (memory rule
+    ``feedback_always_run_in_background_for_sub_agent_dispatch``). The
+    guard denies main-agent Agent calls when ``run_in_background`` is
+    not ``True``; sub-agents may still dispatch foreground (sidechain
+    sees the unblocked default).
     """
+    tool_name = data.get("tool_name", "")
+    if tool_name == "Agent":
+        sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
+        if sidechain is False and data.get("tool_input", {}).get("run_in_background") is not True:
+            json.dump(
+                {
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        "[main-agent-orchestration-guard] Foreground Agent dispatch "
+                        "DENIED in main agent context.\n"
+                        "Pass `run_in_background: true` to every Agent invocation "
+                        "from the main agent.\n"
+                        "Memory rule: "
+                        "feedback_always_run_in_background_for_sub_agent_dispatch "
+                        "(RED CARD recurrence)."
+                    ),
+                },
+                sys.stdout,
+            )
+            return True
+        return False
+
     if _is_orchestration_action(data):
         return False
 
-    tool_name = data.get("tool_name", "")
     is_non_orch = tool_name in _NON_ORCHESTRATION_TOOLS or tool_name == "Bash"
     if not is_non_orch:
         return False
@@ -1669,6 +1773,98 @@ def handle_track_todos(data: dict) -> None:
     todos_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+# ── PostToolUse: capture Agent-tool sub-agent dispatches ───────────
+#
+# Issue #778 (reopened): the PreCompact snapshot pinned the loop
+# tick-owner (#786 WS3) but NOT ad-hoc background sub-agents an
+# orchestrator dispatches via the ``Agent`` tool. The dispatched
+# agentId is the handle ``SendMessage`` needs to resume/steer/collect a
+# running agent; it lives only in the conversation and is lost on
+# auto-compaction, orphaning the agent. Mirror the #970 ``TodoWrite``
+# capture: on every ``Agent`` PostToolUse, append the agentId + its
+# role/description to ``<session>.agents`` so the snapshot can quote the
+# roster back. Each line is ``<agentId>\t<role>`` — append-only, deduped
+# on agentId, so a multi-agent fan-out accumulates rather than clobbers.
+
+
+_AGENT_ID_KEYS = ("agentId", "agent_id", "id")
+
+
+def _agent_id_from_response(tool_response: object) -> str:
+    """Extract the dispatched agentId from an ``Agent`` PostToolUse payload.
+
+    The harness response shape is not contractually fixed, so probe the
+    known id-bearing keys on a dict response (``agentId`` / ``agent_id``
+    / ``id``). Returns ``""`` when none is present — the caller then
+    falls back to scanning the harness tasks dir.
+    """
+    from typing import cast  # noqa: PLC0415
+
+    if not isinstance(tool_response, dict):
+        return ""
+    response = cast("dict[str, object]", tool_response)
+    for key in _AGENT_ID_KEYS:
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _newest_task_agent_id() -> str:
+    """Scan the harness tasks output dir for the newest ``a*`` task id.
+
+    Fallback used only when the PostToolUse payload does not expose the
+    agentId. The harness writes one ``<agentId>.output`` file per
+    dispatched task under ``CLAUDE_TASKS_DIR`` (or
+    ``~/.claude/tasks``); the dispatched sub-agent's id is ``a``-prefixed.
+    Returns the most-recently-modified match, or ``""`` when the dir is
+    absent / has no match. Never raises — capture must never block the
+    orchestrator.
+    """
+    tasks_dir = Path(os.environ.get("CLAUDE_TASKS_DIR", str(Path.home() / ".claude" / "tasks")))
+    try:
+        candidates = [p for p in tasks_dir.glob("a*.output") if p.is_file()]
+    except OSError:
+        return ""
+    if not candidates:
+        return ""
+    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+    return newest.stem
+
+
+def handle_track_agents(data: dict) -> None:
+    """Persist a dispatched ``Agent`` sub-agent's id + role to ``<session>.agents``.
+
+    No-op for any other tool name. Prefers the agentId carried on the
+    PostToolUse ``tool_response`` (``tool_result`` as a secondary
+    payload key); falls back to the newest ``a*`` id under the harness
+    tasks dir when the payload omits it. Append-only and deduped on
+    agentId so a parallel fan-out of sub-agents all survive compaction.
+    """
+    if data.get("tool_name") != "Agent":
+        return
+    session_id = data.get("session_id", "")
+    if not session_id:
+        return
+
+    agent_id = _agent_id_from_response(data.get("tool_response"))
+    if not agent_id:
+        agent_id = _agent_id_from_response(data.get("tool_result"))
+    if not agent_id:
+        agent_id = _newest_task_agent_id()
+    if not agent_id:
+        return
+
+    tool_input = data.get("tool_input", {})
+    role = str(tool_input.get("description") or tool_input.get("subagent_type") or "(no description)").strip()
+
+    _ensure_state_dir()
+    agents_file = _state_file(session_id, "agents")
+    if any(line.split("\t", 1)[0] == agent_id for line in _read_lines(agents_file)):
+        return
+    _append_line(agents_file, f"{agent_id}\t{role}")
+
+
 # ── PreCompact: retro-before-compact ──────────────────────────────
 
 
@@ -1848,6 +2044,22 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
         for _name, entry in sorted(owned):
             agent_id = entry.get("agent_id") or "(agent id not recorded)"
             lines.append(f"- tick-owner agentId `{agent_id}` (pid {entry.get('pid', '?')})")
+
+    dispatched = _read_lines(_state_file(session_id, "agents"))
+    if dispatched:
+        lines += [
+            "",
+            "## Dispatched background sub-agents",
+            (
+                "Ad-hoc `Agent`-tool sub-agents dispatched this session "
+                "(#778). Their agentIds are the handle `SendMessage` needs "
+                "to resume / steer / collect a still-running agent — reuse "
+                "them rather than re-dispatching duplicate work."
+            ),
+        ]
+        for line in dispatched:
+            agent_id, _, role = line.partition("\t")
+            lines.append(f"- agentId `{agent_id}` — {role or '(no description)'}")
 
     todos = _read_lines(_state_file(session_id, "todos"))
     if todos:
@@ -2365,6 +2577,46 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
+def _evict_stale_db_lease_owner(session_id: str) -> None:
+    """Orphan any ``LoopLease`` ``loop-owner`` row not held by ``session_id``.
+
+    #1380 (#1107 follow-up). Context compaction rotates the Claude
+    ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
+    rewritten to the new id, but the DB ``LoopLease`` row name=
+    ``loop-owner`` still carries the OLD id with an unexpired
+    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    subprocesses (#1107) so the next ``t3 loop tick`` resolves the NEW
+    id via the registry fallback and the ``claim_ownership`` CAS fails
+    (DB row's session != new session, lease not expired) — the same
+    session can never own its own loop until ``t3 loop claim
+    --take-over`` runs manually.
+
+    Compaction is the natural eviction point. Whenever the SessionStart
+    handler records a new session as the tick-owner, any stale DB row
+    (session_id != new id, including the empty-string baseline) is
+    orphaned so the new session's next tick CAS-claims it cleanly. The
+    lease stays the authoritative liveness source; the registry is the
+    discovery channel.
+
+    Best-effort: any Django bootstrap / DB error fails open. The hook
+    must never block the SessionStart directive over a DB hiccup.
+    """
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        LoopLease.objects.filter(name="loop-owner").exclude(session_id=session_id).update(
+            session_id="",
+            acquired_at=None,
+            lease_expires_at=None,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
@@ -2423,6 +2675,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     agent_id = data.get("agent_id", "")
 
+    became_owner_after_rotation = False
     with _loop_registry_txn() as box:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
@@ -2440,9 +2693,27 @@ def handle_session_start_bootstrap(data: dict) -> None:
             # No live owner, or this session already owns it (incl. the
             # post-compaction same-session restart — nothing to re-spawn,
             # the cron keeps ticking). This session is the tick-owner.
+            # ``owner is None`` here = a fresh machine OR a dead-owner
+            # prune; both can leave a stale DB lease behind. The
+            # ``same-session refresh`` case (``owner.session_id ==
+            # session_id``) does not need eviction — gating on this flag
+            # spares those SessionStarts the Django startup cost.
+            became_owner_after_rotation = owner is None
             box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
             context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
+
+    # #1380: orphan any stale DB ``loop-owner`` row from a rotated session
+    # (compaction rotated the Claude ``session_id``, leaving the DB lease
+    # under the previous id with an unexpired ``lease_expires_at``). The
+    # lease stays the authoritative liveness source; this aligns it with
+    # the file registry we just rewrote so the new session's next
+    # ``t3 loop tick`` CAS-claims cleanly without ``--take-over``. Outside
+    # the flock — the DB has its own CAS serialization; holding the
+    # registry flock across a Django bootstrap would needlessly stall
+    # sibling SessionStart hooks.
+    if became_owner_after_rotation:
+        _evict_stale_db_lease_owner(session_id)
 
     # OSC write is a tty side effect, not registry state — keep it out of
     # the flock critical section.
@@ -4203,6 +4474,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
         handle_quote_scanner_pretool,
+        handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_validate_mr_metadata,
@@ -4218,6 +4490,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_cron_jobs,
         handle_read_dedup,
         handle_track_todos,
+        handle_track_agents,
         handle_track_plan_invocation,
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,

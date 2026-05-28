@@ -285,7 +285,7 @@ class TestTriageScanner:
             mock_run.return_value = SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0)
             assert TriageScanner("souliane/teatree").find_stale(days=1) == []
 
-    def test_confidence_property(self) -> None:
+    def test_confidence_high_for_parenthesized_reference(self) -> None:
         issues = [_issue_with_age(42, "feat: triage")]
         prs = [_pr_fixture(100, "feat: triage (#42)")]
         with patch("teatree.triage.run_allowed_to_fail") as mock_run:
@@ -294,6 +294,41 @@ class TestTriageScanner:
                 SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
             ]
             resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert resolved[0].confidence == "high"
+
+    def test_finds_resolved_issue_from_bare_reference(self) -> None:
+        issues = [_issue_with_age(42, "broken thing")]
+        prs = [_pr_fixture(100, "fix: thing, fixes #42")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert len(resolved) == 1
+        assert resolved[0].issue_number == 42
+
+    def test_confidence_medium_for_bare_reference(self) -> None:
+        issues = [_issue_with_age(42, "broken thing")]
+        prs = [_pr_fixture(100, "fix: thing, fixes #42")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert resolved[0].confidence == "medium"
+
+    def test_repeated_reference_yields_single_resolution(self) -> None:
+        issues = [_issue_with_age(42, "broken thing")]
+        prs = [_pr_fixture(100, "fix: thing, fixes #42 (#42)")]
+        with patch("teatree.triage.run_allowed_to_fail") as mock_run:
+            mock_run.side_effect = [
+                SimpleNamespace(stdout=json.dumps(issues), stderr="", returncode=0),
+                SimpleNamespace(stdout=json.dumps(prs), stderr="", returncode=0),
+            ]
+            resolved = TriageScanner("souliane/teatree").find_resolved()
+        assert len(resolved) == 1
         assert resolved[0].confidence == "high"
 
     def test_gh_failure_returns_empty(self) -> None:

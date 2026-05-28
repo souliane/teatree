@@ -194,13 +194,13 @@ class OutboundAuditScannerTests(TestCase):
         assert slack_claim.verified_at is not None
         assert notion_claim.verified_at is None
 
-    def test_default_notifier_calls_notify_user_lazily(self) -> None:
-        """Production default forwards to teatree.notify.notify_user."""
+    def test_default_notifier_uses_verified_delivery_wrapper_lazily(self) -> None:
+        """Production default forwards to the #1181 verified-delivery wrapper."""
         from unittest.mock import patch as _patch  # noqa: PLC0415
 
         from teatree.loop.scanners.outbound_audit import _default_notifier  # noqa: PLC0415
 
-        with _patch("teatree.notify.notify_user") as notify_mock:
+        with _patch("teatree.messaging.notify_with_fallback") as notify_mock:
             _default_notifier("drift alert text", "outbound_drift:key-1")
 
         notify_mock.assert_called_once()

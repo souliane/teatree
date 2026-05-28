@@ -92,6 +92,23 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 # only the statusline rendering is suppressed.
 _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 
+# Signal-kind *prefixes* whose every outcome is internal scanner state, not
+# user-facing statusline content. The ``self_update.*`` family
+# (``cadence_not_elapsed``, ``up_to_date``, ``updated``, ``skipped``,
+# ``failed``) is the auto-update scanner's per-repo bookkeeping; its
+# ``reason`` payload (e.g. ``recent_marker``) used to leak into the
+# statusline as a mystery ``recent_marker: ?`` row because the renderer
+# treats any ``reason``-bearing action as a ticket disposition. The
+# update outcome is logged and persisted on ``SelfUpdateMarker`` — the
+# statusline is the wrong surface for it.
+_STATUSLINE_DROP_PREFIXES: tuple[str, ...] = ("self_update.",)
+
+
+def _is_statusline_dropped(kind: str) -> bool:
+    """True when *kind* is diagnostic-only and must not reach the statusline."""
+    return kind in _STATUSLINE_DROP_KINDS or kind.startswith(_STATUSLINE_DROP_PREFIXES)
+
+
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
 
 
@@ -323,7 +340,7 @@ def _claim_red_mr_fix(signal: ScanSignal) -> bool:
 
 
 def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
-    if signal.kind in _STATUSLINE_DROP_KINDS:
+    if _is_statusline_dropped(signal.kind):
         return []
     conditional = _conditional_dispatch(signal)
     if conditional is not None:

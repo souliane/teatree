@@ -37,6 +37,9 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
         requests.append(url)
 
         class Response:
+            def __init__(self) -> None:
+                self.headers = {"x-next-page": ""}
+
             def raise_for_status(self) -> None:
                 return None
 
@@ -82,7 +85,7 @@ def test_gitlab_api_helpers_cover_http_paths_and_failures(monkeypatch: pytest.Mo
     assert client.list_all_open_mrs("adrien") == [{"iid": 1, "draft": False}, {"iid": 2, "draft": True}]
     assert client.list_all_open_mrs("adrien", include_draft=False) == [{"iid": 1, "draft": False}]
     assert client.cancel_pipelines(42, "feature") == [101, 101]
-    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+    monkeypatch.setattr(client, "get_json_paginated", lambda endpoint: [])
     assert client.list_all_open_mrs("adrien") == []
     monkeypatch.setattr(client, "get_json", lambda endpoint: {"oops": "bad"})
     assert client.cancel_pipelines(42, "feature") == []
@@ -244,6 +247,27 @@ def test_get_work_item_status_returns_none_when_widgets_not_a_list(monkeypatch: 
     result = client.get_work_item_status("org/repo", 42)
 
     assert result is None
+
+
+@pytest.mark.parametrize(
+    "graphql_response",
+    [
+        {"data": {"project": None}},
+        {"data": {"project": {"workItems": None}}},
+        {"data": {"project": {"workItems": {"nodes": None}}}},
+        {"data": {"project": {"workItems": {"nodes": ["not-a-dict"]}}}},
+        {"data": None},
+        {},
+    ],
+)
+def test_get_work_item_status_returns_none_when_graphql_hop_is_null(
+    graphql_response: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(client, "graphql", lambda query, variables: graphql_response)
+
+    assert client.get_work_item_status("org/repo", 42) is None
 
 
 def test_get_work_item_status_returns_none_when_status_value_not_dict(monkeypatch: pytest.MonkeyPatch) -> None:

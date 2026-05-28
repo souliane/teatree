@@ -47,6 +47,7 @@ import httpx
 
 from teatree.backends.slack_bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
 from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
+from teatree.backends.slack_scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
 from teatree.backends.slack_token_policy import SlackOp, channel_token
 from teatree.backends.slack_token_validation import (
     TokenSlotMismatchError,
@@ -475,14 +476,20 @@ class SlackBotBackend:
         return self._cached_bot_id
 
     def auth_test(self) -> RawAPIDict:
-        """Return the raw ``auth.test`` response (``{}`` when no bot token).
+        """Return the ``auth.test`` body with granted scopes from the ``X-OAuth-Scopes`` header.
 
-        A connector preflight calls this to assert the bot token is live
-        and correctly scoped before the loop proceeds — a hard-fail gate
-        rather than discovering ``missing_scope`` mid-tick via a phantom
-        ``post_message`` success.
+        Slack reports the token's scopes in the response header, not the JSON
+        body; they are attached under :data:`GRANTED_SCOPES_KEY` (native keys
+        untouched) so a connector-preflight scope guard can read them. ``{}``
+        when no bot token is configured.
         """
-        return self._post("auth.test", {})
+        if not self._bot_token:
+            return {}
+        headers = {"Authorization": f"Bearer {self._bot_token}", "Content-Type": "application/json; charset=utf-8"}
+        response = httpx.post("https://slack.com/api/auth.test", headers=headers, json={}, timeout=10.0)
+        response.raise_for_status()
+        body = cast("RawAPIDict", response.json())
+        return attach_granted_scopes(body, response.headers.get(OAUTH_SCOPES_HEADER, ""))
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         if is_single_emoji_body(text):

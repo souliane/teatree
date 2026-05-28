@@ -129,6 +129,44 @@ class TestLifecycleSetup(TestCase):
             ticket.refresh_from_db()
             assert ticket.variant == "testcustomer"
 
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_variant_propagates_to_db_name_and_env_cache(self) -> None:
+        """`--variant` must reach db_name and the rendered WT_VARIANT/WT_DB_NAME.
+
+        The in-scope worktree resolved by the command holds a cached ``ticket``
+        FK loaded before the variant update. When ``_build_db_name`` and the env
+        render read that stale FK, ``WT_VARIANT`` renders blank and ``db_name``
+        loses its variant suffix — so the DB import targets the wrong name. The
+        command must refresh the FK so both reflect the new variant.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "backend"
+            wt_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/91", variant="")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="/tmp/backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+            )
+
+            with patch.object(utils_run_mod.subprocess, "run"):
+                worktree_id = cast(
+                    "int",
+                    call_command("worktree", "provision", path=str(wt_dir), variant="acmebank"),
+                )
+
+            worktree = Worktree.objects.get(pk=worktree_id)
+            assert worktree.db_name == "wt_91_acmebank"
+
+            cache_file = tmp_path / ".t3-cache" / ".t3-env.cache"
+            cache_body = cache_file.read_text(encoding="utf-8")
+            assert "WT_VARIANT=acmebank" in cache_body
+            assert "WT_DB_NAME=wt_91_acmebank" in cache_body
+
     @_patch_overlays(FAILING_IMPORT_OVERLAY)
     @override_settings(**SETTINGS)
     def test_continues_on_db_import_failure(self) -> None:

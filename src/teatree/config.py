@@ -196,6 +196,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
+    "ask_before_creating_news_tickets": bool,
     "dogfood_smoke_disabled": bool,
     "dogfood_smoke_skill": str,
     "dogfood_smoke_cadence_hours": int,
@@ -203,6 +204,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
+    "pull_main_clone_disabled": bool,
+    "pull_main_clone_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -355,6 +358,13 @@ class UserSettings:
     scanning_news_disabled: bool = False
     scanning_news_skill: str = "scanning-news"
     scanning_news_cadence_hours: int = 24
+    # #1391 Ask-gate for news-scan ticket creation. When true (default),
+    # the scanning-news skill must NOT auto-create issues — it records a
+    # ``PendingArticleSuggestion`` per candidate and surfaces the batch
+    # to the user, filing an issue only on explicit approval. Default ON:
+    # backlog pollution from unconfirmed auto-filing is the failure mode
+    # this gate forecloses. Per-overlay overridable.
+    ask_before_creating_news_tickets: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
     # window so the loop exercises the active overlay's provision path
@@ -386,6 +396,22 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
+    # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
+    # ``namespace/repo``: when an MR/PR target repo matches one of these
+    # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
+    # the trailer line is silently stripped before publishing. Default
+    # empty preserves legacy behaviour. Parsed from
+    # ``[teatree.publish_gates] ban_close_trailers_on_namespaces``.
+    ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
+    # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
+    # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
+    # has elapsed, so a clone never drifts behind after a merge and
+    # poisons ``git show`` / ``grep`` investigations. Hourly default keeps
+    # the clones current without spamming each work repo's remote on every
+    # tick. Set ``pull_main_clone_disabled = true`` in ``[teatree]`` (or
+    # per-overlay) as the escape hatch.
+    pull_main_clone_disabled: bool = False
+    pull_main_clone_cadence_hours: int = 1
 
 
 @dataclass
@@ -414,6 +440,12 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
 
     on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
+
+    publish_gates = teatree.get("publish_gates", {}) if isinstance(teatree, dict) else {}
+    raw_ban = publish_gates.get("ban_close_trailers_on_namespaces", []) if isinstance(publish_gates, dict) else []
+    ban_close_trailers_on_namespaces = (
+        [str(p) for p in raw_ban if isinstance(p, str) and p] if isinstance(raw_ban, list) else []
+    )
 
     user = UserSettings(
         workspace_dir=workspace_dir,
@@ -445,6 +477,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
         dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
         dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
         dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),
@@ -452,6 +485,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
+        ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
+        pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
+        pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
