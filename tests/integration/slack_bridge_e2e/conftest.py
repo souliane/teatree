@@ -43,6 +43,7 @@ import httpx
 import pytest
 
 from teatree.backends import slack_bot
+from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
 
 # ── Fake Slack transport ──────────────────────────────────────────────
 
@@ -183,6 +184,11 @@ class _FakeUserSettings:
     """Mirror of ``UserSettings`` for ``_resolved_identities()``."""
 
     user_identity_aliases: list[str] = field(default_factory=list)
+    # #1395 The backend factory now resolves the voice/token classifier
+    # mode from ``load_config().user.slack_voice_classifier_mode``;
+    # mirror the new attribute so the test fixture stays a structural
+    # subset of the real ``UserSettings``.
+    slack_voice_classifier_mode: _VoiceClassifierMode = _VoiceClassifierMode.WARN
 
 
 @dataclass

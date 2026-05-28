@@ -127,7 +127,9 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return _messaging_from_toml_overlay(overlay_name)
-    return get_messaging(overlay)
+    backend = get_messaging(overlay)
+    _apply_voice_classifier_mode(backend)
+    return backend
 
 
 def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None:
@@ -336,14 +338,37 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     # through this bot's IM instead of failing ``channel_not_found``.
     dm_channel_id = cfg.get("slack_dm_channel_id", "")
     if bot_token:
-        return SlackBotBackend(
+        backend = SlackBotBackend(
             bot_token=bot_token,
             app_token=app_token or "",
             user_token=user_token,
             user_id=user_id,
             dm_channel_id=dm_channel_id,
         )
+        _apply_voice_classifier_mode(backend)
+        return backend
     return None
+
+
+def _apply_voice_classifier_mode(backend: "MessagingBackend | None") -> None:
+    """Resolve the voice/token classifier mode from config (#1395).
+
+    Reads the effective setting (env / per-overlay / global) and
+    threads it into a :class:`SlackBotBackend` via its setter. Noop
+    backends and missing-credentials cases are skipped. Tolerates
+    fake configs that don't carry a ``user`` attribute (path-only TOML
+    fallback test fixtures) by leaving the backend on its default
+    :attr:`SlackVoiceClassifierMode.WARN`.
+    """
+    setter = getattr(backend, "set_voice_classifier_mode", None)
+    if setter is None or not callable(setter):
+        return
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+
+        setter(get_effective_settings().slack_voice_classifier_mode)
+    except (AttributeError, ImportError):
+        return
 
 
 def reset_backend_caches() -> None:
