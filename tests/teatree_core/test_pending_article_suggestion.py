@@ -1,0 +1,101 @@
+"""Tests for the news-scan ask-gate candidate queue (#1391).
+
+``PendingArticleSuggestion`` is the durable ask-gate that replaces the
+scanning-news skill's old auto-``gh issue create`` behaviour. The skill
+records one PENDING row per candidate article; an issue is filed only
+when the user approves. With no approval the row stays PENDING and
+nothing is created — default is no-op. Re-scanning the same source URL
+must not enqueue a duplicate candidate.
+"""
+
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models import PendingArticleSuggestion
+
+_URL = "https://tldr.tech/ai/2026-05-27#some-agent-eval-harness"
+
+
+class PendingArticleSuggestionTests(TestCase):
+    def test_record_candidate_creates_pending_row(self) -> None:
+        """A candidate is enqueued as PENDING — not auto-filed."""
+        row = PendingArticleSuggestion.record_candidate(
+            url=_URL,
+            title="An agent eval harness",
+            summary="Pattern we lack",
+            overlay="t3-teatree",
+        )
+
+        assert row is not None
+        assert row.status == PendingArticleSuggestion.Status.PENDING
+        assert row.url == _URL
+        assert row.title == "An agent eval harness"
+        assert row.overlay == "t3-teatree"
+        # No issue is filed at record time — default is no-op.
+        assert row.issue_url == ""
+        assert row.decided_at is None
+
+    def test_record_candidate_is_idempotent_by_url(self) -> None:
+        """Re-scanning the same article URL does not enqueue a duplicate."""
+        first = PendingArticleSuggestion.record_candidate(url=_URL)
+        assert first is not None
+
+        second = PendingArticleSuggestion.record_candidate(url=_URL)
+
+        # Dedup by URL hash — the second scan returns None (already queued).
+        assert second is None
+        assert PendingArticleSuggestion.objects.filter(url_hash=first.url_hash).count() == 1
+
+    def test_record_candidate_dedup_survives_a_decided_row(self) -> None:
+        """A previously approved/rejected URL is not re-enqueued on the next scan."""
+        first = PendingArticleSuggestion.record_candidate(url=_URL)
+        assert first is not None
+        first.reject()
+
+        again = PendingArticleSuggestion.record_candidate(url=_URL)
+
+        assert again is None
+        assert PendingArticleSuggestion.objects.count() == 1
+
+    def test_blank_url_is_not_enqueued(self) -> None:
+        """A blank URL never produces a candidate row."""
+        assert PendingArticleSuggestion.record_candidate(url="   ") is None
+        assert PendingArticleSuggestion.objects.count() == 0
+
+    def test_approve_marks_row_and_records_issue_url(self) -> None:
+        """Approval is the only path that authorizes filing — stamps the issue URL."""
+        row = PendingArticleSuggestion.record_candidate(url=_URL)
+        assert row is not None
+        before = timezone.now()
+
+        row.approve(issue_url="https://github.com/souliane/teatree/issues/9999")
+
+        row.refresh_from_db()
+        assert row.status == PendingArticleSuggestion.Status.APPROVED
+        assert row.issue_url == "https://github.com/souliane/teatree/issues/9999"
+        assert row.decided_at is not None
+        assert row.decided_at >= before
+
+    def test_reject_marks_row_without_issue(self) -> None:
+        """Rejection records the decision and never files an issue."""
+        row = PendingArticleSuggestion.record_candidate(url=_URL)
+        assert row is not None
+
+        row.reject()
+
+        row.refresh_from_db()
+        assert row.status == PendingArticleSuggestion.Status.REJECTED
+        assert row.issue_url == ""
+        assert row.decided_at is not None
+
+    def test_hash_url_is_stable_and_whitespace_insensitive(self) -> None:
+        """The dedup hash ignores surrounding whitespace on the URL."""
+        assert PendingArticleSuggestion.hash_url(_URL) == PendingArticleSuggestion.hash_url(f"  {_URL}  ")
+
+    def test_str_names_status_and_title(self) -> None:
+        """The repr surfaces pk, status, and a title slice for admin/log readability."""
+        row = PendingArticleSuggestion.record_candidate(url=_URL, title="An agent eval harness")
+        assert row is not None
+        rendered = str(row)
+        assert "pending" in rendered
+        assert "An agent eval harness" in rendered

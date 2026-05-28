@@ -3,15 +3,16 @@
 Every state line (anchor ``ready:``/``started:``/``tested:`` rows and the
 action-needed ``ready:`` row) renders items in the same canonical shape so
 the operator never has to mentally translate between two formats. The
-description comes from the cached tracker title (``ticket.extra
-["issue_title"]``) truncated to 40 chars with a Unicode ellipsis; the MR
-chunk is comma-separated and every number is a hyperlink.
+description is a terse 2-3 word topic derived from the cached tracker title
+(``ticket.extra["issue_title"]``) — the conventional-commit prefix stripped,
+the first few words kept, capped with a Unicode ellipsis; the MR chunk is
+space-separated and every number is a hyperlink.
 
 These tests pin the canonical shape on the anchor row (replaces the old
 ``coded: #N`` bare form), the canonical shape on the ``ready:`` action row,
-graceful degradation when ``title`` is empty (just ``#N (!M)``), description
-truncation at 40 chars with the ellipsis, and the ``ActiveTicketsScanner``
-plumbing ``extra['issue_title']`` through the payload.
+graceful degradation when ``title`` is empty (just ``#N (!M)``), the terse
+topic collapse for long titles, and the ``ActiveTicketsScanner`` plumbing
+``extra['issue_title']`` through the payload.
 """
 
 from django.test import TestCase
@@ -73,22 +74,29 @@ def _ready(num: str, *, title: str = "", overlay: str = "teatree") -> DispatchAc
 
 
 class TestShortDescHelper:
-    def test_passes_short_titles_through_unchanged(self) -> None:
+    def test_passes_short_topics_through_unchanged(self) -> None:
+        # A title already 2-3 words within budget reads verbatim.
         assert _short_desc("short title") == "short title"
 
     def test_returns_empty_for_empty_input(self) -> None:
         assert _short_desc("") == ""
 
-    def test_truncates_long_titles_with_ellipsis_at_40_chars(self) -> None:
+    def test_collapses_long_titles_to_terse_topic(self) -> None:
+        # A long single token is tail-elided at the terse 24-char budget,
+        # not the prior 40-char commit-subject slice.
         long = "x" * 60
         out = _short_desc(long)
-        assert len(out) == 40
+        assert len(out) <= 24
         assert out.endswith("…")
-        assert out == "x" * 39 + "…"
+        assert out == "x" * 23 + "…"
 
-    def test_keeps_titles_at_budget_unchanged(self) -> None:
-        exactly_40 = "x" * 40
-        assert _short_desc(exactly_40) == exactly_40
+    def test_keeps_first_three_words_only(self) -> None:
+        # Beyond three words the topic is gist, not the full subject.
+        assert _short_desc("add the canonical item shape everywhere") == "add the canonical"
+
+    def test_strips_conventional_commit_prefix(self) -> None:
+        assert _short_desc("feat(loop): multi loop anchors") == "multi loop anchors"
+        assert _short_desc("techdebt: refactor module") == "refactor module"
 
 
 class TestAnchorCanonicalShape:
@@ -101,18 +109,18 @@ class TestAnchorCanonicalShape:
         )
         text = _blob(zones.anchors)
         # Terse format (#1377) drops the ``state:`` prefix — ``#10`` reads
-        # bare under the overlay tag.
+        # bare under the overlay tag. The topic keeps the first three words.
         assert "#10" in text
         assert "coded:" not in text
-        assert "(Add canonical item shape)" in text, repr(text)
+        assert "(Add canonical item)" in text, repr(text)
 
-    def test_anchor_truncates_long_titles(self) -> None:
+    def test_anchor_collapses_long_titles_to_terse_topic(self) -> None:
         zones = zones_for(
             [_active("10", "coded", title="x" * 60)],
             colorize=False,
         )
         text = _blob(zones.anchors)
-        assert "(" + ("x" * 39) + "…)" in text, repr(text)
+        assert "(" + ("x" * 23) + "…)" in text, repr(text)
 
     def test_anchor_no_desc_chunk_when_title_empty(self) -> None:
         zones = zones_for([_active("10", "coded", title="")], colorize=False)
@@ -123,12 +131,12 @@ class TestAnchorCanonicalShape:
         # Ensure no "()" (empty desc) bug.
         assert "()" not in text, repr(text)
 
-    def test_anchor_emits_canonical_pr_chunk_space_separated(self) -> None:
-        """Multiple MRs claiming a ticket render space-separated (#1156).
+    def test_anchor_renders_topic_and_chips_inside_one_paren_group(self) -> None:
+        """#1377 binding spec: topic AND chips share ONE pair of parens.
 
-        #1156 swapped the pre-existing comma join for a single space —
-        each MR now carries its own ``(title)`` chunk so a comma would
-        visually collide with the parens.
+        ``[overlay] #N (topic !M1 !M2)`` — not ``#N (topic) !M1 !M2``.
+        Per the user-spec, every chip is a bare ``!<iid>`` — no per-MR
+        title chunk, no annotation, no comma separator.
         """
         # ``build_ticket_index`` parses ``Closes #N`` from the MR
         # description (nested under ``payload['raw']['description']`` — the
@@ -159,14 +167,16 @@ class TestAnchorCanonicalShape:
         zones = zones_for([action_active, action_pr1, action_pr2], colorize=False)
         anchor = _blob(zones.anchors)
         assert "#44" in anchor, repr(anchor)
-        assert "(Tickety tick)" in anchor, repr(anchor)
-        # Both MRs render, and the comma join is gone.
+        # Topic and chips share ONE pair of parens — ``(Tickety tick) !1``
+        # (chips outside) is the banned shape.
+        assert "(Tickety tick) !1" not in anchor, repr(anchor)
+        assert "(Tickety tick !1" in anchor, repr(anchor)
         assert "!1" in anchor, repr(anchor)
         assert "!2" in anchor, repr(anchor)
         assert ", !2" not in anchor, repr(anchor)
 
     def test_anchor_renders_canonical_shape_under_colorize(self) -> None:
-        """Under OSC8 the MR chunk also uses space separation (#1156)."""
+        """Under OSC8 the chips stay inside the topic parens (#1377)."""
         action_active = _active("44", "coded", title="Tickety tick")
         action_pr1 = DispatchAction(
             kind="statusline",
@@ -209,7 +219,7 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
     behaviours turns this RED.
     """
 
-    def test_full_canonical_shape_with_clickable_numbers_and_space_mrs(self) -> None:
+    def test_full_canonical_shape_with_clickable_numbers_and_inner_chips(self) -> None:
         import re  # noqa: PLC0415
 
         zones = zones_for(
@@ -248,10 +258,10 @@ class TestCanonicalShapeSurvivesTickSplitMerge:
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/1\033\\" in anchor, repr(anchor)
         assert "\033]8;;https://gitlab.example.com/g/p/-/merge_requests/2\033\\" in anchor, repr(anchor)
         # (3) Strip OSC8 sequences to recover the visible text and pin the
-        #     #1156 canonical shape: ``#44 (Tickety tick) !1 !2`` —
-        #     description in single parens, MRs space-joined (no outer parens).
+        #     #1377 terse shape: ``#44 (Tickety tick !1 !2)`` — topic and
+        #     chips share ONE pair of parens.
         visible = re.sub(r"\033]8;;[^\033]*\033\\", "", anchor)
-        assert re.search(r"#44 \(Tickety tick\) !1 !2", visible), repr(visible)
+        assert re.search(r"#44 \(Tickety tick !1 !2\)", visible), repr(visible)
 
     def test_description_chunk_omitted_when_title_empty(self) -> None:
         import re  # noqa: PLC0415
@@ -293,10 +303,10 @@ class TestReadyRowCanonicalShape:
         assert "#99" in text
         assert "(Add identity aliases)" in text, repr(text)
 
-    def test_ready_row_truncates_long_titles(self) -> None:
+    def test_ready_row_collapses_long_titles_to_terse_topic(self) -> None:
         zones = zones_for([_ready("99", title="x" * 60)], colorize=False)
         text = _blob(zones.action_needed)
-        assert "(" + ("x" * 39) + "…)" in text, repr(text)
+        assert "(" + ("x" * 23) + "…)" in text, repr(text)
 
     def test_ready_row_falls_back_to_no_desc_when_title_missing(self) -> None:
         zones = zones_for([_ready("99", title="")], colorize=False)

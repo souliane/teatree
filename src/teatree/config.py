@@ -195,6 +195,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
+    "ask_before_creating_news_tickets": bool,
     "dogfood_smoke_disabled": bool,
     "dogfood_smoke_skill": str,
     "dogfood_smoke_cadence_hours": int,
@@ -202,6 +203,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
     "max_concurrent_local_stacks": int,
+    "pull_main_clone_disabled": bool,
+    "pull_main_clone_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -354,6 +357,13 @@ class UserSettings:
     scanning_news_disabled: bool = False
     scanning_news_skill: str = "scanning-news"
     scanning_news_cadence_hours: int = 24
+    # #1391 Ask-gate for news-scan ticket creation. When true (default),
+    # the scanning-news skill must NOT auto-create issues — it records a
+    # ``PendingArticleSuggestion`` per candidate and surfaces the batch
+    # to the user, filing an issue only on explicit approval. Default ON:
+    # backlog pollution from unconfirmed auto-filing is the failure mode
+    # this gate forecloses. Per-overlay overridable.
+    ask_before_creating_news_tickets: bool = True
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
     # window so the loop exercises the active overlay's provision path
@@ -387,6 +397,15 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+    # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
+    # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
+    # has elapsed, so a clone never drifts behind after a merge and
+    # poisons ``git show`` / ``grep`` investigations. Hourly default keeps
+    # the clones current without spamming each work repo's remote on every
+    # tick. Set ``pull_main_clone_disabled = true`` in ``[teatree]`` (or
+    # per-overlay) as the escape hatch.
+    pull_main_clone_disabled: bool = False
+    pull_main_clone_cadence_hours: int = 1
 
 
 @dataclass
@@ -446,6 +465,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
         dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
         dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
         dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),
@@ -453,6 +473,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
+        pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
+        pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)

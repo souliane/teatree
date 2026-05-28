@@ -10,11 +10,15 @@ from typing import TYPE_CHECKING
 
 from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.models import Worktree
+from teatree.core.worktree_env import write_env_cache
 from teatree.utils import git
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+from teatree.utils.db import drop_db
+from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from teatree.core.reconcile import Drift
 
 
 def worktree_map(repo: str) -> dict[str, str]:
@@ -298,3 +302,46 @@ def _raise_on_cleanup_failures(
             write_out(line)
         write_err(f"clean-all: {len(failed)} push/abandon failure(s).")
         raise SystemExit(1)
+
+
+def _fix_drift(drift: "Drift") -> list[str]:
+    """Apply reconciler fixes for one ticket's drift.
+
+    Each fix uses :func:`run_checked` so failures surface — no silent
+    swallow.  Called from ``t3 workspace doctor --fix``.
+    """
+    fixes: list[str] = []
+
+    for c in drift.orphan_containers:
+        run_checked(["docker", "rm", "-f", c.name])
+        fixes.append(f"removed orphan container {c.name}")
+
+    for d in drift.orphan_dbs:
+        drop_db(d.db_name)
+        fixes.append(f"dropped orphan DB {d.db_name}")
+
+    for missing_wt in drift.missing_worktree_dirs:
+        Worktree.objects.filter(pk=missing_wt.worktree_pk).update(extra={})
+        fixes.append(f"cleared worktree_path on wt#{missing_wt.worktree_pk} (path gone: {missing_wt.path})")
+
+    fixes.extend(
+        f"stale worktree dir {stale.path} — remove manually with `git worktree remove`"
+        for stale in drift.stale_worktree_dirs
+    )
+
+    for missing_cache in drift.missing_env_caches:
+        wt = Worktree.objects.get(pk=missing_cache.worktree_pk)
+        write_env_cache(wt)
+        fixes.append(f"regenerated env cache for wt#{missing_cache.worktree_pk}")
+
+    for cache_drift in drift.env_cache_drifts:
+        wt = Worktree.objects.get(pk=cache_drift.worktree_pk)
+        write_env_cache(wt)
+        fixes.append(f"rewrote drifted env cache for wt#{cache_drift.worktree_pk}")
+
+    fixes.extend(
+        f"missing DB {m.db_name} for wt#{m.worktree_pk} — run `t3 <overlay> worktree provision` to re-provision"
+        for m in drift.missing_dbs
+    )
+
+    return fixes

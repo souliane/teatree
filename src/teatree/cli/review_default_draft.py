@@ -49,7 +49,8 @@ def notify_draft_created(*, repo: str, mr: int, body: str, message: str) -> None
     """
     import hashlib  # noqa: PLC0415
 
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+    from teatree.core.notify import NotifyKind  # noqa: PLC0415
+    from teatree.messaging import notify_with_fallback  # noqa: PLC0415
 
     body_preview = body.strip().splitlines()[0][:200] if body.strip() else ""
     text = (
@@ -61,7 +62,7 @@ def notify_draft_created(*, repo: str, mr: int, body: str, message: str) -> None
         f"`t3 review delete-draft-note {repo} {mr} <id>`"
     )
     digest = hashlib.sha1(message.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
-    notify_user(
+    notify_with_fallback(
         text,
         kind=NotifyKind.INFO,
         idempotency_key=f"post_comment_draft:{repo}!{mr}:{digest}",

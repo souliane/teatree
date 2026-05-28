@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
+from django_fsm import can_proceed
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
@@ -19,6 +20,7 @@ from teatree.core.local_stack_gate import refuse_if_limit_exceeded
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
     _die,
+    _fix_drift,
     _raise_on_cleanup_failures,
     drop_orphan_databases,
     drop_orphaned_stashes,
@@ -31,7 +33,7 @@ from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes
-from teatree.core.reconcile import Drift, reconcile_all, reconcile_ticket
+from teatree.core.reconcile import reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree
 from teatree.core.runners import (
     WorktreeProvisioner,
@@ -39,13 +41,12 @@ from teatree.core.runners import (
     WorktreeStartRunner,
     WorktreeTeardownRunner,
 )
-from teatree.core.worktree_env import write_env_cache
 from teatree.utils import git
-from teatree.utils.db import drop_db
-from teatree.utils.run import CommandFailedError, run_checked
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
+    from teatree.core.overlay import OverlayBase
 
 
 class OrphanEntry(TypedDict):
@@ -106,47 +107,32 @@ def _resolve_workspace_ticket(path: str) -> Ticket:
         raise
 
 
-def _fix_drift(drift: Drift) -> list[str]:
-    """Apply reconciler fixes for one ticket's drift.
+def _report_worktree_probes(
+    worktrees: list[Worktree],
+    overlay: "OverlayBase",
+    write: Callable[[str], None],
+    *,
+    note_empty: bool,
+) -> tuple[int, int]:
+    """Run each worktree's readiness probes; return ``(total, failures)``.
 
-    Each fix uses :func:`run_checked` so failures surface — no silent
-    swallow.  Called from ``t3 workspace doctor --fix``.
+    Shared by ``start`` (probe only the worktrees that started) and
+    ``ready`` (probe every worktree). ``note_empty`` reports a worktree
+    with no probes explicitly (``ready``) or skips it silently (``start``).
     """
-    fixes: list[str] = []
-
-    for c in drift.orphan_containers:
-        run_checked(["docker", "rm", "-f", c.name])
-        fixes.append(f"removed orphan container {c.name}")
-
-    for d in drift.orphan_dbs:
-        drop_db(d.db_name)
-        fixes.append(f"dropped orphan DB {d.db_name}")
-
-    for missing_wt in drift.missing_worktree_dirs:
-        Worktree.objects.filter(pk=missing_wt.worktree_pk).update(extra={})
-        fixes.append(f"cleared worktree_path on wt#{missing_wt.worktree_pk} (path gone: {missing_wt.path})")
-
-    fixes.extend(
-        f"stale worktree dir {stale.path} — remove manually with `git worktree remove`"
-        for stale in drift.stale_worktree_dirs
-    )
-
-    for missing_cache in drift.missing_env_caches:
-        wt = Worktree.objects.get(pk=missing_cache.worktree_pk)
-        write_env_cache(wt)
-        fixes.append(f"regenerated env cache for wt#{missing_cache.worktree_pk}")
-
-    for cache_drift in drift.env_cache_drifts:
-        wt = Worktree.objects.get(pk=cache_drift.worktree_pk)
-        write_env_cache(wt)
-        fixes.append(f"rewrote drifted env cache for wt#{cache_drift.worktree_pk}")
-
-    fixes.extend(
-        f"missing DB {m.db_name} for wt#{m.worktree_pk} — run `t3 <overlay> worktree provision` to re-provision"
-        for m in drift.missing_dbs
-    )
-
-    return fixes
+    total = 0
+    total_failures = 0
+    for wt in worktrees:
+        probes = overlay.get_readiness_probes(wt)
+        if not probes:
+            if note_empty:
+                write(f"  {wt.repo_path}: no probes")
+            continue
+        write(f"  {wt.repo_path}:")
+        summary = run_and_report_probes(probes, write_line=write, indent="    ")
+        total += summary.total
+        total_failures += summary.failures
+    return total, total_failures
 
 
 def _branch_prefix() -> str:
@@ -332,14 +318,26 @@ class Command(TyperCommand):
         overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
+        started: list[Worktree] = []
         failures: list[str] = []
         refuse_if_limit_exceeded(next(iter(worktrees), None), write_err=self.stderr.write)
         for wt in worktrees:
+            # The worktrees in one ticket can be in different FSM states
+            # (e.g. a sibling repo whose provision has not run yet is still
+            # CREATED). ``start_services`` only accepts the
+            # ``[PROVISIONED, SERVICES_UP, READY]`` source states; firing it
+            # on a CREATED worktree raises ``TransitionNotAllowed`` and would
+            # crash the whole command, abandoning the worktrees already
+            # started. Skip the ones that can't transition and start the rest.
+            if not can_proceed(wt.start_services):
+                self.stdout.write(f"  Skipping {wt.repo_path} (state: {wt.state}, not ready to start)")
+                continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
             commands = list(overlay.get_run_commands(wt))
             with transaction.atomic():
                 wt.start_services(services=commands)
                 wt.save()
+            started.append(wt)
             result = WorktreeStartRunner(wt, overlay=overlay).run()
             self.stdout.write(f"    {result.detail}")
             if not result.ok:
@@ -347,15 +345,7 @@ class Command(TyperCommand):
         if failures:
             _die(self.stderr.write, f"  Failed: {', '.join(failures)}")
 
-        total, total_failures = 0, 0
-        for wt in worktrees:
-            probes = overlay.get_readiness_probes(wt)
-            if not probes:
-                continue
-            self.stdout.write(f"  {wt.repo_path}:")
-            summary = run_and_report_probes(probes, write_line=self.stdout.write, indent="    ")
-            total += summary.total
-            total_failures += summary.failures
+        total, total_failures = _report_worktree_probes(started, overlay, self.stdout.write, note_empty=False)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return f"started {len(worktrees)} worktree(s)"
@@ -377,17 +367,7 @@ class Command(TyperCommand):
         overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
-        total = 0
-        total_failures = 0
-        for wt in worktrees:
-            probes = overlay.get_readiness_probes(wt)
-            if not probes:
-                self.stdout.write(f"  {wt.repo_path}: no probes")
-                continue
-            self.stdout.write(f"  {wt.repo_path}:")
-            summary = run_and_report_probes(probes, write_line=self.stdout.write, indent="    ")
-            total += summary.total
-            total_failures += summary.failures
+        total, total_failures = _report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return "ok"

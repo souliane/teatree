@@ -8,6 +8,7 @@ from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
+from teatree.backends.types import dig
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
@@ -210,41 +211,40 @@ def fetch_project_items(
     token: str = "",
 ) -> list[ProjectItem]:
     """Fetch all items from a GitHub Projects v2 board, preserving board order."""
-    query = _PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number)
-    data = _gh_graphql(query, token=token)
-    items: list[ProjectItem] = []
+    data = _gh_graphql(_PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number), token=token)
+    # ``dig`` null-guards each hop: GraphQL returns ``null`` (not ``{}``) for a
+    # user/project the token cannot see, where a chained ``.get(k, {})`` would
+    # call ``.get`` on ``None`` and crash the board sync.
+    raw_items = dig(data, "data", "user", "projectV2", "items", "nodes")
+    nodes = raw_items if isinstance(raw_items, list) else []
+    return [
+        item for position, node in enumerate(nodes) if (item := _project_item_from_node(node, position)) is not None
+    ]
 
-    project = data.get("data", {}).get("user", {}).get("projectV2", {})  # type: ignore[union-attr]
-    if not project:
-        return items
 
-    nodes = project.get("items", {}).get("nodes", [])
-    for position, node in enumerate(nodes):
-        if not isinstance(node, dict):
-            continue
-        content = node.get("content")
-        if not isinstance(content, dict) or "number" not in content:
-            continue  # skip draft items or non-issue content
+def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
+    """Build a :class:`ProjectItem` from one board node, or ``None`` to skip.
 
-        status_field = node.get("fieldValueByName")
-        status = status_field.get("name", "") if isinstance(status_field, dict) else ""
-
-        label_nodes = content.get("labels", {}).get("nodes", [])
-        labels = [ln["name"] for ln in label_nodes if isinstance(ln, dict) and "name" in ln]
-
-        items.append(
-            ProjectItem(
-                issue_number=int(content["number"]),
-                title=str(content.get("title", "")),
-                url=str(content.get("url", "")),
-                status=status,
-                position=position,
-                labels=labels,
-                updated_at=str(content.get("updatedAt", "")),
-            ),
-        )
-
-    return items
+    Every field read goes through :func:`dig`, which null-guards each hop and
+    returns ``object`` — so a draft item (no ``content``) or a node the token
+    cannot fully see degrades to a skip rather than crashing the board sync.
+    """
+    number = dig(node, "content", "number")
+    if not isinstance(number, int):
+        return None  # draft item or non-issue content
+    status_name = dig(node, "fieldValueByName", "name")
+    raw_labels = dig(node, "content", "labels", "nodes")
+    label_nodes = raw_labels if isinstance(raw_labels, list) else []
+    labels = [str(name) for ln in label_nodes if isinstance(name := dig(ln, "name"), str)]
+    return ProjectItem(
+        issue_number=number,
+        title=str(dig(node, "content", "title") or ""),
+        url=str(dig(node, "content", "url") or ""),
+        status=str(status_name or ""),
+        position=position,
+        labels=labels,
+        updated_at=str(dig(node, "content", "updatedAt") or ""),
+    )
 
 
 def _record_github_note_claim(
@@ -493,6 +493,43 @@ class GitHubCodeHost:
                 target_url=str(result.get("html_url") or ""),
             )
         return result
+
+    def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+        """List the comments on a GitHub issue.
+
+        Supports ``https://github.com/<owner>/<repo>/issues/<number>``.
+        Returns an empty list when the URL is not a recognised GitHub issue
+        URL — the caller treats "no comments" and "unresolvable" identically.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return []
+
+        repo = f"{match['owner']}/{match['repo']}"
+        data = _gh_api_get(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
+        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
+
+    def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+        """Edit an existing GitHub issue comment in place.
+
+        GitHub issue-comment ids are globally unique within a repo, edited
+        via ``/repos/{repo}/issues/comments/{id}`` (the issue number is not
+        part of the path). Returns ``{"error": ...}`` when the URL is not a
+        recognised GitHub issue URL.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        repo = f"{match['owner']}/{match['repo']}"
+        data = _gh_api_patch(
+            f"repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
     @staticmethod
     def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:

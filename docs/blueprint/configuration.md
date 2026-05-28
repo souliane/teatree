@@ -46,6 +46,7 @@ slack_user_id = "U01ABCD1234"
 url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
 e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
+
 ```
 
 **Slack bot setup** (`t3 setup slack-bot --overlay <name>`): an interactive walkthrough scaffolds the per-overlay Slack app and stores its tokens. Steps:

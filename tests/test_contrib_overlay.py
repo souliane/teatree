@@ -14,7 +14,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.contrib.t3_teatree.apps import T3TeatreeConfig
 from teatree.contrib.t3_teatree.overlay import TeatreeOverlay, _repo_root
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.core.overlay_loader import get_overlay
 
 
@@ -399,14 +399,27 @@ class TestEntryPointDiscovery:
 class TestMaxConcurrentAutoStarts:
     """The in-repo dogfooding overlay raises loop auto-start concurrency to 3."""
 
-    def test_in_repo_overlay_resolves_to_three(self) -> None:
-        overlay = TeatreeOverlay()
-        assert overlay.config.max_concurrent_auto_starts == 3
+    def test_in_repo_overlay_resolves_to_three(self, tmp_path: Path, monkeypatch) -> None:
+        """The in-repo overlay's settings module sets the value to 3.
+
+        Built against an empty config so the resolved value reflects the
+        bundled overlay's own setting, not whatever the developer's real
+        ``~/.teatree.toml`` happens to override ``[overlays.t3-teatree]`` to.
+        ``OverlayConfig.apply_toml_overrides`` resolves through
+        ``teatree.config.CONFIG_PATH`` at construction time, so pointing that
+        constant at a fresh empty toml is what makes this hermetic — the
+        class-level ``TeatreeOverlay.config`` is baked at import against the
+        host config and cannot be trusted here.
+        """
+        empty_config = tmp_path / "teatree.toml"
+        empty_config.write_text("", encoding="utf-8")
+        monkeypatch.setattr(config_mod, "CONFIG_PATH", empty_config)
+
+        config = OverlayConfig(settings_module=overlay_mod._SETTINGS_MODULE, overlay_name="t3-teatree")
+        assert config.max_concurrent_auto_starts == 3
 
     def test_base_default_stays_one(self) -> None:
         """Guard: external/multi-repo overlays must keep the conservative default of 1."""
-        from teatree.core.overlay import OverlayConfig  # noqa: PLC0415
-
         assert OverlayConfig.max_concurrent_auto_starts == 1
         assert OverlayConfig().max_concurrent_auto_starts == 1
 

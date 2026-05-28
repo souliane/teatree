@@ -5,7 +5,24 @@ protocol implementations.  They do NOT replace the Protocol signatures
 (which remain ``dict[str, object]`` for structural typing compatibility).
 """
 
-from typing import TypedDict
+from collections.abc import Mapping
+from typing import TypedDict, cast
+
+
+def dig(data: object, *keys: str) -> object:
+    """Walk nested mapping *keys*, returning ``None`` on any missing/null hop.
+
+    Unlike a chained ``dict.get(k, {})`` this tolerates a key that is present
+    but ``null`` — the shape GraphQL returns for an inaccessible user / project
+    / work item — where the chained-default form would call ``.get`` on
+    ``None`` and crash. Shared by the GitHub and GitLab GraphQL parsers.
+    """
+    current = data
+    for key in keys:
+        if not isinstance(current, Mapping):
+            return None
+        current = cast("Mapping[str, object]", current).get(key)
+    return current
 
 
 class PullRequestResponse(TypedDict, total=False):
