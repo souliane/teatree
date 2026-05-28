@@ -298,13 +298,62 @@ class ReviewerPrsScanner:
             # self-noted, or already merged/closed); filter them here BEFORE
             # adding the URL to ``scanned_urls`` so the orphan-task sweep
             # still reaps the corresponding ticket via ``get_pr_open_state``
-            # when the MR is genuinely merged/closed.
-            if should_review_candidate_reasons(pr, current_user=primary_reviewer):
+            # when the MR is genuinely merged/closed. The full identity set
+            # (not just the primary alias) is matched so an MR authored under
+            # any of the user's github/gitlab aliases is recognised as own
+            # work (#1321 multi-identity).
+            reasons = should_review_candidate_reasons(pr, current_user=primary_reviewer, self_identities=reviewers)
+            if reasons:
+                # #1321: a reviewing task already created for a self-authored
+                # OPEN MR (before this gate, or via another path) lingers
+                # forever — the orphan sweep only reaps MERGED/CLOSED PRs.
+                # Emit a reconciliation signal so the queue self-heals on the
+                # next tick. Other skip reasons (already-approved, merged,
+                # broadcast-reacted) are handled by the existing orphan sweep
+                # or are genuinely review-engaged, so only ``author_is_self``
+                # drives reconciliation here.
+                if "author_is_self" in reasons:
+                    signals.extend(self._self_authored_reconcile_signals(url, ticket_model))
                 continue
             scanned_urls.add(url)
             signals.extend(self._signals_for_pr(pr, url, cache, ticket_model, primary_reviewer))
         signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
         return signals
+
+    def _self_authored_reconcile_signals(
+        self,
+        url: str,
+        ticket_model: "TicketModel | None",
+    ) -> list[ScanSignal]:
+        """Emit ``reviewer_pr.task_self_authored`` for an open reviewing task on a self-authored MR (#1321).
+
+        A reviewer-role ticket carrying a non-terminal ``reviewing`` task
+        whose MR the user authored is wrong — own MRs route to coder/
+        debugger + a colleague review-request, never a ``t3:reviewer``
+        sub-agent. The mechanical handler completes the task so
+        ``pending-spawn`` stops surfacing it.
+        """
+        if ticket_model is None or not url:
+            return []
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+        candidates = ticket_model.objects.filter(
+            role="reviewer",
+            issue_url=url,
+            tasks__phase="reviewing",
+            tasks__status__in=open_statuses,
+        )
+        if self.overlay_name:
+            candidates = candidates.filter(overlay=self.overlay_name)
+        return [
+            ScanSignal(
+                kind="reviewer_pr.task_self_authored",
+                summary=f"Reviewing task closed (self-authored MR): {url}",
+                payload={"url": url, "ticket_id": ticket.pk},
+            )
+            for ticket in candidates.distinct()
+        ]
 
     def _signals_for_pr(
         self,

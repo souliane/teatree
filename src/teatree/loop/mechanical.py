@@ -92,7 +92,40 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
     """
     from django.apps import apps  # noqa: PLC0415
 
-    from teatree.core.models.task import Task  # noqa: PLC0415
+    ticket_model = apps.get_model("core", "Ticket")
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is None:
+        return
+    try:
+        ticket = ticket_model.objects.get(pk=ticket_id)
+    except ticket_model.DoesNotExist:
+        return
+    completed = _complete_open_reviewing_tasks(ticket)
+    if completed:
+        logger.info(
+            "Auto-completed %d orphaned reviewing task(s) on ticket %s (PR %s confirmed merged/closed)",
+            completed,
+            ticket_id,
+            payload.get("url", "?"),
+        )
+
+
+def reviewer_task_self_authored(payload: ActionPayload) -> None:
+    """Complete every open reviewing task on a SELF-AUTHORED MR's reviewer ticket (#1321).
+
+    The scanner emits this signal when ``list_review_requested_prs``
+    surfaces an MR the user authored (under any of their configured
+    identities). Own MRs route to coder/debugger + a colleague
+    review-request — never a ``t3:reviewer`` sub-agent. Without this sweep
+    a reviewing task created for a self-authored OPEN MR (the orphan sweep
+    only reaps MERGED/CLOSED PRs) lingers forever and re-dispatches a
+    self-review every ``pending-spawn``.
+
+    Narrow and best-effort, mirroring :func:`reviewer_task_orphaned`: by
+    ticket id, only ``phase=reviewing`` non-terminal tasks; a missing
+    ticket no-ops silently.
+    """
+    from django.apps import apps  # noqa: PLC0415
 
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
@@ -102,18 +135,26 @@ def reviewer_task_orphaned(payload: ActionPayload) -> None:
         ticket = ticket_model.objects.get(pk=ticket_id)
     except ticket_model.DoesNotExist:
         return
+    completed = _complete_open_reviewing_tasks(ticket)
+    if completed:
+        logger.info(
+            "Auto-completed %d reviewing task(s) on ticket %s (self-authored MR %s — no self-review)",
+            completed,
+            ticket_id,
+            payload.get("url", "?"),
+        )
+
+
+def _complete_open_reviewing_tasks(ticket: object) -> int:
+    """Complete every non-terminal ``phase=reviewing`` task on *ticket*; return the count."""
+    from teatree.core.models.task import Task  # noqa: PLC0415
+
     open_tasks = Task.objects.pending_in_phase("reviewing").filter(ticket=ticket)
     completed = 0
     for task in open_tasks:
         task.complete()
         completed += 1
-    if completed:
-        logger.info(
-            "Auto-completed %d orphaned reviewing task(s) on ticket %s (PR %s confirmed merged/closed)",
-            completed,
-            ticket_id,
-            payload.get("url", "?"),
-        )
+    return completed
 
 
 def assign_gitlab_reviewer(payload: ActionPayload) -> None:
@@ -162,5 +203,6 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "ticket_completion": complete_ticket,
     "ticket_reopen": reopen_ticket,
     "reviewer_task_orphaned": reviewer_task_orphaned,
+    "reviewer_task_self_authored": reviewer_task_self_authored,
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
 }
