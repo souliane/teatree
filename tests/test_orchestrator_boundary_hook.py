@@ -311,3 +311,62 @@ class TestSanctionedReadOnlyBashStillAllowed942:
             "transcript_path": _transcript(tmp_path, sidechain=True),
         }
         assert handle_enforce_orchestrator_boundary(data) is False
+
+
+class TestMainAgentForegroundAgentIsBlocked1442:
+    """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
+
+    Foreground Agent calls from the main agent block the orchestrator
+    for the entire sub-agent runtime (often 30+ min) and are the source
+    of a recurring failure (memory rule
+    ``feedback_always_run_in_background_for_sub_agent_dispatch``). The
+    gate denies the call when the main agent dispatches an Agent without
+    ``run_in_background: true``; background calls are allowed, and a
+    sub-agent dispatching its own Agent (sidechain=True) is allowed to
+    pick foreground if it wants.
+    """
+
+    _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
+
+    def test_agent_foreground_blocked_in_main_agent(self, tmp_path, capsys):
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"description": "implement X", "run_in_background": False},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "main-agent-orchestration-guard" in out["permissionDecisionReason"]
+        assert "run_in_background" in out["permissionDecisionReason"]
+        assert self._RULE_CITATION in out["permissionDecisionReason"]
+
+    def test_agent_foreground_blocked_when_field_absent(self, tmp_path, capsys):
+        # Default Agent behavior is foreground when the key is omitted.
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"description": "implement X"},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert self._RULE_CITATION in out["permissionDecisionReason"]
+
+    def test_agent_background_allowed_in_main_agent(self, tmp_path):
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"description": "implement X", "run_in_background": True},
+            "transcript_path": _transcript(tmp_path, sidechain=False),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_agent_foreground_allowed_in_sub_agent(self, tmp_path):
+        # Sub-agent dispatching its own Agent — sidechain=True ⇒ allowed
+        # to pick foreground, the guard only governs main-agent dispatch.
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"description": "nested work", "run_in_background": False},
+            "transcript_path": _transcript(tmp_path, sidechain=True),
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
