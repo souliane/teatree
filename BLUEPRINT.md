@@ -97,6 +97,8 @@ Auto-scheduling chains the phases: `start → provision worker → schedule_codi
 
 **Clean-worktree preflight (#884).** `code()`, `test()`, `review()`, `ship()` refuse the transition if any worktree has tracked uncommitted changes. The refusal raises a `DirtyWorktreeError` (an `InvalidTransitionError` subclass, **not** `TransitionNotAllowed`) inside the caller's outer atomic block, so the FSM state change is rolled back and the lease reaper returns the CLAIMED task to PENDING on the next tick. No auto-stash — worktrees share one `.git`, so a stash is repo-global and could clobber an unrelated branch's work.
 
+**Concurrent-stack cap (#1397).** `max_concurrent_local_stacks` (in `[teatree]` / `[overlays.<name>]`) caps the number of distinct tickets whose worktrees can be in `services_up`/`ready` at once for a given overlay. The gate (`teatree.core.local_stack_gate.check_local_stack_limit`) runs before `Worktree.start_services()` in `t3 <overlay> worktree start` and `workspace start`; on breach it raises `LocalStackLimitExceededError` naming the blockers. Default `0` keeps the legacy unbounded behaviour; set `1` on a heavy overlay to prevent local-stack OOMs. Per-overlay overridable; sibling worktrees of the same ticket count as one logical stack.
+
 ---
 
 ## 5. Agent Execution
