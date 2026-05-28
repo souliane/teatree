@@ -51,7 +51,7 @@ def _live_pid() -> int:
 
 
 def _ctx(capsys: pytest.CaptureFixture[str]) -> str:
-    return json.loads(capsys.readouterr().out)["additionalContext"]
+    return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
 
 
 def _owner_entry(session_id: str, agent_id: str, pid: int) -> dict:
@@ -217,7 +217,7 @@ def _race_round(
     with redirect_stdout(buf):
         r.handle_session_start_bootstrap({"session_id": session_id, "agent_id": f"a-{session_id}"})
     out = buf.getvalue().strip()
-    context = json.loads(out)["additionalContext"] if out else ""
+    context = json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
     Path(result_path).write_text(context, encoding="utf-8")
 
 

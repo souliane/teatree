@@ -151,6 +151,18 @@ Hook JSON output supports event-specific fields:
 > `resume`, `clear`, `compact`), which **does** support `additionalContext`.
 > Teatree writes the durable snapshot in the `PreCompact` hook and re-injects
 > it from `handle_session_start_bootstrap` when `source == "compact"`.
+>
+> **#1452 — SessionStart `additionalContext` MUST be nested under `hookSpecificOutput`.**
+> The harness silently drops the legacy flat top-level form
+> `{"additionalContext": "…"}` for `SessionStart`; only the nested envelope
+> `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
+> is accepted (matches the Agent SDK `SessionStartHookSpecificOutput` typed dict).
+> The flat form parses as valid JSON, so the hook exits 0 and the JSONL records
+> the stdout — but the recovered text never reaches the model. Symptom in the
+> session JSONL: the hook record has `content: ""` while `stdout` contains the
+> JSON payload. PostToolUse-style raw-text stdout still works; SessionStart
+> does not. Symptom in the session JSONL: the hook record has `content: ""`
+> while `stdout` carries the payload.
 
 ### Skills Can Define Their Own Hooks
 
