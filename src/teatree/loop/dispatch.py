@@ -182,6 +182,15 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # is permanently absent yet fully OPEN). The mechanical handler then
     # completes the task so ``pending-spawn`` stops surfacing it.
     "reviewer_pr.task_orphaned": ("mechanical", "reviewer_task_orphaned"),
+    # #1321: ``list_review_requested_prs`` can surface an MR the user
+    # authored (under any of their configured identities). Own MRs must
+    # never dispatch ``t3:reviewer`` — they route to coder/debugger + a
+    # colleague review-request. The scanner emits this signal when a
+    # reviewing task already exists for a self-authored MR so the
+    # mechanical handler completes it and the queue self-heals on the next
+    # tick (the orphan sweep only reaps MERGED/CLOSED PRs, not open
+    # self-authored ones).
+    "reviewer_pr.task_self_authored": ("mechanical", "reviewer_task_self_authored"),
     # #1113 Defect 2: ``SlackDmInboundScanner`` emits ``slack.user_reply`` per
     # drained user reply. The real consumer is the reactive Slack-answer loop
     # (``teatree.loop.slack_answer`` — drains the ``PendingChatInjection`` rows
