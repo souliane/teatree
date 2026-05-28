@@ -9,11 +9,17 @@
   <a href="https://github.com/souliane/teatree/blob/main/LICENSE"><img src="https://img.shields.io/github/license/souliane/teatree" alt="License"></a>
 </p>
 
-Personal code factory for multi-repo projects.
+A personal workflow harness wrapped around an AI coding agent. Single-author tool;
+the code lives in a public repo in case any of it is useful to anyone else.
 
-Teatree turns a ticket URL into a merged pull request. It creates synchronized worktrees across every repo the ticket touches, provisions isolated databases and ports, routes AI agents through code → test → review → ship phases, and tracks each ticket through a state machine until delivery. If your work lives in a single repo, use a simpler tool — teatree is built for projects where one ticket means changes in several repos, each needing its own environment.
+Teatree sits at the shell, alongside the editor. It turns a ticket URL into a
+merged pull request by creating synchronized worktrees across the repos a ticket
+touches, provisioning isolated databases and ports, driving the work through
+code → test → review → ship phases, and keeping enough durable state to survive
+context loss and long waits.
 
-Under the hood it's a Django project with a plugin system (overlays) that adapts it to your repos, CI, and services.
+Under the hood it is a Django project with a plugin system (overlays) that adapts
+it to a given set of repos, CI, and services.
 
 ```mermaid
 graph TB
@@ -48,11 +54,130 @@ graph TB
   hooks -->|"enforces"| skills
 ```
 
+## Gaps it tries to fill
+
+Each section below names a piece of friction the author kept hitting and what
+teatree does about it. None of these are framed as comparisons — other tools
+solve some of the same shapes well, and teatree borrows from them where it can.
+
+### A merge step that is neither a manual click nor a blind auto-merge
+
+The author kept ending up at one of two extremes: either babysitting every
+merge by hand (every PR a separate context switch back to the browser), or
+flipping on full auto-merge and watching the agent merge PRs against branches
+the reviewer had moved underneath. The first wastes the day; the second loses
+trust in a single bad merge.
+
+Teatree puts a two-step contract between "looks done" and "merged". An
+orchestrator pass issues a per-diff CLEAR after an independent cold review;
+a separate merge worker re-verifies the live HEAD SHA, the green checks, and
+the non-draft state at the moment of merge, and refuses raw merge commands by
+default. Two independent passes have to agree on the same SHA before the host
+API gets called.
+
+### Posting under your identity without losing track of what was posted
+
+The author wanted the agent to handle Slack DMs, PR comments, MR approvals,
+Notion writes — anything that normally needs a hand on the keyboard — without
+the dread of finding out tomorrow that a message went to the wrong place or
+under the wrong voice. Logs in `~/.shell_history` are not enough; the agent's
+own claim about what it posted is the thing that needs verifying.
+
+Every on-behalf write records an `OutboundClaim` row, then re-reads the target
+surface (Slack permalink, GitLab note, Notion block) and compares the live
+content against the claim. A drift means the post landed wrong, was edited, or
+never made it; teatree surfaces those as actionable rows rather than silent
+failures. Combined with an approval gate (`OnBehalfApproval`), nothing
+colleague-facing ships unless the user has explicitly opted into either
+per-action approval or end-to-end autonomy for that overlay.
+
+### Workflow state that survives the session
+
+The author kept losing the picture every time a conversation ended or
+context got compacted — what was in flight, which PR was waiting on what,
+which review was half-done. Rebuilding it from `gh pr list` and chat
+history every morning gets old.
+
+Teatree puts the state into a Django-backed SQLite/Postgres database:
+`Ticket`, `Worktree`, `Task`, `PullRequest`, each with its own state
+machine. Transitions are guarded methods (`Ticket.code()`, `Ticket.ship()`),
+not free-form field writes — the predicates run, the dependent gates stay
+aligned, illegal moves raise `InvalidTransitionError`. Snapshots before
+context compaction get recovered automatically on the next session start.
+Not perfect, but more reliable than picking up the picture from scratch.
+
+### A chat-only operating model that does not block on a TTY
+
+The author carries a laptop around and answers questions from a phone. Most
+agent harnesses assume a TTY: when the agent has a question, the run blocks
+until someone is in front of a terminal to answer. That makes long autonomous
+sessions impossible — every clarifying question becomes a hard stop.
+
+Teatree resolves an availability mode (`present` / `away` / `auto`). In `away`
+mode, structured questions become durable `DeferredQuestion` rows instead of
+blocking; the user answers them later from Slack, via `t3 teatree questions
+answer`. The agent keeps working on whatever it can in the meantime. Replies
+and prompts the user receives all happen in Slack DMs; no shared dashboard,
+no shared SaaS, no DevOps onboarding.
+
+### Multi-repo, multi-overlay worktree provisioning
+
+The author's typical ticket is not "edit one file"; it is "change the backend,
+the frontend, the translations bundle, and the CI config, all at once." Each
+repo needs its own isolated worktree, its own database, its own ports, so two
+tickets in flight do not collide on the same dev server.
+
+`t3 <overlay> workspace ticket <url>` reads the ticket, decides which repos
+are affected, creates one git worktree per repo under a single ticket
+directory, allocates ports, provisions DBs, generates env files, and starts
+the services. Each ticket runs in isolation; multiple tickets in flight share
+no infrastructure. Overlay packages carry the project-specific glue
+(which repos, which CI, which probes); the core stays generic.
+
+### A long-running loop that turns signals into actions
+
+The author kept noticing the agent only works while someone is actively
+prompting it. PRs sit waiting for review nudges, CI failures go unreviewed,
+ticket changes pile up in the inbox until someone glances at them.
+
+A long-running `/loop` slot inside the interactive session ticks every ~12
+minutes. Each tick fans out to scanners that watch assigned issues, open PRs,
+PRs assigned for review, Slack mentions, the Notion bridge, and the local
+task queue. Findings render to a statusline file the Claude Code statusline
+hook reads in under 10ms, so live status sits at the top of every session
+without polling. Lease-gated dispatch turns scanner findings into agent
+actions when there is something to do, and keeps quiet when there is not.
+
+## What teatree is NOT
+
+A few honest scope statements, so anyone evaluating this knows what they are
+looking at:
+
+- **Not a shared corporate platform.** Single-author tool. No multi-tenant
+  SaaS, no team dashboard, no SSO. It uses the user's own GitLab / GitHub /
+  Slack credentials and runs on the user's laptop.
+- **Not an IDE plugin.** It lives at the shell. The editor stays whatever
+  editor the user prefers.
+- **Not a replacement for the agent CLI.** Teatree wraps the agent CLI
+  (currently Claude Code; the agent runtime is pluggable) with state, loops,
+  integrations, and skills. The agent does the creative work; teatree does
+  the mechanical work.
+- **Not a stable, polished product.** It is in motion, expected to break,
+  expected to change shape. The author dogfoods it daily on real client
+  work; bugs surface fast because every broken edge stops a real ticket.
+
 ## Core concepts
 
-Teatree coordinates work through **four state machines** — each transition is a typed code path with tests, not a prompt the model might skip. The models live in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`, `pull_request.py`).
+Teatree coordinates work through **four state machines** — each transition is a
+typed code path with tests, not a prompt the model might skip. The models live
+in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
+`pull_request.py`).
 
-**Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases (ticket → code → test → review → ship) drive corresponding ticket states. The full `Ticket.State` set is `not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered`, plus `ignored` for work that is consciously skipped.
+**Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
+(ticket → code → test → review → ship) drive corresponding ticket states. The
+full `Ticket.State` set is `not_started → scoped → started → coded → tested →
+reviewed → shipped → in_review → merged → retrospected → delivered`, plus
+`ignored` for work that is consciously skipped.
 
 **Worktree** — one repo checkout inside a ticket's workspace.
 
@@ -90,34 +215,58 @@ stateDiagram-v2
   approved --> merged: merge
 ```
 
-Every state change goes through a method with code behind it. `Ticket`, `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators that declare the legal source and target states; `Ticket.code()` requires `state == STARTED`, `Ticket.ship()` requires `state == REVIEWED`, and so on. `Task` status moves through guarded methods (`claim`, `complete`, `fail`, `reopen`) that take a row lock and a lease, raising `InvalidTransitionError` on an illegal move. Agents do not write to these fields directly; they call the transition, and the transition enforces its own preconditions. Direct writes to a state machine field bypass the predicates and produce records that look advanced from one angle and stale from another — that's a bug, not a shortcut. The same rule applies to the CLI: any command that affects a state machine calls into a transition, never mutates the field.
+Every state change goes through a method with code behind it. `Ticket`,
+`Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
+that declare the legal source and target states; `Ticket.code()` requires
+`state == STARTED`, `Ticket.ship()` requires `state == REVIEWED`, and so on.
+`Task` status moves through guarded methods (`claim`, `complete`, `fail`,
+`reopen`) that take a row lock and a lease, raising `InvalidTransitionError`
+on an illegal move. Agents do not write to these fields directly; they call
+the transition, and the transition enforces its own preconditions. The same
+rule applies to the CLI: any command that affects a state machine calls into
+a transition, never mutates the field.
 
-Agents read skills to do the *creative* work (writing code, reviewing a diff, choosing how to test); the CLI owns the *mechanical* work (branching, ports, DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
+Agents read skills to do the *creative* work (writing code, reviewing a diff,
+choosing how to test); the CLI owns the *mechanical* work (branching, ports,
+DB refresh, pipeline waits, PR validation). Three interfaces sit on top:
 
 - **CLI** (`t3 ...`) — the source of truth. Everything else is a view on top.
-- **Loop & Statusline** — a long-running `/loop` slot scans signals, dispatches actions, renders a statusline file the Claude Code hook reads on every prompt.
+- **Loop & Statusline** — a long-running `/loop` slot scans signals,
+  dispatches actions, renders a statusline file the Claude Code hook reads
+  on every prompt.
 - **Claude plugin** — skills and hooks that teach an agent how to drive the CLI.
 
-## Three Tiers
+## Three tiers
 
 ### 1. t3 CLI
 
-The core of teatree. Django management commands handle everything deterministic: state machines, port allocation, database provisioning, worktree creation, PR validation, code host sync. These are tested with >90% branch coverage — no prose, no model variance.
+The core of teatree. Django management commands handle everything
+deterministic: state machines, port allocation, database provisioning,
+worktree creation, PR validation, code host sync. Tested with >90% branch
+coverage — no prose, no model variance.
 
 ```bash
 t3 teatree worktree provision   # provision worktrees, DBs, ports for a ticket
-t3 teatree worktree start   # start all services
-t3 teatree workspace ticket  # create multi-repo worktrees from a ticket URL
-t3 teatree db refresh        # restore a database dump
-t3 teatree pr create         # create a pull request with metadata validation
-t3 teatree followup sync     # sync tickets and PRs from code host
+t3 teatree worktree start       # start all services
+t3 teatree workspace ticket     # create multi-repo worktrees from a ticket URL
+t3 teatree db refresh           # restore a database dump
+t3 teatree pr create            # create a pull request with metadata validation
+t3 teatree followup sync        # sync tickets and PRs from code host
 ```
 
-> Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in another overlay.
+> Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
+> another overlay.
 
 ### 2. Loop & Statusline
 
-A long-running `/loop` slot in your interactive Claude Code session drives the day. Every ~12 minutes the loop runs `t3 loop tick`, which fans out to scanners that watch your assigned issues, your open PRs, PRs assigned to you for review, Slack mentions, the Notion → GitLab bridge, and the local task queue. Findings are rendered to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones: anchors / action needed / in flight). The Claude Code statusline hook `cat`s that file in <10ms, so live status sits at the top of every session without polling.
+A long-running `/loop` slot in the interactive Claude Code session drives the
+day. Every ~12 minutes the loop runs `t3 loop tick`, which fans out to
+scanners that watch assigned issues, open PRs, PRs assigned for review, Slack
+mentions, the Notion → GitLab bridge, and the local task queue. Findings render
+to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones:
+anchors / action needed / in flight). The Claude Code statusline hook `cat`s
+that file in <10ms, so live status sits at the top of every session without
+polling.
 
 ```bash
 # Spawn a Claude Code session with the loop pre-registered:
@@ -131,9 +280,13 @@ t3 loop tick
 t3 loop status
 ```
 
-The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting `loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`). To stop the loop, run `/loop unregister t3-loop` in the Claude Code session.
+The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
+`loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`). To stop
+the loop, run `/loop unregister t3-loop` in the Claude Code session.
 
-**Wire up the Claude Code statusline hook** so the rendered file actually shows in the bottom bar. Either enable the `t3` plugin (the plugin's `settings.json` registers the hook automatically), or add it to `~/.claude/settings.json`:
+**Wire up the Claude Code statusline hook** so the rendered file actually shows
+in the bottom bar. Either enable the `t3` plugin (the plugin's `settings.json`
+registers the hook automatically), or add it to `~/.claude/settings.json`:
 
 ```json
 {
@@ -146,40 +299,48 @@ The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting `loop
 
 ### 3. Claude Plugin
 
-Skills and hooks that drive AI-assisted development. Each skill covers one phase of the development lifecycle — ticket intake, coding, testing, review, shipping — and contains the methodology, guardrails, and domain knowledge the agent needs to do the work well: TDD discipline, debugging process, review checklists, retro learning, verification rules. Skills declare dependencies (`requires:`) and optional companion skills (`companions:`) from third-party packages like [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill routing, branch protection, and session tracking.
+Skills and hooks that drive AI-assisted development. Each skill covers one phase
+of the development lifecycle — ticket intake, coding, testing, review, shipping
+— and contains the methodology, guardrails, and domain knowledge the agent needs
+to do the work well: TDD discipline, debugging process, review checklists, retro
+learning, verification rules. Skills declare dependencies (`requires:`) and
+optional companion skills (`companions:`) from third-party packages like
+[superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill
+routing, branch protection, and session tracking.
 
-Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the actual development work — writing code, reasoning about architecture, reviewing diffs, running retros — is guided by skill content, not CLI commands.
+Skills use the CLI for infrastructure (worktrees, databases, ports, CI), but the
+actual development work — writing code, reasoning about architecture, reviewing
+diffs, running retros — is guided by skill content, not CLI commands.
 
 ### Workflow guarantees
 
-A few rules in the lifecycle skills are non-negotiable. They exist because each one prevents a specific class of failure that has bitten a real session:
+A few rules in the lifecycle skills are non-negotiable. They exist because each
+one prevents a specific class of failure that has bitten a real session:
 
-- **PRs go through `t3 <overlay> pr create`.** Raw `gh pr create` / `glab mr create` skips the shipping gate (testing + reviewing phases), the visual-QA gate, and the title/description validator. The CLI is the only path that runs every guard; using it is mandatory whenever the overlay exposes the subcommand.
-- **The `reviewing` phase is satisfied by an independent sub-agent, not by self-review.** Before push, the implementing conversation spawns the `t3:reviewer` sub-agent (read-only, no edits) and applies its findings. Self-review against repo rules is a complement, not a substitute — the implementer's context carries the same blind spots that allowed the gap.
-- **State machine changes happen via transitions, never via direct field writes.** This holds for both code and CLI: every command that affects a state machine must call into a transition (`Ticket.code()`, `Ticket.review()`, `Ticket.ship()`, etc.) so the predicates run and the dependent gates stay aligned.
-- **Mass renames and cross-cutting refactors require an exhaustive sweep before "done".** A single `rg` pass is not enough — the agent runs every surface form (plain, quoted, attribute access, subscript, CamelCase variants, sibling repos) and confirms zero hits before claiming the rename is complete.
+- **PRs go through `t3 <overlay> pr create`.** Raw `gh pr create` /
+  `glab mr create` skips the shipping gate (testing + reviewing phases), the
+  visual-QA gate, and the title/description validator. The CLI is the only path
+  that runs every guard; using it is mandatory whenever the overlay exposes
+  the subcommand.
+- **The `reviewing` phase is satisfied by an independent sub-agent, not by
+  self-review.** Before push, the implementing conversation spawns the
+  `t3:reviewer` sub-agent (read-only, no edits) and applies its findings.
+  Self-review against repo rules is a complement, not a substitute — the
+  implementer's context carries the same blind spots that allowed the gap.
+- **State machine changes happen via transitions, never via direct field
+  writes.** This holds for both code and CLI: every command that affects a
+  state machine must call into a transition (`Ticket.code()`,
+  `Ticket.review()`, `Ticket.ship()`, etc.) so the predicates run and the
+  dependent gates stay aligned.
+- **Mass renames and cross-cutting refactors require an exhaustive sweep
+  before "done".** A single `rg` pass is not enough — the agent runs every
+  surface form (plain, quoted, attribute access, subscript, CamelCase
+  variants, sibling repos) and confirms zero hits before claiming the rename
+  is complete.
 
-These rules live in the `ship`, `review`, `code`, and `rules` skills. The CLI enforces what it can mechanically (gate checks, transition predicates); the skills carry the rest.
-
-## What It Looks Like
-
-Tell your AI agent what you want:
-
-> `https://github.com/org/repo/issues/1234`
-
-The agent fetches the ticket, creates synchronized worktrees across all repos, provisions isolated databases and ports, implements the feature with TDD, writes a test plan, runs E2E tests, self-reviews, then pushes and creates the pull request.
-
-> `Fix PROJ-5678`
-
-The agent fetches the failed test report from CI, reproduces locally, fixes, pushes, and monitors the pipeline until green.
-
-> `Review https://github.com/org/repo/pull/456`
-
-The agent fetches the ticket for context, inspects every commit individually, and posts draft review comments inline on the correct file and line.
-
-> `Follow up on my open tickets`
-
-The agent batch-processes your assigned tickets, checks CI statuses, nudges stale PRs, and starts work on anything that's ready.
+These rules live in the `ship`, `review`, `code`, and `rules` skills. The CLI
+enforces what it can mechanically (gate checks, transition predicates); the
+skills carry the rest.
 
 ## Get Started
 
@@ -193,7 +354,8 @@ apm install -g souliane/teatree   # installs skills + companion dependencies
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
-`uv tool install` puts `t3` in `~/.local/bin/`. If that directory isn't on your `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
+`uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
+`PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
 ### For contributors
 
@@ -206,11 +368,27 @@ uv tool install --editable .   # global `t3` binary, live-reloaded from this clo
 t3 setup                       # installs skills globally, respects local symlinks
 ```
 
-New here? [`MAP.md`](MAP.md) lists every package directory with a one-line purpose and links to the relevant `BLUEPRINT.md` section — read it first to find where something lives.
+New here? [`MAP.md`](MAP.md) lists every package directory with a one-line
+purpose and links to the relevant `BLUEPRINT.md` section — read it first to
+find where something lives.
 
-`uv tool install --editable .` produces the same global `~/.local/bin/t3` as the user flow — edits in this clone take effect on the next invocation, no `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to install companion dependencies (superpowers, ac-django, etc.), symlinks teatree skills to `~/.claude/skills/`, links the Claude plugin (`~/.claude/plugins/t3 → <clone>`) so hooks and agents always read from the live checkout, and — if `t3` isn't on `PATH` — re-runs `uv tool install --editable .` to self-install. Must be run from the main clone, not a worktree.
+`uv tool install --editable .` produces the same global `~/.local/bin/t3` as
+the user flow — edits in this clone take effect on the next invocation, no
+`uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to
+install companion dependencies (superpowers, ac-django, etc.), symlinks teatree
+skills to `~/.claude/skills/`, links the Claude plugin
+(`~/.claude/plugins/t3 → <clone>`) so hooks and agents always read from the
+live checkout, and — if `t3` is not on `PATH` — re-runs
+`uv tool install --editable .` to self-install. Must be run from the main
+clone, not a worktree.
 
-`t3 setup` also self-heals when teatree adds a new dep: editable installs don't auto-resync their venv when `pyproject.toml` changes, so on every run `t3 setup` compares the declared `[project].dependencies` against the dists in the running interpreter and re-runs `uv tool install --editable . --reinstall` automatically when anything is missing. After the reinstall, setup re-execs itself against the refreshed venv. No manual `--reinstall` step is needed when pulling teatree updates.
+`t3 setup` also self-heals when teatree adds a new dep: editable installs do
+not auto-resync their venv when `pyproject.toml` changes, so on every run
+`t3 setup` compares the declared `[project].dependencies` against the dists in
+the running interpreter and re-runs `uv tool install --editable . --reinstall`
+automatically when anything is missing. After the reinstall, setup re-execs
+itself against the refreshed venv. No manual `--reinstall` step is needed when
+pulling teatree updates.
 
 ## Skills
 
@@ -266,7 +444,9 @@ graph LR
 
 ### Extended `SKILL.md` frontmatter
 
-Teatree adds a small schema on top of Claude Code's standard `SKILL.md` frontmatter so skills can declare *when* they should load and *what* they need alongside them:
+Teatree adds a small schema on top of Claude Code's standard `SKILL.md`
+frontmatter so skills can declare *when* they should load and *what* they need
+alongside them:
 
 ```yaml
 ---
@@ -282,18 +462,31 @@ search_hints: [deliver, merge request, PR]
 ---
 ```
 
-- `triggers` — deterministic auto-load rules (keywords, URLs, priority, exclude, end-of-session phrases)
+- `triggers` — deterministic auto-load rules (keywords, URLs, priority, exclude,
+  end-of-session phrases)
 - `requires` — hard dependencies, resolved transitively with cycle detection
-- `companions` — optional third-party skills (e.g. from [obra/superpowers](https://github.com/obra/superpowers), installed via [APM](https://github.com/microsoft/apm), never modified by teatree)
-- `search_hints` — keyword synonyms used to route headless tasks to the right skill
+- `companions` — optional third-party skills (e.g. from
+  [obra/superpowers](https://github.com/obra/superpowers), installed via
+  [APM](https://github.com/microsoft/apm), never modified by teatree)
+- `search_hints` — keyword synonyms used to route headless tasks to the right
+  skill
 
-The `UserPromptSubmit` hook matches the prompt against a cached trigger index and injects `LOAD THESE SKILLS NOW: ...`. `PreToolUse` blocks edits until the injected skills are loaded. Matching is regex, not the model — skill loading is no longer the agent's decision.
+The `UserPromptSubmit` hook matches the prompt against a cached trigger index
+and injects `LOAD THESE SKILLS NOW: ...`. `PreToolUse` blocks edits until the
+injected skills are loaded. Matching is regex, not the model — skill loading
+is no longer the agent's decision.
 
-See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and [docs/claude-code-internals.md](docs/claude-code-internals.md) for how the hooks wire into Claude Code.
+See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and
+[docs/claude-code-internals.md](docs/claude-code-internals.md) for how the
+hooks wire into Claude Code.
 
-## Project Overlay
+## Overlays
 
-Teatree is generic — it doesn't know your repos, CI, or environment defaults. Project-specific behaviour lives in a lightweight overlay package that subclasses `OverlayBase`.
+Teatree's core is generic — it does not know about specific repos, CI, or
+environment defaults. Project-specific behaviour lives in a lightweight overlay
+package that subclasses `OverlayBase` and registers via the `teatree.overlays`
+entry point. The overlay carries the project's repos, provisioning steps,
+runtime metadata, and service hooks; the core stays the same across projects.
 
 Create one with:
 
@@ -308,7 +501,14 @@ The overlay registers via a `teatree.overlays` entry point:
 my-overlay = "myapp.overlay:MyOverlay"
 ```
 
-Once installed (`pip install -e .`), the overlay is auto-discovered at startup. The overlay implements the narrow contract teatree needs: managed repos, provisioning steps, runtime metadata, and project-specific service hooks. See [docs/overlay-api.md](docs/overlay-api.md) for the full API.
+Once installed (`pip install -e .`), the overlay is auto-discovered at startup.
+The overlay implements the narrow contract teatree needs: managed repos,
+provisioning steps, runtime metadata, and project-specific service hooks. See
+[docs/overlay-api.md](docs/overlay-api.md) for the full API.
+
+Overlays can live anywhere; they do not need to be vendored into this repo.
+The author dogfoods this on a private client-codebase overlay; the same
+extension point is what any other consumer would use.
 
 ## Configuration
 
@@ -348,9 +548,10 @@ path = "~/workspace/my-overlay"
 
 The `t3:contribute` skill's push gate is the `T3_PUSH` environment variable
 (default `false`), not a TOML key — it exists as a deliberate stop for
-privacy review before any skill improvement leaves your machine.
+privacy review before any skill improvement leaves the machine.
 
-Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill symlinks and caches.
+Run `t3 setup` after editing `~/.teatree.toml` to apply changes to skill
+symlinks and caches.
 
 ### Operating mode
 
@@ -363,10 +564,10 @@ has for publishing actions:
 - `auto` — opt-in end-to-end autonomy. The agent ships complete features
   without confirm prompts: push → MR create → pipeline watch → merge → clean up
   remote branches. Quality gates (lint, tests, migrations check) still run;
-  they just don't depend on user confirmation. A small always-gated list
+  they just do not depend on user confirmation. A small always-gated list
   remains regardless of mode: force-push to default branches, history rewrites
   on shared defaults, destructive shared-DB operations, and external writes the
-  active overlay hasn't authorised.
+  active overlay has not authorised.
 
 Unknown values raise an error — a typo in `mode` will never silently downgrade
 to a less-safe mode.
@@ -393,14 +594,20 @@ default. See `BLUEPRINT.md` § 10.1.1 for the full details.
 
 ## Contributing & Self-Improvement
 
-After every non-trivial session, the `retro` skill runs a retrospective, extracts what went wrong, and writes fixes back into skill files. When contributors enable this (`contribute = true` in `~/.teatree.toml`), improvements flow back upstream through a fork-based model.
+After every non-trivial session, the `retro` skill runs a retrospective,
+extracts what went wrong, and writes fixes back into skill files. When
+contributors enable this (`contribute = true` in `~/.teatree.toml`),
+improvements flow back upstream through a fork-based model.
 
 **Where improvements go:**
 
-- `contribute = false` (default): improvements go to your project overlay only
-- `contribute = true`: the agent also improves core skills, pushes to a branch, opens a PR
+- `contribute = false` (default): improvements go to the project overlay only
+- `contribute = true`: the agent also improves core skills, pushes to a
+  branch, opens a PR
 
-Nothing is ever pushed without explicit consent. The `contribute` skill shows exactly what will be pushed, runs privacy scans, and checks fork divergence before creating PRs.
+Nothing is ever pushed without explicit consent. The `contribute` skill shows
+exactly what will be pushed, runs privacy scans, and checks fork divergence
+before creating PRs.
 
 ```bash
 # Run tests locally
@@ -412,7 +619,10 @@ prek run --all-files         # ruff, pytest, codespell, banned-terms
 
 ### E2E Tests
 
-E2E tests run via `t3 <overlay> e2e run`, which dispatches to the in-repo pytest-playwright runner or an external playwright repo based on `OverlayBase.get_e2e_config()`. Overlays declare `"runner": "project"` or `"runner": "external"`; the runner is overlay-agnostic from the call site:
+E2E tests run via `t3 <overlay> e2e run`, which dispatches to the in-repo
+pytest-playwright runner or an external playwright repo based on
+`OverlayBase.get_e2e_config()`. Overlays declare `"runner": "project"` or
+`"runner": "external"`; the runner is overlay-agnostic from the call site:
 
 ```bash
 t3 <overlay> e2e run                          # CI default
@@ -420,20 +630,33 @@ t3 <overlay> e2e run --headed                 # interactive debug
 t3 <overlay> e2e run --update-snapshots       # accept new snapshots
 ```
 
-**Failure triage artifacts** (git-ignored, mounted writable into the e2e container):
+**Failure triage artifacts** (git-ignored, mounted writable into the e2e
+container):
 
-- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the live ASGI server. Path is printed on every test failure via `pytest_runtest_makereport`.
-- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only retained for **failing** tests (passing tests delete their video on teardown to keep CI artifact size small).
+- `e2e/.logs/server-<ISO>-<worker>.log` — captured stdout/stderr from the
+  live ASGI server. Path is printed on every test failure via
+  `pytest_runtest_makereport`.
+- `e2e/.videos/<test-name>/<rand>.webm` — Playwright video recording. Only
+  retained for **failing** tests (passing tests delete their video on teardown
+  to keep CI artifact size small).
 
-In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts and link them from the failed run summary so reviewers can replay the failure without rerunning the suite.
+In CI, attach the `e2e/.logs/` and `e2e/.videos/` directories as job artifacts
+and link them from the failed run summary so reviewers can replay the failure
+without rerunning the suite.
 
 ## Security Considerations
 
-Skills are prompt instructions — they control what your AI agent does. This makes the supply chain a security surface.
+Skills are prompt instructions — they control what your AI agent does. This
+makes the supply chain a security surface.
 
-**Safe defaults:** self-improvement is off, pushing is disabled, and there is no auto-update mechanism. All pushes go to branches (never main) and require a PR. APM dependencies are pinned to specific commit SHAs in `apm.yml`.
+**Safe defaults:** self-improvement is off, pushing is disabled, and there is
+no auto-update mechanism. All pushes go to branches (never main) and require
+a PR. APM dependencies are pinned to specific commit SHAs in `apm.yml`.
 
-**Supply chain:** `t3 setup` verifies that skills are loaded via symlinks to your clone — not stale copies. If you use a fork from someone else, you are trusting that person's skill files as agent instructions. Review changes before pulling.
+**Supply chain:** `t3 setup` verifies that skills are loaded via symlinks to
+the local clone — not stale copies. If you use a fork from someone else, you
+are trusting that person's skill files as agent instructions. Review changes
+before pulling.
 
 ## Project Structure
 
@@ -454,19 +677,14 @@ teatree/
   docs/                # MkDocs documentation site
 ```
 
-## FAQ
+## Where it is headed
 
-**Why not just use [superpowers](https://github.com/obra/superpowers) or [oh-my-claudecode](https://github.com/anthropics/oh-my-claudecode)?**
-
-Teatree uses superpowers as a companion — its methodology skills (TDD, debugging, verification) load alongside teatree's lifecycle skills via the `companions:` mechanism. But teatree solves a different problem: multi-repo worktree provisioning, database lifecycle, port allocation, service management, and CI sync. These require deterministic code, not prose. Skill frameworks give agents knowledge; teatree gives them infrastructure.
-
-**Is this overkill for my project?**
-
-If you work in a single repo with a simple setup, probably. Teatree shines when your workflow has friction that the model can't solve from first principles: multi-repo synchronization, tenant-specific configuration, isolated worktree environments, or a CI/CD pipeline with project-specific quirks.
-
-**Why do skills live in the same repo as the CLI?**
-
-Because skills reference the CLI and the overlay API. Keeping them together means a single `git clone` gives you everything, and skill improvements can be tested against the actual code in the same PR.
+Teatree stays a single-author tool for now. The plan is to keep dogfooding it
+on real client work, let the rough edges surface through daily use, and only
+broaden adoption once the patterns it relies on have been pushed through
+enough sessions to be trustworthy. The public repo is a side effect of that
+workflow — the code lives somewhere reachable in case any of the patterns
+help someone else, not as a finished product looking for users.
 
 **Why "teatree"?**
 
