@@ -55,6 +55,33 @@ jobs:
         if: steps.blueprint_diff.outputs.changed == 'true'
         run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref=origin/${{ github.base_ref }}
 
+  doc-update-gate:
+    # Deterministic doc-update gate (souliane/teatree#1461). The
+    # pre-push hook runs against staged changes; CI re-runs the same
+    # check on the PR diff so an agent that bypasses prek still trips
+    # the gate. Reads the PR-vs-base diff into the git index so the
+    # hook's ``git diff --cached`` query sees the PR contents.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_doc_update.py
+
   docs-drift:
     runs-on: ubuntu-latest
     steps:

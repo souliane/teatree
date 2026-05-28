@@ -81,6 +81,40 @@ If the changes touch architecture, add new modules, rename commands, or change e
 2. If it doesn't, update it **before** pushing. Ask the user before modifying.
 3. This applies to all repos that have a `BLUEPRINT.md`.
 
+### 3a1. Documentation Discipline (Non-Negotiable)
+
+Before creating the PR, ask: did this diff change anything a user or colleague would learn from the README, BLUEPRINT, or any skill file?
+
+Common triggers (not exhaustive):
+
+- New `t3` command, flag, or env var
+- Renamed or removed public symbol, command, or setting
+- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name, a new `MiniLoopMarker` name)
+- New `SKILL.md` added, or one removed
+- User-observable behaviour change (default flips, UI flow, error message shape, response payload)
+- New feature flag
+
+**If YES:** the same MR includes the doc update — README for user-facing changes, BLUEPRINT for architectural ones, the relevant `SKILL.md` for skill behaviour changes.
+
+**If NO:** the MR description carries this line on its own:
+
+```text
+docs: n/a — <one-line reason>
+```
+
+Examples:
+
+- `docs: n/a — internal refactor, no user-visible change`
+- `docs: n/a — bug fix preserving existing contract`
+- `docs: n/a — test-only change`
+- `docs: n/a — generated-doc regeneration, source unchanged`
+
+The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
+
+**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` / `MiniLoopMarker` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+
+Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
+
 ### 3b. Self-Review Against Repo Rules
 
 **Before every push**, run the self-review gate from [`../review/SKILL.md`](../review/SKILL.md) § "Active Verification Against Repo Rules":
