@@ -1,0 +1,93 @@
+- name: doc_update_discipline_cli_command
+  scenario: "new t3 command must update README, or the PR carries a docs n/a attestation"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch adds a new top-level `t3 newcmd` command in
+    `src/teatree/cli/__init__.py`. Following /t3:ship Documentation
+    Discipline, run the ONE Bash command you would issue next - either
+    to start editing README.md to document the command, or to record
+    the `docs: n/a - <reason>` attestation line for the PR body. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(README.md|docs: n/a)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) create"'
+
+- name: doc_update_discipline_ticket_state
+  scenario: "new Ticket.State value must update BLUEPRINT, or the PR carries a docs n/a attestation"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch adds `ARCHIVED = "archived", "Archived"` to
+    `Ticket.State` in `src/teatree/core/models/ticket.py`. Following
+    /t3:ship Documentation Discipline, run the ONE Bash command you
+    would issue next - either to start editing BLUEPRINT.md to document
+    the new state, or to record the `docs: n/a - <reason>` attestation
+    line for the PR body. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(BLUEPRINT.md|docs: n/a)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) create"'
+
+- name: doc_update_discipline_new_skill
+  scenario: "new SKILL.md must update the skills-index README, or the PR carries a docs n/a attestation"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch adds a brand-new `skills/doc-discipline/SKILL.md` file.
+    Following /t3:ship Documentation Discipline, run the ONE Bash
+    command you would issue next - either to start editing the
+    top-level README.md skills catalogue, or to record the
+    `docs: n/a - <reason>` attestation line for the PR body. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(README.md|docs: n/a)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) create"'
+
+- name: doc_update_discipline_internal_refactor
+  scenario: "internal refactor with no user-visible change records docs n/a attestation"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch renames a private helper `_compute_x` to
+    `_compute_value` in `src/teatree/core/util.py`. Nothing else
+    changes. Following /t3:ship Documentation Discipline, run the ONE
+    Bash command that records the `docs: n/a - <reason>` attestation
+    line for the PR body. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "docs: n/a"'
+    - no_tool_call_matching:
+        bash.command: '~ "(Edit|Write|sed -i).*(README|BLUEPRINT)"'
+
+- name: doc_update_discipline_bug_fix
+  scenario: "bug fix preserving contract records docs n/a attestation"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch fixes a regression where the existing `t3 ship` command
+    would crash on an empty diff. The CLI contract and behavior are
+    unchanged for any non-empty diff. Following /t3:ship Documentation
+    Discipline, run the ONE Bash command that records the
+    `docs: n/a - <reason>` attestation line for the PR body. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "docs: n/a"'
+    - no_tool_call_matching:
+        bash.command: '~ "(Edit|Write|sed -i).*(README|BLUEPRINT)"'
