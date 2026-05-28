@@ -104,7 +104,7 @@ class TestHandleSessionStartBootstrap:
     def test_fresh_machine_is_tick_owner_no_roster_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Tick-dispatch, NOT the retired roster. Per-unit "spawn one fresh
         # bounded sub-agent" IS the model; what must be gone is the
         # immortal-roster vocabulary + names.
@@ -133,7 +133,7 @@ class TestHandleSessionStartBootstrap:
 
         handle_session_start_bootstrap({"session_id": "second-2"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Non-owner: stay idle, never arm a competing tick, never spawn.
         for retired_token in (
             "t3-main-loop",
@@ -168,7 +168,7 @@ class TestHandleSessionStartBootstrap:
 
         handle_session_start_bootstrap({"session_id": "owner-1"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Post-compaction same-session restart: still owner, tick-driven,
         # nothing to re-spawn.
         assert "t3 loop tick" in ctx
@@ -193,7 +193,7 @@ class TestHandleSessionStartBootstrap:
 
         handle_session_start_bootstrap({"session_id": "new-owner"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Dead owner pruned -> this session becomes tick-owner (no
         # re-spawn; the cron keeps ticking).
         assert "t3 loop tick" in ctx
@@ -224,7 +224,7 @@ class TestHandleSessionStartBootstrap:
         self, registry_paths, capsys: pytest.CaptureFixture[str]
     ) -> None:
         handle_session_start_bootstrap({"session_id": "owner-1"})
-        assert "additionalContext" in json.loads(capsys.readouterr().out)
+        assert "additionalContext" in json.loads(capsys.readouterr().out)["hookSpecificOutput"]
 
     def test_non_owner_with_tty_does_not_emit_osc(self, registry_paths) -> None:
         _, tty_path = registry_paths
@@ -258,7 +258,7 @@ class TestOwnerPidIsSessionNotHookSubprocess:
         # Session 2 starts while session 1 is still alive -> stay idle,
         # ownership unchanged.
         handle_session_start_bootstrap({"session_id": "owner-2"})
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -325,7 +325,7 @@ class TestWs3TickDispatchContract:
 
     def _ctx(self, capsys: pytest.CaptureFixture[str], session_id: str = "s-1") -> str:
         handle_session_start_bootstrap({"session_id": session_id})
-        return json.loads(capsys.readouterr().out)["additionalContext"]
+        return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
 
     def test_bootstrap_does_not_instruct_spawning_the_roster(self, capsys: pytest.CaptureFixture[str]) -> None:
         ctx = self._ctx(capsys)
@@ -388,7 +388,7 @@ class TestAutocompactAdvisoryIntegration:
         handle_session_start_bootstrap({"session_id": "s1", "agent_id": "a1"})
 
         payload = json.loads(capsys.readouterr().out)
-        context = payload["additionalContext"]
+        context = payload["hookSpecificOutput"]["additionalContext"]
         assert "AUTO-COMPACT SILENT KILL-SWITCH" in context
         assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in context
         assert "1000000" in context
@@ -405,7 +405,7 @@ class TestAutocompactAdvisoryIntegration:
         handle_session_start_bootstrap({"session_id": "s2", "agent_id": "a2"})
 
         payload = json.loads(capsys.readouterr().out)
-        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["additionalContext"]
+        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["hookSpecificOutput"]["additionalContext"]
 
     def test_no_advisory_when_pct_override_unset(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
@@ -418,7 +418,7 @@ class TestAutocompactAdvisoryIntegration:
         handle_session_start_bootstrap({"session_id": "s3", "agent_id": "a3"})
 
         payload = json.loads(capsys.readouterr().out)
-        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["additionalContext"]
+        assert "AUTO-COMPACT SILENT KILL-SWITCH" not in payload["hookSpecificOutput"]["additionalContext"]
 
 
 # ── Issue #1380: evict stale LoopLease owner on session rotation (#1107 follow-up) ──
