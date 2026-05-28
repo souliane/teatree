@@ -111,7 +111,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         out = capsys.readouterr().out
         # Exactly one JSON object on stdout (chained writes would be invalid).
-        ctx = json.loads(out)["additionalContext"]
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
         assert "/repo/work" in ctx
         # The tick-dispatch directive is preserved in the same payload.
@@ -124,7 +124,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "Learned X" in ctx
         assert "Fixed Y" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
@@ -137,7 +137,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "Finding A" in ctx
         assert "Finding B" in ctx
 
@@ -148,7 +148,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         handle_session_start_bootstrap({"session_id": session_id, "source": "compact"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" not in ctx
 
     def test_non_compact_source_does_not_inject_recovery(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -158,7 +158,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         handle_session_start_bootstrap({"session_id": session_id, "source": "startup"})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" not in ctx
         assert "stale snapshot" not in ctx
 
@@ -169,7 +169,7 @@ class TestSessionStartCompactRecoversSnapshot:
 
         handle_session_start_bootstrap({"session_id": session_id})
 
-        ctx = json.loads(capsys.readouterr().out)["additionalContext"]
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" not in ctx
 
 
