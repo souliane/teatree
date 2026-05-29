@@ -37,6 +37,9 @@ dependencies = [
   "pyyaml>=6",
   "tomlkit>=0.13",
 ]
+# ``t3 tool to-markdown`` converts PDF/XLSX/DOCX/PPTX attachments to Markdown.
+# Narrow extras only — never ``markitdown[all]`` (avoids audio/onnx weight).
+optional-dependencies.markdown = [ "markitdown[docx,pdf,pptx,xlsx]>=0.1.6" ]
 optional-dependencies.notion = [ "browser-cookie3>=0.20" ]
 optional-dependencies.slack = [ "slack-sdk>=3.35" ]
 scripts = { t3 = "t3_bootstrap:main" }
@@ -295,6 +298,7 @@ python-version = "3.13"
 [tool.ty.analysis]
 allowed-unresolved-imports = [
   "django.tasks", # Django 6 exposes this dynamically and ty cannot resolve it yet, even with django-types
+  "markitdown",   # Optional dependency (markdown extra), guarded by try/except ImportError
   "mkdocs",       # Optional dependency, guarded by try/except ImportError
   "lib.env",      # Legacy scripts — guarded by try/except ImportError
   "lib.gitlab",   # Legacy scripts — guarded by try/except ImportError
