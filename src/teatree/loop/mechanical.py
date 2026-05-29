@@ -6,10 +6,15 @@ Called by ``tick._execute_mechanical`` after dispatch, before statusline render.
 
 import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from django_fsm import can_proceed
 
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_resources import free_resources
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +162,69 @@ def _complete_open_reviewing_tasks(ticket: object) -> int:
     return completed
 
 
+def todo_completion(payload: ActionPayload) -> None:
+    """Complete a swept task whose artifact is terminal — RE-checking first (#129).
+
+    The ``todo_sweep`` scanner emits ``todo.completion_detected`` after
+    ``is_issue_done`` returned True for the task's issue. Because dispatch runs
+    after every scanner and the artifact could (in principle) re-open between
+    the scan and this handler, the handler re-verifies the terminal state
+    against the live code host before advancing the FSM — never auto-complete
+    on a stale read. Best-effort and idempotent: a missing task, an
+    already-terminal task, or a host that can no longer confirm the issue is
+    done all no-op silently rather than crash the tick.
+    """
+    from teatree.core.models.task import Task  # noqa: PLC0415
+
+    task_id = payload.get("task_id")
+    if task_id is None:
+        return
+    try:
+        task = Task.objects.select_related("ticket").get(pk=task_id)
+    except Task.DoesNotExist:
+        return
+    if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+        return
+    if not _artifact_still_terminal(task):
+        logger.info("todo_completion: task %s artifact no longer terminal — skipping completion", task_id)
+        return
+    task.complete()
+    logger.info("Auto-completed task %s (artifact confirmed terminal: %s)", task_id, payload.get("issue_url", "?"))
+
+
+def _artifact_still_terminal(task: "Task") -> bool:
+    """Re-verify the task's issue is done via the live code host (fail-CLOSED).
+
+    Returns True only when the overlay's ``is_issue_done`` confirms the issue
+    on a fresh fetch. Any uncertainty — no host, fetch error, error payload —
+    returns False so the handler does NOT complete the task (the opposite of
+    the scanner's fail-OPEN-to-orphaned: at the *completion* gate, uncertainty
+    must block the irreversible action, not permit it).
+    """
+    from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    issue_url = task.ticket.issue_url
+    if not issue_url:
+        return False
+    try:
+        overlay = get_overlay()
+        host = get_code_host_for_url(overlay, issue_url)
+    except Exception:
+        logger.exception("todo_completion: could not resolve code host for %s", issue_url)
+        return False
+    if host is None:
+        return False
+    try:
+        issue_data = host.get_issue(issue_url)
+    except Exception:  # noqa: BLE001 — any host error fails CLOSED (no completion), never crashes the tick.
+        logger.warning("todo_completion: re-check fetch failed for %s", issue_url)
+        return False
+    if not isinstance(issue_data, dict) or "error" in issue_data:
+        return False
+    return bool(overlay.is_issue_done(issue_data))
+
+
 def assign_gitlab_reviewer(payload: ActionPayload) -> None:
     """Append the user as reviewer on the MR carried by *payload* (#1295 cap B).
 
@@ -205,4 +273,6 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "reviewer_task_orphaned": reviewer_task_orphaned,
     "reviewer_task_self_authored": reviewer_task_self_authored,
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
+    "free_resources": free_resources,
+    "todo_completion": todo_completion,
 }

@@ -82,6 +82,17 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.merge_blocked": "action_needed",
     "incoming_event.merge_escalation": "action_needed",
     "incoming_event.recorded": "in_flight",
+    # #128 resource-pressure scanner — WARN-band advisories and any
+    # cleanup failure surface in action_needed; the freeing itself routes
+    # through the mechanical handler below. ``ram_kill_candidate`` is
+    # statusline-only (never an agent) so a flagged process-kill remains a
+    # user-visible advisory, not an autonomous action.
+    "resource.pressure_warn": "action_needed",
+    "resource.cleanup_failed": "action_needed",
+    "resource.ram_kill_candidate": "action_needed",
+    # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
+    # review; the completion path routes through the mechanical handler below.
+    "todo.orphaned": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -226,6 +237,12 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #1295 cap H: ac-reviewing-codebase auto-fix sweep emits this per
     # new finding → routes to ``t3:coder`` for the drift fix.
     "skill_drift_detected": ("agent", "t3:coder"),
+    # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
+    # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
+    "resource.cleanup_needed": ("mechanical", "free_resources"),
+    # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
+    # handler RE-checks then completes it (never bulk, never on a stale read).
+    "todo.completion_detected": ("mechanical", "todo_completion"),
 }
 
 
