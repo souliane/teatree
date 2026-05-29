@@ -121,6 +121,63 @@ class TestPrCreateSyncShip(TestCase):
         ticket.refresh_from_db()
         assert ticket.state in {Ticket.State.SHIPPED, Ticket.State.REVIEWED}
 
+    def test_skip_validation_still_enforces_mr_format_check(self) -> None:
+        """Skip the heavy gates, still enforce the MR format check.
+
+        ``--skip-validation`` skips the HEAVY gates but NOT the cheap,
+        deterministic MR title/description format check — a non-compliant
+        title must not slip onto GitLab via the bypass. Only the explicit
+        ``--skip-mr-format-check`` opt-in disables the format check too.
+        """
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        ship_mock = MagicMock()
+        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+        fmt_error = pr_command.PrValidationError(error="PR validation failed", details=["bad title"])
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "validate_pr_metadata", return_value=fmt_error) as fmt,
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.id), sync=True, skip_validation=True),
+            )
+        fmt.assert_called_once()
+        assert result == fmt_error
+        ship_mock.call.assert_not_called()
+
+    def test_skip_mr_format_check_disables_the_format_check_too(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/backend",
+            branch="feature-branch",
+            extra={"worktree_path": "/tmp/backend"},
+        )
+        ship_mock = MagicMock()
+        ship_mock.call.return_value = {"ticket_id": ticket.pk, "ok": True, "detail": "PR opened"}
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command, "validate_pr_metadata") as fmt,
+            patch("teatree.core.tasks.execute_ship", ship_mock),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "pr", "create", str(ticket.id), sync=True, skip_validation=True, skip_mr_format_check=True
+                ),
+            )
+        fmt.assert_not_called()
+        assert result["ok"] is True
+
     def test_sync_illegal_transition_without_skip_is_structured_failure(self) -> None:
         # Validation NOT skipped, no attested session -> the gate blocks
         # with a structured failure, never a raw TransitionNotAllowed (#694).

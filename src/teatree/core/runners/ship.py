@@ -275,13 +275,28 @@ class ShipExecutor(RunnerBase):
     ) -> PullRequestSpec:
         title_override = str(extra.get("pr_title_override") or "")
         subject, body = git.last_commit_message(repo=repo_path)
-        title = title_override or subject or f"Resolve {ticket.issue_url}"
-        raw_description = f"{subject}\n\n{body}" if subject and body else (subject or body)
+        overlay = get_overlay()
+        # PRODUCE the title from structured data unless the user pinned one
+        # via --title. The overlay default returns the subject unchanged.
+        generated = overlay.metadata.build_pr_title(
+            branch=branch,
+            subject=subject,
+            body=body or "",
+            issue_url=ticket.issue_url or "",
+        )
+        title = title_override or generated or f"Resolve {ticket.issue_url}"
         close_ticket = should_close_ticket(
             extra,
-            setting_enabled=get_overlay().config.mr_close_ticket,
+            setting_enabled=overlay.config.mr_close_ticket,
         )
-        description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
+        # Build the description's FIRST LINE from the (sanitized) title, not the
+        # raw subject — otherwise a canonical generated title diverges from the
+        # raw-subject first line, the exact title/description divergence that
+        # blocks the release-notes pipeline.
+        sanitized_title = sanitize_close_keywords(title, close_ticket=close_ticket)
+        title = sanitized_title
+        sanitized_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
+        description = f"{sanitized_title}\n\n{sanitized_body}" if sanitized_body else sanitized_title
         description = apply_publish_gate(
             description,
             repo=repo_path,

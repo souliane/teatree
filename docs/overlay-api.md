@@ -71,6 +71,7 @@ Project metadata, CI integration, MR validation, and skill registration live on 
 | Method | Default | Purpose |
 |--------|---------|---------|
 | `validate_pr(title, description)` | no errors/warnings | Validate PR title and description against project conventions |
+| `build_pr_title(branch, subject, body, issue_url)` | the commit `subject` | Produce the PR title from structured ticket data so the ship path generates a compliant title instead of copying a raw subject |
 | `get_followup_repos()` | `[]` | Repos to check during follow-up sync |
 | `get_skill_metadata()` | `{}` | Skill path, remote patterns, trigger index for the overlay's companion skills |
 | `get_ci_project_path()` | `""` | CI project path for pipeline triggers and evidence posting |

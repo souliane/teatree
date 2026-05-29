@@ -590,6 +590,9 @@ class TestShipExecutorHonorsAutoCloseSetting(TestCase):
         cfg = MagicMock()
         cfg.config.mr_close_ticket = setting_enabled
         cfg.config.pr_auto_labels = []
+        # The default title hook returns the subject unchanged; mirror that so
+        # this auto-close test exercises sanitization, not title generation.
+        cfg.metadata.build_pr_title.side_effect = lambda *, branch, subject, body, issue_url: subject
         with (
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.get_overlay", return_value=cfg),
