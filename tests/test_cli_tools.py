@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -364,3 +365,31 @@ class TestValidateMrCommand:
                 ["tool", "validate-mr", "--title", "feat: a [f] (p#1)", "--description", "body here"],
             )
         ov.metadata.validate_pr.assert_called_once_with("feat: a [f] (p#1)", "body here")
+
+    def test_runs_to_completion_in_a_fresh_shell_without_django_preset(self) -> None:
+        # Bug 4 (#126): the pre-push hook shells ``t3 tool validate-mr`` from
+        # a session shell with no ``DJANGO_SETTINGS_MODULE``. ``get_overlay()``
+        # imports the overlay's Django models, which raised
+        # ``ImproperlyConfigured`` without ``django.setup()`` first — the gate
+        # then failed CLOSED and blocked every MR/PR create. The in-process
+        # tests above mock ``get_overlay`` and never hit that import, so the
+        # real ``t3`` entrypoint is driven here in a subprocess with the env
+        # var stripped, exactly as the hook invokes it.
+        driver = (
+            "import sys\n"
+            "from teatree.cli import main\n"
+            "sys.argv = ['t3', 'tool', 'validate-mr', '--title', 'feat: x (#1)', '--description', 'body']\n"
+            "main()\n"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        proc = subprocess.run(
+            [sys.executable, "-c", driver],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=env,
+        )
+        assert proc.returncode == 0, f"validate-mr crashed:\n{proc.stdout}\n{proc.stderr}"
+        assert "ImproperlyConfigured" not in proc.stderr
+        assert "AppRegistryNotReady" not in proc.stderr

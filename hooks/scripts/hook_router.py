@@ -134,26 +134,12 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
     ),
-    (
-        re.compile(r"\bgh\s+pr\s+merge\b"),
-        (
-            "BLOCKED: raw `gh pr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "expected_head_oid SHA-binding, privacy/AI-signature scan, "
-            "mark_merged). Use the sanctioned keystone transition "
-            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
-    (
-        re.compile(r"\bglab\s+mr\s+merge\b"),
-        (
-            "BLOCKED: raw `glab mr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "SHA-binding, privacy/AI-signature scan, mark_merged). Use the "
-            "sanctioned keystone transition `t3 <overlay> ticket merge "
-            "<clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
+    # NOTE: ``gh pr merge`` / ``glab mr merge`` are NOT static-blocked here.
+    # A pure regex cannot tell a teatree-managed repo (must use the keystone
+    # `t3 <overlay> ticket merge` transition) from a lightweight repo with no
+    # ticket/overlay FSM (which had no way to merge at all — a permanent
+    # lockout). The cwd-aware ``handle_block_out_of_band_merge`` gate enforces
+    # this with a managed-repo carve-out instead (#126).
     (
         re.compile(r"\bsafety\s+(?:check|scan)\b"),
         "BLOCKED: `safety` — use `pip-audit` instead (#1264; `uv audit` is preview-only).",
@@ -3738,6 +3724,126 @@ def handle_block_direct_commands(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
+# ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
+#
+# ``gh pr merge`` / ``glab mr merge`` bypass the FSM coherence mechanism
+# (ledger update, MergeClear validation, SHA-binding, privacy/AI-signature
+# scan, mark_merged), so a TEATREE-MANAGED repo must use the keystone
+# transition ``t3 <overlay> ticket merge <clear_id>`` (BLUEPRINT §17.1
+# invariant 8 / §17.4). But the previous static-regex block hard-denied
+# EVERY repo — a lightweight repo with no ticket/overlay FSM had no merge
+# path at all, a permanent lockout (#126).
+#
+# This cwd-aware gate carves out the unmanaged case: a merge is ALLOWED
+# only when the cwd repo is confidently NOT teatree-managed (no overlay
+# claims it). The gate stays STRICT for managed repos AND fail-safe on
+# uncertainty: when the cwd or its slug cannot be resolved, the repo is
+# treated as managed and the merge is BLOCKED — detection failure never
+# weakens the gate.
+
+_OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+_OUT_OF_BAND_MERGE_REASON = (
+    "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
+    "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
+    "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
+    "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
+    "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
+    "teatree-managed and the cwd could not be resolved, run the merge from inside "
+    "the repo's working tree so the gate can classify it."
+)
+
+
+def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
+    """Return ``(repo_slug_substrings, overlay_base_paths)`` from config.
+
+    Offline read of ``~/.teatree.toml`` (mirroring :func:`_load_protected_branches`'s
+    shape) collecting the two signals that mark a repo teatree-managed: the
+    per-overlay repo slug lists (``workspace_repos`` / ``frontend_repos`` /
+    ``public_repos``) and each overlay's ``path`` working-tree base. Teatree
+    core's own slug (``souliane/teatree``) is always included. Fails to an
+    empty signal set on a missing/broken config — the caller treats "no
+    resolvable signal + a resolvable slug" as unmanaged, never as a license
+    to weaken the gate on uncertainty.
+    """
+    import tomllib  # noqa: PLC0415
+
+    slugs: list[str] = ["souliane/teatree"]
+    paths: list[Path] = []
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return slugs, paths
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return slugs, paths
+    for overlay_cfg in (config.get("overlays") or {}).values():
+        if not isinstance(overlay_cfg, dict):
+            continue
+        for key in ("workspace_repos", "frontend_repos", "public_repos"):
+            slugs.extend(str(s).strip().lower() for s in overlay_cfg.get(key, []) if str(s).strip())
+        base = overlay_cfg.get("path")
+        if isinstance(base, str) and base.strip():
+            with contextlib.suppress(OSError, RuntimeError):
+                paths.append(Path(base).expanduser().resolve())
+    return slugs, paths
+
+
+def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
+    """Whether *cwd* belongs to a teatree-managed repo.
+
+    Returns ``True`` (managed — keep the keystone-merge block), ``False``
+    (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
+    caller fails safe and BLOCKS). Reuses ``publish_surface._slug_for_cwd``
+    for slug resolution so the host/owner/repo shape matches the
+    private-repo carve-out's.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            cwd.resolve().relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(cwd).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    if not slug:
+        return None
+    return any(entry in slug for entry in slugs)
+
+
+def handle_block_out_of_band_merge(data: dict) -> bool:
+    """Block a raw ``gh pr merge`` / ``glab mr merge`` on a managed repo.
+
+    Carve-out for the permanent-lockout case (#126): a merge is allowed only
+    when the cwd repo is confidently NOT teatree-managed. Managed repos and
+    any case the gate cannot classify stay BLOCKED — fail-safe on uncertainty.
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _OUT_OF_BAND_MERGE_RE.search(command):
+        return False
+    cwd = _resolve_cwd_repo(data)
+    if cwd is None:
+        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+    managed = _cwd_is_teatree_managed(cwd)
+    if managed is False:
+        return False
+    return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+
+
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 
 
@@ -4573,6 +4679,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_out_of_band_merge,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,

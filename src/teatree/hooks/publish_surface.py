@@ -146,10 +146,29 @@ def _slug_for_cwd(cwd: Path) -> str:
     return cleaned
 
 
-def _visibility_cache_path() -> Path:
+def _cache_root() -> Path:
+    """Resolve a writable cache dir that never collides with the config file.
+
+    The historical default ``~/.teatree`` is the shell-sourceable config
+    FILE in this environment, so a cache write under it raised "Not a
+    directory" and the verdict could never persist — every commit re-probed.
+    Honour ``T3_DATA_DIR`` when set, else use the XDG cache dir (matching
+    ``url_title_fetcher``'s ``~/.cache/teatree``). If the chosen root already
+    exists as a non-directory, fall back to a sibling so the write still
+    succeeds rather than being silently swallowed as an ``OSError``.
+    """
     base = os.environ.get("T3_DATA_DIR")
-    root = Path(base) if base else Path.home() / ".teatree"
-    return root / "repo-visibility-cache.json"
+    if base:
+        return Path(base)
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    root = (Path(xdg) if xdg else Path.home() / ".cache") / "teatree"
+    if root.exists() and not root.is_dir():
+        return Path.home() / ".teatree-data"
+    return root
+
+
+def _visibility_cache_path() -> Path:
+    return _cache_root() / "repo-visibility-cache.json"
 
 
 def _read_visibility_cache(slug: str) -> str | None:
@@ -226,16 +245,26 @@ def _probe_gh(repo_path: str) -> str | None:
 
 
 def _probe_glab(repo_path: str) -> str | None:
+    # ``glab api`` has no ``--jq`` flag (unlike ``gh``), so the verdict is
+    # parsed from the full project JSON in Python. Passing ``--jq`` makes
+    # glab exit non-zero with "Unknown flag", which silently defeats the
+    # private-repo carve-out for every GitLab repo.
     try:
         result = run_allowed_to_fail(
-            ["glab", "api", f"projects/{repo_path.replace('/', '%2F')}", "--jq", ".visibility"],
+            ["glab", "api", f"projects/{repo_path.replace('/', '%2F')}"],
             expected_codes=(0,),
             timeout=_PROBE_TIMEOUT_S,
         )
     except (CommandFailedError, OSError):
         return None
-    verdict = result.stdout.strip().upper()
-    return verdict or None
+    try:
+        project = json.loads(result.stdout)
+    except ValueError:
+        return None
+    visibility = project.get("visibility") if isinstance(project, dict) else None
+    if not isinstance(visibility, str):
+        return None
+    return visibility.strip().upper() or None
 
 
 def _slug_is_private(slug: str) -> bool:
