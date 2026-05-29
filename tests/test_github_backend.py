@@ -12,6 +12,7 @@ from teatree.backends.github import (
     GitHubCodeHost,
     ProjectItem,
     _gh_api_get,
+    _gh_api_get_paginated,
     _gh_api_patch,
     _gh_api_post,
     _gh_graphql,
@@ -62,6 +63,45 @@ class TestGhApiGet:
             mock_run.return_value = MagicMock(stdout="{}")
             _gh_api_get("/test", token="tok")
         assert mock_run.call_args[1]["token"] == "tok"
+
+
+class TestGhApiGetPaginated:
+    def test_flattens_slurped_pages(self) -> None:
+        pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+            result = _gh_api_get_paginated("repos/o/r/issues/5/comments?per_page=100")
+        argv = mock_run.call_args.args
+        assert "--paginate" in argv
+        assert "--slurp" in argv
+        assert "repos/o/r/issues/5/comments?per_page=100" in argv
+        assert result == [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    def test_passes_token(self) -> None:
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            _gh_api_get_paginated("repos/o/r/issues/5/comments", token="tok")
+        assert mock_run.call_args.kwargs["token"] == "tok"
+
+    def test_empty_pages_return_empty_list(self) -> None:
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
+            result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+        assert result == []
+
+    def test_non_array_outer_payload_returns_empty_list(self) -> None:
+        # A single-object endpoint accidentally passed here must not explode;
+        # ``--slurp`` always yields an outer array, but guard defensively.
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
+            result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+        assert result == []
+
+    def test_skips_non_list_pages(self) -> None:
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=json.dumps([[{"id": 1}], {"oops": True}]))
+            result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+        assert result == [{"id": 1}]
 
 
 class TestGhApiPost:
@@ -479,14 +519,43 @@ class TestGitHubCodeHost:
         assert result == {}
 
     def test_list_pr_comments(self) -> None:
+        # ``--slurp`` wraps each page in an outer array; one page → one inner list.
         notes = [{"id": 1, "body": "comment"}]
-        with patch.object(github_mod, "_gh_api_get", return_value=notes):
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=notes):
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == notes
 
     def test_list_pr_comments_returns_empty_for_non_list(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"error": "bad"}):
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=[]):
+            host = GitHubCodeHost()
+            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+        assert result == []
+
+    def test_list_pr_comments_paginates_beyond_the_first_page(self) -> None:
+        # A PR with >30 comments: GitHub's default page size silently caps a
+        # non-paginated GET at 30, so a ``## Test Plan`` note older than the 30
+        # most-recent comments goes unseen and the evidence-poster duplicates
+        # it every run. ``gh api --paginate --slurp`` returns every page as an
+        # outer array of per-page arrays; the helper flattens them so the
+        # dedup search sees the full comment history.
+        page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
+        page_two = [{"id": 100, "body": "## Test Plan"}]
+        slurped_pages = json.dumps([page_one, page_two])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped_pages)
+            host = GitHubCodeHost()
+            result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+        argv = mock_run.call_args.args
+        assert "--paginate" in argv
+        assert "--slurp" in argv
+        assert result == [*page_one, *page_two]
+        assert {"id": 100, "body": "## Test Plan"} in result
+
+    def test_list_pr_comments_returns_empty_when_slurp_yields_no_pages(self) -> None:
+        # No comments → ``--slurp`` emits ``[]`` (zero pages) → empty result.
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout="[]")
             host = GitHubCodeHost()
             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
         assert result == []
