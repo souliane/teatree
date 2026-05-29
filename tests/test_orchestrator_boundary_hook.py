@@ -1,339 +1,232 @@
-"""Tests for the orchestrator-execution-boundary gate (#836 §17.6 gate 2).
+"""Tests for the orchestrator-execution-boundary gate (#836 §17.6 gate 2, #115).
 
-The orchestrator (MAIN agent) is delegate-only (BLUEPRINT §17.4 /
-§17.8): it dispatches sub-agents and decides merges/clears; it must NOT
-itself Edit/Write/Read-sweep/Grep or run mutating Bash. Sub-agents are
-the hands that implement and are unaffected. The main-vs-sub-agent
-signal is the transcript's ``isSidechain`` marker (Claude Code logs
-sub-agent turns with ``isSidechain: true``); the gate fails open when
-the signal is unavailable (documented limitation — no false blocks).
+The orchestrator (MAIN agent) keeps its session responsive: it
+dispatches sub-agents and decides merges/clears, and should not tie its
+own session up running a LONG / HEAVY foreground Bash command (test
+suite, build, dev server, long sleep, full-tree sweep). Quick
+orientation Bash — ``git status``/``cat``/``ls``/``grep``/``git
+commit`` — passes; only the heavy denylist shapes are gated, and
+``run_in_background: true`` is the escape hatch. Sub-agents — the hands
+that implement — may run anything.
+
+#115 fixed the two original defects: (a) the gate was an allow-list that
+over-blocked quick orchestrator Bash, now a denylist; (b) it
+MISDETECTED genuine sub-agents as the main agent because the PreToolUse
+payload's ``transcript_path`` always points at the PARENT session
+transcript (``isSidechain: false`` tail), never the sub-agent's own. The
+reliable signal is the payload's ``agent_id`` (non-empty ⇒ sub-agent),
+read by ``_call_is_from_subagent``.
 """
 
 import json
+from pathlib import Path
+
+import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
-    _active_turn_is_sidechain,
+    _call_is_from_subagent,
     _is_orchestration_action,
+    _orchestrator_bash_gate_enabled,
     handle_enforce_orchestrator_boundary,
 )
 
 
-def _transcript(tmp_path, *, sidechain: bool | None):
-    """Write a one-turn transcript; ``sidechain`` None ⇒ omit the key."""
-    entry: dict = {"type": "assistant", "message": {"role": "assistant", "content": []}}
-    if sidechain is not None:
-        entry["isSidechain"] = sidechain
-    path = tmp_path / "transcript.jsonl"
-    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
-    return str(path)
+@pytest.fixture(autouse=True)
+def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate ``_orchestrator_bash_gate_enabled`` from the dev's real config.
+
+    The handler reads ``~/.teatree.toml``; the developer's real file may
+    set ``orchestrator_bash_gate_enabled = false`` (the #115 failsafe).
+    Point ``Path.home`` at a clean tmp dir so the gate is ON by default
+    for every test here. The kill-switch tests monkeypatch ``Path.home``
+    again to their own dir, overriding this fixture.
+    """
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
 
-class TestActiveTurnSidechainSignal:
-    def test_subagent_turn_detected(self, tmp_path):
-        assert _active_turn_is_sidechain(_transcript(tmp_path, sidechain=True)) is True
-
-    def test_main_agent_turn_detected(self, tmp_path):
-        assert _active_turn_is_sidechain(_transcript(tmp_path, sidechain=False)) is False
-
-    def test_no_marker_yields_none(self, tmp_path):
-        assert _active_turn_is_sidechain(_transcript(tmp_path, sidechain=None)) is None
-
-    def test_missing_transcript_yields_none(self):
-        assert _active_turn_is_sidechain("/no/such/transcript.jsonl") is None
-
-    def test_most_recent_marker_wins(self, tmp_path):
-        path = tmp_path / "t.jsonl"
-        path.write_text(
-            json.dumps({"type": "assistant", "isSidechain": False, "message": {"role": "assistant", "content": []}})
-            + "\n"
-            + json.dumps({"type": "assistant", "isSidechain": True, "message": {"role": "assistant", "content": []}})
-            + "\n",
-            encoding="utf-8",
-        )
-        assert _active_turn_is_sidechain(str(path)) is True
+def _main_agent_bash(command: str, *, run_in_background: bool | None = None) -> dict:
+    """A main-agent Bash payload (no ``agent_id``)."""
+    tool_input: dict = {"command": command}
+    if run_in_background is not None:
+        tool_input["run_in_background"] = run_in_background
+    return {"tool_name": "Bash", "tool_input": tool_input}
 
 
-class TestOrchestrationActionAllowList:
-    def test_task_dispatch_is_orchestration(self):
+def _subagent_bash(command: str) -> dict:
+    """A sub-agent Bash payload — carries a non-empty ``agent_id``."""
+    return {
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "agent_id": "a4ad83956ff699aaa",
+        "agent_type": "general-purpose",
+    }
+
+
+class TestCallIsFromSubagent:
+    def test_nonempty_agent_id_is_subagent(self) -> None:
+        assert _call_is_from_subagent({"agent_id": "a4ad83956ff699aaa"}) is True
+
+    def test_absent_agent_id_is_main_agent(self) -> None:
+        assert _call_is_from_subagent({"tool_name": "Bash"}) is False
+
+    def test_empty_agent_id_is_main_agent(self) -> None:
+        assert _call_is_from_subagent({"agent_id": ""}) is False
+
+
+class TestOrchestrationAction:
+    def test_task_dispatch_is_orchestration(self) -> None:
         assert _is_orchestration_action({"tool_name": "Task", "tool_input": {}}) is True
 
-    def test_ask_user_question_is_orchestration(self):
+    def test_ask_user_question_is_orchestration(self) -> None:
         assert _is_orchestration_action({"tool_name": "AskUserQuestion", "tool_input": {}}) is True
 
-    def test_t3_bash_is_orchestration(self):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "t3 teatree ticket clear 5 slug --reviewed-sha abc123"},
-        }
-        assert _is_orchestration_action(data) is True
+    def test_mcp_send_message_is_orchestration(self) -> None:
+        assert _is_orchestration_action({"tool_name": "mcp__claude_ai_Slack__slack_send_message"}) is True
 
-    def test_gh_pr_view_is_orchestration(self):
-        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr view 42 --json state"}}
-        assert _is_orchestration_action(data) is True
+    def test_mcp_view_read_is_orchestration(self) -> None:
+        assert _is_orchestration_action({"tool_name": "mcp__claude_ai_Slack__slack_read"}) is True
 
-    def test_git_status_is_orchestration(self):
-        data = {"tool_name": "Bash", "tool_input": {"command": "git status"}}
-        assert _is_orchestration_action(data) is True
-
-    def test_edit_is_not_orchestration(self):
-        assert _is_orchestration_action({"tool_name": "Edit", "tool_input": {}}) is False
-
-    def test_mutating_bash_is_not_orchestration(self):
-        data = {"tool_name": "Bash", "tool_input": {"command": "rm -rf build/ && touch x"}}
-        assert _is_orchestration_action(data) is False
+    def test_bash_is_not_decided_here(self) -> None:
+        # Bash is judged by the heavy denylist in the handler, not here.
+        assert _is_orchestration_action(_main_agent_bash("git status")) is False
 
 
-class TestMainAgentNonOrchestrationIsBlocked:
-    def test_main_agent_edit_is_flagged(self, tmp_path, capsys):
-        data = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/x", "old_string": "a", "new_string": "b"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-        out = json.loads(capsys.readouterr().out)
-        assert out["permissionDecision"] == "deny"
-        assert "orchestrator" in out["permissionDecisionReason"]
-        assert "delegate-only" in out["permissionDecisionReason"]
+class TestMainAgentQuickBashAllowed:
+    """Quick orientation/mutation Bash from the main agent passes through.
 
-    def test_main_agent_write_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Write",
-            "tool_input": {"file_path": "/x", "content": "y"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_investigative_grep_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Grep",
-            "tool_input": {"pattern": "TODO"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_mutating_bash_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "sed -i 's/a/b/' file.py"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-
-class TestSubAgentAndOrchestrationAreAllowed:
-    def test_subagent_edit_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/x", "old_string": "a", "new_string": "b"},
-            "transcript_path": _transcript(tmp_path, sidechain=True),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
-
-    def test_main_agent_task_dispatch_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Task",
-            "tool_input": {"description": "implement X"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
-
-    def test_main_agent_t3_merge_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "t3 teatree ticket merge 7 --human-authorized owner"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
-
-    def test_unknown_agent_fails_open_not_blocked(self, tmp_path):
-        # No isSidechain marker ⇒ cannot tell ⇒ must NOT block (no false block).
-        data = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/x", "old_string": "a", "new_string": "b"},
-            "transcript_path": _transcript(tmp_path, sidechain=None),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
-
-    def test_missing_transcript_fails_open(self):
-        data = {
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/x", "old_string": "a", "new_string": "b"},
-            "transcript_path": "",
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
-
-
-class TestRegisteredInChain:
-    def test_handler_is_in_pretooluse_chain(self):
-        assert handle_enforce_orchestrator_boundary in router._HANDLERS["PreToolUse"]
-
-
-class TestInvestigativeBashIsBlocked942:
-    """#942 — main-agent investigative Bash falls through the allow-list.
-
-    Covers ``cat``/``grep``/``rg``/``awk``/``sed`` of source or fetched
-    artifacts. The positive cases below were the recurring failure mode
-    the user surfaced in the issue: artifact download + Read sequence
-    (``cat /tmp/screenshot.png``) and repo-wide analysis grep
-    (``rg TODO src/``, ``grep -r ... src/``). The negative cases must
-    keep working because they are the sanctioned orchestrator surface:
-    single status checks, piped read-only inspection
-    (``gh pr view ... | grep state``), and pure orientation commands
-    (``echo``, ``pwd``, ``ls``).
+    These were BLOCKED under the old allow-list (#115 over-block); the
+    denylist inversion lets them through.
     """
 
-    def test_main_agent_cat_of_fetched_artifact_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "cat /tmp/screenshot.png"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_cat_of_source_file_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "cat src/teatree/foo.py"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_repo_wide_rg_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "rg TODO src/"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_recursive_grep_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "grep -r TODO src/"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_head_of_source_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "head -50 src/teatree/cli/overlay.py"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
-
-    def test_main_agent_awk_of_file_is_flagged(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "awk '/foo/{print}' src/teatree/foo.py"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is True
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git commit -m 'wip'",
+            "cat src/teatree/config.py",
+            "grep -rn TODO src/",
+            "ls -la",
+            "echo hello",
+            "rg pattern src/",
+            "head -50 file.py",
+            "sed -i 's/a/b/' file.py",
+            "gh pr view 42 --json state | grep state",
+            "t3 teatree ticket merge 7 --human-authorized owner",
+        ],
+    )
+    def test_quick_main_agent_bash_passes(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
 
 
-class TestSanctionedReadOnlyBashStillAllowed942:
-    """Negative cases the #942 fix must preserve unbroken."""
+class TestMainAgentHeavyBashBlocked:
+    """Heavy/long-running foreground Bash from the main agent is denied."""
 
-    def test_gh_pr_checks_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "gh pr checks 42"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run pytest --no-cov -q",
+            "tox -e py312",
+            "t3 teatree run backend",
+            "t3 myapp e2e smoke",
+            "python manage.py runserver",
+            "nx serve frontend",
+            "docker compose up -d",
+            "npx playwright test",
+            "playwright test specs/",
+            "npm run build",
+            "npm install",
+            "npm ci",
+            "pipenv install",
+            "pip install requests",
+            "uv sync",
+            "vite build",
+            "webpack --mode production",
+            "cargo build --release",
+            "cargo test",
+            "make all",
+            "sleep 600",
+            "find . -name '*.py' -exec grep -l TODO {} ;",
+            "ls -laR /Users/adrien/workspace",
+        ],
+    )
+    def test_heavy_main_agent_bash_blocked(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
-    def test_gh_pr_view_piped_to_grep_is_allowed(self, tmp_path):
-        # The orchestrator regex matches the START of the command. A
-        # primary read-only verb piped to grep/cat/jq is still a
-        # sanctioned status check.
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "gh pr view 42 --json state | grep state"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+    def test_block_message_mentions_run_in_background_and_kill_switch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        reason = out["permissionDecisionReason"]
+        assert "long-running" in reason or "heavy" in reason
+        assert "run_in_background" in reason
+        assert "orchestrator_bash_gate_enabled" in reason
 
-    def test_glab_mr_view_piped_to_jq_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "glab mr view 7 | grep '^state'"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
 
-    def test_t3_ticket_clear_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "t3 teatree ticket clear 5 slug --reviewed-sha abc123 --reviewer-identity x"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+class TestHeavyBashEscapeHatch:
+    def test_heavy_with_run_in_background_is_allowed(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest", run_in_background=True)) is False
 
-    def test_git_status_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git status"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+    def test_subagent_heavy_bash_is_allowed(self) -> None:
+        # The #115 regression test: a genuine sub-agent (non-empty
+        # ``agent_id``) running a heavy command must NOT be blocked, even
+        # though the payload's transcript_path would read isSidechain:false.
+        assert handle_enforce_orchestrator_boundary(_subagent_bash("uv run pytest --no-cov -q")) is False
 
-    def test_echo_orientation_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "echo $T3_REPO"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+    def test_subagent_dev_server_is_allowed(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_subagent_bash("nx serve frontend")) is False
 
-    def test_pwd_orientation_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "pwd"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
 
-    def test_ls_orientation_is_allowed(self, tmp_path):
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls -la"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+class TestNonBashToolsArePassThrough:
+    """The gate now only governs Bash — Edit/Write/Read/Grep pass through.
 
-    def test_subagent_grep_is_still_allowed(self, tmp_path):
-        # Sub-agents implement — they may grep source freely.
-        data = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "grep -r TODO src/"},
-            "transcript_path": _transcript(tmp_path, sidechain=True),
-        }
-        assert handle_enforce_orchestrator_boundary(data) is False
+    Investigative/implementation tools are no longer blocked for the main
+    agent (4.x-class agents inspect freely); the boundary is narrowed to
+    heavy Bash only.
+    """
+
+    @pytest.mark.parametrize("tool_name", ["Edit", "Write", "NotebookEdit", "Read", "Grep", "Glob"])
+    def test_non_bash_tool_passes(self, tool_name: str) -> None:
+        assert handle_enforce_orchestrator_boundary({"tool_name": tool_name, "tool_input": {}}) is False
+
+
+class TestGateKillSwitch:
+    def test_gate_disabled_via_toml_passes_all(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path
+        (home / ".teatree.toml").write_text("[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        assert _orchestrator_bash_gate_enabled() is False
+        # Even a heavy foreground main-agent command passes when disabled.
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is False
+
+    def test_gate_enabled_by_default_when_key_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path
+        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        assert _orchestrator_bash_gate_enabled() is True
+
+    def test_gate_enabled_when_config_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        assert _orchestrator_bash_gate_enabled() is True
+
+    def test_gate_enabled_on_broken_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / ".teatree.toml").write_text("this is not = valid = toml [[[", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        assert _orchestrator_bash_gate_enabled() is True
 
 
 class TestMainAgentForegroundAgentIsBlocked1442:
     """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
 
-    Foreground Agent calls from the main agent block the orchestrator
-    for the entire sub-agent runtime (often 30+ min) and are the source
-    of a recurring failure (memory rule
-    ``feedback_always_run_in_background_for_sub_agent_dispatch``). The
-    gate denies the call when the main agent dispatches an Agent without
-    ``run_in_background: true``; background calls are allowed, and a
-    sub-agent dispatching its own Agent (sidechain=True) is allowed to
-    pick foreground if it wants.
+    Detection now uses ``agent_id`` (the #115 fix) instead of the
+    transcript ``isSidechain`` read.
     """
 
     _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
 
-    def test_agent_foreground_blocked_in_main_agent(self, tmp_path, capsys):
-        data = {
-            "tool_name": "Agent",
-            "tool_input": {"description": "implement X", "run_in_background": False},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
+    def test_agent_foreground_blocked_in_main_agent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
         assert handle_enforce_orchestrator_boundary(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
@@ -341,32 +234,29 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert "run_in_background" in out["permissionDecisionReason"]
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
-    def test_agent_foreground_blocked_when_field_absent(self, tmp_path, capsys):
-        # Default Agent behavior is foreground when the key is omitted.
-        data = {
-            "tool_name": "Agent",
-            "tool_input": {"description": "implement X"},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
+    def test_agent_foreground_blocked_when_field_absent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X"}}
         assert handle_enforce_orchestrator_boundary(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
-    def test_agent_background_allowed_in_main_agent(self, tmp_path):
-        data = {
-            "tool_name": "Agent",
-            "tool_input": {"description": "implement X", "run_in_background": True},
-            "transcript_path": _transcript(tmp_path, sidechain=False),
-        }
+    def test_agent_background_allowed_in_main_agent(self) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": True}}
         assert handle_enforce_orchestrator_boundary(data) is False
 
-    def test_agent_foreground_allowed_in_sub_agent(self, tmp_path):
-        # Sub-agent dispatching its own Agent — sidechain=True ⇒ allowed
-        # to pick foreground, the guard only governs main-agent dispatch.
+    def test_agent_foreground_allowed_in_sub_agent(self) -> None:
+        # Sub-agent (non-empty agent_id) dispatching its own Agent may
+        # pick foreground — the guard only governs main-agent dispatch.
         data = {
             "tool_name": "Agent",
             "tool_input": {"description": "nested work", "run_in_background": False},
-            "transcript_path": _transcript(tmp_path, sidechain=True),
+            "agent_id": "a4ad83956ff699aaa",
+            "agent_type": "general-purpose",
         }
         assert handle_enforce_orchestrator_boundary(data) is False
+
+
+class TestRegisteredInChain:
+    def test_handler_is_in_pretooluse_chain(self) -> None:
+        assert handle_enforce_orchestrator_boundary in router._HANDLERS["PreToolUse"]

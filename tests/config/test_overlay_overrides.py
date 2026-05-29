@@ -289,6 +289,37 @@ notify_on_post_on_behalf = false
 
         assert get_effective_settings().notify_on_post_on_behalf is False
 
+    def test_overlay_can_override_orchestrator_bash_gate_enabled(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#115: per-overlay kill-switch for the orchestrator-Bash gate.
+
+        An overlay can disable the heavy-Bash boundary gate while the
+        global default stays on. Runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "looseshell")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+orchestrator_bash_gate_enabled = true
+
+[overlays.looseshell]
+class = "x.y:Z"
+orchestrator_bash_gate_enabled = false
+""",
+        )
+
+        assert get_effective_settings().orchestrator_bash_gate_enabled is False
+
     def test_overlay_can_override_max_concurrent_local_stacks(
         self,
         config_file: Path,
