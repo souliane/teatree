@@ -104,7 +104,7 @@ class ReviewService:
 
         return post_draft_note_impl(self, repo, mr, note, file=file, line=line)
 
-    def post_draft_note(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-draft-note`` CLI flags; ``evidence`` is the #1280 structured-evidence record and must stay a kwarg on this surface.
+    def post_draft_note(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-draft-note`` CLI flags; ``evidence`` is the #1280 structured-evidence record and the ``allow_*`` overrides are the #126 documented escapes — all must stay kwargs on this surface.
         self,
         repo: str,
         mr: int,
@@ -113,6 +113,8 @@ class ReviewService:
         file: str = "",
         line: int = 0,
         evidence: FindingEvidence | None = None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
     ) -> tuple[str, int]:
         """Post a draft note. Returns (message, exit_code).
 
@@ -125,10 +127,20 @@ class ReviewService:
         Gated by the pre-publish chain in :meth:`_run_pre_publish_gates` —
         ``on_behalf_post_mode`` (#960), colleague-MR shape (#1114), TODO-anchor
         (#1186), and structured-evidence (#1280, requires ``evidence`` on
-        ``missing/wrong/broken`` finding bodies).
+        ``missing/wrong/broken`` finding bodies). ``allow_long_review`` /
+        ``allow_todo_blocker`` are the documented per-call escapes for the
+        shape and TODO-anchor gates (#126).
         """
         refusal = self._run_pre_publish_gates(
-            repo=repo, mr=mr, note=note, file=file, line=line, action="post_draft_note", evidence=evidence
+            repo=repo,
+            mr=mr,
+            note=note,
+            file=file,
+            line=line,
+            action="post_draft_note",
+            evidence=evidence,
+            allow_long_review=allow_long_review,
+            allow_todo_blocker=allow_todo_blocker,
         )
         if refusal:
             return refusal, 1
@@ -144,18 +156,38 @@ class ReviewService:
         line: int,
         action: str,
         evidence: FindingEvidence | None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
     ) -> str:
-        """Run on-behalf (#960) → shape (#1114) → TODO-anchor (#1186) → evidence (#1280); first refusal or ``""``."""
+        """Run on-behalf (#960) → shape (#1114) → TODO-anchor (#1186) → evidence (#1280); first refusal or ``""``.
+
+        ``allow_long_review`` / ``allow_todo_blocker`` are the #126 documented
+        escapes: each lets exactly one sibling gate proceed for a
+        legitimately-authorized action. They never relax the on-behalf or
+        evidence gates.
+        """
         blocked = check_on_behalf(repo, mr, action)
         if blocked:
             return blocked
         encoded = repo.replace("/", "%2F")
         api = self._get_api()
-        shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=note, inline=bool(file and line))
+        shape_error = check_review_shape(
+            api=api,
+            encoded_repo=encoded,
+            mr=mr,
+            body=note,
+            inline=bool(file and line),
+            allow_long_review=allow_long_review,
+        )
         if shape_error:
             return shape_error
         todo_error = check_todo_anchor(
-            api=api, encoded_repo=encoded, mr=mr, body=note, anchor=InlineAnchor(file=file, line=line)
+            api=api,
+            encoded_repo=encoded,
+            mr=mr,
+            body=note,
+            anchor=InlineAnchor(file=file, line=line),
+            allow_todo_blocker=allow_todo_blocker,
         )
         if todo_error:
             return todo_error
@@ -167,7 +199,7 @@ class ReviewService:
 
         return post_comment_impl(self, repo, mr, note, file=file, line=line)
 
-    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` (#1207 default-flip) and ``evidence`` (#1280) must stay kwargs on this surface.
+    def post_comment(  # noqa: PLR0913 — public service method whose params map 1:1 to the ``t3 review post-comment`` CLI flags; ``live`` (#1207 default-flip), ``evidence`` (#1280) and the ``allow_*`` escapes (#126) must stay kwargs on this surface.
         self,
         repo: str,
         mr: int,
@@ -177,6 +209,8 @@ class ReviewService:
         line: int = 0,
         live: bool = False,
         evidence: FindingEvidence | None = None,
+        allow_long_review: bool = False,
+        allow_todo_blocker: bool = False,
     ) -> tuple[str, int]:
         """Post an MR comment — DRAFT by default; ``--live`` needs a Slack-recorded LivePostApproval (#1207).
 
@@ -187,16 +221,37 @@ class ReviewService:
         when ``note`` matches an "X is missing/wrong/broken" pattern, the
         ``evidence`` kwarg must carry a verified
         :class:`~teatree.cli.review_evidence_gate.FindingEvidence` record.
+
+        ``allow_long_review`` / ``allow_todo_blocker`` are the #126
+        documented per-call escapes for the colleague-MR shape and the
+        TODO-anchor gates respectively.
         """
         from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
         if not live:
-            msg, code = self.post_draft_note(repo, mr, note, file=file, line=line, evidence=evidence)
+            msg, code = self.post_draft_note(
+                repo,
+                mr,
+                note,
+                file=file,
+                line=line,
+                evidence=evidence,
+                allow_long_review=allow_long_review,
+                allow_todo_blocker=allow_todo_blocker,
+            )
             if code == 0:
                 notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
             return msg, code
         refusal = self._run_pre_publish_gates(
-            repo=repo, mr=mr, note=note, file=file, line=line, action="post_comment", evidence=evidence
+            repo=repo,
+            mr=mr,
+            note=note,
+            file=file,
+            line=line,
+            action="post_comment",
+            evidence=evidence,
+            allow_long_review=allow_long_review,
+            allow_todo_blocker=allow_todo_blocker,
         )
         if refusal:
             return refusal, 1

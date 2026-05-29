@@ -210,6 +210,41 @@ class Command(TyperCommand):
         worktree.save()
         return f"DB refreshed for {worktree.db_name}"
 
+    @command()
+    def approve(
+        self,
+        op: str = typer.Argument(help="The DB op to authorize (e.g. `fresh-dump`)."),
+        tenant: str = typer.Argument(help="The tenant / source database the op is scoped to."),
+        *,
+        approver: str = typer.Option(
+            ...,
+            "--approver",
+            help=(
+                "Id of the human user recording the approval. Refused if it names a "
+                "maker/coding-agent/loop role — the executing agent can never "
+                "self-authorize the op (#953, mirrors MergeClear §17.8 / approve-on-behalf #960)."
+            ),
+        ),
+    ) -> str:
+        """Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126).
+
+        The recorded-approval channel is the no-TTY satisfier for
+        ``db refresh --fresh-dump``: a chat-only operator records the
+        approval here, then the agent re-runs ``db refresh --fresh-dump
+        --user-authorized <id>`` which consumes the row single-use. The
+        scope is normalized identically at record and consume, so the
+        recorded ``(op, tenant)`` matches the gate's expected scope (named
+        in its refusal message) regardless of case/whitespace.
+        """
+        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415
+
+        try:
+            approval = DbApproval.record(op, tenant, approver)
+        except DbApprovalError as err:
+            self.stderr.write(f"Refused: {err}")
+            raise SystemExit(1) from err
+        return f"OK recorded DbApproval id={approval.pk} op={approval.op!r} tenant={approval.tenant!r}"
+
     @command(name="restore-ci")
     def restore_ci(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
         """Restore the worktree database from the latest CI dump."""
