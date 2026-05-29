@@ -468,6 +468,8 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      unresolved.                                             │
 │ approve-live-post    Mint a single-use :class:`LivePostApproval` for         │
 │                      ``<mr-url>``.                                           │
+│ authorize            Record a one-step authorization that lets               │
+│                      ``post-comment --live`` publish.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -900,6 +902,43 @@ Usage: t3 review approve-live-post [OPTIONS] MR_URL
 │                               human authorization (#126). Alternative to     │
 │                               --slack-ts; one of the two is required.        │
 │ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review authorize`
+
+```
+Usage: t3 review authorize [OPTIONS] SCOPE
+
+ Record a one-step authorization that lets ``post-comment --live`` publish.
+
+ Collapses the two-command dance (``approve-on-behalf`` +
+ ``approve-live-post``) into one: writes the durable
+ :class:`OnBehalfApproval` for ``(<scope>, post_comment)`` AND
+ mints the single-use :class:`LivePostApproval` for the same MR,
+ so the next matching ``t3 review post-comment <mr> ... --live``
+ invocation publishes and consumes both tokens. Any subsequent
+ live post on the same MR requires a fresh ``authorize``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    scope      TEXT  MR reference the authorization is scoped to — accepts  │
+│                       the GitLab/GitHub URL (e.g.                            │
+│                       ``https://gitlab.com/org/proj/-/merge_requests/42``)   │
+│                       or the canonical ``<org/proj>!<iid>`` token. Records   │
+│                       ONE durable authorization that lets the next ``t3      │
+│                       review post-comment <mr> ... --live`` publish — no     │
+│                       separate ``approve-live-post`` step.                   │
+│                       [required]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Identifier of the human user recording the        │
+│                            authorization. Refused if it names a              │
+│                            maker/coding-agent/loop role — the executing      │
+│                            agent can never self-authorize the post (#960,    │
+│                            mirrors DbApproval #953 / MergeClear section      │
+│                            17.8).                                            │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
