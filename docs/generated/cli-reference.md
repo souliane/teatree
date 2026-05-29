@@ -3120,6 +3120,8 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ migrate          Apply pending migrations to the runtime self-DB             │
+│                  (non-destructive self-rescue).                              │
 │ refresh          Re-import the worktree database from dump/DSLR.             │
 │ restore-ci       Restore database from the latest CI dump.                   │
 │ reset-passwords  Reset all user passwords to a known dev value.              │
@@ -3127,6 +3129,35 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │                  as JSON.                                                    │
 │ shell            Drop into a Django shell against the resolved (gate)        │
 │                  control DB.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db migrate`
+
+```
+Usage: t3 teatree db migrate [OPTIONS]
+
+ Apply pending migrations to the runtime self-DB, non-destructively.
+
+ The always-available self-rescue for a stale runtime control DB —
+ the exact gap that locks out the sanctioned merge path
+ (``ticket clear``/``merge`` refuse on ANY pending migration). It
+ delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+ runs ``migrate --no-input`` *in this process* against the same
+ connection the merge gate reads, so "migrate then re-check"
+ converges on one DB.
+
+ Unlike ``resetdb`` this drops nothing — live ticket/session/lease
+ rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
+ cannot target a different (auto-isolated) DB than the runtime
+ resolves. Dispatched via teatree-core (``python -m teatree``) so it
+ reaches the runtime self-DB regardless of which overlay invokes it.
+
+ Fail-closed: a real migrate failure exits non-zero with the captured
+ error, never leaving a half-migrated DB look like a success.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3305,18 +3336,26 @@ Usage: t3 teatree pr create [OPTIONS] TICKET_ID
  ``--title`` overrides the PR title (default: last commit subject).
  Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
 
+ ``--skip-validation`` skips the heavy ship gates (visual QA, branch
+ currency, FSM phase check) but STILL runs the cheap MR
+ title/description format check. ``--skip-mr-format-check`` is the
+ separate, explicit opt-in that disables that format check too — needed
+ only in the rare case where a non-canonical title must ship anyway.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --title                                      TEXT                            │
-│ --dry-run            --no-dry-run                  [default: no-dry-run]     │
-│ --skip-validation    --no-skip-validation          [default:                 │
-│                                                    no-skip-validation]       │
-│ --skip-visual-qa                             TEXT                            │
-│ --sync               --no-sync                     [default: no-sync]        │
-│ --help                                             Show this message and     │
-│                                                    exit.                     │
+│ --title                                          TEXT                        │
+│ --dry-run                --no-dry-run                  [default: no-dry-run] │
+│ --skip-validation        --no-skip-validation          [default:             │
+│                                                        no-skip-validation]   │
+│ --skip-mr-format-che…    --no-skip-mr-format…          [default:             │
+│                                                        no-skip-mr-format-ch… │
+│ --skip-visual-qa                                 TEXT                        │
+│ --sync                   --no-sync                     [default: no-sync]    │
+│ --help                                                 Show this message and │
+│                                                        exit.                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

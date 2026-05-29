@@ -36,6 +36,7 @@ Database operations on worktrees.
 
 | Subcommand | Arguments | Returns | Description |
 |------------|-----------|---------|-------------|
+| `migrate` | — | string | Applies pending migrations to the runtime self-DB in-process (non-destructive self-rescue for a stale control DB; the always-available unblock when the merge path refuses on unapplied migrations) |
 | `refresh` | `--path`, `--dslr-snapshot`, `--dump-path`, `--force` | string | Re-imports the worktree database from DSLR snapshot or dump, runs post-DB steps and password reset |
 | `restore-ci` | `--path` | string | Restores the worktree database from the latest CI dump |
 | `reset-passwords` | `--path` | string | Resets all user passwords to a known dev value via the overlay's reset command |
