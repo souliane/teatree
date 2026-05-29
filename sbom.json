@@ -347,7 +347,22 @@
     },
     {
       "bom-ref": "requirements-L67",
-      "description": "requirements line 67: rich==15.0.0",
+      "description": "requirements line 67: pyyaml==6.0.3",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/pyyaml/"
+        }
+      ],
+      "name": "pyyaml",
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "type": "library",
+      "version": "6.0.3"
+    },
+    {
+      "bom-ref": "requirements-L69",
+      "description": "requirements line 69: rich==15.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -361,8 +376,8 @@
       "version": "15.0.0"
     },
     {
-      "bom-ref": "requirements-L71",
-      "description": "requirements line 71: shellingham==1.5.4",
+      "bom-ref": "requirements-L73",
+      "description": "requirements line 73: shellingham==1.5.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -376,8 +391,8 @@
       "version": "1.5.4"
     },
     {
-      "bom-ref": "requirements-L73",
-      "description": "requirements line 73: six==1.17.0",
+      "bom-ref": "requirements-L75",
+      "description": "requirements line 75: six==1.17.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -391,8 +406,8 @@
       "version": "1.17.0"
     },
     {
-      "bom-ref": "requirements-L75",
-      "description": "requirements line 75: sqlparse==0.5.5",
+      "bom-ref": "requirements-L77",
+      "description": "requirements line 77: sqlparse==0.5.5",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -406,8 +421,8 @@
       "version": "0.5.5"
     },
     {
-      "bom-ref": "requirements-L77",
-      "description": "requirements line 77: tomlkit==0.15.0",
+      "bom-ref": "requirements-L79",
+      "description": "requirements line 79: tomlkit==0.15.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -421,8 +436,8 @@
       "version": "0.15.0"
     },
     {
-      "bom-ref": "requirements-L79",
-      "description": "requirements line 79: typer==0.25.1",
+      "bom-ref": "requirements-L81",
+      "description": "requirements line 81: typer==0.25.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -436,8 +451,8 @@
       "version": "0.25.1"
     },
     {
-      "bom-ref": "requirements-L81",
-      "description": "requirements line 81: typing-extensions==4.15.0",
+      "bom-ref": "requirements-L83",
+      "description": "requirements line 83: typing-extensions==4.15.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -451,8 +466,8 @@
       "version": "4.15.0"
     },
     {
-      "bom-ref": "requirements-L86",
-      "description": "requirements line 86: tzdata==2026.2 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L88",
+      "description": "requirements line 88: tzdata==2026.2 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -534,10 +549,10 @@
       "ref": "requirements-L67"
     },
     {
-      "ref": "requirements-L7"
+      "ref": "requirements-L69"
     },
     {
-      "ref": "requirements-L71"
+      "ref": "requirements-L7"
     },
     {
       "ref": "requirements-L73"
@@ -555,7 +570,10 @@
       "ref": "requirements-L81"
     },
     {
-      "ref": "requirements-L86"
+      "ref": "requirements-L83"
+    },
+    {
+      "ref": "requirements-L88"
     },
     {
       "ref": "requirements-L9"
