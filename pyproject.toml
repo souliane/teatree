@@ -298,6 +298,7 @@ python-version = "3.13"
 [tool.ty.analysis]
 allowed-unresolved-imports = [
   "django.tasks", # Django 6 exposes this dynamically and ty cannot resolve it yet, even with django-types
+  "markitdown",   # Optional dependency (markdown extra), guarded by try/except ImportError
   "mkdocs",       # Optional dependency, guarded by try/except ImportError
   "lib.env",      # Legacy scripts — guarded by try/except ImportError
   "lib.gitlab",   # Legacy scripts — guarded by try/except ImportError
