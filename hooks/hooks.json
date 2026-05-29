@@ -80,6 +80,17 @@
         ]
       }
     ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event TaskCreated",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "InstructionsLoaded": [
       {
         "hooks": [
