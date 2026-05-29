@@ -216,6 +216,104 @@ class TestDbRefreshRecordedChannel(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_vii_non_tty_no_approval_refusal_names_expected_scope(self) -> None:
+        """#126 gap 4: the non-TTY dead-end must surface the expected op+tenant scope.
+
+        Without a recorded approval and no TTY the gate refuses — but a
+        chat-only operator is then stuck unless the refusal tells them
+        exactly which ``DbApproval`` to record (mirrors
+        ``OnBehalfPostBlockedError`` naming the satisfying invocation).
+        The refusal message must name the op and tenant.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "test"
+            wt_dir.mkdir()
+            _make_worktree(wt_dir)
+            stdin = _FakeStream(tty=False, content="yes\n")
+            stdout = _FakeStream(tty=False)
+            stderr = io.StringIO()
+            with patch("sys.stdin", stdin), patch("sys.stdout", stdout), pytest.raises(SystemExit):
+                call_command("db", "refresh", path=str(wt_dir), fresh_dump=True, user_authorized="", stderr=stderr)
+            # The command surfaces the refusal on stderr; the hint must name
+            # the op+tenant scope so a chat-only operator knows what to record.
+            surfaced = stderr.getvalue()
+            assert _OP in surfaced, f"refusal must name the op scope: {surfaced!r}"
+            assert _TENANT in surfaced, f"refusal must name the tenant scope: {surfaced!r}"
+
+
+class TestDbApprovalScopeHint(TestCase):
+    """The recorded-approval refusal surfaces the expected scope (#126 gap 4)."""
+
+    def test_require_approval_non_tty_no_record_names_scope(self) -> None:
+        """A non-TTY refusal with no recorded approval names op+tenant in the message."""
+        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+        from teatree.utils.approval import ApprovalRefusedError  # noqa: PLC0415
+
+        stdin = _FakeStream(tty=False, content="yes\n")
+        stdout = _FakeStream(tty=False)
+        with pytest.raises(ApprovalRefusedError) as exc:
+            require_approval(
+                "Pull fresh DEV dump?",
+                ApprovalScope(op=_OP, tenant=_TENANT, user_authorized=""),
+                stdin=stdin,
+                stdout=stdout,
+            )
+        message = str(exc.value)
+        assert _OP in message, f"refusal must name the op scope: {message!r}"
+        assert _TENANT in message, f"refusal must name the tenant scope: {message!r}"
+        assert "approve" in message.lower(), f"refusal must point at the recorded-approval remedy: {message!r}"
+
+    def test_require_approval_non_tty_matching_record_proceeds(self) -> None:
+        """A non-TTY caller WITH a matching recorded approval proceeds (no refusal)."""
+        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+
+        DbApproval.record(_OP, _TENANT, _USER)
+        stdin = _FakeStream(tty=False, content="")
+        stdout = _FakeStream(tty=False)
+        require_approval(
+            "Pull fresh DEV dump?",
+            ApprovalScope(op=_OP, tenant=_TENANT, user_authorized=_USER),
+            stdin=stdin,
+            stdout=stdout,
+        )
+        assert DbApproval.objects.get().consumed_at is not None
+
+
+class TestDbApprovalScopeNormalization(TestCase):
+    """op/tenant are normalized identically at record and consume (#126 gap 4).
+
+    Same drift class as the on-behalf target: a recorded approval whose op
+    differs only by case/whitespace from the consume token must still match,
+    while a genuinely different op/tenant must NOT.
+    """
+
+    def test_op_case_and_whitespace_normalized_at_both_ends(self) -> None:
+        DbApproval.record("  Fresh-Dump  ", _TENANT, _USER)
+        consumed = DbApproval.consume("fresh-dump", _TENANT)
+        assert consumed is not None, "a case/whitespace-variant op must still match"
+
+    def test_tenant_whitespace_normalized(self) -> None:
+        DbApproval.record(_OP, "  test_db  ", _USER)
+        consumed = DbApproval.consume(_OP, "test_db")
+        assert consumed is not None
+
+    def test_distinct_op_still_does_not_match(self) -> None:
+        DbApproval.record(_OP, _TENANT, _USER)
+        assert DbApproval.consume("dslr-snapshot", _TENANT) is None
+
+    def test_distinct_tenant_still_does_not_match(self) -> None:
+        DbApproval.record(_OP, _TENANT, _USER)
+        assert DbApproval.consume(_OP, "tenant-b") is None
+
+    def test_single_use_preserved_across_normalized_forms(self) -> None:
+        DbApproval.record("FRESH-DUMP", _TENANT, _USER)
+        assert DbApproval.consume("fresh-dump", _TENANT) is not None
+        assert DbApproval.consume("Fresh-Dump", _TENANT) is None
+
+
+class TestDbRefreshRecordedChannelTtyRegression(TestCase):
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_vi_interactive_tty_path_still_works(self) -> None:
         """Case (vi): regression — a human at a TTY answering ``y`` still works.
 

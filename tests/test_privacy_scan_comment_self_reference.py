@@ -23,6 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.hooks import privacy_diff_comments
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
@@ -177,16 +178,16 @@ class TestDetectorUnit:
 class TestScriptEndToEnd:
     """The script blocks a diff with an MR-ref comment on an added line."""
 
-    def test_python_mr_comment_exits_nonzero(self) -> None:
+    def test_python_mr_comment_exits_findings_code(self) -> None:
         diff = _diff("src/teatree/x.py", "    # Consolidated into !7511")  # privacy-scan:allow
         result = _run(diff)
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert _CATEGORY in result.stdout
 
-    def test_ts_workstream_comment_exits_nonzero(self) -> None:
+    def test_ts_workstream_comment_exits_findings_code(self) -> None:
         diff = _diff("src/app/widget.ts", "  // W20 sandbox fix")  # privacy-scan:allow
         result = _run(diff)
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert _CATEGORY in result.stdout
 
     def test_legit_security_comment_exits_zero(self) -> None:

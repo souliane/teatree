@@ -36,7 +36,7 @@ import pytest
 from django.db import connections
 
 from teatree.core.models import OnBehalfApproval
-from teatree.core.review_request_guard import canonical_mr_url
+from teatree.core.models.on_behalf_approval import canonical_on_behalf_target
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
@@ -141,7 +141,7 @@ class TestReviewRequestPostConcurrentApproval:
     """Two concurrent posts on the same MR consume the #960 approval once."""
 
     def test_concurrent_posts_consume_one_approval(self, tmp_path: Path) -> None:
-        canonical = canonical_mr_url(_MR_URL)
+        canonical = canonical_on_behalf_target(_MR_URL)
         alias = _make_alias(tmp_path)
         try:
             OnBehalfApproval.objects.using(alias).create(
@@ -168,7 +168,7 @@ class TestReviewRequestPostConcurrentApproval:
         """
         from teatree.core.models import OnBehalfAudit  # noqa: PLC0415
 
-        canonical = canonical_mr_url(_MR_URL)
+        canonical = canonical_on_behalf_target(_MR_URL)
         alias = _make_alias(tmp_path)
         try:
             OnBehalfApproval.objects.using(alias).create(

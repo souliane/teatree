@@ -17,9 +17,12 @@ The parser walks a Bash command string in two passes:
     command segment and pull out body-flag values, heredoc-style content,
     and attached short-option payloads (``-d'{...}'``).
 
-Indirect body sources we cannot inspect (``gh api --input -``, missing
-files, opaque ``-d @file`` references) fail closed via a sentinel
-string that downstream scanning treats as a HIGH match.
+Indirect body sources we cannot inspect (``gh api --input -``, opaque
+``-d @file`` references, a missing ``git commit -F`` message file) fail
+closed via a sentinel string that downstream scanning treats as a HIGH
+match. A missing ``gh``/``glab`` ``--body-file`` is the one exception:
+an absent drafted PR/issue body is "needs-inline", not a leak, so it
+contributes no payload rather than a fail-closed HIGH (#126).
 """
 
 import json
@@ -363,48 +366,62 @@ def _walk_body_file_flags(
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=False)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = _attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=False)
                 break
         if attached is not None:
             i += 1
             continue
         if is_git and word == "-F" and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=True)
             i += 2
             continue
         if is_git:
             attached = _attached_value(word, "-F")
             if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=True)
                 i += 1
                 continue
         i += 1
 
 
-def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str, str]) -> None:
+def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str, str], *, fail_closed: bool) -> None:
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
 
     Resolution order: the on-disk file, then an in-command heredoc that
-    writes to that path (``cat > path <<EOF … EOF``), then the fail-closed
-    sentinel. The heredoc fallback closes the #126 false positive where a
-    body written to a temp file and committed via ``-F`` in the same
-    command was unreadable at PreToolUse scan time (the hook runs BEFORE
-    the file is created).
+    writes to that path (``cat > path <<EOF … EOF``), then the
+    ``fail_closed`` branch. The heredoc fallback closes the #126 false
+    positive where a body written to a temp file and committed via ``-F``
+    in the same command was unreadable at PreToolUse scan time (the hook
+    runs BEFORE the file is created).
+
+    ``fail_closed`` selects what an unresolvable path does:
+
+    * ``True`` (``git commit -F <path>``) — append the fail-closed
+        sentinel. A commit message cannot be amended post-push without a
+        force-push we do not permit, so an unreadable commit-message file
+        must hard-block, matching the #1207 rationale.
+    * ``False`` (``gh``/``glab`` ``--body-file`` / ``--description-file``
+        / ``--file``) — append NOTHING. A drafted PR/issue body file that
+        does not exist at scan time is "needs-inline", not a leak: there
+        is nothing to scan, and a public post that genuinely carries a
+        quote still reaches the gate via its inline ``--body`` text.
+        Treating an absent draft file as a HIGH match denied every such
+        publish (#126).
     """
     content = _read_file_arg(path)
     if content is None:
         content = heredoc_files.get(path)
-    if content is None:
-        payloads.append(FAIL_CLOSED_SENTINEL)
-    else:
+    if content is not None:
         payloads.append(content)
+    elif fail_closed:
+        payloads.append(FAIL_CLOSED_SENTINEL)
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:

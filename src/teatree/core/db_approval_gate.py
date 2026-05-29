@@ -28,8 +28,8 @@ unchanged.
 from dataclasses import dataclass
 from typing import TextIO
 
-from teatree.core.models.db_approval import DbApproval, DbAudit
-from teatree.utils.approval import require_interactive_approval
+from teatree.core.models.db_approval import DbApproval, DbAudit, canonical_db_scope
+from teatree.utils.approval import ApprovalRefusedError, require_interactive_approval
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +63,13 @@ def require_approval(prompt: str, scope: ApprovalScope, *, stdin: TextIO, stdout
     the requested op+tenant (wrong op/tenant scope, already consumed, or
     none recorded), fall back to the interactive-TTY path
     (:func:`~teatree.utils.approval.require_interactive_approval`) entirely
-    unchanged — a human at a terminal can still answer directly. Never
-    self-authorizing, per-invocation single-use, scoped strictly to
-    op+tenant.
+    unchanged — a human at a terminal can still answer directly. When that
+    path refuses for lack of a TTY (the autonomous-loop dead-end), the
+    refusal is re-raised with the **expected op+tenant scope** and the exact
+    ``approve``-recording remedy named (mirroring ``OnBehalfPostBlockedError``),
+    so a chat-only operator is not left guessing which ``DbApproval`` to
+    record (#126). Never self-authorizing, per-invocation single-use, scoped
+    strictly to op+tenant.
     """
     if scope.user_authorized.strip():
         consumed = DbApproval.consume(scope.op, scope.tenant)
@@ -78,4 +82,24 @@ def require_approval(prompt: str, scope: ApprovalScope, *, stdin: TextIO, stdout
             )
             return
 
-    require_interactive_approval(prompt, stdin=stdin, stdout=stdout)
+    try:
+        require_interactive_approval(prompt, stdin=stdin, stdout=stdout)
+    except ApprovalRefusedError as refused:
+        raise ApprovalRefusedError(_scope_hint(scope, refused)) from refused
+
+
+def _scope_hint(scope: ApprovalScope, refused: ApprovalRefusedError) -> str:
+    """Append the expected op+tenant scope and the recorded-approval remedy to a refusal.
+
+    Mirrors :class:`~teatree.core.on_behalf_gate_recorded.OnBehalfPostBlockedError`:
+    a refused gate must name exactly what would satisfy it, so a non-TTY /
+    chat-only operator can record the approval without a terminal.
+    """
+    norm_op, norm_tenant = canonical_db_scope(scope.op, scope.tenant)
+    return (
+        f"{refused}\n"
+        f"This op is scoped to op={norm_op!r} tenant={norm_tenant!r}. "
+        f"To satisfy the gate without a terminal, record a single-use approval and re-run with "
+        f"--user-authorized <user-id>:\n"
+        f"    t3 db approve {norm_op} {norm_tenant} --approver <user-id>"
+    )
