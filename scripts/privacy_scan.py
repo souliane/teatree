@@ -1,7 +1,18 @@
 """Scan text (typically a git diff) for privacy-sensitive patterns.
 
-Used by: retro (§ Privacy Scan), contribute (§2 Pre-Flight).
-Exit code 0 = clean, 1 = findings.
+Used by: retro (§ Privacy Scan), contribute (§2 Pre-Flight), and the
+public-repo pre-push leak gate (``scripts/hooks/refuse-public-push-with-leak.sh``).
+
+Exit codes:
+
+* ``0`` — clean (no findings), or ``--no-strict`` regardless of findings.
+* :data:`PRIVACY_FINDINGS_EXIT_CODE` (``3``) — genuine findings present in
+    strict mode. This is a DEDICATED code, distinct from the generic Python
+    exception code (``1``) and the typer usage-error code (``2``), so the
+    pre-push gate can block on *findings only* and fail OPEN on any other
+    non-zero exit (a scanner crash, a missing script, an argparse error).
+    Conflating "findings" with "crash" previously wedged every push closed
+    whenever the scanner itself failed (#126 gap 3).
 """
 
 import json
@@ -14,6 +25,11 @@ from rich.console import Console
 from rich.table import Table
 
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+
+# Dedicated "findings present" exit code. NOT 1 (generic exception) and NOT
+# 2 (typer usage error) so the leak gate can distinguish a real finding from
+# the scanner crashing. See module docstring.
+PRIVACY_FINDINGS_EXIT_CODE = 3
 
 app = typer.Typer(add_completion=False)
 console = Console(stderr=True)
@@ -158,7 +174,7 @@ def main(
             console.print("[green]Privacy scan: clean[/]")
 
     if all_findings and strict:
-        raise SystemExit(1)
+        raise SystemExit(PRIVACY_FINDINGS_EXIT_CODE)
 
 
 if __name__ == "__main__":

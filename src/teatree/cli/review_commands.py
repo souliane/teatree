@@ -47,6 +47,21 @@ _EVIDENCE_JSON_HELP = (
 )
 
 
+_ALLOW_LONG_REVIEW_HELP = (
+    "Escape the colleague-MR review-shape cap (souliane/teatree#1114) for ONE "
+    "post — the documented over-deny escape (#126), consistent with the sibling "
+    "--quote-ok / --allow-banned-term overrides. Use only when a long-form review "
+    "on a colleague's MR is genuinely authorized; the cap still fires by default."
+)
+
+_ALLOW_TODO_BLOCKER_HELP = (
+    "Escape the TODO-anchor blocker gate (souliane/teatree#1186) for ONE post — "
+    "the documented over-deny escape (#126). Use only when a blocker anchored on an "
+    "author-marked TODO/FIXME genuinely must be addressed in THIS MR; the gate still "
+    "refuses by default."
+)
+
+
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
     from teatree.cli.review_evidence_gate import FindingEvidence  # noqa: PLC0415
@@ -61,7 +76,7 @@ def _parse_evidence(raw: str) -> "FindingEvidence | None":
 
 
 @review_app.command(name="post-draft-note")
-def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
+def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI flag mapped 1:1 to the public `review post-draft-note` surface (repo/mr/note/file/line/general/evidence-json + the #126 gate escapes). The `--general` flag is load-bearing — it closes the #72 silent-degradation foot-gun by making the inline-vs-general decision explicit. `--evidence-json` is load-bearing — it's the #1280 structured-evidence CLI plumbing.
     repo: str = typer.Argument(help="GitLab project path (e.g., my-org/my-repo)"),
     mr: int = typer.Argument(help="Merge request IID"),
     note: str = typer.Argument(help="Comment text (markdown)"),
@@ -86,6 +101,8 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
         ),
     ),
     evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
+    allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
+    allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
 ) -> None:
     """Post a draft note on a GitLab MR (inline or general).
 
@@ -111,7 +128,16 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     service = _require_token()
     validate_inline_or_general(file=file, line=line, general=general)
     evidence = _parse_evidence(evidence_json)
-    msg, code = service.post_draft_note(repo, mr, note, file=file, line=line or 0, evidence=evidence)
+    msg, code = service.post_draft_note(
+        repo,
+        mr,
+        note,
+        file=file,
+        line=line or 0,
+        evidence=evidence,
+        allow_long_review=allow_long_review,
+        allow_todo_blocker=allow_todo_blocker,
+    )
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)
@@ -136,6 +162,8 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
         ),
     ),
     evidence_json: str = typer.Option("", "--evidence-json", help=_EVIDENCE_JSON_HELP),
+    allow_long_review: bool = typer.Option(False, "--allow-long-review", help=_ALLOW_LONG_REVIEW_HELP),
+    allow_todo_blocker: bool = typer.Option(False, "--allow-todo-blocker", help=_ALLOW_TODO_BLOCKER_HELP),
 ) -> None:
     """Post a comment on a GitLab MR — DRAFT by default, ``--live`` requires Slack approval.
 
@@ -145,10 +173,24 @@ def post_comment(  # noqa: PLR0913 — typer command: every param is a CLI flag 
     the comment directly — gated on a Slack-recorded
     :class:`~teatree.core.models.live_post_approval.LivePostApproval`
     for the MR (mint via ``t3 review approve-live-post``).
+
+    ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
+    per-post escapes for the colleague-MR shape and TODO-anchor gates
+    respectively (#126), mirroring the sibling override flags.
     """
     service = _require_token()
     evidence = _parse_evidence(evidence_json)
-    msg, code = service.post_comment(repo, mr, note, file=file, line=line, live=live, evidence=evidence)
+    msg, code = service.post_comment(
+        repo,
+        mr,
+        note,
+        file=file,
+        line=line,
+        live=live,
+        evidence=evidence,
+        allow_long_review=allow_long_review,
+        allow_todo_blocker=allow_todo_blocker,
+    )
     typer.echo(msg)
     if code:
         raise typer.Exit(code=code)

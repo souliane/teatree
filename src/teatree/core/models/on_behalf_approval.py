@@ -36,7 +36,34 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.models.live_post_approval import canonical_mr_scope
 from teatree.core.models.merge_clear import is_non_reviewer_role
+
+
+def canonical_on_behalf_target(target: str) -> str:
+    """Return the stable scope key an on-behalf approval is recorded/consumed under.
+
+    The on-behalf gate is the single chokepoint for every post made under
+    the user's identity, but each consume call site builds the target token
+    differently for the *same* merge request: ``review_on_behalf`` and
+    ``pr.py`` use ``"{repo}!{iid}"``; ``review_request_post`` and the signals
+    approval-reaction use the full MR/PR URL. With a strict exact-string
+    match a legitimately pre-recorded approval in one form silently failed to
+    match a consume token built in another — the documented PRE-RECORD
+    workflow over-denied.
+
+    This normalizes every form to the same token at BOTH record and consume:
+
+    * an MR/PR URL (``https://.../-/merge_requests/<iid>`` or
+        ``https://.../pull/<iid>``) → ``"<repo>!<iid>"`` (delegated to
+        :func:`~teatree.core.models.live_post_approval.canonical_mr_scope`,
+        the same canonicalizer the #1207 live-post gate uses);
+    * an already-canonical ``"<repo>!<iid>"`` → unchanged;
+    * any non-MR target (an issue URL, a ``ticket:<pk>`` compound, a Slack
+        ``channel/thread`` ref) → returned stripped of whitespace only, so a
+        non-MR scope is preserved verbatim and never collapsed.
+    """
+    return canonical_mr_scope(target)
 
 
 class OnBehalfApprovalError(ValueError):
@@ -79,7 +106,7 @@ class OnBehalfApproval(models.Model):
         ``MergeClear.issue`` / ``DbApproval.record``). Construction is
         atomic so a rejected approval leaves no partial row.
         """
-        clean_target = target.strip()
+        clean_target = canonical_on_behalf_target(target)
         if not clean_target:
             msg = "target is required and must be non-empty (#960)"
             raise OnBehalfApprovalError(msg)
@@ -109,12 +136,14 @@ class OnBehalfApproval(models.Model):
 
         A consumed approval is single-use and no longer matches (reusing it
         would let a replay slip a second unapproved post through). The scope
-        is exact: an approval for ``post_comment`` on ``org/repo#42`` never
-        satisfies any other target or action.
+        is exact under canonicalization: an approval recorded for an MR in
+        any surface form (URL or ``<repo>!<iid>``) matches a consume token
+        for the SAME MR in any other form, but never a different MR or
+        action (see :func:`canonical_on_behalf_target`).
         """
         if self.consumed_at is not None:
             return False
-        return self.target == target.strip() and self.action == action.strip()
+        return self.target == canonical_on_behalf_target(target) and self.action == action.strip()
 
     @classmethod
     def consume(cls, target: str, action: str, *, using: str | None = None) -> "OnBehalfApproval | None":
@@ -134,7 +163,7 @@ class OnBehalfApproval(models.Model):
         ``transaction_mode=IMMEDIATE`` ``OPTIONS``. Production callers pass
         no ``using`` and run against the default connection.
         """
-        clean_target = target.strip()
+        clean_target = canonical_on_behalf_target(target)
         clean_action = action.strip()
         manager = cls.objects.using(using) if using else cls.objects
         with transaction.atomic(using=using):
