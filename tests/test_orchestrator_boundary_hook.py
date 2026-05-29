@@ -257,6 +257,35 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert handle_enforce_orchestrator_boundary(data) is False
 
 
+class TestSelfRescueEscapeHatchNeverGated:
+    r"""The self-rescue command can NEVER be gated (#1474).
+
+    ``t3 <overlay> gate disable`` is the orchestrator's guaranteed escape
+    from a Bash lockout: it flips the durable ``orchestrator_bash_gate_enabled``
+    kill-switch in ``~/.teatree.toml``. For the escape to be reachable EVEN
+    WHEN the gate is fully enabled — and even if sidechain detection
+    misclassifies the caller — the heavy-Bash denylist must not match it.
+
+    These tests pin that invariant. They go RED the moment anyone adds
+    ``t3 … gate`` to :data:`_ORCHESTRATOR_HEAVY_BASH_RE` (e.g. by widening the
+    ``t3 \S+ (run|e2e|test)`` alternative to also catch ``gate``).
+    """
+
+    @pytest.mark.parametrize("command", ["t3 teatree gate disable", "t3 teatree gate enable", "t3 teatree gate status"])
+    def test_self_rescue_not_matched_by_heavy_denylist(self, command: str) -> None:
+        assert router._ORCHESTRATOR_HEAVY_BASH_RE.search(command) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        ["t3 teatree gate disable", "t3-teatree gate disable", "t3 myoverlay gate disable"],
+    )
+    def test_main_agent_self_rescue_passes_with_gate_enabled(self, command: str) -> None:
+        # MAIN-agent call (no agent_id), gate fully ON (the autouse fixture
+        # points Path.home at a clean tmp dir): the escape hatch must pass.
+        assert _orchestrator_bash_gate_enabled() is True
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+
 class TestRegisteredInChain:
     def test_handler_is_in_pretooluse_chain(self) -> None:
         assert handle_enforce_orchestrator_boundary in router._HANDLERS["PreToolUse"]
