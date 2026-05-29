@@ -307,6 +307,20 @@ class OverlayMetadata:
     def validate_pr(self, title: str, description: str) -> ValidationResult:
         return {"errors": [], "warnings": []}
 
+    def build_pr_title(self, *, branch: str, subject: str, body: str, issue_url: str) -> str:
+        """Produce the PR title from structured data instead of copying the subject.
+
+        The default returns ``subject`` unchanged — historic behaviour, so an
+        overlay that does not override it is unaffected. An overlay enforcing a
+        title grammar (e.g. ``type(scope): … [flag] (ticket_url)``) overrides
+        this to ASSEMBLE a canonical title from ``branch`` / ``subject`` /
+        ``issue_url``. This closes the gap where a coder agent's non-canonical
+        commit subject (e.g. ``test(insurance): …``) flowed straight onto the
+        MR: the factory now produces a compliant title rather than letting the
+        validator merely reject the copied one after the fact.
+        """
+        return subject
+
     def get_followup_repos(self) -> list[str]:
         return []
 

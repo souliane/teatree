@@ -83,6 +83,12 @@
       "signature": "(title: str, description: str) -> teatree.types.ValidationResult"
     },
     {
+      "description": "Produce the PR title from structured ticket data (default: the commit subject).",
+      "name": "metadata.build_pr_title",
+      "required": false,
+      "signature": "(*, branch: str, subject: str, body: str, issue_url: str) -> str"
+    },
+    {
       "description": "Return the active overlay skill path and remote match patterns.",
       "name": "metadata.get_skill_metadata",
       "required": false,

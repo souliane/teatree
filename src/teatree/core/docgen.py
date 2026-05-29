@@ -24,6 +24,7 @@ _OVERLAY_HOOK_ORDER = (
 
 _METADATA_HOOK_ORDER = (
     "validate_pr",
+    "build_pr_title",
     "get_skill_metadata",
     "get_ci_project_path",
     "get_e2e_config",
@@ -48,6 +49,7 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
 
 _METADATA_HOOK_DESCRIPTIONS = {
     "validate_pr": "Return PR validation problems for this overlay.",
+    "build_pr_title": "Produce the PR title from structured ticket data (default: the commit subject).",
     "get_skill_metadata": "Return the active overlay skill path and remote match patterns.",
     "get_ci_project_path": "Return the GitLab project path for CI operations.",
     "get_e2e_config": "Return E2E runner configuration (runner, test_dir, settings_module, project_path, ref).",
