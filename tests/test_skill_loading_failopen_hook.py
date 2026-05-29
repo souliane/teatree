@@ -185,6 +185,17 @@ class TestResolutionEdgeCases:
         assert payload is None
         assert "t3:gone" in warning
 
+    def test_stale_overlay_path_does_not_collide_with_bare_skill(self, gate: Path) -> None:
+        # A stale overlay path whose dir name's post-colon suffix collides
+        # with an installed BARE skill (``code``) must NOT resolve onto it —
+        # the overlay dir is matched verbatim (``t3:code``), so the gate
+        # fails open instead of locking out on the renamed-away path.
+        _write_pending("sess-collide", ["skills/t3:code/SKILL.md"])
+        blocked, payload, warning = _run({"session_id": "sess-collide", "tool_name": "Bash"})
+        assert blocked is False
+        assert payload is None
+        assert "t3:code" in warning
+
     def test_empty_segment_is_not_enforceable(self) -> None:
         # A degenerate name whose final segment is empty must never block.
         assert _skill_resolves("ns:", []) is False

@@ -520,12 +520,23 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     """
     stripped = name.rstrip("/")
     if stripped.endswith("/SKILL.md"):
-        stripped = stripped[: -len("/SKILL.md")]
-        # An overlay skill_path may be rooted at a search dir's parent
-        # (``skills/<skill>/SKILL.md``); probe the literal path too.
+        # Path-shaped overlay ``skill_path`` (``skills/<skill>/SKILL.md``).
+        # The loadable skill dir is the parent of the ``SKILL.md`` leaf,
+        # taken VERBATIM (overlay skill dirs may carry a ``:`` in the dir
+        # name, so no namespace strip here — that would mis-resolve a
+        # stale ``skills/ns:gone/SKILL.md`` onto an installed bare skill).
         if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
             return True
-    segment = stripped.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+        segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
+    else:
+        # Bare name: either a plain skill (``ac-*``, ``code``) whose dir is
+        # the name itself, or a ``plugin:skill`` form whose on-disk dir is
+        # the post-colon segment. Try both.
+        bare = stripped.rsplit("/", 1)[-1]
+        post_colon = bare.rsplit(":", 1)[-1]
+        return any(
+            (d / candidate / "SKILL.md").is_file() for d in search_dirs for candidate in {bare, post_colon} if candidate
+        )
     if not segment or segment == "SKILL.md":
         return False
     return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
