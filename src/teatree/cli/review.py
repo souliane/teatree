@@ -226,6 +226,7 @@ class ReviewService:
         documented per-call escapes for the colleague-MR shape and the
         TODO-anchor gates respectively.
         """
+        from teatree.cli.review_authorize import resolve_live_authorization  # noqa: PLC0415
         from teatree.cli.review_default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
 
         if not live:
@@ -242,6 +243,13 @@ class ReviewService:
             if code == 0:
                 notify_draft_created(repo=repo, mr=mr, body=note, message=msg)
             return msg, code
+        # One-step authorization gate (#126): a single ``t3 review authorize``
+        # is the satisfier. Surface the unified refusal naming that one
+        # command before the per-token chokepoints below would emit the old
+        # two-command messages.
+        live_refusal = resolve_live_authorization(scope=f"{repo}!{mr}", action="post_comment")
+        if live_refusal:
+            return live_refusal, 1
         refusal = self._run_pre_publish_gates(
             repo=repo,
             mr=mr,
@@ -559,10 +567,12 @@ class ReviewService:
 # `teatree.cli.review_drafts`, `teatree.cli.review_live_approval`, and
 # `teatree.cli.review_commands`.
 from teatree.cli import review_commands as _review_commands  # noqa: E402 — registration side-effect
+from teatree.cli.review_authorize import register as _register_authorize  # noqa: E402 — late, after typer app
 from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
 from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)
 _register_live_approval(review_app)
+_register_authorize(review_app)
 _ = _review_commands  # quiet "unused import" — module load is the side-effect

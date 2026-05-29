@@ -79,28 +79,6 @@ APPROVAL_PHRASES: tuple[str, ...] = (
 _ON_BEHALF_POST_ACTION = "post_comment"
 
 
-def _user_channel() -> str:
-    """Resolve the Slack DM channel id the user reads (the ``D...`` token).
-
-    Returns ``""`` when no channel is configured (the test harness path);
-    the caller treats an empty channel as "verify against the user_id
-    only, do not pin to a specific DM channel".
-    """
-    import os  # noqa: PLC0415
-
-    from teatree.config import load_config  # noqa: PLC0415
-
-    cfg = load_config().raw
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
-    overlays = cfg.get("overlays") or {}
-    if overlay_name and isinstance(overlays.get(overlay_name), dict):
-        channel = overlays[overlay_name].get("slack_user_channel", "")
-        if channel:
-            return str(channel)
-    teatree_cfg = cfg.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_channel", ""))
-
-
 _NEGATION_TOKENS: tuple[str, ...] = (
     "don't",
     "do not",
@@ -281,7 +259,9 @@ def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, 
                 "or --from-on-behalf (a recorded `t3 review approve-on-behalf` token)"
             ),
         )
-    _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=_user_channel())
+    from teatree.core.notify import resolve_user_channel  # noqa: PLC0415
+
+    _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=resolve_user_channel())
     if error:
         return "", "", error
     return slack_ts, slack_ts, ""
