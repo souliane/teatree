@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
+from teatree.backends.github_claims import record_github_note_claim as _record_github_note_claim
 from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
 from teatree.backends.types import dig
 from teatree.types import RawAPIDict
@@ -132,6 +133,40 @@ def _gh_api_get(endpoint: str, *, token: str = "") -> object:
     return json.loads(result.stdout)
 
 
+def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+    """Fetch EVERY page of a list endpoint and return one flat list.
+
+    A plain ``gh api`` GET returns only the first page — GitHub's default
+    page size silently caps the result, so a comment older than the most
+    recent page goes unseen and the find-then-update dedup re-posts a
+    duplicate. ``--paginate`` follows the ``Link`` header to the last page;
+    ``--slurp`` wraps each page's JSON array into one outer array
+    (``[[page1…], [page2…]]``), which this flattens into a single list.
+
+    Non-list pages (a single-object body, an error payload) are skipped so
+    a malformed page can never raise. Returns ``[]`` when the outer payload
+    is not an array.
+    """
+    result = _run_gh(
+        "gh",
+        "api",
+        endpoint,
+        "--paginate",
+        "--slurp",
+        "--header",
+        "Accept: application/vnd.github+json",
+        token=token,
+    )
+    pages = json.loads(result.stdout)
+    if not isinstance(pages, list):
+        return []
+    flattened: list[RawAPIDict] = []
+    for page in pages:
+        if isinstance(page, list):
+            flattened.extend(cast("list[RawAPIDict]", page))
+    return flattened
+
+
 def _gh_api_post(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
     """Call ``gh api`` (POST) and return parsed JSON."""
     cmd = [
@@ -245,75 +280,6 @@ def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
         labels=labels,
         updated_at=str(dig(node, "content", "updatedAt") or ""),
     )
-
-
-def _record_github_note_claim(
-    *,
-    repo: str,
-    target_number: int,
-    comment_id: int,
-    body: str,
-    target_url: str,
-) -> None:
-    """Audit one successful GitHub-comment publish for the drift verifier (#1198).
-
-    Mirrors :func:`teatree.cli.review_audit.record_note_claim` for the
-    GitLab side: best-effort write, never raises into the caller.
-    ``payload_digest`` lets the verifier detect silent body-divergence
-    without storing the full body in the claim row.
-
-    The idempotency key encodes ``repo``, target number (PR or issue —
-    GitHub uses the same ``/issues/<n>/comments`` endpoint for both), and
-    the server-assigned ``comment_id`` so a retried POST that the API
-    collapsed to the same comment no-ops at the ledger layer.
-
-    Best-effort: any exception (Django not booted, DB outage, integrity
-    race) is swallowed. The publish has already succeeded by the time we
-    get here — failing to audit it must not turn that success into a
-    user-visible failure.
-
-    Stamps ``extra["overlay"]`` from ``T3_OVERLAY_NAME`` (#1275) so the
-    audit verifier can re-read the comment through the same overlay's
-    GitHub token that posted it — not a process-global resolver that may
-    land on a different identity in multi-overlay setups.
-    """
-    import hashlib  # noqa: PLC0415 — stdlib, cheap, used only here
-    import os  # noqa: PLC0415 — defer stdlib import out of module load
-
-    try:
-        from django.db import (  # noqa: PLC0415 — keep Django out of module-load if bootstrap fails
-            DatabaseError,
-            IntegrityError,
-            transaction,
-        )
-
-        from teatree.core.models import OutboundClaim  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 — must never break the publish path
-        return
-
-    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "") or ""
-    idempotency_key = f"github_note:{repo}#{target_number}:{comment_id}"
-    try:
-        with transaction.atomic():
-            OutboundClaim.objects.get_or_create(
-                idempotency_key=idempotency_key,
-                defaults={
-                    "kind": OutboundClaim.Kind.GITHUB_NOTE.value,
-                    "target_url": target_url,
-                    "extra": {
-                        "repo": repo,
-                        "target_number": target_number,
-                        "artifact_id": str(comment_id),
-                        "payload_digest": digest,
-                        "overlay": overlay_name,
-                    },
-                },
-            )
-    except (IntegrityError, DatabaseError):
-        return
-    except Exception:  # noqa: BLE001 — must never break the publish path
-        return
 
 
 class GitHubCodeHost:
@@ -430,8 +396,10 @@ class GitHubCodeHost:
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
     def list_pr_comments(self, *, repo: str, pr_iid: int) -> list[RawAPIDict]:
-        data = _gh_api_get(f"repos/{repo}/issues/{pr_iid}/comments", token=self._token)
-        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
+        # Paginate: a busy PR has >30 comments (GitHub's default page size),
+        # and a non-paginated GET would hide the ``## Test Plan`` note the
+        # evidence-poster looks up to UPDATE — re-posting a duplicate instead.
+        return _gh_api_get_paginated(f"repos/{repo}/issues/{pr_iid}/comments?per_page=100", token=self._token)
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         query = quote_plus(f"is:issue is:open assignee:{assignee}")
