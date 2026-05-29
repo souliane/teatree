@@ -37,9 +37,15 @@ class PrValidationError(TypedDict):
 def ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
     """Return ``(repo_path, title, description)`` previewed from the last commit.
 
-    Sanitizes the TITLE first, then builds the description's first line from
-    that exact sanitized string. Applying close-keyword sanitization only to
-    the description (the old behaviour) silently diverged it from the title
+    The title is PRODUCED by the overlay (``metadata.build_pr_title``), not
+    copied verbatim from the commit subject: an overlay enforcing a title
+    grammar assembles a canonical title from the branch + subject + ticket so
+    a non-canonical subject can never reach the MR. The default overlay hook
+    returns the subject unchanged, preserving prior behaviour.
+
+    The TITLE is sanitized first, then the description's first line is built
+    from that exact sanitized string. Applying close-keyword sanitization only
+    to the description (the old behaviour) silently diverged it from the title
     whenever the title carried a close-keyword (e.g. the ``Resolve <url>``
     fallback, or a ``fix: resolve X`` subject) — the title/description
     divergence class. Reusing the sanitized title makes the first line ==
@@ -47,11 +53,18 @@ def ship_preview(ticket: Ticket, worktree: Worktree) -> tuple[str, str, str]:
     """
     repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     subject, body = git.last_commit_message(repo=repo_path)
+    overlay = get_overlay()
+    generated = overlay.metadata.build_pr_title(
+        branch=worktree.branch or "",
+        subject=subject,
+        body=body or "",
+        issue_url=ticket.issue_url or "",
+    )
     close_ticket = should_close_ticket(
         ticket.extra or {},
-        setting_enabled=get_overlay().config.mr_close_ticket,
+        setting_enabled=overlay.config.mr_close_ticket,
     )
-    title = sanitize_close_keywords(subject or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
+    title = sanitize_close_keywords(generated or f"Resolve {ticket.issue_url}", close_ticket=close_ticket)
     raw_body = sanitize_close_keywords(body, close_ticket=close_ticket) if body else ""
     description = f"{title}\n\n{raw_body}" if raw_body else title
     return repo_path, title, description
