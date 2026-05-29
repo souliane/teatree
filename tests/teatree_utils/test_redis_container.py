@@ -161,6 +161,68 @@ class TestEnsureRunning:
         assert "6379:6379" in run_call
 
 
+class TestNativeSquatterDetection:
+    # lsof -F pc output: each field is prefixed with its type char, so a
+    # `redis-server` command appears as the line `credis-server` and a `p<pid>`
+    # line precedes it.
+    def test_reports_native_redis_listener(self) -> None:
+        with (
+            patch("shutil.which", return_value="/usr/bin/lsof"),
+            patch.object(
+                redis_container,
+                "run_allowed_to_fail",
+                return_value=_completed(stdout="p4242\ncredis-server\n"),
+            ),
+        ):
+            assert redis_container._native_host_listeners() == ["4242/redis-server"]
+
+    def test_ignores_docker_port_forwarder(self) -> None:
+        # Docker's own publish proxy holds the port on behalf of teatree-redis —
+        # that is not a native squatter and must not be reported. The lsof
+        # command field for `com.docker.backend` prints as `ccom.docker.backend`.
+        with (
+            patch("shutil.which", return_value="/usr/bin/lsof"),
+            patch.object(
+                redis_container,
+                "run_allowed_to_fail",
+                return_value=_completed(stdout="p99\nccom.docker.backend\n"),
+            ),
+        ):
+            assert redis_container._native_host_listeners() == []
+
+    def test_returns_empty_when_lsof_absent(self) -> None:
+        with patch("shutil.which", return_value=None):
+            assert redis_container._native_host_listeners() == []
+
+
+class TestNativeSquatterGuard:
+    def test_ensure_running_raises_when_native_redis_holds_port(self) -> None:
+        # Regression (#1373 sibling): a native `redis-server` binds host 6379,
+        # so `_create()` would fail with `bind: address already in use` and
+        # leave teatree-redis in Created state. _evict_squatters only handles
+        # container squatters, so provision must fail loud naming the process.
+        with (
+            patch.object(redis_container, "status", return_value="missing"),
+            patch.object(redis_container, "_non_teatree_squatters_on_host_port", return_value=[]),
+            patch.object(redis_container, "_native_host_listeners", return_value=["4242/redis-server"]),
+            patch.object(redis_container, "_docker_checked") as mock_create,
+            pytest.raises(redis_container.NativeRedisSquatterError, match="4242/redis-server"),
+        ):
+            redis_container.ensure_running(db_count=16)
+        mock_create.assert_not_called()
+
+    def test_ensure_running_creates_when_no_native_listener(self) -> None:
+        with (
+            patch.object(redis_container, "status", return_value="missing"),
+            patch.object(redis_container, "_non_teatree_squatters_on_host_port", return_value=[]),
+            patch.object(redis_container, "_native_host_listeners", return_value=[]),
+            patch.object(redis_container, "_docker_tolerant", return_value=_completed()),
+            patch.object(redis_container, "_docker_checked", return_value=_completed()) as mock_create,
+        ):
+            redis_container.ensure_running(db_count=16)
+        assert mock_create.call_args.args[0] == "run"
+
+
 class TestStop:
     def test_no_op_when_container_missing(self) -> None:
         with (
