@@ -1089,13 +1089,13 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
             # A live LoopLease row surfaces in the consolidated loop line
-            # — ``loop · <name> <Nm> · …`` — at the top of the statusline,
-            # listing each live loop by its short name. The pre-refit
-            # one-line-per-loop dump (``loop:owner``, ``loop:tick``, …) and
-            # the later useless ``N loops live`` count were both removed at
-            # the user's explicit request.
+            # — ``loop running · <name> <Nm> · …`` — at the top of the
+            # statusline, listing each live loop by its short name. The
+            # pre-refit one-line-per-loop dump (``loop:owner``,
+            # ``loop:tick``, …) and the later useless ``N loops live`` count
+            # were both removed at the user's explicit request.
             body = sl.read_text(encoding="utf-8")
-            assert "loop · " in body, body
+            assert "loop running · " in body, body
             assert "loops live" not in body, body
             assert "owner" in body.splitlines()[0], body
 

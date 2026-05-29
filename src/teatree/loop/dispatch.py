@@ -93,15 +93,31 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 
 # Signal-kind *prefixes* whose every outcome is internal scanner state, not
-# user-facing statusline content. The ``self_update.*`` family
-# (``cadence_not_elapsed``, ``up_to_date``, ``updated``, ``skipped``,
-# ``failed``) is the auto-update scanner's per-repo bookkeeping; its
-# ``reason`` payload (e.g. ``recent_marker``) used to leak into the
-# statusline as a mystery ``recent_marker: ?`` row because the renderer
-# treats any ``reason``-bearing action as a ticket disposition. The
-# update outcome is logged and persisted on ``SelfUpdateMarker`` — the
-# statusline is the wrong surface for it.
-_STATUSLINE_DROP_PREFIXES: tuple[str, ...] = ("self_update.",)
+# user-facing statusline content. Each family is per-scanner bookkeeping
+# that, without this drop, falls through the catch-all at the end of
+# :func:`_dispatch_one` and renders as a garbage row (often
+# ``<reason>: ?``) that drowns the real tickets and MRs the dashboard
+# exists to show. The outcome is logged / persisted on the scanner's own
+# ledger; the statusline is the wrong surface for it.
+#
+# ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
+# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
+# ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
+# ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
+# explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
+# reviewer-ping reconciler's per-MR bookkeeping; and the ``*.queued``
+# dispatch markers (``architectural_review``, ``dogfood_smoke``,
+# ``scanning_news``) that only record an agent was queued.
+_STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
+    "self_update.",
+    "pull_main_clone.",
+    "pr_sweep.",
+    "outbound.",
+    "review_nag.",
+    "architectural_review.",
+    "dogfood_smoke.",
+    "scanning_news.",
+)
 
 
 def _is_statusline_dropped(kind: str) -> bool:
