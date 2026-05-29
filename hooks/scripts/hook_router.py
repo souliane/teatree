@@ -507,36 +507,32 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     """True iff *name* resolves to a loadable skill in *search_dirs*.
 
-    Handles the two shapes that reach ``<session>.pending``. A bare or
-    namespaced skill name (lifecycle ``code``, supplementary ``ac-*``, or
-    a defensive ``plugin:skill``) is matched by its final ``:``/``/``
-    segment against ``<dir>/<segment>/SKILL.md``. An overlay ``skill_path``
-    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) has its
-    ``/SKILL.md`` leaf dropped so the ``<skill>`` directory name is matched,
-    and the literal path is probed against each search dir as a fallback.
+    Resolution is deliberately CONSERVATIVE: a name resolves only when its
+    own skill directory exists VERBATIM. Two shapes reach
+    ``<session>.pending``. A bare name (lifecycle ``code``, supplementary
+    ``ac-*``) matches ``<dir>/<name>/SKILL.md``. An overlay ``skill_path``
+    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) matches
+    when the literal path is a file under a search dir (or its parent), or
+    when its ``<skill>`` parent-dir name exists as a skill dir.
+
+    No namespace ``:``-stripping is performed in either branch — stripping
+    would mis-resolve a stale ``old:code`` / ``skills/old:code/SKILL.md``
+    onto an installed bare ``code`` and re-introduce the very fail-closed
+    lockout class this gate exists to prevent. A name that resolves only by
+    discarding its namespace is treated as unresolvable (fail open).
 
     Symlinked skill dirs (the common install shape) resolve through
     ``is_file``.
     """
     stripped = name.rstrip("/")
     if stripped.endswith("/SKILL.md"):
-        # Path-shaped overlay ``skill_path`` (``skills/<skill>/SKILL.md``).
-        # The loadable skill dir is the parent of the ``SKILL.md`` leaf,
-        # taken VERBATIM (overlay skill dirs may carry a ``:`` in the dir
-        # name, so no namespace strip here — that would mis-resolve a
-        # stale ``skills/ns:gone/SKILL.md`` onto an installed bare skill).
+        # Path-shaped overlay ``skill_path``: literal path, then the
+        # ``<skill>`` parent-dir name — both taken verbatim.
         if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
             return True
         segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
     else:
-        # Bare name: either a plain skill (``ac-*``, ``code``) whose dir is
-        # the name itself, or a ``plugin:skill`` form whose on-disk dir is
-        # the post-colon segment. Try both.
-        bare = stripped.rsplit("/", 1)[-1]
-        post_colon = bare.rsplit(":", 1)[-1]
-        return any(
-            (d / candidate / "SKILL.md").is_file() for d in search_dirs for candidate in {bare, post_colon} if candidate
-        )
+        segment = stripped.rsplit("/", 1)[-1]
     if not segment or segment == "SKILL.md":
         return False
     return any((d / segment / "SKILL.md").is_file() for d in search_dirs)

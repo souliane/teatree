@@ -151,12 +151,24 @@ class TestResolutionEdgeCases:
         assert payload is not None
         assert "/code" in payload["permissionDecisionReason"]
 
-    def test_namespaced_name_resolves_via_final_segment(self, gate: Path) -> None:
-        # A ``plugin:skill`` form resolves on its final segment (``code``).
-        _write_pending("sess-ns", ["t3:code"])
-        blocked, payload, _ = _run({"session_id": "sess-ns", "tool_name": "Bash"})
+    def test_bare_namespaced_name_resolves_only_verbatim(self, gate: Path) -> None:
+        # A bare ``plugin:skill`` resolves ONLY when a verbatim ``t3:code``
+        # skill dir exists — never by discarding the namespace onto an
+        # installed bare ``code`` (that collision is the lockout class).
+        _seed_skill(gate, "t3:code")
+        _write_pending("sess-ns-ok", ["t3:code"])
+        blocked, payload, _ = _run({"session_id": "sess-ns-ok", "tool_name": "Bash"})
         assert blocked is True
         assert payload is not None
+
+    def test_bare_namespaced_collision_fails_open(self, gate: Path) -> None:
+        # Stale bare ``old:code`` (no ``old:code`` dir) must NOT resolve onto
+        # the installed bare ``code`` — fail open, do not lock out.
+        _write_pending("sess-ns-stale", ["old:code"])
+        blocked, payload, warning = _run({"session_id": "sess-ns-stale", "tool_name": "Bash"})
+        assert blocked is False
+        assert payload is None
+        assert "old:code" in warning
 
     def test_override_dirs_are_actually_scanned(self, gate: Path) -> None:
         # Proves the gate uses the canonical T3_SKILL_SEARCH_DIRS-driven
@@ -196,8 +208,11 @@ class TestResolutionEdgeCases:
         assert payload is None
         assert "t3:code" in warning
 
-    def test_empty_segment_is_not_enforceable(self) -> None:
-        # A degenerate name whose final segment is empty must never block.
-        assert _skill_resolves("ns:", []) is False
-        assert _skill_resolves("", []) is False
-        assert _skill_resolves("SKILL.md", []) is False
+    def test_empty_segment_is_not_enforceable(self, gate: Path) -> None:
+        # Degenerate names must never resolve — proven against a NON-empty
+        # search dir (the fixture seeds real skills) so the guard does not
+        # depend on an empty dir list.
+        dirs = [gate]
+        assert _skill_resolves("", dirs) is False
+        assert _skill_resolves("SKILL.md", dirs) is False
+        assert _skill_resolves("/SKILL.md", dirs) is False
