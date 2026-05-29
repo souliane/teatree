@@ -56,13 +56,23 @@ class TestMergeClassMutationDetection:
         assert _is_merge_class_mutation({"tool_name": "Read", "tool_input": {"file_path": "/x"}}) is False
 
 
+def _finding_json(*, uncovered: list[dict] | None = None, symbols: list[str] | None = None) -> str:
+    return json.dumps(
+        {
+            "passes": False,
+            "uncovered": uncovered if uncovered is not None else [{"path": "src/x.py", "lines": [3]}],
+            "unreferenced_symbols": symbols or [],
+        }
+    )
+
+
 class TestBlocksUncoveredDiff:
     def test_blocks_gh_pr_ready_when_diff_coverage_fails(self, monkeypatch, capsys):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(
             args=[],
             returncode=1,
-            stdout="Per-diff coverage gate: FAILED\n  uncovered new lines in src/x.py: [3]",
+            stdout=_finding_json(),
             stderr="",
         )
         with patch.object(router.subprocess, "run", return_value=rejected) as run:
@@ -71,24 +81,66 @@ class TestBlocksUncoveredDiff:
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
         assert "gate 12" in out["permissionDecisionReason"]
-        assert "uncovered new lines" in out["permissionDecisionReason"]
-        # It shelled `t3 tool diff-coverage` — reusing the gate as-is.
+        # It shelled `t3 tool diff-coverage --json` — reusing the gate as-is.
         assert run.call_args[0][0][:3] == ["/usr/local/bin/t3", "tool", "diff-coverage"]
+        assert "--json" in run.call_args[0][0]
 
     def test_blocks_non_draft_pr_create_on_unreferenced_symbol(self, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="Per-diff coverage gate: FAILED", stderr=""
+            args=[], returncode=1, stdout=_finding_json(uncovered=[], symbols=["build_widget"]), stderr=""
         )
         data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
         with patch.object(router.subprocess, "run", return_value=rejected):
             assert handle_block_uncovered_diff(data) is True
 
 
+class TestFailsOpenOnBrokenSubprocess:
+    """The documented contract: DENY only on a successfully-computed finding.
+
+    A crash (``ModuleNotFoundError: No module named 'coverage'`` — the
+    dev-only ``coverage`` dep is absent from the installed ``t3`` tool
+    env), an import error, a nonzero exit with no parseable JSON, or
+    malformed JSON must FAIL OPEN (return ``False``). Treating a crash as
+    a coverage *finding* and denying — the #122 lockout — turns every
+    ``gh pr create`` into a deny. Reverting the fix (back to
+    ``if result.returncode != 0: deny``) turns these RED.
+    """
+
+    def test_fail_open_on_module_not_found_crash(self, monkeypatch):
+        # The exact #122 shape: coverage missing → traceback on stderr,
+        # empty stdout, exit 1. The current (buggy) gate denied here.
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        crashed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Traceback (most recent call last):\nModuleNotFoundError: No module named 'coverage'",
+        )
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr create --title t --body b"}}
+        with patch.object(router.subprocess, "run", return_value=crashed):
+            assert handle_block_uncovered_diff(data) is False
+
+    def test_fail_open_on_nonzero_with_unparseable_stdout(self, monkeypatch):
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        garbage = subprocess.CompletedProcess(args=[], returncode=2, stdout="some non-json error text", stderr="boom")
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        with patch.object(router.subprocess, "run", return_value=garbage):
+            assert handle_block_uncovered_diff(data) is False
+
+    def test_fail_open_on_malformed_json(self, monkeypatch):
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        truncated = subprocess.CompletedProcess(args=[], returncode=1, stdout='{"passes": fal', stderr="")
+        data = {"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}
+        with patch.object(router.subprocess, "run", return_value=truncated):
+            assert handle_block_uncovered_diff(data) is False
+
+
 class TestAllowsCleanCases:
     def test_allows_gh_pr_ready_when_diff_coverage_clean(self, monkeypatch):
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
-        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
+        clean = json.dumps({"passes": True, "uncovered": [], "unreferenced_symbols": []})
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout=clean, stderr="")
         with patch.object(router.subprocess, "run", return_value=ok):
             assert (
                 handle_block_uncovered_diff({"tool_name": "Bash", "tool_input": {"command": "gh pr ready 42"}}) is False
