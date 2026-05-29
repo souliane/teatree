@@ -53,7 +53,8 @@ class TestRestoreSources:
             DoctorService.restore_sources(tmp_path)
 
         assert not marker.exists()
-        assert mock_run.call_count == 2  # git update-index + git checkout
+        # (update-index + checkout) for pyproject.toml and uv.lock.
+        assert mock_run.call_count == 4
 
     def test_noop_when_no_marker(self, tmp_path):
         DoctorService.restore_sources(tmp_path)  # must not raise
