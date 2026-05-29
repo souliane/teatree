@@ -1312,30 +1312,27 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 
 # ── PreToolUse: orchestrator-execution-boundary (#836 §17.6 gate 2) ──
 #
-# The orchestrator (the MAIN agent) is delegate-only: it dispatches
-# sub-agents and makes merge/clear decisions; it must NOT itself perform
-# investigative or implementation work (Edit/Write/NotebookEdit, a
-# mutating Bash command, or an investigative Grep/Glob/Read sweep). That
-# work is what sub-agents are for. The recurring failure this gate
-# extinguishes: the coordinator "just quickly" edits a file or greps the
-# codebase instead of dispatching, which is exactly the conflation §17.4
-# / §17.8 forbid.
+# The orchestrator (the MAIN agent) keeps the session responsive: it
+# dispatches sub-agents and makes merge/clear decisions and should not
+# tie its own session up running a LONG / HEAVY command (a test suite, a
+# build, a dev server, a long sleep, a full-tree sweep) that belongs in a
+# sub-agent (or, when run inline, behind ``run_in_background: true``).
+# Quick orientation Bash — ``git status``, ``cat``, ``ls``, ``grep``, a
+# ``git commit`` — is allowed; only the heavy/long-running shapes below
+# are gated. This is the denylist inversion of the original allow-list
+# (#115): 4.x-class agents need to inspect freely, so the gate now flags
+# the narrow set of commands that actually hurt — never every Bash.
 #
-# Main-vs-sub-agent signal. Claude Code logs every sub-agent (Agent
-# tool) turn into the transcript JSONL with ``isSidechain: true``; the
-# main agent's turns carry ``isSidechain: false`` (or omit the key). The
-# entry that issued the tool call being gated is the most recent
-# transcript entry. So: walk the transcript newest→oldest, and the first
-# entry that carries an explicit ``isSidechain`` boolean tells us which
-# agent is acting. ``True`` ⇒ sub-agent ⇒ allow (sub-agents implement).
-# Anything else (no transcript, no entry with the key) ⇒ treat as the
-# main agent. Limitation (documented in the PR): the harness does not put
-# an agent-kind field directly on the PreToolUse payload, so this reads
-# the transcript sidechain marker — the cleanest reliable signal
-# available. If the transcript is unavailable the gate fails OPEN (does
-# not block) to avoid wedging a legitimate main-agent session on a
-# missing/locked transcript; the trade-off is a missed flag, never a
-# false block.
+# Main-vs-sub-agent signal (#115 root cause). The PreToolUse payload's
+# ``transcript_path`` ALWAYS points at the PARENT session transcript,
+# even for a sub-agent's tool call (a sub-agent's own turns live in a
+# separate ``…/subagents/agent-<id>.jsonl`` the hook never receives), and
+# the parent transcript's tail entries carry ``isSidechain: false`` — so
+# the previous transcript-``isSidechain`` read MISDETECTED every genuine
+# sub-agent as the main agent and blocked it. The reliable signal is on
+# the payload itself: a sub-agent call carries a non-empty ``agent_id``
+# (and ``agent_type``); a main-agent call omits it. ``_call_is_from_subagent``
+# reads that field directly — no transcript needed.
 
 # Pure-orchestration tools — always allowed for the main agent.
 _ORCHESTRATION_TOOLS = {
@@ -1348,144 +1345,174 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# Tool names that are investigative/implementation when the MAIN agent
-# runs them directly. Bash is judged separately (read-only vs mutating).
-_NON_ORCHESTRATION_TOOLS = {
-    "Edit",
-    "Write",
-    "NotebookEdit",
-    "MultiEdit",
-    "Read",
-    "Grep",
-    "Glob",
-}
-# A Bash command the orchestrator MAY run: read-only inspection and the
-# sanctioned t3 orchestration verbs (ticket clear/merge, ticket-state
-# reads, gh/glab *view*/*checks*/*list*). Everything else is treated as
-# mutating/investigative for the main agent.
-#
-# File-content tools (``cat``/``head``/``tail``/``less``/``wc``/``file``/
-# ``grep``/``rg``/``awk``/``sed``) are deliberately NOT in the start-of-
-# command allow-list — see #942: a main-agent ``cat /tmp/screenshot.png``
-# or ``rg TODO src/`` is investigative work that belongs in a sub-agent.
-# Pipelines stay allow-listed because the regex anchors on the START of
-# the command: ``gh pr view ... | grep state`` matches ``gh pr view``
-# (the read-only primary), so a sanctioned status check piped to a
-# read-only filter is still allowed; only a bare investigative read at
-# the head of the command line is blocked.
-_ORCHESTRATOR_BASH_RE = re.compile(
-    r"^\s*(?:"
-    r"t3\s|"
-    r"gh\s+\w+\s+(?:view|list|checks|status)\b|"
-    r"glab\s+\w+\s+(?:view|list|show)\b|"
-    r"git\s+(?:status|log|show|diff|branch|remote)\b|"
-    r"(?:echo|printf|pwd|which|env|ls|date|whoami)\b"
+# HEAVY / long-running Bash shapes the main agent should not run inline.
+# This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
+# the escape hatch is ``run_in_background: true`` (or, for a whole class
+# of work, dispatching a sub-agent). When in doubt the command is
+# ALLOWED — only an explicit match here, foreground, is gated. Patterns
+# cover: Python/test runners, language/asset builds, dev servers,
+# browser E2E, package installs/sync, long sleeps, and full-tree
+# recursive sweeps (the shapes that actually wedge a session).
+_ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
+    r"(?:"
+    r"\bpytest\b|"
+    r"\btox\b|"
+    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
+    r"manage\.py\s+runserver|"
+    r"\bnx\s+(?:serve|run)\b|"
+    r"docker\s+compose\s+(?:up|build)|"
+    r"(?:npx\s+)?playwright\s+test|"
+    r"\bnpm\s+(?:run|install|ci)\b|"
+    r"\b(?:pipenv|pip)\s+install\b|"
+    r"\buv\s+sync\b|"
+    r"vite\s+build|"
+    r"\bwebpack\b|"
+    r"\bcargo\s+(?:build|test)\b|"
+    r"\bmake\b|"
+    r"\bsleep\s+\d{2,}|"
+    r"\bfind\s+\S+.*-exec\b|"
+    r"\bls\s+-[a-zA-Z]*R\b"
     r")",
 )
-# Even a read-only-prefixed command is mutating if it edits in place or
-# redirects into a file (``sed -i``, ``awk … > out``) or chains a
-# destructive command. These markers disqualify it from the orchestrator
-# read-only allow-list. Pipes/``;``/``&&`` are intentionally NOT markers
-# (``gh pr view … | jq`` is read-only) — only genuine mutation is
-# disqualifying, so a read-only inspection chain is not false-flagged.
-_BASH_MUTATION_MARKERS_RE = re.compile(
-    r"(?:(?<![0-9&])>>?(?!&)|\s-i\b|\s--in-place\b|\b(?:rm|mv|cp|touch|mkdir|tee|install)\s)",
-)
 
 
-def _active_turn_is_sidechain(transcript_path: str) -> bool | None:
-    """Whether the turn issuing this tool call is a sub-agent (sidechain).
+def _call_is_from_subagent(data: dict) -> bool:
+    """True when the gated tool call originates from a sub-agent.
 
-    Returns ``True`` for a sub-agent turn, ``False`` for the main agent,
-    and ``None`` when the transcript is missing/empty or carries no
-    entry with an explicit ``isSidechain`` boolean (caller fails open).
+    The PreToolUse payload carries a non-empty ``agent_id`` (and
+    ``agent_type``) for every sub-agent call and omits it for the main
+    agent — the only reliable main-vs-sub-agent signal, because the
+    payload's ``transcript_path`` always points at the PARENT session
+    transcript (see the #115 root-cause note above). Empty/absent
+    ``agent_id`` ⇒ main agent.
     """
-    for entry in reversed(_read_transcript_entries(transcript_path)):
-        flag = entry.get("isSidechain")
-        if isinstance(flag, bool):
-            return flag
-    return None
+    return bool(data.get("agent_id"))
 
 
 def _is_orchestration_action(data: dict) -> bool:
-    """True when the tool call is a sanctioned orchestration verb."""
+    """True when the tool call is a sanctioned orchestration verb.
+
+    Only the non-Bash orchestration surfaces are judged here. Bash is
+    decided by the heavy-command denylist in
+    :func:`handle_enforce_orchestrator_boundary` (it needs the
+    ``run_in_background`` flag the denylist consults).
+    """
     tool_name = data.get("tool_name", "")
     if tool_name in _ORCHESTRATION_TOOLS:
         return True
     # MCP orchestration surfaces: Slack/messaging sends, GitHub/GitLab
     # *view*-class MCP reads. A conservative allow-list keeps the gate
     # from flagging the orchestrator's own coordination calls.
-    if tool_name.startswith("mcp__") and (
+    return tool_name.startswith("mcp__") and (
         "send_message" in tool_name or tool_name.endswith(("_view", "_get", "_list", "_read")) or "_view_" in tool_name
-    ):
+    )
+
+
+def _orchestrator_bash_gate_enabled() -> bool:
+    """Whether the heavy-Bash boundary gate is enabled (default True).
+
+    Best-effort read of ``[teatree] orchestrator_bash_gate_enabled`` from
+    ``~/.teatree.toml``, mirroring :func:`_plan_gate_enabled`'s toml-read
+    shape. Fails OPEN to enabled on a missing/broken config so the gate
+    keeps its protective default; an explicit ``false`` is the kill-switch
+    that lets the user disable it with one config line (never a code
+    edit).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
         return True
-    if tool_name == "Bash":
-        command = data.get("tool_input", {}).get("command", "")
-        if _BASH_MUTATION_MARKERS_RE.search(command):
-            return False
-        return bool(_ORCHESTRATOR_BASH_RE.match(command))
-    return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("orchestrator_bash_gate_enabled") is not False
+
+
+def _deny_foreground_agent_dispatch(data: dict) -> bool:
+    """#1442: deny a main-agent foreground ``Agent`` dispatch.
+
+    A foreground dispatch blocks the orchestrator for the entire
+    sub-agent runtime (often 30+ min) — a recurring failure (memory rule
+    ``feedback_always_run_in_background_for_sub_agent_dispatch``). Only
+    the main agent is governed; a sub-agent dispatching its own ``Agent``
+    may pick foreground.
+    """
+    if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is True:
+        return False
+    return emit_pretooluse_deny(
+        "[main-agent-orchestration-guard] Foreground Agent dispatch "
+        "DENIED in main agent context.\n"
+        "Pass `run_in_background: true` to every Agent invocation "
+        "from the main agent.\n"
+        "Memory rule: "
+        "feedback_always_run_in_background_for_sub_agent_dispatch "
+        "(RED CARD recurrence)."
+    )
+
+
+def _deny_heavy_main_agent_bash(data: dict) -> bool:
+    """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
+
+    Passes through when the call is a sanctioned orchestration verb,
+    comes from a sub-agent, is dispatched with ``run_in_background:
+    true``, or does not match the heavy denylist
+    (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+    """
+    if _is_orchestration_action(data) or _call_is_from_subagent(data):
+        return False
+    tool_input = data.get("tool_input", {})
+    if tool_input.get("run_in_background") is True:
+        return False
+    command = tool_input.get("command", "")
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+        return False
+    return emit_pretooluse_deny(
+        "BLOCKED: the orchestrator (main agent) ran a command that looks "
+        "long-running / heavy and would tie up this session: "
+        f"`{command[:120]}`.\n"
+        "The orchestrator is delegate-only for heavy work (BLUEPRINT "
+        "§17.4 / §17.8 / §17.6 gate 2). Either pass `run_in_background: "
+        "true` to run it without blocking the session, dispatch a "
+        "sub-agent (Task/Agent) to do it, or — if this is a false "
+        "positive — set `orchestrator_bash_gate_enabled = false` under "
+        "`[teatree]` in ~/.teatree.toml to disable the gate."
+    )
 
 
 def handle_enforce_orchestrator_boundary(data: dict) -> bool:
-    """Flag the MAIN agent doing investigative/implementation work.
+    """Flag the MAIN agent running a HEAVY/long-running Bash command.
 
     Deterministic enforcement of the orchestrator-decides /
     loop-executes topology (BLUEPRINT §17.4 / §17.8 / §17.6 gate 2): the
-    orchestrator is delegate-only. When the main agent (not a sub-agent —
-    see ``_active_turn_is_sidechain``) invokes a mutating/investigative
-    tool that is not a sanctioned orchestration verb, the call is blocked
-    with an actionable message. Sub-agents are unaffected — they are the
-    hands that implement. Fails open when the transcript cannot
-    distinguish the agent (documented limitation), never blocking on an
-    ambiguous signal.
+    orchestrator keeps its session responsive by delegating long work.
+    When the main agent (not a sub-agent — see
+    :func:`_call_is_from_subagent`) runs a foreground Bash command that
+    matches the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`) and
+    is not dispatched with ``run_in_background: true``, the call is
+    blocked with an actionable message. Everything else — quick
+    orientation Bash, ``git`` reads/commits, ``cat``/``ls``/``grep`` —
+    passes. Sub-agents are unaffected: they are the hands that implement
+    and may run any command, heavy or not. The ``Agent`` foreground guard
+    (#1442) rides the same handler.
 
-    Extension (#1442): the main agent must dispatch ``Agent`` calls with
-    ``run_in_background: true`` — a foreground dispatch blocks the
-    orchestrator for the entire sub-agent runtime (often 30+ min) and is
-    the source of a recurring failure (memory rule
-    ``feedback_always_run_in_background_for_sub_agent_dispatch``). The
-    guard denies main-agent Agent calls when ``run_in_background`` is
-    not ``True``; sub-agents may still dispatch foreground (sidechain
-    sees the unblocked default).
+    Disabled entirely (pass-through) when
+    ``[teatree] orchestrator_bash_gate_enabled = false`` — the one-line
+    kill-switch (#115).
     """
+    if not _orchestrator_bash_gate_enabled():
+        return False
     tool_name = data.get("tool_name", "")
     if tool_name == "Agent":
-        sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
-        if sidechain is False and data.get("tool_input", {}).get("run_in_background") is not True:
-            return emit_pretooluse_deny(
-                "[main-agent-orchestration-guard] Foreground Agent dispatch "
-                "DENIED in main agent context.\n"
-                "Pass `run_in_background: true` to every Agent invocation "
-                "from the main agent.\n"
-                "Memory rule: "
-                "feedback_always_run_in_background_for_sub_agent_dispatch "
-                "(RED CARD recurrence)."
-            )
+        return _deny_foreground_agent_dispatch(data)
+    if tool_name != "Bash":
         return False
-
-    if _is_orchestration_action(data):
-        return False
-
-    is_non_orch = tool_name in _NON_ORCHESTRATION_TOOLS or tool_name == "Bash"
-    if not is_non_orch:
-        return False
-
-    sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
-    # True ⇒ sub-agent (allowed to implement). None ⇒ cannot tell ⇒ fail
-    # open. Only an explicit False (main agent) is blocked.
-    if sidechain is not False:
-        return False
-
-    return emit_pretooluse_deny(
-        f"BLOCKED: the orchestrator (main agent) invoked `{tool_name}` — a "
-        "non-orchestration investigative/implementation action. The "
-        "orchestrator is delegate-only (BLUEPRINT §17.4 / §17.8 / §17.6 "
-        "gate 2): it dispatches sub-agents and makes merge/clear "
-        "decisions; it does not itself Edit/Write/Read-sweep/Grep or run "
-        "mutating Bash. Dispatch a sub-agent to do this work (the Task/"
-        "Agent tools), or use a sanctioned orchestration verb."
-    )
+    return _deny_heavy_main_agent_bash(data)
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────
