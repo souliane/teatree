@@ -14,6 +14,12 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
+  # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
+  # It must be present in the installed tool env, not only the dev group —
+  # otherwise a real run dies with ModuleNotFoundError and the #937 gate-12
+  # PreToolUse hook used to treat that crash as a coverage finding (#122).
+  "coverage>=7",
   "croniter>=6.2.2",
   "django>=5.2,<6.1",
   "django-fsm-2>=4",

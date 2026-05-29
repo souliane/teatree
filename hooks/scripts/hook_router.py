@@ -1239,8 +1239,18 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 # A draft PR is not yet under review, so draft creation does not fire;
 # ``git commit`` is deliberately NOT a trigger — Gate 12 is pre-MERGE,
 # not pre-commit (the commit-stage gates are §17.1-numbering / sync).
-# Fails open on a broken environment (no ``t3``, timeout), matching the
-# other t3-shelling hooks.
+#
+# Fail-open contract (#122): DENY only on an actual, successfully-computed
+# uncovered-diff finding. The gate shells ``t3 tool diff-coverage --json``
+# and denies *only* when stdout parses as the report JSON with
+# ``passes == false``. A subprocess CRASH (the #122 lockout:
+# ``diff-coverage`` imports the DEV-only ``coverage`` module, absent from
+# the installed ``t3`` tool env, so a real run dies with
+# ``ModuleNotFoundError`` → exit 1, traceback on stderr, no parseable
+# stdout), a timeout, a missing ``t3``, or any nonzero exit without
+# parseable report JSON FAILS OPEN — a broken environment must never deny
+# a merge-class mutation. Treating a crash as a coverage finding turned
+# every ``gh pr create`` into a deny; that is the bug this closes.
 
 _GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
 _PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
@@ -1265,8 +1275,39 @@ def _is_merge_class_mutation(data: dict) -> bool:
 def _diff_coverage_argv() -> list[str] | None:
     t3_bin = shutil.which("t3")
     if t3_bin:
-        return [t3_bin, "tool", "diff-coverage"]
+        return [t3_bin, "tool", "diff-coverage", "--json"]
     return None
+
+
+def _diff_coverage_finding(stdout: str) -> str | None:
+    """Return a deny reason iff *stdout* is a report JSON with ``passes`` false.
+
+    The fail-open discriminator (#122). ``t3 tool diff-coverage --json``
+    emits exactly ``{"passes": ..., "uncovered": [...],
+    "unreferenced_symbols": [...]}`` on a successful measurement. A crash
+    (e.g. the dev-only ``coverage`` module missing from the installed
+    ``t3`` env) produces a traceback on stderr and no parseable JSON on
+    stdout — so anything that is not a well-formed report with
+    ``passes is False`` is "not a finding" and the caller fails open.
+
+    Returns the human-readable finding summary when there IS a genuine
+    finding, else ``None`` (clean, crashed, or unparsable).
+    """
+    try:
+        report = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("passes") is not False:
+        return None
+    rows = [
+        f"  uncovered new lines in {entry.get('path')}: {entry.get('lines')}"
+        for entry in (report.get("uncovered") or [])
+        if isinstance(entry, dict)
+    ]
+    symbols = report.get("unreferenced_symbols") or []
+    if symbols:
+        rows.append(f"  new production symbols not referenced by any changed test: {sorted(symbols)}")
+    return "\n".join(rows)
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -1278,8 +1319,15 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     — a vacuity gate that never fires is itself a false-completion
     surface. This makes it a code gate at the same pre-merge layer as
     the sibling Gate-15 AI-signature scan, reusing ``t3 tool
-    diff-coverage`` as-is. Fails open on a broken environment (no
-    ``t3``, timeout), matching the other t3-shelling hooks.
+    diff-coverage --json`` as-is.
+
+    Fail-open contract (#122): DENY only on an actual, successfully-
+    computed uncovered-diff finding — a report JSON with ``passes`` false.
+    A subprocess crash (``ModuleNotFoundError: No module named
+    'coverage'`` when the dev-only dep is absent from the installed ``t3``
+    env), a timeout, a missing ``t3``, or any nonzero exit without
+    parseable report JSON FAILS OPEN. A broken environment must never deny
+    a merge-class mutation; hooks must be crash-proof.
     """
     if not _is_merge_class_mutation(data):
         return False
@@ -1296,18 +1344,19 @@ def handle_block_uncovered_diff(data: dict) -> bool:
             check=False,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
 
-    if result.returncode != 0:
-        return emit_pretooluse_deny(
-            "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-            "An added production line is uncovered or a changed symbol is not "
-            "referenced by a changed test. Cover/reference it, then re-mark the "
-            "PR ready (resolve the finding before re-requesting review).\n"
-            + (result.stdout or result.stderr or "").strip()
-        )
-    return False
+    finding = _diff_coverage_finding(result.stdout or "")
+    if finding is None:
+        return False
+
+    return emit_pretooluse_deny(
+        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
+        "An added production line is uncovered or a changed symbol is not "
+        "referenced by a changed test. Cover/reference it, then re-mark the "
+        "PR ready (resolve the finding before re-requesting review).\n" + finding
+    )
 
 
 # ── PreToolUse: orchestrator-execution-boundary (#836 §17.6 gate 2) ──
