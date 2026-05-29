@@ -1736,6 +1736,7 @@ name = "teatree"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "coverage" },
     { name = "croniter" },
     { name = "django" },
     { name = "django-fsm-2" },
@@ -1784,6 +1785,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "browser-cookie3", marker = "extra == 'notion'", specifier = ">=0.20" },
+    { name = "coverage", specifier = ">=7" },
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "django", specifier = ">=5.2,<6.1" },
     { name = "django-fsm-2", specifier = ">=4" },
