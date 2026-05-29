@@ -154,6 +154,24 @@ def _parse_excluded_skills(raw: object) -> list[str]:
     return [str(s) for s in raw] if isinstance(raw, list) else []
 
 
+_DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
+
+
+def _parse_disk_cache_allowlist(raw: object) -> list[str]:
+    """Coerce the disk cache allow-list, falling back to the regenerable-cache default.
+
+    A missing key (``None``) yields the curated default set of regenerable
+    caches; an explicit list (even empty) is honoured verbatim so a user can
+    narrow the allow-list to nothing. Non-list scalars degrade to the default
+    rather than raising.
+    """
+    if raw is None:
+        return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
+    if not isinstance(raw, list):
+        return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
+    return [str(s) for s in raw]
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -203,6 +221,21 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "resource_pressure_disabled": bool,
+    "resource_pressure_cadence_minutes": int,
+    "resource_pressure_min_free_interval_minutes": int,
+    "disk_warn_free_gb": float,
+    "disk_crit_free_gb": float,
+    "ram_warn_avail_gb": float,
+    "ram_crit_avail_gb": float,
+    "disk_cache_allowlist": _parse_excluded_skills,
+    "allow_destructive_disk": bool,
+    "worktree_stale_days": int,
+    "max_worktree_gc_per_tick": int,
+    "allow_destructive_ram": bool,
+    "ram_kill_allowlist": _parse_excluded_skills,
+    "todo_sweep_disabled": bool,
+    "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
@@ -388,6 +421,51 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # #128 Resource-pressure scanner — teatree-controlled auto-free before
+    # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
+    # (``os.statvfs`` for disk, ``vm_stat`` reclaimable pages for RAM) — never
+    # percent-of-nominal (the APFS shared-container total and macOS "99 % RAM
+    # used" both mislead). Monitoring + regenerable-cache purge are on by
+    # default; every irreversible lever (worktree GC, process SIGTERM) is
+    # flag-gated OFF. ``resource_pressure_disabled = true`` is the durable
+    # kill-switch (mirrors ``self_update_disabled``): the scanner is never
+    # wired. All knobs are per-overlay overridable.
+    resource_pressure_disabled: bool = False
+    resource_pressure_cadence_minutes: int = 5
+    resource_pressure_min_free_interval_minutes: int = 30
+    disk_warn_free_gb: float = 25.0
+    disk_crit_free_gb: float = 10.0
+    ram_warn_avail_gb: float = 3.0
+    ram_crit_avail_gb: float = 1.5
+    # Allow-LIST only (never a denylist): exactly these regenerable cache dirs
+    # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
+    # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
+    # the latter is hard-protected even if a user adds it.
+    disk_cache_allowlist: list[str] = field(
+        default_factory=lambda: ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"],
+    )
+    # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
+    # ``worktree_stale_days``) at CRITICAL, capped at
+    # ``max_worktree_gc_per_tick`` per pass and never the active session's
+    # worktree. Always logged + DM.
+    allow_destructive_disk: bool = False
+    worktree_stale_days: int = 30
+    max_worktree_gc_per_tick: int = 3
+    # Opt-in: enables SIGTERM (never SIGKILL) of allow-listed renderer
+    # processes after >= 2 consecutive CRITICAL-RAM ticks, never a process in
+    # the active-session ancestry. Empty ``ram_kill_allowlist`` means no
+    # process is ever killed even when ``allow_destructive_ram = true``.
+    allow_destructive_ram: bool = False
+    ram_kill_allowlist: list[str] = field(default_factory=list)
+    # #129 TODO-sweep scanner — per-overlay; verifies open Task rows against
+    # their artifact's terminal state (issue closed / PR merged) and completes
+    # only on durable proof, never in bulk and never on a stale read. On by
+    # default; ``todo_sweep_disabled = true`` is the escape hatch.
+    # ``todo_sweep_recheck_interval_hours`` is the per-task anti-thrash window
+    # (a task swept within it is skipped this tick) and the idempotency window
+    # for the atomic ``last_sweep_check_ts`` stamp.
+    todo_sweep_disabled: bool = False
+    todo_sweep_recheck_interval_hours: int = 1
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
     # Each running worktree (``services_up``/``ready``) holds docker
     # containers, browsers, language servers, and CI processes — on a
@@ -517,6 +595,23 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        resource_pressure_disabled=bool(teatree.get("resource_pressure_disabled", False)),
+        resource_pressure_cadence_minutes=int(teatree.get("resource_pressure_cadence_minutes", 5)),
+        resource_pressure_min_free_interval_minutes=int(
+            teatree.get("resource_pressure_min_free_interval_minutes", 30),
+        ),
+        disk_warn_free_gb=float(teatree.get("disk_warn_free_gb", 25.0)),
+        disk_crit_free_gb=float(teatree.get("disk_crit_free_gb", 10.0)),
+        ram_warn_avail_gb=float(teatree.get("ram_warn_avail_gb", 3.0)),
+        ram_crit_avail_gb=float(teatree.get("ram_crit_avail_gb", 1.5)),
+        disk_cache_allowlist=_parse_disk_cache_allowlist(teatree.get("disk_cache_allowlist")),
+        allow_destructive_disk=bool(teatree.get("allow_destructive_disk", False)),
+        worktree_stale_days=int(teatree.get("worktree_stale_days", 30)),
+        max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
+        allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
+        ram_kill_allowlist=_parse_excluded_skills(teatree.get("ram_kill_allowlist", [])),
+        todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
+        todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
