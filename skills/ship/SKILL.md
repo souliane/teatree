@@ -145,7 +145,7 @@ Before creating a PR, the `pr create` command automatically checks the session g
 
 - **shipping** requires prior `testing` and `reviewing` phases. (#837: it no longer requires a per-ticket `retro` visit — retro is orchestrator-only.)
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
-- `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice.
+- `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice. It skips only the **heavy** gates (visual QA, branch currency, FSM phase check) and STILL runs the cheap MR title/description format check (#1486), so a non-canonical title can never slip onto the remote via this bypass. The separate `--skip-mr-format-check` is the explicit opt-in that disables that format check too — needed only in the rare case a non-canonical title must ship anyway (and likewise user-authorised, never the agent's own choice).
 
 **The `reviewing` phase MUST be earned by spawning the `t3:reviewer` sub-agent — not by self-review against repo rules alone.** § 3b ("Self-Review Against Repo Rules") is necessary but not sufficient: it is the implementer reviewing their own work, which is the exact pattern that allowed #545 to claim "implementation finished" while review later found six rounds of missed renames, broken tests, undocumented contract changes, and a bypassed shipping gate. An independent reviewer that has not seen the implementation conversation is the corrective.
 
