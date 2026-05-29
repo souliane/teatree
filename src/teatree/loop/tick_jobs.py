@@ -41,6 +41,7 @@ from teatree.loop.scanners import (
     PrSweepScanner,
     PullMainCloneScanner,
     RedCardScanner,
+    ResourcePressureScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
@@ -54,6 +55,7 @@ from teatree.loop.scanners import (
     StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
+    TodoSweepScanner,
 )
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
@@ -375,6 +377,29 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
     )
 
 
+def _todo_sweep_scanner_for(backend: OverlayBackends) -> TodoSweepScanner | None:
+    """Build a per-overlay TODO-sweep scanner (#129).
+
+    Verifies open Task rows against their artifact's terminal state via the
+    overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has no
+    Python class (the scanner needs the overlay object as its terminal-state
+    oracle) or when ``todo_sweep_disabled = true`` (the escape hatch). The
+    per-task recheck/idempotency window comes from
+    ``todo_sweep_recheck_interval_hours``.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.todo_sweep_disabled:
+        return None
+    return TodoSweepScanner(
+        overlay=overlay,
+        overlay_name=backend.name,
+        recheck_interval_hours=settings.todo_sweep_recheck_interval_hours,
+    )
+
+
 def _architectural_review_scanner_for(backend: OverlayBackends) -> ArchitecturalReviewScanner | None:
     """Build a per-overlay architectural-review scanner from teatree-core config.
 
@@ -517,6 +542,36 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     return SelfUpdateScanner(
         repos=tuple(repos),
         cadence_hours=settings.self_update_cadence_hours,
+    )
+
+
+def _resource_pressure_scanner() -> ResourcePressureScanner | None:
+    """Build the global resource-pressure scanner from teatree-core config (#128).
+
+    Returns ``None`` when ``resource_pressure_disabled = true`` (the durable
+    kill-switch, mirroring ``self_update_disabled``) so the job is never wired.
+    Otherwise builds a single global :class:`ResourcePressureScanner`
+    (``overlay=""``) — disk/RAM pressure is a host-level concern, not any one
+    overlay's tracked work. All thresholds, cadence, allow-lists, and
+    destructive opt-in flags come straight from ``UserSettings``; the
+    destructive levers default OFF.
+    """
+    settings = load_config().user
+    if settings.resource_pressure_disabled:
+        return None
+    return ResourcePressureScanner(
+        disk_warn_free_gb=settings.disk_warn_free_gb,
+        disk_crit_free_gb=settings.disk_crit_free_gb,
+        ram_warn_avail_gb=settings.ram_warn_avail_gb,
+        ram_crit_avail_gb=settings.ram_crit_avail_gb,
+        cadence_minutes=settings.resource_pressure_cadence_minutes,
+        min_free_interval_minutes=settings.resource_pressure_min_free_interval_minutes,
+        disk_cache_allowlist=tuple(settings.disk_cache_allowlist),
+        allow_destructive_disk=settings.allow_destructive_disk,
+        worktree_stale_days=settings.worktree_stale_days,
+        max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
+        allow_destructive_ram=settings.allow_destructive_ram,
+        ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
     )
 
 
@@ -730,6 +785,12 @@ def _jobs_for_overlay_backend(
     arch_scanner = _architectural_review_scanner_for(backend)
     if arch_scanner is not None:
         jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
+    # #129 TODO-sweep scanner — verifies open Task rows against artifact
+    # terminal state and completes only on durable proof. Per-overlay
+    # because the Task/Ticket rows it walks are overlay-scoped.
+    todo_sweep_scanner = _todo_sweep_scanner_for(backend)
+    if todo_sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=todo_sweep_scanner, overlay=tag))
     # #1257 PR-sweep scanner — auto-merge-green-PRs sibling wired
     # per-overlay (not per-host). The overlay's followup-repos list
     # (full ``owner/repo`` slugs) is the sweep target.
@@ -839,6 +900,13 @@ def build_default_jobs(
     self_update_scanner = _self_update_scanner()
     if self_update_scanner is not None:
         jobs.append(_ScannerJob(scanner=self_update_scanner, overlay=""))
+    # #128 Resource-pressure scanner — global (overlay="") host-level
+    # disk/RAM auto-free. Monitoring + regenerable-cache purge on by
+    # default; destructive levers flag-gated off. Kill-switch:
+    # ``resource_pressure_disabled = true`` → builder returns None.
+    resource_pressure_scanner = _resource_pressure_scanner()
+    if resource_pressure_scanner is not None:
+        jobs.append(_ScannerJob(scanner=resource_pressure_scanner, overlay=""))
 
     if backends:
         all_backends = tuple(backends)
