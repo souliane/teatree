@@ -15,6 +15,14 @@ a ``t3 …`` command, and ``t3 …`` invocations are the orchestration prefix th
 gate is built to allow. The kill-switch lives out-of-repo so it survives
 ``t3 update``.
 
+A second gate rides the same self-rescue surface: the skill-loading-on-task
+gate (``handle_enforce_skill_loading_on_task_create``, [#1488]) can deny a
+fanned-out ``TaskCreated`` until the matching teatree skill is loaded. If its
+detection ever misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
+``[teatree] skill_loading_gate_enabled = false`` kill-switch — reachable for the
+same reason (``t3 …`` is the orchestration prefix every gate allows; the
+``TaskCreated`` gate does not govern Bash at all).
+
 This is a pure-Python local read/modify/write of ``~/.teatree.toml`` — it does
 NOT route through Django or an overlay ``manage.py`` subprocess, so it stays
 runnable even when the heavier overlay machinery is wedged.
@@ -26,19 +34,20 @@ from pathlib import Path
 import typer
 
 GATE_KEY = "orchestrator_bash_gate_enabled"
+SKILL_GATE_KEY = "skill_loading_gate_enabled"
 
 
 def _config_path() -> Path:
     return Path.home() / ".teatree.toml"
 
 
-def gate_is_enabled() -> bool:
-    """Resolve ``[teatree] orchestrator_bash_gate_enabled`` (default True).
+def _gate_key_is_enabled(key: str) -> bool:
+    """Resolve ``[teatree] <key>`` (default True), failing OPEN to enabled.
 
-    Mirrors the hook layer's ``_orchestrator_bash_gate_enabled`` resolution:
-    the gate is enabled unless an explicit ``false`` is recorded. Fails OPEN to
-    enabled on a missing/broken config so the reported status matches what the
-    gate itself would do.
+    Mirrors the hook layer's gate resolution: the gate is enabled unless an
+    explicit ``false`` is recorded. Fails OPEN to enabled on a
+    missing/broken config so the reported status matches what the gate
+    itself would do.
     """
     config_path = _config_path()
     if not config_path.is_file():
@@ -51,10 +60,20 @@ def gate_is_enabled() -> bool:
     teatree = config.get("teatree") if isinstance(config, dict) else None
     if not isinstance(teatree, dict):
         return True
-    return teatree.get(GATE_KEY) is not False
+    return teatree.get(key) is not False
 
 
-def _set_gate_enabled(*, enabled: bool) -> None:
+def gate_is_enabled() -> bool:
+    """Resolve the orchestrator heavy-Bash gate (``GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(GATE_KEY)
+
+
+def skill_loading_gate_is_enabled() -> bool:
+    """Resolve the skill-loading-on-task gate (``SKILL_GATE_KEY``, default True)."""
+    return _gate_key_is_enabled(SKILL_GATE_KEY)
+
+
+def _set_gate_key(key: str, *, enabled: bool) -> None:
     # ``tomlkit`` is imported inline (matching ``slack_setup``) so loading this
     # module — pulled transitively by ``teatree.config`` on every CLI bootstrap
     # — never eagerly imports the toml-preserving dep.
@@ -67,15 +86,39 @@ def _set_gate_enabled(*, enabled: bool) -> None:
     if not isinstance(teatree, tomlkit_items.Table):
         teatree = tomlkit.table()
         document["teatree"] = teatree
-    teatree[GATE_KEY] = enabled
+    teatree[key] = enabled
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
 
 
+def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str) -> None:
+    """Attach a ``status``/``disable``/``enable`` subgroup for ``[teatree] <key>``."""
+    group = typer.Typer(no_args_is_help=True, help=f"{label} kill-switch (self-rescue).")
+
+    @group.command(name="status")
+    def status() -> None:
+        """Show whether the gate is enabled."""
+        typer.echo("gate ENABLED" if _gate_key_is_enabled(key) else "gate DISABLED — no-op")
+
+    @group.command(name="disable")
+    def disable() -> None:
+        """Disable the gate (self-rescue from a lockout)."""
+        _set_gate_key(key, enabled=False)
+        typer.echo(f"gate DISABLED — wrote `{key} = false` to {_config_path()}")
+
+    @group.command(name="enable")
+    def enable() -> None:
+        """Re-enable the gate."""
+        _set_gate_key(key, enabled=True)
+        typer.echo(f"gate ENABLED — wrote `{key} = true` to {_config_path()}")
+
+    parent.add_typer(group, name=name)
+
+
 def register_gate_commands(overlay_app: typer.Typer) -> None:
-    """Attach the ``gate`` subgroup to an overlay's Typer app."""
+    """Attach the ``gate`` subgroup (heavy-Bash + skill-loading kill-switches)."""
     gate_group = typer.Typer(
         no_args_is_help=True,
-        help="Orchestrator-execution-boundary gate kill-switch (self-rescue).",
+        help="Enforcement-gate kill-switches (self-rescue).",
     )
 
     @gate_group.command(name="status")
@@ -89,13 +132,20 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
     @gate_group.command(name="disable")
     def disable() -> None:
         """Disable the gate (self-rescue from a Bash lockout)."""
-        _set_gate_enabled(enabled=False)
+        _set_gate_key(GATE_KEY, enabled=False)
         typer.echo(f"gate DISABLED — wrote `{GATE_KEY} = false` to {_config_path()}")
 
     @gate_group.command(name="enable")
     def enable() -> None:
         """Re-enable the gate."""
-        _set_gate_enabled(enabled=True)
+        _set_gate_key(GATE_KEY, enabled=True)
         typer.echo(f"gate ENABLED — wrote `{GATE_KEY} = true` to {_config_path()}")
+
+    _register_keyed_gate(
+        gate_group,
+        name="skill-loading",
+        key=SKILL_GATE_KEY,
+        label="Skill-loading-on-task gate",
+    )
 
     overlay_app.add_typer(gate_group, name="gate")

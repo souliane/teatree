@@ -346,9 +346,11 @@ Neither event supports matchers — they fire on every occurrence.
 
 `{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
 
+> **TeaTree uses this seam to close the fan-out skill-loading bypass (#1488).** Because the Task/Workflow vehicle bypasses `PreToolUse` (see Known Limitations below), the `PreToolUse`-only skill-loading gate (`handle_enforce_skill_loading`, matcher `Bash|Edit|Write`) was never consulted on a fanned-out task — which is how a bespoke review workflow ran instead of `/t3:review`. `handle_enforce_skill_loading_on_task_create` now rides `TaskCreated` and emits this `{"continue": false, "stopReason": …}` envelope to force the matching teatree skill onto the dispatched task. The exact firing + schema were confirmed against the Claude Code 2.1.156 binary. See BLUEPRINT.md §17.6.4 gate 17 and `hooks/CLAUDE.md`.
+
 ### Known Limitations
 
-- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. TeaTree works around this for the skill-loading gate by riding `TaskCreated` instead (see the note above the Known Limitations heading; #1488).
 - **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
 - **Task UI freezes during auto-compact** — no status updates on completed tasks
 

@@ -2218,8 +2218,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ agent         Launch Claude Code with overlay context and auto-detected      │
 │               skills.                                                        │
 │ config        Overlay configuration.                                         │
-│ gate          Orchestrator-execution-boundary gate kill-switch               │
-│               (self-rescue).                                                 │
+│ gate          Enforcement-gate kill-switches (self-rescue).                  │
 │ worktree      Per-worktree FSM operations.                                   │
 │ workspace     Ticket-level workspace operations (every worktree in the       │
 │               ticket).                                                       │
@@ -2344,15 +2343,16 @@ Usage: t3 teatree config [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 
- Orchestrator-execution-boundary gate kill-switch (self-rescue).
+ Enforcement-gate kill-switches (self-rescue).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ status   Show whether the orchestrator heavy-Bash gate is enabled.           │
-│ disable  Disable the gate (self-rescue from a Bash lockout).                 │
-│ enable   Re-enable the gate.                                                 │
+│ status         Show whether the orchestrator heavy-Bash gate is enabled.     │
+│ disable        Disable the gate (self-rescue from a Bash lockout).           │
+│ enable         Re-enable the gate.                                           │
+│ skill-loading  Skill-loading-on-task gate kill-switch (self-rescue).         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2384,6 +2384,59 @@ Usage: t3 teatree gate disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate skill-loading`
+
+```
+Usage: t3 teatree gate skill-loading [OPTIONS] COMMAND [ARGS]...
+
+ Skill-loading-on-task gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate skill-loading status`
+
+```
+Usage: t3 teatree gate skill-loading status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate skill-loading disable`
+
+```
+Usage: t3 teatree gate skill-loading disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate skill-loading enable`
+
+```
+Usage: t3 teatree gate skill-loading enable [OPTIONS]
 
  Re-enable the gate.
 
