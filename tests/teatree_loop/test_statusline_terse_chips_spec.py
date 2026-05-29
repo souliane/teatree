@@ -1,15 +1,18 @@
-"""Statusline terse-chips spec (#1377, binding format).
+"""Statusline terse-chips spec (#1377 item shape, #130 state labels).
 
-Pins the literal user-spec shape ``[overlay] #N (topic !chip1 !chip2 …)``:
+Pins the literal user-spec item shape ``#N (topic !chip1 !chip2 …)``,
+prefixed by its FSM ``state:`` group label (#130):
 
 - Topic and chips share ONE pair of parentheses.
 - Chips are bare ``!<iid>`` (GitLab MR) or ``#<n>`` (GitHub PR) — no
     per-MR title chunk, no annotation chunk, no review-permalink suffix.
 - No empty ``()`` when both topic and chips are absent — the parens
     are suppressed entirely.
+- The line is grouped by FSM state, so a single ``started`` ticket reads
+    ``[overlay] started: #N (topic !chips)``.
 
 Example shape (overlay name sanitised for this public repo):
-``[acme-fleet] #8495 (extra field !6264 !7491 !7490 !7487)``
+``[acme-fleet] started: #8495 (extra field !6264 !7491 !7490 !7487)``
 """
 
 import re
@@ -83,7 +86,7 @@ class TestAnchorWithFourGitlabMrsMatchesShape:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        assert anchor_line == "[acme-fleet] #8495 (extra field !6264 !7491 !7490 !7487)", repr(anchor_line)
+        assert anchor_line == "[acme-fleet] started: #8495 (extra field !6264 !7491 !7490 !7487)", repr(anchor_line)
 
 
 class TestGithubChipsUseHash:
@@ -114,7 +117,7 @@ class TestGithubChipsUseHash:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[teatree]")), "")
-        assert anchor_line == "[teatree] #97 (terse chips spec #1377 #1399)", repr(anchor_line)
+        assert anchor_line == "[teatree] started: #97 (terse chips spec #1377 #1399)", repr(anchor_line)
 
 
 class TestNoMrsNoEmptyParens:
@@ -132,7 +135,7 @@ class TestNoMrsNoEmptyParens:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        assert anchor_line == "[acme-fleet] #100 (some topic)", repr(anchor_line)
+        assert anchor_line == "[acme-fleet] started: #100 (some topic)", repr(anchor_line)
 
     def test_ticket_with_no_topic_and_no_mrs_has_no_parens_at_all(self) -> None:
         actions = [
@@ -146,5 +149,6 @@ class TestNoMrsNoEmptyParens:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        # Bare ``[acme-fleet] #100`` — no parens, no trailing space.
-        assert anchor_line == "[acme-fleet] #100", repr(anchor_line)
+        # ``[acme-fleet] started: #100`` — state label, then the bare ``#100``
+        # (no parens, no trailing space when topic and chips are both absent).
+        assert anchor_line == "[acme-fleet] started: #100", repr(anchor_line)

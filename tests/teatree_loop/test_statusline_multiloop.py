@@ -8,10 +8,12 @@ History:
     (``loop:tick``, ``loop:owner``, …).
 *   A later refit replaced that per-loop dump with a single consolidated
     ``loop · next tick in <d> · N loops live`` summary line.
-*   This refit drops the useless ``N loops live`` count: each live loop
-    now lists its short name + next tick as a relative duration in minutes
-    (``loop · my-prs 11m · tickets 11m``). The user explicitly opted out of
-    the bare count — it said neither which loops nor when they tick.
+*   A later refit dropped the useless ``N loops live`` count: each live
+    loop lists its short name + next tick as a relative duration in
+    minutes. The user explicitly opted out of the bare count.
+*   #130 prepended the leading state word so the line now reads
+    ``loop running · my-prs 11m · tickets 11m`` and appends a
+    ``waiting: N questions`` clause when the loop is blocked on the user.
 
 The #1073 foreign-hijack RED line is preserved unchanged through every
 refit — it is a different code path (``loop_owner_anchor``) and a
@@ -50,7 +52,7 @@ class TestLiveLoopsAnchor:
 
         assert len(lines) == 1, repr(lines)
         line = lines[0]
-        assert line.startswith("loop · "), line
+        assert line.startswith("loop running · "), line
         # The useless headline count is gone; each loop's short name appears.
         assert "loops live" not in line, line
         assert "tick" in line, line
@@ -115,7 +117,7 @@ class TestPopulateLoopsAnchorIntegration:
         _populate_live_loops_anchor(zones)
 
         joined = "\n".join(item if isinstance(item, str) else item.text for item in zones.anchors)
-        assert "loop · " in joined, repr(joined)
+        assert "loop running · " in joined, repr(joined)
         # Each live loop is named; the bare count is gone.
         assert "loops live" not in joined, repr(joined)
         assert "tick" in joined, repr(joined)
