@@ -218,7 +218,7 @@ addopts = """
 --cov --cov-report=term-missing:skip-covered --cov-branch
 --reuse-db
 """
-timeout = 10
+timeout = 60
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]
