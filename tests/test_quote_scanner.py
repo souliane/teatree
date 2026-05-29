@@ -11,6 +11,7 @@ are asserted as a unit.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
 from teatree.hooks import quote_scanner
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
 from teatree.hooks.quote_scanner import Finding, ScanResult, extract_publish_payload, has_quote_ok_override, scan_text
 
 
@@ -292,19 +294,16 @@ class TestBypassClosures:
         assert "User mandate" in body
 
     def test_curl_data_flag_unparseable_json_fails_closed(self) -> None:
-        # Fail-closed: when curl carries a data flag we cannot parse,
-        # the payload must contain a sentinel string that will trip the
-        # HIGH gate (we use the well-known HIGH pattern so the test does
-        # not depend on a new pattern). Specifically: a `the user said:`
-        # marker so any reviewer sees the gate blocked.
+        # Fail-closed: when curl carries a data flag we cannot parse, the
+        # payload carries the fail-closed sentinel, which ``scan_text``
+        # recognises EXPLICITLY as a HIGH finding (#126) rather than via a
+        # content-pattern self-match.
         cmd = "curl -X POST https://slack.com/api/chat.postMessage -d @some-binary-file"
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
-        # The fail-closed sentinel deliberately matches a HIGH pattern so
-        # downstream ``scan_text`` produces a deny decision.
         scan = scan_text(payload)
         assert scan.has_high, (
-            f"unparsable curl data must fail closed via a HIGH-matching sentinel; got payload={payload!r}"
+            f"unparsable curl data must fail closed via the explicit sentinel finding; got payload={payload!r}"
         )
 
 
@@ -914,6 +913,125 @@ class TestRound3BypassClosures:
         assert payload is not None
         scan = scan_text(payload)
         assert scan.has_high
+
+
+class TestFailClosedSentinelNoSelfMatch:
+    """The fail-closed sentinel must not self-match a content pattern (#126)."""
+
+    def test_sentinel_does_not_trip_the_user_said_pattern(self) -> None:
+        scan = scan_text(FAIL_CLOSED_SENTINEL)
+        # The sentinel is recognised explicitly, never via a content
+        # pattern that would describe a body the scanner never saw.
+        names = {f.name for f in scan.findings}
+        assert names == {"fail-closed-sentinel"}, f"sentinel self-matched a content pattern: {names}"
+
+    def test_missing_dash_f_file_yields_only_the_sentinel_finding(self) -> None:
+        cmd = "git commit -F /nonexistent/path-126.txt"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+        assert {f.name for f in scan.findings} == {"fail-closed-sentinel"}
+
+
+class TestHeredocToFileDashF:
+    """``cat > path <<EOF … EOF; git commit -F path`` resolves the body (#126)."""
+
+    def test_dash_f_resolves_heredoc_written_file_body(self) -> None:
+        # At PreToolUse the file does not exist yet (hook runs BEFORE the
+        # command), so the only body source is the in-command heredoc.
+        cmd = (
+            "cat > /tmp/commit-msg-126.txt <<'EOF'\n"
+            "refactor: clean up the widget refinery\n"
+            "EOF\n"
+            "git commit -F /tmp/commit-msg-126.txt"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "clean up the widget refinery" in payload
+        # No sentinel — the body was resolved from the heredoc.
+        assert not is_fail_closed_sentinel(payload)
+
+    def test_dash_f_heredoc_body_with_user_quote_still_scans_high(self) -> None:
+        # The resolved body IS scanned — a verbatim user quote in the
+        # heredoc-written commit message still trips the gate.
+        cmd = (
+            "cat > /tmp/commit-msg-126b.txt <<'EOF'\n"
+            "the user said: ship it now\n"
+            "EOF\n"
+            "git commit -F /tmp/commit-msg-126b.txt"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        scan = scan_text(payload)
+        assert scan.has_high
+        assert "the-user-said-colon" in {f.name for f in scan.findings}
+
+    def test_dash_f_quoted_redirect_path_matches_bare_reference(self) -> None:
+        cmd = (
+            "cat > '/tmp/commit msg 126.txt' <<'EOF'\n"
+            "refactor: tidy the parser\n"
+            "EOF\n"
+            "git commit -F '/tmp/commit msg 126.txt'"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "tidy the parser" in payload
+
+
+def _git_init_remote(repo: Path, remote_url: str) -> None:
+    git_bin = shutil.which("git")
+    assert git_bin is not None
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+    subprocess.run([git_bin, "init", "-b", "main"], cwd=repo, check=True, capture_output=True, env=env)
+    subprocess.run([git_bin, "remote", "add", "origin", remote_url], cwd=repo, check=True, capture_output=True, env=env)
+
+
+@pytest.fixture
+def _private_repo_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = tmp_path / ".teatree.toml"
+    cfg.write_text('[teatree]\nprivate_repos = ["acmecorp-engineering"]\n', encoding="utf-8")
+    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestPrivateRepoCarveOut:
+    """A private-repo commit with a verbatim quote downgrades to warn (#126)."""
+
+    def test_private_repo_commit_with_quote_pattern_downgrades_to_warn(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "the user said: ship it now"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_quote_scanner_pretool(data)
+        assert blocked is False  # downgraded, not denied
+        captured = capsys.readouterr()
+        assert captured.out == ""  # no deny JSON
+        assert "WARNING" in captured.err
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
+
+    def test_public_surface_from_private_repo_still_denies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        # gh issue create is a PUBLIC surface even from inside a private repo.
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh issue create --title t --body "the user said: ship it now"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_quote_scanner_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
 class TestHookChainRegistration:

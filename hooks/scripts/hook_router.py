@@ -22,8 +22,13 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 STATE_DIR = Path(
     os.environ.get(
@@ -130,26 +135,12 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
     ),
-    (
-        re.compile(r"\bgh\s+pr\s+merge\b"),
-        (
-            "BLOCKED: raw `gh pr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "expected_head_oid SHA-binding, privacy/AI-signature scan, "
-            "mark_merged). Use the sanctioned keystone transition "
-            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
-    (
-        re.compile(r"\bglab\s+mr\s+merge\b"),
-        (
-            "BLOCKED: raw `glab mr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "SHA-binding, privacy/AI-signature scan, mark_merged). Use the "
-            "sanctioned keystone transition `t3 <overlay> ticket merge "
-            "<clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
+    # NOTE: ``gh pr merge`` / ``glab mr merge`` are NOT static-blocked here.
+    # A pure regex cannot tell a teatree-managed repo (must use the keystone
+    # `t3 <overlay> ticket merge` transition) from a lightweight repo with no
+    # ticket/overlay FSM (which had no way to merge at all — a permanent
+    # lockout). The cwd-aware ``handle_block_out_of_band_merge`` gate enforces
+    # this with a managed-repo carve-out instead (#126).
     (
         re.compile(r"\bsafety\s+(?:check|scan)\b"),
         "BLOCKED: `safety` — use `pip-audit` instead (#1264; `uv audit` is preview-only).",
@@ -171,8 +162,64 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
+# are never cleaned up when a session ends, so the state dir accumulates
+# hundreds of stale files over time (#130). A throttled mtime sweep removes
+# anything older than the retention window. The throttle sentinel keeps the
+# sweep from walking the directory on every single state write — it runs at
+# most once per ``_SWEEP_THROTTLE_SECONDS``.
+_STATE_FILE_MAX_AGE_SECONDS = 2 * 24 * 60 * 60
+_SWEEP_THROTTLE_SECONDS = 60 * 60
+_SWEEP_SENTINEL = ".last-sweep"
+
+# Suffixes the sweep must never delete by age, because a live reader gates
+# behaviour on the file's presence AND the file's mtime does not refresh for
+# the life of an active session. ``.crons`` is written once by
+# ``handle_track_cron_jobs`` at registration and then read on every prompt by
+# ``_session_has_loop`` to gate the loop-registration directive/deny; an active
+# long-lived session that never changes its crons keeps an unmodified ``.crons``
+# that ages past the retention window. Sweeping it would make
+# ``_session_has_loop`` return False and re-emit the loop-registration nag for a
+# session that is already running the loop. The throttle-and-recreate markers
+# (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT listed: their
+# absence is the safe default and they are re-armed on demand.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons"})
+
+
+def _sweep_stale_state_files() -> None:
+    """Remove ephemeral state files older than the retention window (throttled).
+
+    Files whose suffix is in ``_SWEEP_PROTECTED_SUFFIXES`` are skipped — they
+    are read live by gates whose mtime does not refresh for an active session,
+    so age is not a liveness signal for them.
+
+    Best-effort and crash-proof: any OS error is swallowed so a sweep can
+    never break the state write it piggybacks on. Throttled via the
+    ``_SWEEP_SENTINEL`` mtime so the directory is walked at most once per
+    ``_SWEEP_THROTTLE_SECONDS``.
+    """
+    sentinel = STATE_DIR / _SWEEP_SENTINEL
+    now = time.time()
+    try:
+        if sentinel.is_file() and now - sentinel.stat().st_mtime < _SWEEP_THROTTLE_SECONDS:
+            return
+        sentinel.write_text("", encoding="utf-8")
+        cutoff = now - _STATE_FILE_MAX_AGE_SECONDS
+        for entry in STATE_DIR.iterdir():
+            if entry.name == _SWEEP_SENTINEL or not entry.is_file():
+                continue
+            if entry.name.rsplit(".", 1)[-1] in _SWEEP_PROTECTED_SUFFIXES:
+                continue
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # _sweep_stale_state_files swallows its own OSError, so no guard here.
+    _sweep_stale_state_files()
 
 
 def _read_input() -> dict:
@@ -471,10 +518,75 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
+#
+# The gate blocks Bash/Edit/Write until every suggested-but-unloaded
+# skill is loaded. A suggestion lands in ``<session>.pending`` from the
+# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# lifecycle/intent detection.
+#
+# Fail-open contract (the lockout class this closes): a config entry can
+# map a keyword to a skill NAME that no longer resolves (renamed or
+# removed skill — e.g. ``ac-auditing-repos`` after the rename to
+# ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
+# load ("Unknown skill") would block ALL Bash/Edit/Write for the whole
+# session with no in-session self-rescue. So before blocking, the gate
+# verifies each required name resolves to a loadable skill; an
+# unresolvable name does NOT block — it emits a one-line warning naming
+# the stale skill + the config file and is dropped from the demand. Only
+# skills that genuinely resolve but are not yet loaded enforce load-first.
+#
+# Resolution reuses the canonical :func:`_skill_search_dirs` (defined
+# below for skill-usage tracking) so the gate scans the SAME dirs the
+# loader builds its trigger index from — the repo ``skills/``
+# source-of-truth (lifecycle skills) plus the agent install dirs
+# (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
+# ``<session>.pending`` carries bare names (lifecycle ``code``/``debug``,
+# supplementary ``ac-*``) AND overlay ``skill_path`` values of the shape
+# ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
+# gate keeps enforcing load-first for a genuinely-installed overlay skill
+# while still failing open on a stale name.
+
+
+def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
+    """True iff *name* resolves to a loadable skill in *search_dirs*.
+
+    Resolution is deliberately CONSERVATIVE: a name resolves only when its
+    own skill directory exists VERBATIM. Two shapes reach
+    ``<session>.pending``. A bare name (lifecycle ``code``, supplementary
+    ``ac-*``) matches ``<dir>/<name>/SKILL.md``. An overlay ``skill_path``
+    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) matches
+    when the literal path is a file under a search dir (or its parent), or
+    when its ``<skill>`` parent-dir name exists as a skill dir.
+
+    No namespace ``:``-stripping is performed in either branch — stripping
+    would mis-resolve a stale ``old:code`` / ``skills/old:code/SKILL.md``
+    onto an installed bare ``code`` and re-introduce the very fail-closed
+    lockout class this gate exists to prevent. A name that resolves only by
+    discarding its namespace is treated as unresolvable (fail open).
+
+    Symlinked skill dirs (the common install shape) resolve through
+    ``is_file``.
+    """
+    stripped = name.rstrip("/")
+    if stripped.endswith("/SKILL.md"):
+        # Path-shaped overlay ``skill_path``: literal path, then the
+        # ``<skill>`` parent-dir name — both taken verbatim.
+        if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
+            return True
+        segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
+    else:
+        segment = stripped.rsplit("/", 1)[-1]
+    if not segment or segment == "SKILL.md":
+        return False
+    return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when suggested skills haven't been loaded."""
+    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+
+    Fails open on a stale/unresolvable required skill (see the module
+    comment above): such a name is warned about, never blocked on.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return False
@@ -484,12 +596,27 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         return False
 
     loaded = set(_read_lines(_state_file(session_id, "skills")))
-    unloaded = [f"/{s}" for s in pending_lines if s not in loaded]
+    unloaded = [s for s in pending_lines if s not in loaded]
     if not unloaded:
         return False
 
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in unloaded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in unloaded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
-        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
+        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
     return emit_pretooluse_deny(reason)
@@ -1092,6 +1219,27 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
+def _quote_scanner_high_verdict(
+    quote_scanner: "ModuleType", tool_name: str, result: object, *, carve_out: bool
+) -> bool:
+    """Resolve a HIGH quote-scanner match into a deny / downgrade verdict.
+
+    A HIGH match on a private-repo commit (``carve_out``) downgrades to a
+    warn (#126); every other HIGH match denies. Split out of
+    :func:`_run_quote_scanner_pretool` to keep its return count under the
+    PLR0911 ceiling.
+    """
+    if carve_out:
+        sys.stderr.write(
+            "WARNING: pre-publish quote-scanner gate (#1213) — patterns matched on a "
+            "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
+        )
+        quote_scanner.log_decision(tool_name=tool_name, decision="warn-private-repo", result=result, override=False)
+        return False
+    quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
+    return emit_pretooluse_deny(quote_scanner.format_block_message(result))
+
+
 def _run_quote_scanner_pretool(data: dict) -> bool:
     """Quote-scanner inner body — assumes ``teatree`` is already importable.
 
@@ -1101,7 +1249,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import publish_surface, quote_scanner  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1126,13 +1274,9 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         return False
 
     if result.has_high:
-        quote_scanner.log_decision(
-            tool_name=tool_name,
-            decision="deny",
-            result=result,
-            override=False,
-        )
-        return emit_pretooluse_deny(quote_scanner.format_block_message(result))
+        command = tool_input.get("command", "")
+        carve_out = publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data))
+        return _quote_scanner_high_verdict(quote_scanner, tool_name, result, carve_out=carve_out)
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
@@ -1198,7 +1342,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1215,6 +1359,14 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 
     term = banned_terms_scanner.scan_text(payload)
     if term is None:
+        return False
+
+    command = tool_input.get("command", "")
+    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
+            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
+        )
         return False
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
@@ -3709,6 +3861,126 @@ def handle_block_direct_commands(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
+# ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
+#
+# ``gh pr merge`` / ``glab mr merge`` bypass the FSM coherence mechanism
+# (ledger update, MergeClear validation, SHA-binding, privacy/AI-signature
+# scan, mark_merged), so a TEATREE-MANAGED repo must use the keystone
+# transition ``t3 <overlay> ticket merge <clear_id>`` (BLUEPRINT §17.1
+# invariant 8 / §17.4). But the previous static-regex block hard-denied
+# EVERY repo — a lightweight repo with no ticket/overlay FSM had no merge
+# path at all, a permanent lockout (#126).
+#
+# This cwd-aware gate carves out the unmanaged case: a merge is ALLOWED
+# only when the cwd repo is confidently NOT teatree-managed (no overlay
+# claims it). The gate stays STRICT for managed repos AND fail-safe on
+# uncertainty: when the cwd or its slug cannot be resolved, the repo is
+# treated as managed and the merge is BLOCKED — detection failure never
+# weakens the gate.
+
+_OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+_OUT_OF_BAND_MERGE_REASON = (
+    "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
+    "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
+    "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
+    "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
+    "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
+    "teatree-managed and the cwd could not be resolved, run the merge from inside "
+    "the repo's working tree so the gate can classify it."
+)
+
+
+def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
+    """Return ``(repo_slug_substrings, overlay_base_paths)`` from config.
+
+    Offline read of ``~/.teatree.toml`` (mirroring :func:`_load_protected_branches`'s
+    shape) collecting the two signals that mark a repo teatree-managed: the
+    per-overlay repo slug lists (``workspace_repos`` / ``frontend_repos`` /
+    ``public_repos``) and each overlay's ``path`` working-tree base. Teatree
+    core's own slug (``souliane/teatree``) is always included. Fails to an
+    empty signal set on a missing/broken config — the caller treats "no
+    resolvable signal + a resolvable slug" as unmanaged, never as a license
+    to weaken the gate on uncertainty.
+    """
+    import tomllib  # noqa: PLC0415
+
+    slugs: list[str] = ["souliane/teatree"]
+    paths: list[Path] = []
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return slugs, paths
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return slugs, paths
+    for overlay_cfg in (config.get("overlays") or {}).values():
+        if not isinstance(overlay_cfg, dict):
+            continue
+        for key in ("workspace_repos", "frontend_repos", "public_repos"):
+            slugs.extend(str(s).strip().lower() for s in overlay_cfg.get(key, []) if str(s).strip())
+        base = overlay_cfg.get("path")
+        if isinstance(base, str) and base.strip():
+            with contextlib.suppress(OSError, RuntimeError):
+                paths.append(Path(base).expanduser().resolve())
+    return slugs, paths
+
+
+def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
+    """Whether *cwd* belongs to a teatree-managed repo.
+
+    Returns ``True`` (managed — keep the keystone-merge block), ``False``
+    (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
+    caller fails safe and BLOCKS). Reuses ``publish_surface._slug_for_cwd``
+    for slug resolution so the host/owner/repo shape matches the
+    private-repo carve-out's.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            cwd.resolve().relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(cwd).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    if not slug:
+        return None
+    return any(entry in slug for entry in slugs)
+
+
+def handle_block_out_of_band_merge(data: dict) -> bool:
+    """Block a raw ``gh pr merge`` / ``glab mr merge`` on a managed repo.
+
+    Carve-out for the permanent-lockout case (#126): a merge is allowed only
+    when the cwd repo is confidently NOT teatree-managed. Managed repos and
+    any case the gate cannot classify stay BLOCKED — fail-safe on uncertainty.
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _OUT_OF_BAND_MERGE_RE.search(command):
+        return False
+    cwd = _resolve_cwd_repo(data)
+    if cwd is None:
+        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+    managed = _cwd_is_teatree_managed(cwd)
+    if managed is False:
+        return False
+    return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+
+
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 
 
@@ -4544,6 +4816,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_out_of_band_merge,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
