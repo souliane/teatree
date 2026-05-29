@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.teatree_gate import register_gate_commands
 from teatree.utils.run import run_streamed, spawn
 from teatree.utils.singleton import AlreadyRunningError, singleton
 
@@ -327,6 +328,7 @@ class OverlayAppBuilder:
         self._register_worker_command()
         self._register_shortcut_commands()
         self._register_config_commands()
+        register_gate_commands(self.overlay_app)
 
         for group_name, dj_group in DJANGO_GROUPS.items():
             group = typer.Typer(no_args_is_help=True, help=dj_group.help_text)

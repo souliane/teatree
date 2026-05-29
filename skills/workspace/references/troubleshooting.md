@@ -4,6 +4,12 @@
 
 ---
 
+## Orchestrator Locked Out of Bash
+
+- **Symptom:** Every orchestrator (main-agent) `Bash` call is denied by the orchestrator-execution-boundary gate (`handle_enforce_orchestrator_boundary`, BLUEPRINT §17.6.4 gate 2), and — when `agent_id` detection misfires (sidechain misdetection) — every sub-agent's `Bash` is denied too. The session deadlocks with no in-band way to run a command.
+- **Recovery:** Run `t3 <overlay> gate disable` (e.g. `t3 teatree gate disable`). This is the always-allow-listed self-rescue: it flips `[teatree] orchestrator_bash_gate_enabled = false` in `~/.teatree.toml`, and the gate's heavy-Bash denylist never matches a `t3 …` command, so it runs even while the gate is fully enabled. If even that is somehow blocked, set `orchestrator_bash_gate_enabled = false` under `[teatree]` in `~/.teatree.toml` from any external shell — the kill-switch is a plain config line, and editing it needs no `t3` at all. Re-enable later with `t3 <overlay> gate enable`.
+- **Prevention:** Main-vs-sub-agent is detected via the PreToolUse payload's `agent_id` (non-empty ⇒ sub-agent), not the parent transcript's `isSidechain` marker — the transcript read misclassified every sub-agent and caused the double lockout. The durable out-of-repo kill-switch survives `t3 update`, so a stale clone cannot re-lock the orchestrator ([#1472](https://github.com/souliane/teatree/issues/1472), self-rescue command [#1474](https://github.com/souliane/teatree/issues/1474)).
+
 ## `ty` Version Bumps Break Pre-Commit
 
 - **Symptom:** `uv lock --upgrade` bumps `ty` by many minor versions; the new ty finds dozens of new type errors (e.g., `invalid-return-type`, `invalid-argument-type` on Django/FSM patterns).
