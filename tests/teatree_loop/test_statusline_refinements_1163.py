@@ -232,7 +232,7 @@ class TestLiveLoopsAnchor:
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1
-        assert lines[0].startswith("loop · ")
+        assert lines[0].startswith("loop running · ")
         assert "loops live" not in lines[0]
         assert "tick" in lines[0]
         assert "slack-answer" in lines[0]
@@ -265,7 +265,7 @@ class TestZonesForIntegratesLoopsAnchor:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "loop · " in body
+        assert "loop running · " in body
         assert "loops live" not in body
         assert "tick" in body
         assert "owner" in body
