@@ -37,6 +37,9 @@ dependencies = [
   "pyyaml>=6",
   "tomlkit>=0.13",
 ]
+# ``t3 tool to-markdown`` converts PDF/XLSX/DOCX/PPTX attachments to Markdown.
+# Narrow extras only — never ``markitdown[all]`` (avoids audio/onnx weight).
+optional-dependencies.markdown = [ "markitdown[docx,pdf,pptx,xlsx]>=0.1.6" ]
 optional-dependencies.notion = [ "browser-cookie3>=0.20" ]
 optional-dependencies.slack = [ "slack-sdk>=3.35" ]
 scripts = { t3 = "t3_bootstrap:main" }
