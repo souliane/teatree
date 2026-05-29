@@ -63,6 +63,18 @@ def test_agent_signature_opt_in(tmp_path: Path) -> None:
     assert load_config(config_path).user.agent_signature is True
 
 
+def test_orchestrator_bash_gate_enabled_defaults_on(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.orchestrator_bash_gate_enabled is True
+
+
+def test_orchestrator_bash_gate_enabled_can_be_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\norchestrator_bash_gate_enabled = false\n")
+    assert load_config(config_path).user.orchestrator_bash_gate_enabled is False
+
+
 def test_require_human_approval_to_merge_defaults_on(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\n")
