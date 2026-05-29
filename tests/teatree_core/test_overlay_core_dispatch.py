@@ -150,6 +150,51 @@ class TestTicketGroupCoreDispatch:
         assert "merge" in cmd
 
 
+class TestDbMigrateCoreDispatch:
+    """``db migrate`` routes through ``python -m teatree`` (core); siblings do not.
+
+    ``db migrate`` migrates the teatree-core control DB the merge gate reads,
+    so it must run in the runtime process (``python -m teatree``). The sibling
+    ``db`` subcommands (``refresh``/``restore-ci``/``reset-passwords``) drive
+    the overlay's own ``db_import`` strategy and must keep routing through the
+    overlay's ``manage.py``. So ``db`` is a *per-subcommand* core-dispatch
+    group, not a wholesale one (#126).
+    """
+
+    def test_db_migrate_is_marked_core_dispatch_per_subcommand(self) -> None:
+        entry = DJANGO_GROUPS["db"]
+        assert "migrate" in getattr(entry, "core_subcommands", frozenset()), (
+            f"db.migrate must opt into per-subcommand core dispatch (#126), got {entry!r}"
+        )
+        # The group itself must NOT be wholesale core_dispatch — refresh et al.
+        # still need the overlay manage.py.
+        assert getattr(entry, "core_dispatch", False) is False
+
+    def test_db_migrate_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["db", "migrate"])
+        assert result.exit_code == 0, result.output
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"db migrate must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"db migrate must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"db migrate must NOT route through manage.py, got {cmd!r}"
+        assert "db" in cmd
+        assert "migrate" in cmd
+
+    def test_db_refresh_still_uses_overlay_manage_py(self, overlay_clone_path: Path) -> None:
+        # The sibling stays on the overlay manage.py path — only migrate is
+        # core-dispatched.
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["db", "refresh"])
+        assert result.exit_code == 0, result.output
+        cmd = run_streamed.call_args.args[0]
+        assert "manage.py" in " ".join(cmd), f"db refresh must route through the overlay manage.py, got {cmd!r}"
+
+
 class TestShortcutCoreDispatch:
     """``full-status`` and ``daily`` shortcut to followup commands — same dispatch rule."""
 
