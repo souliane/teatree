@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 import teatree.cli as teatree_cli
+from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
 from teatree.cli.tools import ToolRunner
 from teatree.repo_mode import RepoMode
@@ -244,7 +245,7 @@ class TestPrivacyScanWrapperSurfacesFindings:
         "except SystemExit as e:\n"
         "    raise\n"
         "except Exception as e:\n"
-        "    import sys; sys.exit(getattr(e, 'exit_code', 3))\n"
+        "    import sys; sys.exit(getattr(e, 'exit_code', 99))\n"
     )
 
     def _invoke(self, stdin_text: str) -> tuple[int, str]:
@@ -260,7 +261,9 @@ class TestPrivacyScanWrapperSurfacesFindings:
 
     def test_planted_secret_finding_reaches_caller(self) -> None:
         code, out = self._invoke("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
-        assert code == 1, out
+        # The dedicated findings exit code (#126) propagates through
+        # ``t3 tool privacy-scan`` → ``run_script`` → ``typer.Exit``.
+        assert code == PRIVACY_FINDINGS_EXIT_CODE, out
         assert "api_key" in out
         assert "glpat-" in out
 

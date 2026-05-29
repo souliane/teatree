@@ -323,6 +323,74 @@ class TestRefusePublicPushWithLeak:
         assert os.access(HOOK, os.X_OK), f"{HOOK} must be chmod +x"
 
 
+class TestLeakGateFailsOpenOnScannerCrash:
+    """The gate blocks on a genuine FINDING, never on a scanner CRASH (#126 gap 3).
+
+    The pre-push gate previously treated ANY non-zero scan exit as a finding
+    and BLOCKED. So a scanner crash (missing script, import error, argparse
+    usage error) wedged every push closed with no recourse — an over-deny
+    lockout. The fix reserves a dedicated findings exit code and makes the
+    gate block ONLY on that code, failing OPEN (allow) on any other non-zero.
+    """
+
+    def _crashing_scan_shim(self, bin_dir: Path, exit_code: int) -> str:
+        """Write a fake scan command that always exits ``exit_code`` (never the findings code)."""
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        shim = bin_dir / "fake-scan"
+        shim.write_text(
+            f'#!/usr/bin/env bash\necho "scanner blew up" >&2\nexit {exit_code}\n',
+            encoding="utf-8",
+        )
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        return str(shim)
+
+    def test_scanner_crash_fails_open(self, tmp_path: Path) -> None:
+        """A non-findings, non-zero scan exit (crash) must ALLOW the push."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        # Point the gate at a scan command that crashes with code 1 (generic
+        # exception) — distinct from the dedicated findings code.
+        shim = self._crashing_scan_shim(tmp_path / "scanbin", exit_code=1)
+        env["T3_PRIVACY_SCAN_CMD"] = shim
+        (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, "scanner crash must fail OPEN: " + result.stdout + result.stderr
+
+    def test_scanner_usage_error_fails_open(self, tmp_path: Path) -> None:
+        """An argparse/usage-error exit (2) is also a crash, not a finding → ALLOW."""
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")
+        shim = self._crashing_scan_shim(tmp_path / "scanbin", exit_code=2)
+        env["T3_PRIVACY_SCAN_CMD"] = shim
+        (work / "feature.txt").write_text("a clean feature line\n", encoding="utf-8")
+        _git(work, "add", "feature.txt")
+        _git(work, "commit", "-m", "add feature")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 0, "scanner usage error must fail OPEN: " + result.stdout + result.stderr
+
+    def test_genuine_finding_still_blocks(self, tmp_path: Path) -> None:
+        """The real scanner reports a finding on the dedicated code → still BLOCK.
+
+        Uses the real privacy_scan.py (not a shim) so the dedicated findings
+        exit code path is exercised end-to-end — the gate must block on it.
+        """
+        work, env = _clone_with_remote(tmp_path, "PUBLIC")  # env already points at real privacy_scan.py
+        (work / "leak.txt").write_text(
+            "token = glpat-XXXXXXXXXXXXXXXX\n",
+            encoding="utf-8",
+        )
+        _git(work, "add", "leak.txt")
+        _git(work, "commit", "-m", "add config")
+
+        result = _run_hook(work, env, _push_stdin(work))
+
+        assert result.returncode == 1, "genuine finding must still block: " + result.stdout + result.stderr
+
+
 class TestRefusePublicPushWithNonNoreplyAuthor:
     """#730 — public history must never carry a real author/committer email.
 

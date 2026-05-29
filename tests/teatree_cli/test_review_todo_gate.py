@@ -319,6 +319,107 @@ class TestNonBlockerCommentsAllowed:
 # ---------------------------------------------------------------------------
 
 
+class TestAllowTodoBlockerOverride:
+    """A documented ``--allow-todo-blocker`` escape lets an authorized in-MR blocker proceed.
+
+    Mirrors the sibling ``--quote-ok`` / ``--allow-banned-term`` overrides
+    (#126 round-2, gap 2).
+
+    Matrix:
+    * refused without the flag (the gate still fires);
+    * allowed with the flag (the escape works);
+    * fail-open on diff-fetch failure is preserved (the flag does not relax it).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _gate_immediate(tmp_path, monkeypatch)
+        _disable_shape_gate(monkeypatch)
+
+    def test_blocker_refused_without_flag(self) -> None:
+        """Control: a TODO-anchored blocker is refused when the override is absent."""
+        diff = _build_diff(target_line=42, marker_line=42, marker_text="// TODO: defer")
+        stub = _StubAPI(diff)
+        service = _service_with_stub(stub)
+
+        msg, code = service.post_comment(
+            "org/repo",
+            7,
+            "This must be implemented before merge — it is blocking.",
+            file="x.py",
+            line=42,
+        )
+
+        assert code == 1, f"control: blocker must refuse without flag: code={code} msg={msg!r}"
+        assert not any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls)
+
+    def test_blocker_allowed_with_flag(self) -> None:
+        """The escape works: the same blocker proceeds with ``allow_todo_blocker=True``."""
+        diff = _build_diff(target_line=42, marker_line=42, marker_text="// TODO: defer")
+        stub = _StubAPI(diff)
+        service = _service_with_stub(stub)
+
+        msg, code = service.post_comment(
+            "org/repo",
+            7,
+            "This must be implemented before merge — it is blocking.",
+            file="x.py",
+            line=42,
+            allow_todo_blocker=True,
+        )
+
+        assert code == 0, f"override must let the blocker proceed: code={code} msg={msg!r}"
+        assert any(c[0] == "post_json" and "/draft_notes" in c[1] for c in stub.calls), (
+            "API POST must fire when the TODO-blocker override is set"
+        )
+
+    def test_gate_function_returns_empty_with_override(self) -> None:
+        """Direct unit: the override short-circuits to ``""`` (proceed)."""
+        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+
+        diff = _build_diff(target_line=42, marker_line=42, marker_text="// TODO: defer")
+
+        class _DiffAPI:
+            def get_json(self, endpoint: str) -> object:
+                if "/changes" in endpoint:
+                    return {"changes": [{"new_path": "x.py", "diff": diff}]}
+                return {}
+
+        assert (
+            check_todo_anchor(
+                api=cast("Any", _DiffAPI()),
+                encoded_repo="org%2Frepo",
+                mr=7,
+                body="This is blocking and must be done before merge.",
+                anchor=InlineAnchor(file="x.py", line=42),
+                allow_todo_blocker=True,
+            )
+            == ""
+        )
+
+    def test_fail_open_on_diff_failure_unchanged_by_flag(self) -> None:
+        """Fail-open is preserved: a diff-fetch failure proceeds with OR without the flag."""
+        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+
+        class _BoomAPI:
+            def get_json(self, _endpoint: str) -> object:
+                msg = "network down"
+                raise RuntimeError(msg)
+
+        for flag in (False, True):
+            assert (
+                check_todo_anchor(
+                    api=cast("Any", _BoomAPI()),
+                    encoded_repo="org%2Frepo",
+                    mr=7,
+                    body="This is blocking and must be done.",
+                    anchor=InlineAnchor(file="x.py", line=42),
+                    allow_todo_blocker=flag,
+                )
+                == ""
+            )
+
+
 class TestCheckTodoAnchorUnit:
     """Direct unit tests on ``check_todo_anchor`` — no ReviewService round-trip."""
 
