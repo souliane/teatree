@@ -475,10 +475,63 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
+#
+# The gate blocks Bash/Edit/Write until every suggested-but-unloaded
+# skill is loaded. A suggestion lands in ``<session>.pending`` from the
+# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# lifecycle/intent detection.
+#
+# Fail-open contract (the lockout class this closes): a config entry can
+# map a keyword to a skill NAME that no longer resolves (renamed or
+# removed skill — e.g. ``ac-auditing-repos`` after the rename to
+# ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
+# load ("Unknown skill") would block ALL Bash/Edit/Write for the whole
+# session with no in-session self-rescue. So before blocking, the gate
+# verifies each required name resolves to a loadable skill; an
+# unresolvable name does NOT block — it emits a one-line warning naming
+# the stale skill + the config file and is dropped from the demand. Only
+# skills that genuinely resolve but are not yet loaded enforce load-first.
+
+
+def _skill_search_dirs() -> list[Path]:
+    """Return the directories scanned to decide whether a skill resolves.
+
+    Mirrors the loader's resolution surface (``hook_router`` source root,
+    the per-platform agent skills dirs, the bundled plugin skills dir).
+    A skill ``<name>`` resolves when ``<dir>/<final-segment>/SKILL.md``
+    exists under any of these.
+    """
+    home = Path(os.environ.get("HOME", str(Path.home())))
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root / "plugins" / "t3" / "skills",
+        repo_root.parent,
+        home / ".agents" / "skills",
+        home / ".claude" / "skills",
+        home / ".codex" / "skills",
+    ]
+    return [d for d in candidates if d.is_dir()]
+
+
+def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
+    """True iff *name* resolves to a loadable skill in *search_dirs*.
+
+    The final path segment of a (possibly plugin-namespaced) name is
+    matched against ``<dir>/<segment>/SKILL.md``. Symlinked skill dirs
+    (the common install shape) resolve through ``is_file``.
+    """
+    segment = name.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    if not segment:
+        return False
+    return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when suggested skills haven't been loaded."""
+    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+
+    Fails open on a stale/unresolvable required skill (see the module
+    comment above): such a name is warned about, never blocked on.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return False
@@ -488,12 +541,27 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         return False
 
     loaded = set(_read_lines(_state_file(session_id, "skills")))
-    unloaded = [f"/{s}" for s in pending_lines if s not in loaded]
+    unloaded = [s for s in pending_lines if s not in loaded]
     if not unloaded:
         return False
 
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in unloaded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in unloaded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
-        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
+        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
     return emit_pretooluse_deny(reason)
