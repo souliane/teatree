@@ -622,6 +622,193 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     return emit_pretooluse_deny(reason)
 
 
+# ── TaskCreated: enforce-skill-loading-on-task-create (#1488) ─────────
+#
+# ``ultracode`` (and any harness Workflow/Task fan-out) spawns sub-agents
+# through the Task/Workflow vehicle, which BYPASSES ``PreToolUse`` hooks
+# (a known regression from TodoWrite — see ``docs/claude-code-internals.md``
+# §9). The ``PreToolUse`` skill-loading gate above
+# (:func:`handle_enforce_skill_loading`, matcher ``Bash|Edit|Write``) is
+# therefore never consulted on the fan-out, so sub-agents skip
+# auto-loading the matching teatree lifecycle skill. That is the loophole
+# that let a bespoke review workflow run instead of ``/t3:review``.
+#
+# The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
+# against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
+# with ``task_id``/``task_subject``/``task_description``; a hook output of
+# ``{"continue": false, ...}`` sets ``preventContinuation``). This handler
+# rides that event to force the matching lifecycle skill + its
+# already-transitive companions onto the dispatched task.
+#
+# It enforces SKILL-LOADING ONLY — it never inspects agent count, token
+# budget, ``run_in_background``, or any workflow-size field, so ultracode
+# keeps maximal fan-out room. The deny schema is the teammate-stop
+# envelope (``{"continue": false, "stopReason": ...}``), NOT the
+# ``PreToolUse`` ``hookSpecificOutput`` deny; ``main`` translates the
+# handler's ``True`` return into ``sys.exit(2)`` the same as the
+# ``PreToolUse`` gates.
+
+# Mandatory reason, mirroring the #1302 ``[skip-plan-gate: <reason>]``
+# token: ``[skip-skill-gate: <non-empty-reason>]`` anywhere in the
+# subject/description head unblocks the dispatch; an empty reason rejects.
+_SKIP_SKILL_GATE_RE = re.compile(r"\[skip-skill-gate:\s*(\S[^\]]*?)\s*\]")
+
+
+def _skill_loading_gate_enabled() -> bool:
+    """Whether the skill-loading-on-task-create gate is enabled (default True).
+
+    Best-effort read of ``[teatree] skill_loading_gate_enabled`` from
+    ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`'s
+    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
+    gate keeps its protective default; an explicit ``false`` is the
+    one-line kill-switch (never a code edit).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("skill_loading_gate_enabled") is not False
+
+
+def _task_text_skip_token(text: str) -> str | None:
+    """Return the reason from a ``[skip-skill-gate: <reason>]`` token, else None.
+
+    Scans only the first 512 characters (matching
+    :func:`_agent_prompt_skip_token`) so a buried token in a long task body
+    does not silently authorise dispatch.
+    """
+    match = _SKIP_SKILL_GATE_RE.search(text[:512])
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def _companions_for_task_text(task_text: str) -> list[str]:
+    """Resolve the lifecycle skill for *task_text* plus its companion closure.
+
+    Routes the task text through the production
+    :meth:`SkillLoadingPolicy.lifecycle_for_task_text` (text → lifecycle
+    skill: ``review``/``code``/``ship``/…) and then expands that single
+    skill through :func:`resolve_companions` against the real trigger index
+    (parsed from real ``SKILL.md`` frontmatter). The companions are already
+    transitive — ``review`` pulls in ``code``/``workspace``/``platforms``/
+    … — so no companion-resolution logic is rebuilt here. On any
+    resolution failure (teatree not importable in this hook process, no
+    lifecycle match) the closure is empty and the gate falls back to the
+    ``<session>.pending`` demand set alone.
+    """
+    if not task_text:
+        return []
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added: list[str] = []
+    for extra in (str(scripts_dir), str(src_dir)):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
+            added.append(extra)
+    try:
+        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
+
+        from teatree.skill_deps import resolve_companions  # noqa: PLC0415
+        from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+
+        index = build_trigger_index(_skill_search_dirs())
+        lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(task_text, trigger_index=index)
+        resolved, _missing = resolve_companions([lifecycle], index) if lifecycle else ([], [])
+    except Exception:  # noqa: BLE001
+        return []
+    else:
+        return resolved
+    finally:
+        for extra in added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(extra)
+
+
+def emit_task_create_deny(reason: str) -> bool:
+    """Emit the ``TaskCreated`` deny envelope and return ``True``.
+
+    The harness blocks task creation when a hook emits ``continue: false``
+    (it sets ``preventContinuation``) — a DIFFERENT schema from the
+    ``PreToolUse`` ``hookSpecificOutput`` deny. ``main`` translates the
+    ``True`` return into ``sys.exit(2)``, the documented block signal for
+    the ``TaskCreated``/``TaskCompleted`` events.
+    """
+    json.dump({"continue": False, "stopReason": reason}, sys.stdout)
+    return True
+
+
+def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
+    """Force the matching lifecycle skill + companions onto a fanned-out task.
+
+    Demand set = ``(<session>.pending minus <session>.skills)`` union the
+    companion closure of ``lifecycle_for_task_text(task_description)``, with each name
+    dropped if it does not resolve via :func:`_skill_resolves` (fail-open on
+    a renamed/stale skill — this also defuses the auto-loader's observed
+    demand for an ``ac-exporting-webhook-mapping`` that errors "Unknown
+    skill"). The gate denies only when a RESOLVABLE skill is still unloaded.
+
+    Skill-loading ONLY: no agent-count / token-budget / workflow-size field
+    is read, so ultracode keeps maximal fan-out room. Fails open (passes
+    through) on the kill-switch, a valid ``[skip-skill-gate: <reason>]``
+    token, or a missing session id.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id or not _skill_loading_gate_enabled():
+        return False
+
+    subject = data.get("task_subject", "") or ""
+    description = data.get("task_description", "") or ""
+    if _task_text_skip_token(f"{subject}\n{description}"):
+        return False
+
+    loaded = set(_read_lines(_state_file(session_id, "skills")))
+    pending = [s for s in _read_lines(_state_file(session_id, "pending")) if s not in loaded]
+    detected = [s for s in _companions_for_task_text(description) if s not in loaded]
+
+    demanded: list[str] = []
+    for name in [*pending, *detected]:
+        if name and name not in demanded:
+            demanded.append(name)
+    if not demanded:
+        return False
+
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in demanded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in demanded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading-on-task gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
+    reason = (
+        "SKILL LOADING ENFORCEMENT (TaskCreated): this fanned-out task must "
+        f"load these teatree skills first: {skill_list}. Call the Skill tool "
+        "for each one in the task before doing its work — do NOT run a bespoke "
+        "workflow that skips them. (Disable with `t3 <overlay> gate "
+        "skill-loading disable` or prefix the task with "
+        "`[skip-skill-gate: <reason>]`.)"
+    )
+    return emit_task_create_deny(reason)
+
+
 # ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
 #
 # Denies ``Edit``/``Write`` on files under ``$T3_WORKSPACE_DIR`` when the
@@ -779,7 +966,10 @@ def handle_enforce_plan_gate(data: dict) -> bool:
 #    ``$XDG_DATA_HOME/teatree/last-plan-skill-ts`` (default
 #    ``~/.local/share/teatree/last-plan-skill-ts``) within the cooldown
 #    window (default 30 minutes, configurable via
-#    ``TEATREE_PLAN_GATE_WINDOW_MINUTES``).
+#    ``TEATREE_PLAN_GATE_WINDOW_MINUTES``; the sentinel ``0`` disables the
+#    freshness window entirely, so a single up-front ``/plan`` authorises a
+#    big multi-wave ultracode fan-out across many turns without re-planning
+#    each wave — #1488).
 # 2. The Agent prompt carries an explicit per-call opt-out token
 #    ``[skip-plan-gate: <reason>]`` (reason is mandatory — empty rejects).
 #
@@ -806,6 +996,14 @@ _SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
 
 
 def _plan_gate_window_minutes() -> int:
+    """Resolve the plan-gate freshness window in minutes.
+
+    Returns the default (30) when the env var is unset or unparsable. The
+    sentinel ``0`` is honoured verbatim — it disables the freshness window
+    so a single up-front ``/plan`` authorises an arbitrarily long
+    multi-wave fan-out (#1488). A NEGATIVE value falls back to the default
+    (it is meaningless, not a disable signal).
+    """
     raw = os.environ.get("TEATREE_PLAN_GATE_WINDOW_MINUTES", "").strip()
     if not raw:
         return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
@@ -813,7 +1011,7 @@ def _plan_gate_window_minutes() -> int:
         value = int(raw)
     except ValueError:
         return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
-    return value if value > 0 else _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
+    return value if value >= 0 else _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
 
 
 def _plan_skill_timestamp_file() -> Path:
@@ -888,13 +1086,19 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
     if tool_name not in _AGENT_PLAN_GATE_TOOLS:
         return False
 
+    window = _plan_gate_window_minutes()
+    # Sentinel 0 disables the freshness window — a single up-front /plan
+    # authorises a big multi-wave ultracode fan-out without re-planning each
+    # wave (#1488). The gate then never blocks on staleness.
+    if window == 0:
+        return False
+
     prompt = data.get("tool_input", {}).get("prompt", "") or ""
     if _agent_prompt_skip_token(prompt):
         return False
     if _plan_skill_recently_invoked():
         return False
 
-    window = _plan_gate_window_minutes()
     reason = (
         f"BLOCKED: `{tool_name}` dispatch requires a recent `/plan` invocation "
         f"(within the last {window} minutes) or an explicit per-call opt-out. "
@@ -931,32 +1135,163 @@ def _load_protected_branches() -> set[str]:
     return branches
 
 
-def handle_protect_default_branch(data: dict) -> bool:
-    """Block Edit/Write on files that live on a protected branch."""
-    tool_name = data.get("tool_name", "")
-    if tool_name not in _FILE_PATH_TOOLS:
-        return False
+# Agent-harness state dirs that may sit UNDER a git repo's working tree
+# (e.g. ``~/.claude`` inside a dotfiles repo) but whose files are never
+# repo source. A Write here must never be blocked by the protected-branch
+# gate — editing agent memory / todos / per-project state on `main` is
+# exactly what the agent is supposed to do. Mirrors ``_KEEP_PATTERNS``.
+_AGENT_STATE_PATH_RE = re.compile(
+    r"/\.(claude|codex|cursor|copilot)/(projects/.*/memory/|memory/|todos/|statsig/|.*\.log$)",
+)
 
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not file_path:
-        return False
 
-    parent = str(Path(file_path).parent)
+def _is_agent_state_path(file_path: str) -> bool:
+    """True iff *file_path* is agent-harness state, not repo source.
+
+    Resolved to an absolute, symlink-free path first so a relative or
+    ``..``-laden path can't dodge the pattern. A resolution failure (a
+    path under a missing dir) falls back to the raw string — the regex
+    is anchored on the harness-dir segment, which survives either form.
+    """
     try:
-        branch = subprocess.check_output(  # noqa: S603
-            ["git", "-C", parent, "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = file_path
+    return _AGENT_STATE_PATH_RE.search(resolved) is not None
+
+
+def _file_is_inside_worktree(repo_root: str, file_path: str) -> bool:
+    """True iff *file_path* resolves to a path inside *repo_root*'s working tree.
+
+    ``git -C <parent> rev-parse`` walks UP to the nearest enclosing
+    ``.git``, so the resolved repo root can be an ANCESTOR of the file
+    (a dotfiles/home repo the file merely sits under). Confirming the
+    file is genuinely within that root is what scopes the gate to the
+    TARGET FILE's repo rather than whatever happens to enclose its parent
+    dir (#126). A resolution failure means we cannot confirm containment —
+    fail open (return ``False``, do not block).
+    """
+    try:
+        file_resolved = Path(file_path).expanduser().resolve()
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        file_resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def _repo_root_is_teatree_managed(repo_root: str) -> bool:
+    """True iff *repo_root* is a teatree-MANAGED source repo.
+
+    The protected-branch gate guards only teatree core + the active
+    overlay's registered repos (``~/.teatree.toml``
+    ``workspace_repos`` / ``frontend_repos`` / ``public_repos`` slugs,
+    plus each overlay ``path``) — NOT every git repo (#126). An unmanaged
+    repo on ``main`` (a dotfiles repo, an unrelated clone) must not block,
+    so this returns ``False`` for any repo the managed-signal set does not
+    cover, and ``False`` on any classification error (fail OPEN — the
+    gate-over-deny class this whole change closes).
+
+    Reuses :func:`_overlay_managed_repo_signals` (the same signal source
+    as the out-of-band-merge gate) and ``publish_surface._slug_for_cwd``
+    so the slug shape matches the rest of the managed-repo machinery.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    try:
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            root_resolved.relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(root_resolved).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    return any(entry in slug for entry in slugs) if slug else False
+
+
+def _resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
+    """Return ``(branch, repo_root)`` for the repo enclosing *parent*, or ``None``.
+
+    ``None`` when *parent* is not inside a git repo, on a git error, or on
+    a timeout — every one of which fails the gate open. ``git -C`` walks UP
+    to the nearest ``.git``, so the returned root can be an ancestor of the
+    file; :func:`_file_is_inside_worktree` is what re-scopes it.
+    """
+
+    def _rev_parse(*flags: str) -> str:
+        return subprocess.check_output(  # noqa: S603
+            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,
         ).strip()
+
+    try:
+        return _rev_parse("--abbrev-ref", "HEAD"), _rev_parse("--show-toplevel")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def handle_protect_default_branch(data: dict) -> bool:
+    """Block Edit/Write on a source file in a teatree-MANAGED protected-branch repo.
+
+    Scoped to the TARGET FILE's own repo, never to the cwd's branch and
+    never to "any git repo" (#126). The block fires only when ALL hold:
+
+    1. the tool is ``Edit``/``Write``/``Read`` with a ``file_path``;
+    2. the path is NOT agent-harness state (memory / todos / per-project
+        state) — those are git-tracked scratch state, never protected
+        source, so they are exempt even on ``main``;
+    3. the file's enclosing git repo is on a protected branch;
+    4. the file genuinely lives inside that repo's working tree;
+    5. that repo is teatree-MANAGED (core + the active overlay's
+        registered repos) — an unmanaged repo on ``main`` (a dotfiles
+        clone, an unrelated project) is NOT this gate's concern.
+
+    Any condition unmet → allow (fail open). A git error, an
+    unresolvable repo, or an unclassifiable slug all allow — the
+    gate-over-deny class this change closes means uncertainty errs toward
+    letting the write through, not blocking it.
+    """
+    tool_name = data.get("tool_name", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    # Agent-harness state is never repo source — allow it even on `main`.
+    if tool_name not in _FILE_PATH_TOOLS or not file_path or _is_agent_state_path(file_path):
         return False
 
-    if branch in _load_protected_branches():
-        return emit_pretooluse_deny(
-            f"BLOCKED: file is on protected branch '{branch}'. Create a worktree first with `t3 workspace ticket`."
-        )
-    return False
+    resolved = _resolve_branch_and_root(str(Path(file_path).parent))
+    if resolved is None:
+        return False
+    branch, repo_root = resolved
+
+    if (
+        branch not in _load_protected_branches()
+        or not _file_is_inside_worktree(repo_root, file_path)
+        or not _repo_root_is_teatree_managed(repo_root)
+    ):
+        return False
+
+    return emit_pretooluse_deny(
+        f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
+        "Create a worktree first with `t3 workspace ticket`."
+    )
 
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
@@ -4868,6 +5203,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
     ],
+    "TaskCreated": [handle_enforce_skill_loading_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],

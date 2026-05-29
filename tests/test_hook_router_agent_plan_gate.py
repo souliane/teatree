@@ -152,6 +152,24 @@ class TestCooldownWindow:
         _write_ts(gate_env, time.time() - 45 * 60)
         assert handle_enforce_agent_plan_gate(_agent("implement X")) is False
 
+    def test_window_zero_sentinel_disables_freshness_window(
+        self, gate_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Sentinel 0 disables the freshness window so a single up-front /plan
+        # authorises a big multi-wave ultracode fan-out without re-planning
+        # each wave (#1488): dispatch passes even with NO plan timestamp at all.
+        monkeypatch.setenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", "0")
+        assert not gate_env.is_file()
+        assert handle_enforce_agent_plan_gate(_agent("implement X")) is False
+
+    def test_negative_window_falls_back_to_default_not_disabled(
+        self, gate_env: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A negative value is meaningless — NOT a disable signal. The gate
+        # falls back to the 30-min default and still blocks a stale dispatch.
+        monkeypatch.setenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", "-5")
+        assert handle_enforce_agent_plan_gate(_agent("implement X")) is True
+
 
 # ── PostToolUse: timestamp writer ────────────────────────────────────────
 

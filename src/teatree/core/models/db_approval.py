@@ -36,6 +36,21 @@ from django.utils import timezone
 from teatree.core.models.merge_clear import is_non_reviewer_role
 
 
+def canonical_db_scope(op: str, tenant: str) -> tuple[str, str]:
+    """Return the ``(op, tenant)`` scope key normalized identically for record + consume.
+
+    Same drift class as the on-behalf target (#126): a strict exact-string
+    match silently over-denied a legitimately-recorded approval whose op
+    differed from the consume token only by surrounding whitespace or case.
+    The op vocabulary is a small fixed set (``fresh-dump``, ``dslr-snapshot``),
+    so it is whitespace-stripped AND casefolded; the tenant is a database
+    identifier whose case is significant, so it is whitespace-stripped only.
+    Applied at :meth:`DbApproval.record`, :meth:`DbApproval.matches`, and
+    :meth:`DbApproval.consume` so the two ends can never drift.
+    """
+    return op.strip().casefold(), tenant.strip()
+
+
 class DbApprovalError(ValueError):
     """A ``DbApproval`` was rejected at record time — the #953 contract failed."""
 
@@ -75,12 +90,11 @@ class DbApproval(models.Model):
         ``is_non_reviewer_role()`` guard on ``MergeClear.issue``).
         Construction is atomic so a rejected approval leaves no partial row.
         """
-        clean_op = op.strip()
+        clean_op, clean_tenant = canonical_db_scope(op, tenant)
         if not clean_op:
             msg = "op is required and must be non-empty (#953)"
             raise DbApprovalError(msg)
 
-        clean_tenant = tenant.strip()
         if not clean_tenant:
             msg = "tenant is required and must be non-empty (#953)"
             raise DbApprovalError(msg)
@@ -110,7 +124,8 @@ class DbApproval(models.Model):
         """
         if self.consumed_at is not None:
             return False
-        return self.op == op.strip() and self.tenant == tenant.strip()
+        norm_op, norm_tenant = canonical_db_scope(op, tenant)
+        return self.op == norm_op and self.tenant == norm_tenant
 
     @classmethod
     def consume(cls, op: str, tenant: str) -> "DbApproval | None":
@@ -122,8 +137,7 @@ class DbApproval(models.Model):
         The ``consumed_at`` stamp + ``select_for_update`` make the claim
         single-use even under a concurrent second invocation.
         """
-        clean_op = op.strip()
-        clean_tenant = tenant.strip()
+        clean_op, clean_tenant = canonical_db_scope(op, tenant)
         with transaction.atomic():
             row = (
                 cls.objects.select_for_update()

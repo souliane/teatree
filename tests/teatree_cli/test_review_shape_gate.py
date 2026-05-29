@@ -290,6 +290,91 @@ class TestColleagueMRShapeGate:
         assert any(c[0] == "post_json" for c in stub.calls)
 
 
+class TestAllowLongReviewOverride:
+    """A documented ``--allow-long-review`` escape lets an over-cap colleague-MR review proceed.
+
+    Consistent with the sibling override pattern (#126 round-2, gap 5).
+
+    Matrix:
+    * refused without the flag (the cap still fires);
+    * allowed with the flag (the escape works);
+    * fail-open carve-out (own-MR / unreadable identity) is preserved.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _gate_immediate(tmp_path, monkeypatch)
+        self.monkeypatch = monkeypatch
+
+    def _patch_mr_author(self, author: str) -> None:
+        from teatree.cli import review_shape_gate as gate_mod  # noqa: PLC0415
+
+        self.monkeypatch.setattr(gate_mod, "fetch_mr_author", lambda api, encoded_repo, mr: author)
+
+    def test_over_cap_refused_without_flag(self) -> None:
+        """Control: the over-cap dump is refused when the override is absent."""
+        self._patch_mr_author(_AUTHOR_CAROL)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
+        body = (
+            "## Problem\n\nThe handler crashes on empty input.\n\n"
+            "## Fix\n\nGuard the empty case.\n\n## Verification\n\nAdded a regression test."
+        )
+
+        msg, code = service.post_comment("org/repo", 7, body)
+
+        assert code == 1, f"control: over-cap must refuse without flag: code={code} msg={msg!r}"
+        assert stub.calls == [], "shape gate must block BEFORE any GitLab POST"
+
+    def test_over_cap_allowed_with_flag(self) -> None:
+        """The escape works: the same dump proceeds with ``allow_long_review=True``."""
+        self._patch_mr_author(_AUTHOR_CAROL)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_CAROL)
+        body = (
+            "## Problem\n\nThe handler crashes on empty input.\n\n"
+            "## Fix\n\nGuard the empty case.\n\n## Verification\n\nAdded a regression test."
+        )
+
+        msg, code = service.post_comment("org/repo", 7, body, allow_long_review=True)
+
+        assert code == 0, f"override must let the long review proceed: code={code} msg={msg!r}"
+        assert any(c[0] == "post_json" for c in stub.calls), "API POST must fire when the override is set"
+
+    def test_gate_function_returns_empty_with_override(self) -> None:
+        """Direct unit: the override short-circuits to ``""`` (proceed) on a colleague MR."""
+        from teatree.cli import review_shape_gate as gate_mod  # noqa: PLC0415
+        from teatree.cli.review_shape_gate import check_review_shape  # noqa: PLC0415
+
+        self.monkeypatch.setattr(gate_mod, "fetch_mr_author", lambda api, encoded_repo, mr: _AUTHOR_CAROL)
+
+        class _Api:
+            def current_username(self) -> str:
+                return _AUTHOR_ALICE
+
+        body = "word " * (gate_mod.COLLEAGUE_PROSE_CAP_WORDS + 50)
+        assert (
+            check_review_shape(
+                api=cast("Any", _Api()),
+                encoded_repo="org%2Frepo",
+                mr=7,
+                body=body,
+                inline=False,
+                allow_long_review=True,
+            )
+            == ""
+        )
+
+    def test_fail_open_carveout_unchanged_by_flag(self) -> None:
+        """Own-MR carve-out is preserved: an own MR proceeds with OR without the flag."""
+        self._patch_mr_author(_AUTHOR_ALICE)  # own MR (== current identity)
+        service, stub = _service_with_stub(mr_author=_AUTHOR_ALICE)
+        body = "S1. S2. S3. S4. S5. S6. " * 20  # well over cap
+
+        for flag in (False, True):
+            stub.calls.clear()
+            msg, code = service.post_comment("org/repo", 7, body, allow_long_review=flag)
+            assert code == 0, f"own-MR must pass regardless of flag={flag}: code={code} msg={msg!r}"
+
+
 class TestShapeGateCachesMRAuthor:
     """``fetch_mr_author`` caches per ``(encoded_repo, mr)`` with 5-min TTL.
 

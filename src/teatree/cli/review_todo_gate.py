@@ -156,18 +156,24 @@ class InlineAnchor(NamedTuple):
     line: int
 
 
-def check_todo_anchor(
+def check_todo_anchor(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + anchor + the #126 override).
     *,
     api: "GitLabHTTPClient",
     encoded_repo: str,
     mr: int,
     body: str,
     anchor: InlineAnchor,
+    allow_todo_blocker: bool = False,
 ) -> str:
     """Return a non-empty refusal when a blocker-shaped post anchors on a TODO marker.
 
     Returns ``""`` (proceed) when any of these hold:
 
+    * ``allow_todo_blocker`` is set — the documented escape for the
+        legitimately-authorized case where the in-MR blocker genuinely must
+        be addressed despite the author's deferral marker (the CLI surfaces
+        this as ``--allow-todo-blocker``, mirroring the sibling
+        ``--quote-ok`` / ``--allow-banned-term`` overrides).
     * The anchor is empty (general MR-level note — nothing to anchor on,
         no author intent to read).
     * ``body`` does not look like a blocker.
@@ -180,6 +186,8 @@ def check_todo_anchor(
     the GitLab API call with ``(message, 1)`` — same shape as the
     sibling gates.
     """
+    if allow_todo_blocker:
+        return ""
     if not anchor.file or not anchor.line:
         return ""
     if not looks_like_blocker(body):

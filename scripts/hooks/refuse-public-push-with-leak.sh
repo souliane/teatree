@@ -74,6 +74,13 @@ visibility=$(printf '%s' "${visibility}" | tr '[:lower:]' '[:upper:]')
 
 scan_cmd=${T3_PRIVACY_SCAN_CMD:-t3 tool privacy-scan}
 
+# Dedicated "findings present" exit code from scripts/privacy_scan.py
+# (PRIVACY_FINDINGS_EXIT_CODE). The gate blocks ONLY on this code and fails
+# OPEN on any other non-zero (a scanner crash, a missing script, an argparse
+# usage error). Conflating "findings" with "crash" wedged every push closed
+# whenever the scanner itself failed (#126 gap 3). Overridable for testing.
+findings_code=${T3_PRIVACY_FINDINGS_EXIT_CODE:-3}
+
 default_ref=$(git symbolic-ref --short refs/remotes/"${remote_name}"/HEAD 2>/dev/null || true)
 default_branch=${default_ref#"${remote_name}"/}
 default_branch=${default_branch:-main}
@@ -133,7 +140,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ -n "${diff}${msgs}" ] || continue
 
   report=$(mktemp "${TMPDIR:-/tmp}/t3-privacy-gate.XXXXXX")
-  if ! { printf '%s\n' "${diff}"; printf '%s\n' "${msgs}"; } | ${scan_cmd} - >"${report}" 2>&1; then
+  scan_rc=0
+  { printf '%s\n' "${diff}"; printf '%s\n' "${msgs}"; } | ${scan_cmd} - >"${report}" 2>&1 || scan_rc=$?
+  if [ "${scan_rc}" -eq "${findings_code}" ]; then
     echo "✗ refuse: push to PUBLIC repo '${slug}' carries privacy findings on '${local_ref}'."
     echo "  Findings (line / category / redacted match):"
     # The scanner writes a deterministic plain-text summary to stdout
@@ -143,6 +152,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "  Scrub the diff (generic placeholders) before pushing to a public repo."
     echo "  (public-repo privacy gate — see /t3:rules § Verify Repo Visibility Before Filing External Issues)"
     blocked=1
+  elif [ "${scan_rc}" -ne 0 ]; then
+    # Any other non-zero is a scanner failure (crash, missing script,
+    # argparse error), NOT a finding. Fail OPEN — the gate is a safety net
+    # layered on top of the retro/contribute privacy scan, and blocking
+    # every push because the scanner itself broke is the over-deny lockout
+    # this gate must not be (#126 gap 3). Warn so the failure is visible.
+    echo "⚠ privacy scan could not run (exit ${scan_rc}) on '${local_ref}' — failing OPEN (push allowed)." >&2
+    sed 's/^/  /' "${report}" 2>/dev/null || cat "${report}" 2>/dev/null || true
   fi
   rm -f "${report}"
 done
