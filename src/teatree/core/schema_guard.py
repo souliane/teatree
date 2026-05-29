@@ -12,25 +12,36 @@ tickets, that opaque failure blocks the *entire* merge pipeline with no
 actionable signal. This module provides a cheap pre-flight that converts
 the silent traceback into a clear, sanctioned-remediation error and a
 ``t3 doctor`` check that surfaces the gap proactively at session start.
+
+The merge gate deliberately *refuses* (it does not auto-migrate): mutating
+the schema as a side effect of a merge command is surprising and unsafe if
+the migration itself fails partway. Instead :func:`migrate_self_db` (exposed
+as ``t3 teatree db migrate``) is the explicit, always-available, in-process
+self-rescue — reachable even while the gate is refusing, since it is a
+separate command not gated by the merge path (#126).
 """
 
 import typer
+from django.core.management import call_command
 from django.db import DEFAULT_DB_ALIAS, connections
 from django.db.migrations.executor import MigrationExecutor
 
 _REMEDIATION = (
-    "Run the sanctioned non-destructive migrate:\n"
-    "  uv --directory <teatree-clone> run python manage.py migrate --no-input\n"
+    "Run the sanctioned non-destructive migrate against the runtime self-DB:\n"
+    "  t3 teatree db migrate\n"
     "(or `t3 <overlay> resetdb` only if losing all local ticket/session state "
     "is acceptable). `t3 doctor check` flags this gap at session start."
 )
 
 
 class SelfDbMigrationError(RuntimeError):
-    """Raised when the teatree self-DB has unapplied migrations.
+    """Raised when the teatree self-DB has unapplied migrations or a migrate fails.
 
-    Carries the unapplied migration labels so the caller can render an
-    actionable message instead of a raw ``OperationalError`` traceback.
+    On the read path it carries the unapplied migration labels so the caller
+    can render an actionable message instead of a raw ``OperationalError``
+    traceback. On the write path (:func:`migrate_self_db`) it wraps the
+    underlying migrate failure so the consumer fails *closed* rather than
+    proceeding against a half-migrated DB.
     """
 
 
@@ -45,6 +56,41 @@ def pending_migrations(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
     targets = executor.loader.graph.leaf_nodes()
     plan = executor.migration_plan(targets)
     return [f"{migration.app_label}.{migration.name}" for migration, _backwards in plan]
+
+
+def migrate_self_db(alias: str = DEFAULT_DB_ALIAS) -> list[str]:
+    """Apply pending migrations to the runtime-resolved control DB in-process.
+
+    The always-available, non-destructive self-rescue for a stale runtime
+    self-DB. It runs ``migrate --no-input`` *in the running process* against
+    the connection named by *alias* — the exact connection
+    :func:`pending_migrations` reads — so "migrate then re-check" converges on
+    the same DB. This is the structural fix for the lockout: every prior
+    migrate wrapper either targeted a different DB than the runtime resolves
+    (``uv --directory <clone>`` auto-isolates a worktree-anchored editable
+    install onto a sibling DB) or was destructive (``resetdb``).
+
+    Returns the ``"<app>.<name>"`` labels that were pending (and are now
+    applied); an empty list when the DB was already current (idempotent
+    no-op). Existing rows are preserved — ``migrate`` never drops live data.
+
+    Fail-closed: a genuine migrate failure is re-raised as
+    :class:`SelfDbMigrationError` (never swallowed), so a consumer that
+    migrates-then-proceeds cannot proceed against a half-migrated DB.
+    """
+    pending = pending_migrations(alias)
+    if not pending:
+        return []
+    try:
+        call_command("migrate", "--no-input", database=alias, verbosity=0)
+    except Exception as exc:
+        msg = (
+            f"teatree self-DB migrate failed on alias {alias!r} "
+            f"({len(pending)} pending): {exc.__class__.__name__}: {exc}. "
+            f"The DB is left UNMIGRATED; the sanctioned merge path stays fail-closed (#870)."
+        )
+        raise SelfDbMigrationError(msg) from exc
+    return pending
 
 
 def require_current_schema(alias: str = DEFAULT_DB_ALIAS) -> None:
@@ -84,7 +130,6 @@ def doctor_check_self_db_migrations(alias: str = DEFAULT_DB_ALIAS) -> bool:
         return True
     typer.echo(
         f"FAIL  teatree self-DB has {len(pending)} unapplied migration(s): {', '.join(pending)}. "
-        f"The sanctioned merge path needs a current schema — run "
-        f"`uv --directory <teatree-clone> run python manage.py migrate --no-input`."
+        f"The sanctioned merge path needs a current schema — run `t3 teatree db migrate`."
     )
     return False
