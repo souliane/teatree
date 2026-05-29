@@ -93,19 +93,42 @@ def discover_frontend_port(worktree: Worktree, *, linked_ticket: Ticket | None =
     return None
 
 
+def _runs_backend_stack(worktree: Worktree) -> bool:
+    """True when this worktree's compose project runs the backend (``web``) service.
+
+    Overlay-agnostic signal: the overlay returns a non-empty compose file only
+    for the worktree that owns the backend stack (a frontend / data-only repo
+    returns ``""``). ``docker compose exec web`` and the exported
+    ``COMPOSE_PROJECT_NAME`` must target *that* worktree.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    try:
+        return bool(get_overlay().get_compose_file(worktree))
+    except Exception:  # noqa: BLE001 — a misbehaving overlay hook must not break routing
+        return False
+
+
 def resolve_linked_worktree(linked_ticket: Ticket) -> Worktree | None:
     """Pick the worktree that owns the backend stack for ``linked_ticket``.
 
     The env cache that feeds ``get_e2e_env_extras`` and the
     ``COMPOSE_PROJECT_NAME`` exported for ``docker compose`` calls both live
-    on this worktree. Prefer the first stored-path worktree (deterministic
-    order by pk); fall back to any sibling so a freshly-provisioned ticket
-    with no recorded ``worktree_path`` still routes.
+    on this worktree. A multi-repo ticket has several siblings, and the first
+    by pk is often the *frontend* worktree — exporting its compose project as
+    ``COMPOSE_PROJECT_NAME`` makes ``docker compose exec web`` fail with
+    "service web is not running" (#1322). Prefer the sibling that actually
+    runs the backend stack (non-empty overlay compose file); fall back to the
+    first stored-path worktree, then any sibling so a freshly-provisioned
+    ticket with no recorded ``worktree_path`` still routes.
     """
     siblings = list(Worktree.objects.filter(ticket=linked_ticket).order_by("pk"))
-    for wt in siblings:
-        if (wt.extra or {}).get("worktree_path"):
+    stored = [wt for wt in siblings if (wt.extra or {}).get("worktree_path")]
+    for wt in stored:
+        if _runs_backend_stack(wt):
             return wt
+    if stored:
+        return stored[0]
     return siblings[0] if siblings else None
 
 

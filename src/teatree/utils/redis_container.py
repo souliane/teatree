@@ -20,6 +20,10 @@ IMAGE = "redis:7-alpine"
 HOST_PORT = 6379
 
 
+class NativeRedisSquatterError(RuntimeError):
+    """A non-Docker process holds host 6379, so ``teatree-redis`` cannot bind it."""
+
+
 DEFAULT_DB_COUNT = 16
 
 
@@ -85,6 +89,63 @@ def _evict_squatters() -> None:
         _docker_tolerant("rm", name)
 
 
+def _native_host_listeners() -> list[str]:
+    """Return ``pid/command`` strings for native (non-Docker) listeners on host 6379.
+
+    ``_evict_squatters`` only handles *container* squatters. A native
+    ``redis-server`` started by Homebrew/systemd binds the host port directly,
+    so ``docker run -p 6379:6379`` fails with ``bind: address already in
+    use`` and ``teatree-redis`` is left in ``Created`` state — every worktree's
+    cache/broker traffic then 500s (#1373 sibling). ``lsof`` is the portable
+    probe (macOS + Linux); Docker's own port forwarder (``com.docker`` /
+    ``docker-pr`` / ``dockerd``) is excluded so the shared container's own
+    publish isn't mistaken for a squatter.
+    """
+    if shutil.which("lsof") is None:
+        return []
+    result = run_allowed_to_fail(
+        ["lsof", "-nP", f"-iTCP:{HOST_PORT}", "-sTCP:LISTEN", "-F", "pc"],
+        expected_codes=None,
+    )
+    listeners: list[str] = []
+    pid = ""
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            pid = line[1:].strip()
+        elif line.startswith("c"):
+            command = line[1:].strip()
+            if command and not _is_docker_forwarder(command):
+                listeners.append(f"{pid}/{command}")
+    return listeners
+
+
+def _is_docker_forwarder(command: str) -> bool:
+    """True when *command* is Docker's own port-publish proxy, not a native squatter."""
+    lowered = command.lower()
+    return any(token in lowered for token in ("docker", "vpnkit", "com.docke"))
+
+
+def _guard_native_squatter() -> None:
+    """Raise an actionable error when a native process holds host 6379.
+
+    Eviction is deliberately not attempted: a native ``redis-server`` is
+    almost always a user-managed service (Homebrew/systemd) whose silent kill
+    would surprise the user and lose data. Naming the ``pid/command`` lets the
+    user stop it (``brew services stop redis`` / ``kill <pid>``) and re-run.
+    """
+    listeners = _native_host_listeners()
+    if listeners:
+        joined = ", ".join(listeners)
+        msg = (
+            f"A native (non-Docker) process is listening on host port {HOST_PORT} "
+            f"[{joined}], so the shared '{CONTAINER_NAME}' container cannot bind it "
+            "(docker run would fail with 'address already in use'). Stop the native "
+            "service (e.g. `brew services stop redis` or `kill <pid>`) and re-run, or "
+            "let teatree manage Redis exclusively."
+        )
+        raise NativeRedisSquatterError(msg)
+
+
 def _create(db_count: int) -> None:
     logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
     _docker_checked(
@@ -124,21 +185,27 @@ def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
     cache/broker-touching request 500s. A non-``teatree-redis`` container
     squatting on host port 6379 is evicted before any create/recreate so
     ``docker run -p 6379:6379`` doesn't fail with ``address already in use``.
+    A *native* (non-Docker) ``redis-server`` holding the port cannot be safely
+    evicted, so it raises :class:`NativeRedisSquatterError` naming the process
+    instead of letting ``docker run`` fail with a cryptic bind error.
     """
     current = status()
     if current == "running":
         if not _host_port_published():
             _evict_squatters()
+            _guard_native_squatter()
             _recreate_with_port_publish(db_count)
         return
     if current == "missing":
         _evict_squatters()
+        _guard_native_squatter()
         _create(db_count)
         return
     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
     _docker_checked("start", CONTAINER_NAME)
     if not _host_port_published():
         _evict_squatters()
+        _guard_native_squatter()
         _recreate_with_port_publish(db_count)
 
 
