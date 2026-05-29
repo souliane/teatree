@@ -26,12 +26,13 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from teatree.cli.review_request import _active_project, review_request_app
+from teatree.cli.review_request import _active_project, _overlay_name_for_mr, review_request_app
 from teatree.config import OverlayEntry
 
 _TEATREE_PATH = Path("/workspace/teatree")
 _OTHER_PATH = Path("/workspace/acme-overlay")
 _OTHER_NAME = "acme-overlay"
+_MR_URL = "https://gitlab.com/acme-org/acme-repo/-/merge_requests/385"
 
 
 def _two_overlays() -> list[OverlayEntry]:
@@ -59,6 +60,66 @@ class TestActiveProjectOverlayRouting:
             from teatree.cli.review_request import post  # noqa: PLC0415
 
             post(mr_url="https://gitlab.com/org/repo/-/merge_requests/385", approver="souliane", title="")
+        assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
+
+
+class TestOverlayInferenceFromMrUrl:
+    """``check``/``post`` fall back to MR-URL inference when cwd resolution is blank (#1471).
+
+    Bug: run from a clone whose directory name is not an overlay name (the
+    teatree clone is dir ``teatree`` while the entry point is ``t3-teatree``)
+    on a multi-overlay install, ``_active_project()`` returns an empty
+    overlay name. The dispatch then ran with no ``T3_OVERLAY_NAME``, so the
+    command subprocess hit ``get_overlay()`` multi-overlay ambiguity,
+    ``resolve_guard_target()`` returned ``None``, and the request suppressed
+    with ``no_review_channel_or_token``. The MR URL is the authoritative
+    owner signal and must drive the routing when cwd/env yields nothing.
+    """
+
+    def test_blank_active_project_falls_back_to_url_inference(self) -> None:
+        with (
+            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("django.setup"),
+            patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME) as infer,
+        ):
+            resolved = _overlay_name_for_mr(_MR_URL)
+        infer.assert_called_once_with(_MR_URL)
+        assert resolved == _OTHER_NAME
+
+    def test_resolved_active_project_wins_over_url_inference(self) -> None:
+        """A cwd/env-resolved overlay name short-circuits — URL inference is never consulted."""
+        with (
+            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, _OTHER_NAME)),
+            patch("django.setup") as setup,
+            patch("teatree.core.overlay_loader.infer_overlay_for_url") as infer,
+        ):
+            resolved = _overlay_name_for_mr(_MR_URL)
+        infer.assert_not_called()
+        setup.assert_not_called()
+        assert resolved == _OTHER_NAME
+
+    def test_check_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
+        with (
+            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("django.setup"),
+            patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
+            patch("teatree.cli.review_request.managepy_core") as managepy_core,
+        ):
+            from teatree.cli.review_request import check  # noqa: PLC0415
+
+            check(mr_url=_MR_URL)
+        assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
+
+    def test_post_threads_url_inferred_overlay_when_cwd_blank(self) -> None:
+        with (
+            patch("teatree.cli.review_request._active_project", return_value=(_OTHER_PATH, "")),
+            patch("django.setup"),
+            patch("teatree.core.overlay_loader.infer_overlay_for_url", return_value=_OTHER_NAME),
+            patch("teatree.cli.review_request.managepy_core") as managepy_core,
+        ):
+            from teatree.cli.review_request import post  # noqa: PLC0415
+
+            post(mr_url=_MR_URL, approver="souliane", title="")
         assert managepy_core.call_args.kwargs["overlay_name"] == _OTHER_NAME
 
 
