@@ -22,6 +22,7 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -171,8 +172,47 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
+# are never cleaned up when a session ends, so the state dir accumulates
+# hundreds of stale files over time (#130). A throttled mtime sweep removes
+# anything older than the retention window. The throttle sentinel keeps the
+# sweep from walking the directory on every single state write — it runs at
+# most once per ``_SWEEP_THROTTLE_SECONDS``.
+_STATE_FILE_MAX_AGE_SECONDS = 2 * 24 * 60 * 60
+_SWEEP_THROTTLE_SECONDS = 60 * 60
+_SWEEP_SENTINEL = ".last-sweep"
+
+
+def _sweep_stale_state_files() -> None:
+    """Remove state files older than the retention window (throttled).
+
+    Best-effort and crash-proof: any OS error is swallowed so a sweep can
+    never break the state write it piggybacks on. Throttled via the
+    ``_SWEEP_SENTINEL`` mtime so the directory is walked at most once per
+    ``_SWEEP_THROTTLE_SECONDS``.
+    """
+    sentinel = STATE_DIR / _SWEEP_SENTINEL
+    now = time.time()
+    try:
+        if sentinel.is_file() and now - sentinel.stat().st_mtime < _SWEEP_THROTTLE_SECONDS:
+            return
+        sentinel.write_text("", encoding="utf-8")
+        cutoff = now - _STATE_FILE_MAX_AGE_SECONDS
+        for entry in STATE_DIR.iterdir():
+            if entry.name == _SWEEP_SENTINEL or not entry.is_file():
+                continue
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _sweep_stale_state_files()
+    except OSError:
+        return
 
 
 def _read_input() -> dict:

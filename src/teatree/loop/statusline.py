@@ -272,40 +272,38 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
 
 
 def live_loops_anchor() -> list[str]:
-    """Return one dedicated dim anchor line listing every live loop (#1400).
+    """Return the single dedicated loop line for the dashboard (#1400, #130).
 
     Single line, prepended at the top of the statusline so the user's
-    "which loops are live and when do they tick?" question is answered
-    with one glance:
+    "are the loops live, when do they tick, and am I blocked?" question is
+    answered with one glance:
 
-        ``loop · my-prs 11m · tickets 11m · slack-answer 1m``
+        ``loop running · my-prs 11m · tickets 11m · waiting: 2 questions``
 
-    Each live :class:`~teatree.core.models.LoopLease` contributes one
-    ``<short-name> <next-tick>`` chunk:
+    Shape:
 
-    *   ``<short-name>`` — the lease name with its ``loop-`` prefix
-        stripped (``loop-my-prs`` → ``my-prs``), so the user reads which
-        loops are running, not an opaque count.
-    *   ``<next-tick>`` — the time until that loop's next tick as a
-        RELATIVE duration in whole minutes (``11m``), never a clock time.
+    *   ``loop <state>`` — the leading state word: ``running`` when at
+        least one loop is live, ``idle`` otherwise. The foreign-hijack
+        case is NOT shown here — it is RED and routed to the action line
+        by :func:`loop_owner_anchor`.
+    *   one ``<short-name> <next-tick>`` chunk per live
+        :class:`~teatree.core.models.LoopLease`. ``<short-name>`` is the
+        lease name with its ``loop-`` prefix stripped (``loop-my-prs`` →
+        ``my-prs``); ``<next-tick>`` is the RELATIVE whole-minute
+        countdown to that loop's next tick (``11m``), never a clock time.
         Each loop has its own cadence (:func:`_cadence_for_loop`), so a
         fast reactive loop and a slow self-improve loop show different
         countdowns. The chunk is name-only when the lease has no recorded
-        ``acquired_at`` yet (no tick fired) so we never invent a number we
-        can't compute. ``due`` replaces the duration when overdue.
-
-    The prior ``next tick in <duration> · N loops live`` shape is gone:
-    the bare count said neither *which* loops nor *when* they tick, and the
-    single duration sat detached from the loops it described.
+        ``acquired_at`` yet; ``due`` replaces the duration when overdue.
+    *   ``waiting: <subject>`` — appended ONLY when the loop is blocked on
+        the user (there are unresolved :class:`DeferredQuestion` rows), so
+        the dashboard surfaces "the loop is held, you owe it an answer"
+        without the user hunting for it.
 
     Returns ``[]`` when no loop is live — silences the line entirely on
     a quiet machine. Fails open: any DB / import error degrades to ``[]``
-    so a broken LoopLease read cannot blank the statusline.
-
-    Backward-compat: the return signature is unchanged (``list[str]``)
-    so :func:`_populate_live_loops_anchor` keeps appending whatever lines
-    we return; today it's at most one line, tomorrow it can grow without
-    a caller-side change.
+    (or, for the ``waiting:`` clause specifically, drops just the clause)
+    so a broken read can never blank the statusline.
     """
     try:
         leases = _live_loop_leases()
@@ -315,7 +313,38 @@ def live_loops_anchor() -> list[str]:
         return []
 
     chunks = list(starmap(_loop_chunk, leases))
-    return [" · ".join(["loop", *chunks])]
+    parts = ["loop running", *chunks]
+    waiting = _waiting_clause()
+    if waiting:
+        parts.append(waiting)
+    return [" · ".join(parts)]
+
+
+def _waiting_clause() -> str:
+    """Return ``waiting: N questions`` when blocked on the user, else ``""``.
+
+    Fails open to ``""`` (no clause) on any read error so a broken
+    :class:`DeferredQuestion` query never blanks the loop line.
+    """
+    try:
+        pending = _pending_questions()
+    except Exception:  # noqa: BLE001
+        return ""
+    if pending <= 0:
+        return ""
+    noun = "question" if pending == 1 else "questions"
+    return f"waiting: {pending} {noun}"
+
+
+def _pending_questions() -> int:
+    """Count unresolved deferred questions (the loop's user-blocked signal).
+
+    Thin DB-read seam so :func:`live_loops_anchor` stays a pure formatter —
+    tests stub this rather than constructing ``DeferredQuestion`` fixtures.
+    """
+    from teatree.core.availability import pending_questions_count  # noqa: PLC0415
+
+    return pending_questions_count()
 
 
 def _short_loop_name(name: str) -> str:
