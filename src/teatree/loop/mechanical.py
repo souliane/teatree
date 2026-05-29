@@ -10,6 +10,7 @@ from collections.abc import Callable
 from django_fsm import can_proceed
 
 from teatree.loop.dispatch import ActionPayload
+from teatree.loop.mechanical_resources import free_resources
 
 logger = logging.getLogger(__name__)
 
@@ -205,4 +206,5 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     "reviewer_task_orphaned": reviewer_task_orphaned,
     "reviewer_task_self_authored": reviewer_task_self_authored,
     "assign_gitlab_reviewer": assign_gitlab_reviewer,
+    "free_resources": free_resources,
 }

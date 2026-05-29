@@ -41,6 +41,7 @@ from teatree.loop.scanners import (
     PrSweepScanner,
     PullMainCloneScanner,
     RedCardScanner,
+    ResourcePressureScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
     Scanner,
@@ -521,6 +522,36 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     )
 
 
+def _resource_pressure_scanner() -> ResourcePressureScanner | None:
+    """Build the global resource-pressure scanner from teatree-core config (#128).
+
+    Returns ``None`` when ``resource_pressure_disabled = true`` (the durable
+    kill-switch, mirroring ``self_update_disabled``) so the job is never wired.
+    Otherwise builds a single global :class:`ResourcePressureScanner`
+    (``overlay=""``) — disk/RAM pressure is a host-level concern, not any one
+    overlay's tracked work. All thresholds, cadence, allow-lists, and
+    destructive opt-in flags come straight from ``UserSettings``; the
+    destructive levers default OFF.
+    """
+    settings = load_config().user
+    if settings.resource_pressure_disabled:
+        return None
+    return ResourcePressureScanner(
+        disk_warn_free_gb=settings.disk_warn_free_gb,
+        disk_crit_free_gb=settings.disk_crit_free_gb,
+        ram_warn_avail_gb=settings.ram_warn_avail_gb,
+        ram_crit_avail_gb=settings.ram_crit_avail_gb,
+        cadence_minutes=settings.resource_pressure_cadence_minutes,
+        min_free_interval_minutes=settings.resource_pressure_min_free_interval_minutes,
+        disk_cache_allowlist=tuple(settings.disk_cache_allowlist),
+        allow_destructive_disk=settings.allow_destructive_disk,
+        worktree_stale_days=settings.worktree_stale_days,
+        max_worktree_gc_per_tick=settings.max_worktree_gc_per_tick,
+        allow_destructive_ram=settings.allow_destructive_ram,
+        ram_kill_allowlist=tuple(settings.ram_kill_allowlist),
+    )
+
+
 def _scanning_news_scanner() -> ScanningNewsScanner | None:
     """Build a global scanning-news scanner from teatree-core config.
 
@@ -840,6 +871,13 @@ def build_default_jobs(
     self_update_scanner = _self_update_scanner()
     if self_update_scanner is not None:
         jobs.append(_ScannerJob(scanner=self_update_scanner, overlay=""))
+    # #128 Resource-pressure scanner — global (overlay="") host-level
+    # disk/RAM auto-free. Monitoring + regenerable-cache purge on by
+    # default; destructive levers flag-gated off. Kill-switch:
+    # ``resource_pressure_disabled = true`` → builder returns None.
+    resource_pressure_scanner = _resource_pressure_scanner()
+    if resource_pressure_scanner is not None:
+        jobs.append(_ScannerJob(scanner=resource_pressure_scanner, overlay=""))
 
     if backends:
         all_backends = tuple(backends)
