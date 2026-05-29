@@ -24,6 +24,10 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 STATE_DIR = Path(
     os.environ.get(
@@ -1092,6 +1096,27 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
+def _quote_scanner_high_verdict(
+    quote_scanner: "ModuleType", tool_name: str, result: object, *, carve_out: bool
+) -> bool:
+    """Resolve a HIGH quote-scanner match into a deny / downgrade verdict.
+
+    A HIGH match on a private-repo commit (``carve_out``) downgrades to a
+    warn (#126); every other HIGH match denies. Split out of
+    :func:`_run_quote_scanner_pretool` to keep its return count under the
+    PLR0911 ceiling.
+    """
+    if carve_out:
+        sys.stderr.write(
+            "WARNING: pre-publish quote-scanner gate (#1213) — patterns matched on a "
+            "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
+        )
+        quote_scanner.log_decision(tool_name=tool_name, decision="warn-private-repo", result=result, override=False)
+        return False
+    quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
+    return emit_pretooluse_deny(quote_scanner.format_block_message(result))
+
+
 def _run_quote_scanner_pretool(data: dict) -> bool:
     """Quote-scanner inner body — assumes ``teatree`` is already importable.
 
@@ -1101,7 +1126,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import publish_surface, quote_scanner  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1126,13 +1151,9 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         return False
 
     if result.has_high:
-        quote_scanner.log_decision(
-            tool_name=tool_name,
-            decision="deny",
-            result=result,
-            override=False,
-        )
-        return emit_pretooluse_deny(quote_scanner.format_block_message(result))
+        command = tool_input.get("command", "")
+        carve_out = publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data))
+        return _quote_scanner_high_verdict(quote_scanner, tool_name, result, carve_out=carve_out)
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
@@ -1198,7 +1219,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1215,6 +1236,14 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 
     term = banned_terms_scanner.scan_text(payload)
     if term is None:
+        return False
+
+    command = tool_input.get("command", "")
+    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
+            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
+        )
         return False
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))

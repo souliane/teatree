@@ -16,20 +16,29 @@ passes, a banned-term body blocks, ``--body-file`` is read from disk.
 """
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import banned_terms_scanner
+from teatree.hooks import banned_terms_scanner, publish_surface
 
 
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
-    """A ``~/.teatree.toml`` shaped config carrying one banned term."""
+    """A ``~/.teatree.toml`` shaped config carrying one banned term.
+
+    Also declares the private-repo allowlist used by the #126 carve-out
+    tests; the banned-terms scanner ignores the extra key.
+    """
     cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+    cfg.write_text(
+        '[teatree]\nbanned_terms = ["acmecorp"]\nprivate_repos = ["acmecorp-engineering"]\n',
+        encoding="utf-8",
+    )
     return cfg
 
 
@@ -41,6 +50,24 @@ def _pin_config(config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _bash(command: str) -> dict[str, object]:
     return {"tool_name": "Bash", "tool_input": {"command": command}}
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+    )
+
+
+def _private_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@gitlab.com:acmecorp-engineering/product.git")
+    return repo
 
 
 class TestScanText:
@@ -221,3 +248,58 @@ class TestFormatBlockMessage:
         message = banned_terms_scanner.format_block_message("acmecorp")
         assert "acmecorp" in message
         assert "--allow-banned-term" in message
+
+
+@pytest.mark.integration
+class TestPrivateRepoCarveOut:
+    """A private-repo commit with the repo's own domain word is ALLOWED (#126)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_private_repo_commit_with_domain_word_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "fix the acmecorp refinery"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_public_repo_commit_with_banned_term_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = tmp_path / "pub"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
+        # No allowlist hit; the visibility probe finds nothing → unknown →
+        # NOT private → hard-block stands.
+        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_posting_command_with_banned_term_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Even from inside a private repo, gh issue create is a PUBLIC surface.
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh issue create --title t --body "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
