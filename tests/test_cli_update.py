@@ -468,66 +468,50 @@ class TestSelfDbMigrationOnUpdate:
     must fail closed (non-zero exit) when it cannot.
     """
 
-    def test_migrate_self_db_runs_sanctioned_non_destructive_migrate(
+    def test_migrate_self_db_runs_in_runtime_interpreter_not_uv_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        source = tmp_path / "clone"
-        source.mkdir()
+        # #126: the migrate must run in the RUNTIME process (python -m
+        # teatree), resolving the runtime self-DB — NOT `uv --directory
+        # <clone>`, which for a worktree-anchored editable install
+        # auto-isolates onto a sibling DB the runtime never reads.
         calls: list[list[str]] = []
 
         def _run(cmd: list[str], **_kw: object) -> _Proc:
             calls.append(cmd)
             return _Proc(0, "No migrations to apply.", "")
 
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
-        update_mod._migrate_self_db(source)
+        update_mod._migrate_self_db()
 
         assert len(calls) == 1
         cmd = calls[0]
-        assert cmd[:2] == ["/usr/bin/uv", "--directory"]
-        assert str(source) in cmd
-        assert cmd[-3:] == ["manage.py", "migrate", "--no-input"]
+        assert cmd[0] == update_mod.sys.executable, "must use the running interpreter"
+        assert cmd[1:4] == ["-m", "teatree", "migrate"], f"must be `python -m teatree migrate`, got {cmd!r}"
+        assert "--no-input" in cmd
+        assert "--directory" not in cmd, "must NOT route through `uv --directory <clone>`"
 
-    def test_migrate_self_db_skips_when_uv_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    def test_migrate_self_db_does_not_inherit_caller_settings_module(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        source = tmp_path / "clone"
-        source.mkdir()
-        monkeypatch.setattr(update_mod.shutil, "which", lambda _name: None)
+        # Mirrors #959: a worktree-specific DJANGO_SETTINGS_MODULE in the
+        # caller env must not leak into the migrate subprocess (it would
+        # crash with ModuleNotFoundError). The runtime self-DB migrate
+        # always runs against teatree.settings.
+        monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "worktree_only.settings_local")
+        captured: list[dict[str, str]] = []
 
-        update_mod._migrate_self_db(source)  # must not raise
+        def _run(cmd: list[str], *, env: dict[str, str] | None = None, **_kw: object) -> _Proc:
+            captured.append(dict(env or {}))
+            return _Proc(0, "", "")
 
-        assert "skipping self-DB migration" in capsys.readouterr().out
+        monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
-    def test_self_db_source_prefers_editable_clone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        editable = tmp_path / "editable"
-        editable.mkdir()
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: editable)
+        update_mod._migrate_self_db()
 
-        assert update_mod._self_db_source() == editable
-
-    def test_self_db_source_falls_back_to_main_clone(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        main_clone = tmp_path / "main"
-        main_clone.mkdir()
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: None)
-        monkeypatch.setattr(update_mod, "_find_main_clone", lambda: main_clone)
-
-        assert update_mod._self_db_source() == main_clone
-
-    def test_self_db_source_none_when_nothing_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(update_mod.shutil, "which", lambda _name: None)
-        monkeypatch.setattr(update_mod, "_find_main_clone", lambda: None)
-
-        assert update_mod._self_db_source() is None
-
-    def test_find_main_clone_delegates_to_setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: tmp_path)
-
-        assert update_mod._find_main_clone() == tmp_path
+        assert captured, "migrate subprocess was not invoked"
+        assert captured[0].get("DJANGO_SETTINGS_MODULE") == "teatree.settings"
 
     def test_migrate_self_db_fails_closed_on_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -535,20 +519,14 @@ class TestSelfDbMigrationOnUpdate:
         # #929: a swallowed WARN left t3 update exiting 0 with a
         # half-migrated self-DB, breaking the sanctioned merge path
         # (#870). The failure must now raise (fail-closed).
-        source = tmp_path / "clone"
-        source.mkdir()
-
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", lambda *a, **k: _Proc(1, "", "locked"))
 
         with pytest.raises((SystemExit, click.exceptions.Exit)):
-            update_mod._migrate_self_db(source)
+            update_mod._migrate_self_db()
 
         assert "self-DB migration" in capsys.readouterr().out
 
-    def test_self_db_probe_reports_pending_migrations(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        source = tmp_path / "clone"
-        source.mkdir()
+    def test_self_db_probe_reports_pending_migrations(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
 
         def _run(cmd: list[str], **_kw: object) -> _Proc:
@@ -556,29 +534,23 @@ class TestSelfDbMigrationOnUpdate:
             # Django `migrate --check` exits 1 when migrations are pending.
             return _Proc(1, "", "")
 
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
-        assert _self_db_has_pending_migrations("/usr/bin/uv", source) is True
-        assert calls[0][-3:] == ["migrate", "--check", "--no-input"]
+        assert _self_db_has_pending_migrations() is True
+        cmd = calls[0]
+        assert cmd[0] == update_mod.sys.executable
+        assert cmd[1:4] == ["-m", "teatree", "migrate"]
+        assert cmd[-3:] == ["migrate", "--check", "--no-input"]
 
-    def test_self_db_probe_reports_clean_when_up_to_date(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        source = tmp_path / "clone"
-        source.mkdir()
-
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+    def test_self_db_probe_reports_clean_when_up_to_date(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", lambda *a, **k: _Proc(0, "", ""))
 
-        assert _self_db_has_pending_migrations("/usr/bin/uv", source) is False
+        assert _self_db_has_pending_migrations() is False
 
-    def test_ensure_migrates_even_when_no_repo_advanced_this_run(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_ensure_migrates_even_when_no_repo_advanced_this_run(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The #929 regression: SHA already current (no UPDATED this
         # run) but the self-DB is behind. `t3 update` MUST still migrate
         # — the migration is probe-gated, not advance-gated.
-        source = tmp_path / "editable-src"
-        source.mkdir()
         calls: list[list[str]] = []
 
         def _run(cmd: list[str], **_kw: object) -> _Proc:
@@ -589,81 +561,42 @@ class TestSelfDbMigrationOnUpdate:
                 return _Proc(1, "", "")
             return _Proc(0, "Applying ...", "")
 
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: source)
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
         failed = _ensure_self_db_migrated()
 
         assert failed is False
-        migrate_calls = [c for c in calls if c[-3:] == ["manage.py", "migrate", "--no-input"]]
+        migrate_calls = [c for c in calls if c[-2:] == ["migrate", "--no-input"]]
         assert len(migrate_calls) == 1
-        assert str(source) in migrate_calls[0]
+        assert migrate_calls[0][0] == update_mod.sys.executable
 
-    def test_ensure_skips_migrate_when_probe_reports_clean(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        source = tmp_path / "editable-src"
-        source.mkdir()
+    def test_ensure_skips_migrate_when_probe_reports_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
 
         def _run(cmd: list[str], **_kw: object) -> _Proc:
             calls.append(cmd)
             return _Proc(0, "", "")  # probe: nothing pending
 
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: source)
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
         failed = _ensure_self_db_migrated()
 
         assert failed is False
-        assert not [c for c in calls if c[-3:] == ["manage.py", "migrate", "--no-input"]]
+        assert not [c for c in calls if c[-2:] == ["migrate", "--no-input"]]
 
     def test_ensure_returns_failed_when_migration_fails_closed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        source = tmp_path / "editable-src"
-        source.mkdir()
-
         def _run(cmd: list[str], **_kw: object) -> _Proc:
             if "--check" in cmd:
                 return _Proc(1, "", "")  # pending
             return _Proc(1, "", "db locked")  # migrate fails
 
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: source)
         monkeypatch.setattr(update_mod, "run_allowed_to_fail", _run)
 
         failed = _ensure_self_db_migrated()
 
         assert failed is True
-        assert "self-DB" in capsys.readouterr().out
-
-    def test_ensure_warns_and_passes_when_uv_missing(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # Can't probe or migrate without uv — preserve #925 tolerance:
-        # warn loudly, don't fail the whole run.
-        monkeypatch.setattr(update_mod.shutil, "which", lambda _name: None)
-
-        failed = _ensure_self_db_migrated()
-
-        assert failed is False
-        assert "self-DB migration" in capsys.readouterr().out
-
-    def test_ensure_warns_and_passes_when_no_editable_source(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # Non-editable install with no resolvable core clone → nothing
-        # to migrate from; warn, don't hard-fail.
-        monkeypatch.setattr(update_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
-        monkeypatch.setattr(setup_mod, "_current_editable_source", lambda _uv: None)
-        monkeypatch.setattr(update_mod, "_find_main_clone", lambda: None)
-
-        failed = _ensure_self_db_migrated()
-
-        assert failed is False
         assert "self-DB" in capsys.readouterr().out
 
     def test_reinstall_flow_no_longer_migrates_self_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

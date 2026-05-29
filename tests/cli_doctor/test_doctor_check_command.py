@@ -147,6 +147,48 @@ class TestDoctorCheckCommand:
 
         assert "WARN" in result.output
 
+    def test_configures_django_before_self_db_inspection(self, tmp_path, monkeypatch):
+        """``t3 doctor check`` must configure Django before inspecting the self-DB.
+
+        Regression (#126): ``check()`` is a plain Typer command in a
+        Django-free group, so without an explicit ``django.setup()`` the
+        self-DB schema inspection hit ``ImproperlyConfigured: DJANGO_
+        SETTINGS_MODULE not set`` and silently WARNed — masking a real stale
+        runtime self-DB that would have locked out the merge path. The check
+        must run the canonical ``_ensure_django`` step (``django.setup`` +
+        ``DJANGO_SETTINGS_MODULE``) before reaching the schema guard, so it
+        reports the REAL pending-migration state.
+        """
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        order: list[str] = []
+
+        def _record_setup() -> None:
+            order.append("ensure_django")
+
+        def _record_check(*_args, **_kwargs) -> bool:
+            order.append("self_db_check")
+            return True
+
+        with (
+            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch.object(teatree_cli_doctor, "_ensure_django", side_effect=_record_setup),
+            patch(
+                "teatree.core.schema_guard.doctor_check_self_db_migrations",
+                side_effect=_record_check,
+            ),
+        ):
+            result = runner.invoke(app, ["doctor", "check"])
+
+        assert result.exit_code == 0, result.output
+        # Django must be configured BEFORE the self-DB schema inspection runs.
+        assert "ensure_django" in order, "doctor check must call _ensure_django (#126)"
+        assert order.index("ensure_django") < order.index("self_db_check")
+        assert "Could not inspect self-DB migrations: ImproperlyConfigured" not in result.output
+
     def test_fails_on_import_error(self):
         import builtins  # noqa: PLC0415
 
