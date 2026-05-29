@@ -466,7 +466,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      published.                                              │
 │ resolve-discussion   Mark a GitLab MR discussion thread resolved or          │
 │                      unresolved.                                             │
-│ approve-live-post    Mint a Slack-recorded :class:`LivePostApproval` for     │
+│ approve-live-post    Mint a single-use :class:`LivePostApproval` for         │
 │                      ``<mr-url>``.                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -867,9 +867,11 @@ Usage: t3 review resolve-discussion [OPTIONS] REPO MR DISCUSSION_ID
 ```
 Usage: t3 review approve-live-post [OPTIONS] MR_URL
 
- Mint a Slack-recorded :class:`LivePostApproval` for ``<mr-url>``.
+ Mint a single-use :class:`LivePostApproval` for ``<mr-url>``.
 
- After this command writes the row, the next
+ Authorization arrives through ``--slack-ts`` (verify the user's
+ DM) OR ``--from-on-behalf`` (accept a recorded on-behalf
+ approval). After this command writes the row, the next
  ``t3 review post-comment <mr-url> ... --live`` invocation
  publishes (single-use, consumed by that call); any subsequent
  live post against the same MR requires a fresh approval.
@@ -884,15 +886,20 @@ Usage: t3 review approve-live-post [OPTIONS] MR_URL
 │                        [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --slack-ts        TEXT  Slack timestamp (e.g. ``1700000000.0001``) of the │
-│                            user's DM authorising the live post. The helper   │
-│                            fetches that message, refuses unless it was       │
-│                            authored by the configured user, is recent        │
-│                            (within the TTL window), and contains an explicit │
-│                            approval phrase (``post live`` / ``submit it`` /  │
-│                            ``go ahead``).                                    │
-│                            [required]                                        │
-│    --help                  Show this message and exit.                       │
+│ --slack-ts              TEXT  Slack timestamp (e.g. ``1700000000.0001``) of  │
+│                               the user's DM authorising the live post. The   │
+│                               helper fetches that message, refuses unless it │
+│                               was authored by the configured user, is recent │
+│                               (within the TTL window), and contains an       │
+│                               approval phrase. Alternative to                │
+│                               --from-on-behalf; one of the two is required.  │
+│ --from-on-behalf              Authorize from a recorded on-behalf approval   │
+│                               instead of a Slack DM. Accepts an unconsumed   │
+│                               `t3 review approve-on-behalf <mr-url>          │
+│                               post_comment` token for this exact MR as the   │
+│                               human authorization (#126). Alternative to     │
+│                               --slack-ts; one of the two is required.        │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3160,6 +3167,8 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ migrate          Apply pending migrations to the runtime self-DB             │
+│                  (non-destructive self-rescue).                              │
 │ refresh          Re-import the worktree database from dump/DSLR.             │
 │ restore-ci       Restore database from the latest CI dump.                   │
 │ reset-passwords  Reset all user passwords to a known dev value.              │
@@ -3167,6 +3176,35 @@ Usage: t3 teatree db [OPTIONS] COMMAND [ARGS]...
 │                  as JSON.                                                    │
 │ shell            Drop into a Django shell against the resolved (gate)        │
 │                  control DB.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree db migrate`
+
+```
+Usage: t3 teatree db migrate [OPTIONS]
+
+ Apply pending migrations to the runtime self-DB, non-destructively.
+
+ The always-available self-rescue for a stale runtime control DB —
+ the exact gap that locks out the sanctioned merge path
+ (``ticket clear``/``merge`` refuse on ANY pending migration). It
+ delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+ runs ``migrate --no-input`` *in this process* against the same
+ connection the merge gate reads, so "migrate then re-check"
+ converges on one DB.
+
+ Unlike ``resetdb`` this drops nothing — live ticket/session/lease
+ rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
+ cannot target a different (auto-isolated) DB than the runtime
+ resolves. Dispatched via teatree-core (``python -m teatree``) so it
+ reaches the runtime self-DB regardless of which overlay invokes it.
+
+ Fail-closed: a real migrate failure exits non-zero with the captured
+ error, never leaving a half-migrated DB look like a success.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
