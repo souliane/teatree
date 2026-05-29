@@ -39,8 +39,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, TypedDict
 
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
+from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 
 Severity = str  # "high" | "medium"
@@ -252,10 +254,23 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
 
     Smart-quote variants in the input are normalised to ASCII before
     matching so a single regex catches all typographic forms.
+
+    A body the parser could not resolve carries the fail-closed sentinel
+    (``FAIL_CLOSED_SENTINEL``). That sentinel is recognised EXPLICITLY as
+    a HIGH finding rather than relying on it tripping a content pattern —
+    the old wording self-matched ``the-user-said-colon`` and produced a
+    bogus user-quote finding on a body the scanner never saw (#126). The
+    sentinel is excised before content matching so the fail-closed marker
+    text itself can never produce a second, content-shaped finding.
     """
     result = ScanResult()
     if not text:
         return result
+    if _is_fail_closed_sentinel(text):
+        result.findings.append(Finding(name="fail-closed-sentinel", severity=HIGH, excerpt="unresolved body source"))
+        text = text.replace(_FAIL_CLOSED_SENTINEL, "")
+        if not text.strip():
+            return result
     normalized = _normalize_quotes(text)
     for pattern in (*_BUILTIN_PATTERNS, *_load_blocklist_patterns(blocklist_path)):
         match = pattern.regex.search(normalized)
