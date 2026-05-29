@@ -188,6 +188,16 @@ class TestResolutionEdgeCases:
         assert blocked is True
         assert payload is not None
 
+    def test_generated_overlay_skill_path_spelling_resolves(self, gate: Path) -> None:
+        # The overlay generator emits the exact spelling ``skills/<skill>/
+        # SKILL.md``. With the skill installed at that literal path under a
+        # search dir, the gate must enforce load-first.
+        _seed_skill(gate / "skills", "t3:acme")
+        _write_pending("sess-gen", ["skills/t3:acme/SKILL.md"])
+        blocked, payload, _ = _run({"session_id": "sess-gen", "tool_name": "Bash"})
+        assert blocked is True
+        assert payload is not None
+
     def test_stale_overlay_skill_path_fails_open(self, gate: Path) -> None:
         # A path-shaped suggestion for an uninstalled overlay skill must
         # fail open (warn, not block) — the lockout-prevention contract.
@@ -216,3 +226,4 @@ class TestResolutionEdgeCases:
         assert _skill_resolves("", dirs) is False
         assert _skill_resolves("SKILL.md", dirs) is False
         assert _skill_resolves("/SKILL.md", dirs) is False
+        assert _skill_resolves("ns:", dirs) is False
