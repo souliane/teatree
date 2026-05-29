@@ -74,14 +74,32 @@ class TestSweepStaleStateFiles:
         assert stale.exists(), "second call within the throttle window should skip the walk"
 
 
+class TestSweepProtectsLiveReaderFiles:
+    """``.crons`` must survive the sweep even when aged past the window.
+
+    ``.crons`` is read live by ``_session_has_loop`` to gate the loop-
+    registration directive, and its mtime only refreshes when the session
+    re-registers a cron. An active long-lived session therefore keeps an
+    aging ``.crons`` file. Sweeping it would make ``_session_has_loop``
+    return ``False`` and re-emit the loop-registration nag/deny.
+    """
+
+    def test_aged_crons_survives_sweep(self) -> None:
+        crons = _touch("live-session.crons", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        _sweep_stale_state_files()
+        assert crons.exists(), "an active session's .crons must survive the sweep"
+
+    def test_session_has_loop_stays_true_after_sweep(self) -> None:
+        crons = router.STATE_DIR / "live-session.crons"
+        crons.write_text('{"jobs": [{"id": "loop-tick"}]}', encoding="utf-8")
+        mtime = time.time() - (_STATE_FILE_MAX_AGE_SECONDS + 3600)
+        os.utime(crons, (mtime, mtime))
+        _sweep_stale_state_files()
+        assert router._session_has_loop("live-session")
+
+
 class TestEnsureStateDirRunsSweep:
     def test_ensure_state_dir_invokes_sweep(self) -> None:
         with patch.object(router, "_sweep_stale_state_files") as sweep:
             _ensure_state_dir()
         sweep.assert_called_once()
-
-    def test_ensure_state_dir_survives_sweep_failure(self) -> None:
-        # The sweep is best-effort: a failure must never crash a state write.
-        with patch.object(router, "_sweep_stale_state_files", side_effect=OSError("boom")):
-            _ensure_state_dir()
-        assert router.STATE_DIR.is_dir()

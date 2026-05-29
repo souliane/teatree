@@ -182,9 +182,26 @@ _STATE_FILE_MAX_AGE_SECONDS = 2 * 24 * 60 * 60
 _SWEEP_THROTTLE_SECONDS = 60 * 60
 _SWEEP_SENTINEL = ".last-sweep"
 
+# Suffixes the sweep must never delete by age, because a live reader gates
+# behaviour on the file's presence AND the file's mtime does not refresh for
+# the life of an active session. ``.crons`` is written once by
+# ``handle_track_cron_jobs`` at registration and then read on every prompt by
+# ``_session_has_loop`` to gate the loop-registration directive/deny; an active
+# long-lived session that never changes its crons keeps an unmodified ``.crons``
+# that ages past the retention window. Sweeping it would make
+# ``_session_has_loop`` return False and re-emit the loop-registration nag for a
+# session that is already running the loop. The throttle-and-recreate markers
+# (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT listed: their
+# absence is the safe default and they are re-armed on demand.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons"})
+
 
 def _sweep_stale_state_files() -> None:
-    """Remove state files older than the retention window (throttled).
+    """Remove ephemeral state files older than the retention window (throttled).
+
+    Files whose suffix is in ``_SWEEP_PROTECTED_SUFFIXES`` are skipped — they
+    are read live by gates whose mtime does not refresh for an active session,
+    so age is not a liveness signal for them.
 
     Best-effort and crash-proof: any OS error is swallowed so a sweep can
     never break the state write it piggybacks on. Throttled via the
@@ -201,6 +218,8 @@ def _sweep_stale_state_files() -> None:
         for entry in STATE_DIR.iterdir():
             if entry.name == _SWEEP_SENTINEL or not entry.is_file():
                 continue
+            if entry.name.rsplit(".", 1)[-1] in _SWEEP_PROTECTED_SUFFIXES:
+                continue
             if entry.stat().st_mtime < cutoff:
                 entry.unlink(missing_ok=True)
     except OSError:
@@ -209,10 +228,8 @@ def _sweep_stale_state_files() -> None:
 
 def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        _sweep_stale_state_files()
-    except OSError:
-        return
+    # _sweep_stale_state_files swallows its own OSError, so no guard here.
+    _sweep_stale_state_files()
 
 
 def _read_input() -> dict:

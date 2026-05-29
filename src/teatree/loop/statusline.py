@@ -282,10 +282,11 @@ def live_loops_anchor() -> list[str]:
 
     Shape:
 
-    *   ``loop <state>`` — the leading state word: ``running`` when at
-        least one loop is live, ``idle`` otherwise. The foreign-hijack
-        case is NOT shown here — it is RED and routed to the action line
-        by :func:`loop_owner_anchor`.
+    *   ``loop running`` — the leading state word. The line is only ever
+        rendered when at least one loop is live; when none is, the function
+        returns ``[]`` and the line is silenced entirely (no ``idle`` line
+        is shown). The foreign-hijack case is NOT shown here — it is RED and
+        routed to the action line by :func:`loop_owner_anchor`.
     *   one ``<short-name> <next-tick>`` chunk per live
         :class:`~teatree.core.models.LoopLease`. ``<short-name>`` is the
         lease name with its ``loop-`` prefix stripped (``loop-my-prs`` →

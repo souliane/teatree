@@ -205,9 +205,9 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
 def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
     """Append the #1073 foreign-hijack loop-owner RED line.
 
-    The live-loops anchor (one ``loop:<short>`` line per LoopLease row) is
-    populated separately by
-    :func:`teatree.loop.rendering._populate_live_loops_anchor` (#1163, #1184).
+    The live-loops anchor (the single dedicated ``loop running · …`` line
+    folding all live LoopLease rows) is populated separately by
+    :func:`teatree.loop.rendering._populate_live_loops_anchor` (#1163, #1184, #130).
     This function is responsible only for the #1073 foreign-hijack RED line
     surfaced when a different live session holds ``loop-owner``.
 
