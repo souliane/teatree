@@ -2193,6 +2193,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ agent         Launch Claude Code with overlay context and auto-detected      │
 │               skills.                                                        │
 │ config        Overlay configuration.                                         │
+│ gate          Orchestrator-execution-boundary gate kill-switch               │
+│               (self-rescue).                                                 │
 │ worktree      Per-worktree FSM operations.                                   │
 │ workspace     Ticket-level workspace operations (every worktree in the       │
 │               ticket).                                                       │
@@ -2306,6 +2308,59 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 Usage: t3 teatree config [OPTIONS] COMMAND [ARGS]...
 
  Overlay configuration.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree gate`
+
+```
+Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
+
+ Orchestrator-execution-boundary gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the orchestrator heavy-Bash gate is enabled.           │
+│ disable  Disable the gate (self-rescue from a Bash lockout).                 │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate status`
+
+```
+Usage: t3 teatree gate status [OPTIONS]
+
+ Show whether the orchestrator heavy-Bash gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate disable`
+
+```
+Usage: t3 teatree gate disable [OPTIONS]
+
+ Disable the gate (self-rescue from a Bash lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate enable`
+
+```
+Usage: t3 teatree gate enable [OPTIONS]
+
+ Re-enable the gate.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
