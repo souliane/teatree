@@ -101,6 +101,55 @@ class TestFollowupGroupCoreDispatch:
         assert "manage.py" not in " ".join(cmd)
 
 
+class TestTicketGroupCoreDispatch:
+    """``ticket clear/merge`` route through ``python -m teatree`` (core), not the overlay manage.py.
+
+    ``ticket`` subcommands live in ``teatree.core.management.commands.ticket``
+    (delegating to ``teatree.core.merge_execution``) — teatree CORE, not any
+    overlay-owned ``manage.py``. A non-core overlay clone has its own
+    ``manage.py`` with no ``ticket`` command, so without the ``core_dispatch``
+    marker the sanctioned merge path crashes with ``Unknown command: 'ticket'``
+    — the same #1312/#1318 lockout class as ``followup`` and ``review-request``.
+    """
+
+    def test_ticket_group_is_marked_core_dispatch(self) -> None:
+        """``DJANGO_GROUPS['ticket']`` carries the ``core_dispatch`` marker."""
+        entry = DJANGO_GROUPS["ticket"]
+        assert getattr(entry, "core_dispatch", False) is True, (
+            f"ticket group must opt into core dispatch — its clear/merge commands live in "
+            f"teatree.core, not an overlay manage.py, got {entry!r}"
+        )
+
+    def test_ticket_clear_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        """``t3 <overlay> ticket clear`` must dispatch to core, never the overlay manage.py."""
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["ticket", "clear", "15"])
+        assert result.exit_code == 0, result.output
+        assert run_streamed.called
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"ticket clear must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"ticket clear must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"ticket clear must NOT route through manage.py, got {cmd!r}"
+        assert "ticket" in cmd
+        assert "clear" in cmd
+
+    def test_ticket_merge_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        """``t3 <overlay> ticket merge`` must dispatch to core, never the overlay manage.py."""
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["ticket", "merge", "abc123"])
+        assert result.exit_code == 0, result.output
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"ticket merge must use core dispatch, got {cmd!r}"
+        assert "teatree" in cmd, f"ticket merge must use core dispatch, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"ticket merge must NOT route through manage.py, got {cmd!r}"
+        assert "ticket" in cmd
+        assert "merge" in cmd
+
+
 class TestShortcutCoreDispatch:
     """``full-status`` and ``daily`` shortcut to followup commands — same dispatch rule."""
 
