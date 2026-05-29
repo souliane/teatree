@@ -100,6 +100,12 @@ def _ensure_django() -> None:
 
 _DEV_SOURCES_FILE = ".t3-dev-sources"
 
+# Files the editable-source override mutates and must keep out of the commit
+# path: ``pyproject.toml`` carries the local-path source, and ``uv sync``
+# rewrites ``uv.lock`` to record it.  Both are hidden from git via
+# ``--assume-unchanged`` for the duration of the override and restored together.
+_DEV_HIDDEN_FILES = ("pyproject.toml", "uv.lock")
+
 
 def _find_host_project_root() -> Path | None:
     """Walk up from cwd to find the host project (directory with manage.py + pyproject.toml)."""
@@ -380,8 +386,11 @@ class DoctorService:
         ``uv pip install -e`` is ephemeral — ``uv run`` re-syncs from the lock file
         and overwrites it.  To persist, we patch ``[tool.uv.sources]`` in the host
         project's ``pyproject.toml`` and hide the change from git via
-        ``--assume-unchanged``.  A gitignored ``.t3-dev-sources`` marker records the
-        override so worktree cleanup can restore the original state.
+        ``--assume-unchanged``.  ``uv sync`` then rewrites ``uv.lock`` to record the
+        local-path source; that lockfile mutation is hidden the same way so the
+        dev-only editable state never leaks into a commit.  A gitignored
+        ``.t3-dev-sources`` marker records the override so worktree cleanup can
+        restore the original state.
         """
         typer.echo(f"WARN  {package} is not editable (contribute=true). Installing from {repo_path}...")
 
@@ -402,11 +411,13 @@ class DoctorService:
 
         if _patch_uv_source(pyproject, package, repo_path):
             _write_dev_sources_marker(marker, package, repo_path)
-            run_allowed_to_fail(
-                ["git", "update-index", "--assume-unchanged", "pyproject.toml"],
-                cwd=project_root,
-                expected_codes=None,
-            )
+            for tracked in _DEV_HIDDEN_FILES:
+                if (project_root / tracked).is_file():
+                    run_allowed_to_fail(
+                        ["git", "update-index", "--assume-unchanged", tracked],
+                        cwd=project_root,
+                        expected_codes=None,
+                    )
             result = run_allowed_to_fail(
                 ["uv", "sync", "--quiet"],
                 cwd=project_root,
@@ -423,21 +434,27 @@ class DoctorService:
 
     @staticmethod
     def restore_sources(project_root: Path) -> None:
-        """Revert editable source overrides recorded in ``.t3-dev-sources``."""
+        """Revert editable source overrides recorded in ``.t3-dev-sources``.
+
+        Unhides and restores both the patched ``pyproject.toml`` and the
+        ``uv sync``-mutated ``uv.lock`` so neither carries dev-only editable
+        state after cleanup.
+        """
         marker = project_root / ".t3-dev-sources"
         if not marker.is_file():
             return
 
-        run_allowed_to_fail(
-            ["git", "update-index", "--no-assume-unchanged", "pyproject.toml"],
-            cwd=project_root,
-            expected_codes=None,
-        )
-        run_allowed_to_fail(
-            ["git", "checkout", "--", "pyproject.toml"],
-            cwd=project_root,
-            expected_codes=None,
-        )
+        for tracked in _DEV_HIDDEN_FILES:
+            run_allowed_to_fail(
+                ["git", "update-index", "--no-assume-unchanged", tracked],
+                cwd=project_root,
+                expected_codes=None,
+            )
+            run_allowed_to_fail(
+                ["git", "checkout", "--", tracked],
+                cwd=project_root,
+                expected_codes=None,
+            )
         marker.unlink(missing_ok=True)
         typer.echo("OK    Restored original [tool.uv.sources] from git")
 
