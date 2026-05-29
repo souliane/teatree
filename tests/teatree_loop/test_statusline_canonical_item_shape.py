@@ -108,10 +108,11 @@ class TestAnchorCanonicalShape:
             colorize=False,
         )
         text = _blob(zones.anchors)
-        # Terse format (#1377) drops the ``state:`` prefix — ``#10`` reads
-        # bare under the overlay tag. The topic keeps the first three words.
+        # #130 restores the FSM ``state:`` group label dropped by #1377;
+        # the terse per-item shape ``#N (topic)`` is unchanged. The topic
+        # keeps the first three words.
         assert "#10" in text
-        assert "coded:" not in text
+        assert "coded:" in text
         assert "(Add canonical item)" in text, repr(text)
 
     def test_anchor_collapses_long_titles_to_terse_topic(self) -> None:

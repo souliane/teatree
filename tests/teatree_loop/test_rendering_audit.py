@@ -98,14 +98,16 @@ class TestActiveTicketAnchors:
         )
         text = _blob(zones.anchors)
         assert "[teatree]" in text
-        # Terse format drops the ``state:`` prefix — all surviving actively-
-        # shipping items appear on the same line as bare ``#N`` tokens.
+        # All surviving actively-shipping items appear on ONE line per
+        # overlay, grouped by FSM state.
         assert "#10" in text
         assert "#11" in text
         assert "#12" in text
-        # State-group prefix dropped (#1377).
-        assert "coded:" not in text
-        assert "started:" not in text
+        # #130 restores the FSM ``state:`` group label (#1377 had dropped
+        # it); tickets group by status, ordered by state priority.
+        assert "coded:" in text
+        assert "started:" in text
+        assert text.index("started:") < text.index("coded:"), text
         # One line per overlay.
         assert text.count("[teatree]") == 1
 
