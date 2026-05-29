@@ -491,26 +491,16 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 # unresolvable name does NOT block — it emits a one-line warning naming
 # the stale skill + the config file and is dropped from the demand. Only
 # skills that genuinely resolve but are not yet loaded enforce load-first.
-
-
-def _skill_search_dirs() -> list[Path]:
-    """Return the directories scanned to decide whether a skill resolves.
-
-    Mirrors the loader's resolution surface (``hook_router`` source root,
-    the per-platform agent skills dirs, the bundled plugin skills dir).
-    A skill ``<name>`` resolves when ``<dir>/<final-segment>/SKILL.md``
-    exists under any of these.
-    """
-    home = Path(os.environ.get("HOME", str(Path.home())))
-    repo_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        repo_root / "plugins" / "t3" / "skills",
-        repo_root.parent,
-        home / ".agents" / "skills",
-        home / ".claude" / "skills",
-        home / ".codex" / "skills",
-    ]
-    return [d for d in candidates if d.is_dir()]
+#
+# Resolution reuses the canonical :func:`_skill_search_dirs` (defined
+# below for skill-usage tracking) so the gate scans the SAME dirs the
+# loader builds its trigger index from — the repo ``skills/``
+# source-of-truth (lifecycle skills) plus the agent install dirs
+# (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
+# Names that reach ``pending`` are bare (lifecycle ``code``/``debug`` or
+# supplementary ``ac-*``), never ``plugin:skill`` namespaced; the
+# final-segment strip in :func:`_skill_resolves` is a defensive no-op for
+# those.
 
 
 def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:

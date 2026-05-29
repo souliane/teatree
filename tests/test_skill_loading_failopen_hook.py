@@ -31,28 +31,37 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_enforce_skill_loading
+from hooks.scripts.hook_router import _skill_resolves, handle_enforce_skill_loading
+
+
+def _seed_skill(skills_dir: Path, name: str) -> None:
+    """Create a loadable ``<skills_dir>/<name>/SKILL.md`` fixture skill."""
+    skill = skills_dir / name
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
 
 
 @pytest.fixture
 def gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Point ``STATE_DIR`` at a temp dir and seed a ``~/.claude/skills`` tree.
+    """Point ``STATE_DIR`` and ``T3_SKILL_SEARCH_DIRS`` at temp fixture trees.
 
-    ``HOME`` is already temp-isolated by ``conftest._isolate_env``. This
-    fixture creates the skills directory the resolver scans and seeds one
-    real, loadable skill (``ac-reviewing-codebase``) so tests can
-    distinguish "real but unloaded" from "stale / unresolvable".
+    The gate's resolver scans the dirs returned by the canonical
+    ``_skill_search_dirs``, which honours the ``T3_SKILL_SEARCH_DIRS``
+    override. Pointing it at a temp dir exercises the real resolution path
+    (rather than relying on host skill installs) and seeds one real,
+    loadable skill (``ac-reviewing-codebase``) plus a lifecycle skill
+    (``code``) so tests can distinguish "real but unloaded" from "stale".
 
-    Returns the skills dir so tests can add more skills if needed.
+    Returns the fixture skills dir so tests can add more skills if needed.
     """
     original_state = router.STATE_DIR
     router.STATE_DIR = tmp_path / "state"
     router.STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-    skills_dir = Path.home() / ".claude" / "skills"
-    real_skill = skills_dir / "ac-reviewing-codebase"
-    real_skill.mkdir(parents=True, exist_ok=True)
-    (real_skill / "SKILL.md").write_text("---\nname: ac-reviewing-codebase\n---\n", encoding="utf-8")
+    skills_dir = tmp_path / "skills"
+    _seed_skill(skills_dir, "ac-reviewing-codebase")
+    _seed_skill(skills_dir, "code")
+    monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
 
     yield skills_dir
 
@@ -128,3 +137,36 @@ class TestMixedResolvability:
         # The stale name must not appear as a load-me demand.
         assert "ac-auditing-repos" not in payload["permissionDecisionReason"]
         assert "ac-auditing-repos" in warning
+
+
+class TestResolutionEdgeCases:
+    """Resolution scans the canonical search dirs and the name's final segment."""
+
+    def test_lifecycle_bare_name_resolves_and_blocks(self, gate: Path) -> None:
+        # ``code`` is a lifecycle skill seeded in the fixture skills dir —
+        # an unloaded lifecycle suggestion must still enforce load-first.
+        _write_pending("sess-life", ["code"])
+        blocked, payload, _ = _run({"session_id": "sess-life", "tool_name": "Edit"})
+        assert blocked is True
+        assert payload is not None
+        assert "/code" in payload["permissionDecisionReason"]
+
+    def test_namespaced_name_resolves_via_final_segment(self, gate: Path) -> None:
+        # A ``plugin:skill`` form resolves on its final segment (``code``).
+        _write_pending("sess-ns", ["t3:code"])
+        blocked, payload, _ = _run({"session_id": "sess-ns", "tool_name": "Bash"})
+        assert blocked is True
+        assert payload is not None
+
+    def test_override_dirs_are_actually_scanned(self, gate: Path) -> None:
+        # Proves the gate uses the canonical T3_SKILL_SEARCH_DIRS-driven
+        # resolver: a skill that exists ONLY in the override dir resolves.
+        _seed_skill(gate, "freshly-seeded-skill")
+        _write_pending("sess-fresh", ["freshly-seeded-skill"])
+        blocked, _, _ = _run({"session_id": "sess-fresh", "tool_name": "Bash"})
+        assert blocked is True
+
+    def test_empty_segment_is_not_enforceable(self) -> None:
+        # A degenerate name whose final segment is empty must never block.
+        assert _skill_resolves("ns:", []) is False
+        assert _skill_resolves("", []) is False
