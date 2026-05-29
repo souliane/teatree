@@ -42,13 +42,21 @@ hard-fails.
 
 ## Self-DB Migrations
 
-`t3 update` probes the teatree self-DB with `manage.py migrate --check`
-and, when migrations are pending, applies them **non-destructively** (the
-`uv --directory <clone> run python manage.py migrate --no-input` path, no
-DB drop). This is the sanctioned first-class alternative to the
-destructive `resetdb` (which discards all local ticket/session/lease
-state) and the raw `manage.py migrate` the PreToolUse hook router
-discourages.
+`t3 update` probes the teatree self-DB and, when migrations are pending,
+applies them **non-destructively** (no DB drop). Both the probe and the
+migrate run **in the runtime interpreter** (`python -m teatree migrate`),
+so they target the exact control DB the running `t3` resolves — not a
+`uv --directory <clone>` sibling DB, which for a worktree-anchored editable
+install auto-isolates onto a different DB and silently reports
+"already migrated" while the runtime DB stays stale (#126). This is the
+sanctioned first-class alternative to the destructive `resetdb` (which
+discards all local ticket/session/lease state).
+
+For an on-demand, always-available self-rescue of a stale runtime self-DB —
+e.g. when the sanctioned merge path refuses with "unapplied migration(s)" —
+run `t3 teatree db migrate`. It applies pending migrations in-process against
+the same DB the merge gate reads, is idempotent and non-destructive, and is
+reachable even while the merge gate is refusing.
 
 The migration is gated on **whether migrations are actually pending —
 not on whether a repo advanced this run** (#929). An interrupted prior

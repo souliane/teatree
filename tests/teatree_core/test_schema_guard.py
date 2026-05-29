@@ -112,7 +112,9 @@ class UnmigratedSelfDbTest(TransactionTestCase):
         message = str(exc.value)
         assert "unapplied migration" in message
         assert "ticket clear/merge" in message
-        assert "manage.py migrate" in message
+        # The remediation points at the in-process self-rescue, not the old
+        # `uv --directory <clone>` wrapper that resolved a different DB (#126).
+        assert "t3 teatree db migrate" in message
 
     def test_ticket_clear_command_fails_closed_with_remediation(self) -> None:
         result = cast(
@@ -129,7 +131,7 @@ class UnmigratedSelfDbTest(TransactionTestCase):
         )
         assert result["issued"] is False
         assert "unapplied migration" in str(result["error"])
-        assert "manage.py migrate" in str(result["error"])
+        assert "t3 teatree db migrate" in str(result["error"])
 
     def test_ticket_merge_command_fails_closed_with_remediation(self) -> None:
         result = cast(

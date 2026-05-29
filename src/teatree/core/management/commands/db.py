@@ -1,4 +1,4 @@
-"""Database operations: refresh, restore from CI, reset passwords, introspect."""
+"""Database operations: migrate, refresh, restore from CI, reset passwords, introspect."""
 
 import json
 import os
@@ -12,6 +12,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
 
@@ -106,6 +107,37 @@ def _run_read_only(sql: str) -> list[SqlRow]:
 
 
 class Command(TyperCommand):
+    @command()
+    def migrate(self) -> None:
+        """Apply pending migrations to the runtime self-DB, non-destructively.
+
+        The always-available self-rescue for a stale runtime control DB —
+        the exact gap that locks out the sanctioned merge path
+        (``ticket clear``/``merge`` refuse on ANY pending migration). It
+        delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+        runs ``migrate --no-input`` *in this process* against the same
+        connection the merge gate reads, so "migrate then re-check"
+        converges on one DB.
+
+        Unlike ``resetdb`` this drops nothing — live ticket/session/lease
+        rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
+        cannot target a different (auto-isolated) DB than the runtime
+        resolves. Dispatched via teatree-core (``python -m teatree``) so it
+        reaches the runtime self-DB regardless of which overlay invokes it.
+
+        Fail-closed: a real migrate failure exits non-zero with the captured
+        error, never leaving a half-migrated DB look like a success.
+        """
+        try:
+            applied = migrate_self_db()
+        except SelfDbMigrationError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from exc
+        if not applied:
+            self.stdout.write("Self-DB already current — no migrations to apply.")
+            return
+        self.stdout.write(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
+
     @command()
     def refresh(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public `db refresh` surface (path/dslr/dump/force/fresh-dump/user-authorized); the arg list IS the CLI contract, not an internal design smell (same rationale as ticket.py:clear).
         self,
