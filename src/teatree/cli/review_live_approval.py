@@ -1,19 +1,31 @@
-r"""Slack-DM-verified approval CLI for the ``--live`` post-comment gate (#1207).
+r"""Authorization CLI for the ``--live`` post-comment gate (#1207, #126).
 
-``t3 review approve-live-post <mr-url> --slack-ts <ts>`` is the single
-satisfier for the :class:`~teatree.core.live_post_gate.LivePostBlockedError`
-gate. It walks the Slack DM at ``<ts>``, refuses unless:
+``t3 review approve-live-post <mr-url>`` is the satisfier for the
+:class:`~teatree.core.live_post_gate.LivePostBlockedError` gate. The
+human authorization can arrive through EITHER of two durable channels —
+the gate must not fail-closed against a legitimate one (#126):
 
-* the message was authored by the configured user (``slack_user_id``),
-* the message is fresh — within
+* ``--slack-ts <ts>`` — verify the user's Slack DM at that timestamp.
+    Refuses unless the message was authored by the configured user
+    (``slack_user_id``), is fresh (within
     :data:`~teatree.core.models.live_post_approval.LIVE_POST_APPROVAL_TTL_MINUTES`
-    minutes of now,
-* the message body contains a whole-word, case-insensitive approval
-    phrase (``"post live"`` / ``"submit it"`` / ``"go ahead"``) — the
-    matcher uses ``\b``-anchored regex against each phrase, so a
-    negated form such as ``"don't post live"`` does NOT match. Single-
-    pattern matching with no fuzzy NLP; sentence-aware NLP is tracked
-    as a class-C enforcement follow-up.
+    minutes), and contains a whole-word, case-insensitive, unnegated
+    approval phrase. The phrase list is the natural wording the user
+    actually types ("post the findings", "approved", "ship it", ...),
+    not three magic strings — a negated form such as ``"don't post
+    live"`` still does NOT match (clause-scope negation, no fuzzy NLP).
+
+* ``--from-on-behalf`` — accept a recorded
+    :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`
+    for ``(<scope>, post_comment)`` as the authorization. The on-behalf
+    approval IS the human authorization, recorded durably by
+    ``t3 review approve-on-behalf <scope> post_comment --approver <id>``;
+    requiring a *separate* fresh Slack ts on top of it was the lockout
+    this closes (a user who already recorded the on-behalf token could
+    not get the live post out).
+
+With neither channel satisfied the gate stays blocked — no approval of
+any kind, no token.
 
 On success the helper mints a single-use
 :class:`~teatree.core.models.live_post_approval.LivePostApproval` row
@@ -44,7 +56,27 @@ class SlackMessage(TypedDict, total=False):
     text: str
 
 
-APPROVAL_PHRASES: tuple[str, ...] = ("post live", "submit it", "go ahead")
+APPROVAL_PHRASES: tuple[str, ...] = (
+    "post live",
+    "submit it",
+    "go ahead",
+    # Natural approval wording the user actually types (#126): the
+    # original three-phrase whitelist rejected ordinary approvals
+    # and forced the user to learn one of three magic strings. Each
+    # phrase is matched whole-word and is still rejected when negated
+    # in the same clause (see :func:`_clause_has_phrase`).
+    "post the findings",
+    "post them",
+    "post it",
+    "approved",
+    "approve it",
+    "ship it",
+)
+
+# Action name an :class:`OnBehalfApproval` must carry to authorize a
+# live post — the live, colleague-visible comment is a ``post_comment``
+# on-behalf action, so a recorded approval for it IS the authorization.
+_ON_BEHALF_POST_ACTION = "post_comment"
 
 
 def _user_channel() -> str:
@@ -185,6 +217,76 @@ def _verify_slack_message(*, slack_ts: str, user_id: str, channel: str) -> tuple
     return text, ""
 
 
+def _verify_on_behalf_authorization(*, scope: str) -> tuple[str, str]:
+    """Resolve a recorded on-behalf approval for ``(scope, post_comment)``.
+
+    Returns ``(approval_ref, "")`` when an unconsumed
+    :class:`~teatree.core.models.on_behalf_approval.OnBehalfApproval`
+    exists for this exact MR scope and the ``post_comment`` action — the
+    durable human authorization is sufficient to mint the live-post
+    token, no Slack ts required (#126). Returns ``("", reason)`` when no
+    matching approval exists; the caller then refuses.
+
+    The approval is matched (and read) but NOT consumed here: the
+    :class:`LivePostApproval` is the single-use token that the live
+    post consumes. The on-behalf approval's pk is recorded on the live
+    token as the audit reference for which durable authorization minted
+    it.
+    """
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+
+    approval = (
+        OnBehalfApproval.objects.filter(
+            target=scope,
+            action=_ON_BEHALF_POST_ACTION,
+            consumed_at__isnull=True,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if approval is None:
+        return "", (
+            f"no recorded on-behalf approval for ({scope!r}, {_ON_BEHALF_POST_ACTION!r}) — "
+            f"record one with `t3 review approve-on-behalf {scope} {_ON_BEHALF_POST_ACTION} "
+            f"--approver <id>`, or pass --slack-ts <ts> with the user's DM"
+        )
+    return f"on-behalf-approval#{approval.pk}", ""
+
+
+def _resolve_authorization(*, mr_url: str, slack_ts: str, from_on_behalf: bool, user_id: str) -> tuple[str, str, str]:
+    """Resolve the authorization channel into ``(slack_ts_for_token, ref, error)``.
+
+    Tries the on-behalf channel first when ``--from-on-behalf`` is set,
+    then the Slack-ts channel. Returns ``(ts, ref, "")`` on success
+    (``ts`` is the value persisted on the token — the Slack ts, or the
+    on-behalf approval ref when there is no DM) or ``("", "", reason)``
+    when neither channel authorizes. The caller mints the token only on
+    an empty error.
+    """
+    from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
+
+    scope = canonical_mr_scope(mr_url)
+    if from_on_behalf:
+        ref, error = _verify_on_behalf_authorization(scope=scope)
+        if not error:
+            return ref, ref, ""
+        if not slack_ts:
+            return "", "", error
+    if not slack_ts:
+        return (
+            "",
+            "",
+            (
+                "no authorization provided — pass --slack-ts <ts> (the user's approval DM) "
+                "or --from-on-behalf (a recorded `t3 review approve-on-behalf` token)"
+            ),
+        )
+    _approval_text, error = _verify_slack_message(slack_ts=slack_ts, user_id=user_id, channel=_user_channel())
+    if error:
+        return "", "", error
+    return slack_ts, slack_ts, ""
+
+
 def register(review_app: typer.Typer) -> None:
     """Register the ``approve-live-post`` command on the review typer app.
 
@@ -205,19 +307,32 @@ def register(review_app: typer.Typer) -> None:
         ),
         *,
         slack_ts: str = typer.Option(
-            ...,
+            "",
             "--slack-ts",
             help=(
                 "Slack timestamp (e.g. ``1700000000.0001``) of the user's DM authorising "
                 "the live post. The helper fetches that message, refuses unless it was "
                 "authored by the configured user, is recent (within the TTL window), and "
-                "contains an explicit approval phrase (``post live`` / ``submit it`` / ``go ahead``)."
+                "contains an approval phrase. Alternative to --from-on-behalf; one of the "
+                "two is required."
+            ),
+        ),
+        from_on_behalf: bool = typer.Option(
+            False,
+            "--from-on-behalf",
+            help=(
+                "Authorize from a recorded on-behalf approval instead of a Slack DM. "
+                "Accepts an unconsumed `t3 review approve-on-behalf <mr-url> post_comment` "
+                "token for this exact MR as the human authorization (#126). Alternative to "
+                "--slack-ts; one of the two is required."
             ),
         ),
     ) -> None:
-        """Mint a Slack-recorded :class:`LivePostApproval` for ``<mr-url>``.
+        """Mint a single-use :class:`LivePostApproval` for ``<mr-url>``.
 
-        After this command writes the row, the next
+        Authorization arrives through ``--slack-ts`` (verify the user's
+        DM) OR ``--from-on-behalf`` (accept a recorded on-behalf
+        approval). After this command writes the row, the next
         ``t3 review post-comment <mr-url> ... --live`` invocation
         publishes (single-use, consumed by that call); any subsequent
         live post against the same MR requires a fresh approval.
@@ -241,10 +356,11 @@ def register(review_app: typer.Typer) -> None:
             typer.echo("Refused: no Slack user_id configured — set `teatree.slack_user_id` first")
             raise typer.Exit(code=1)
 
-        _approval_text, error = _verify_slack_message(
+        token_ts, _ref, error = _resolve_authorization(
+            mr_url=mr_url,
             slack_ts=slack_ts,
+            from_on_behalf=from_on_behalf,
             user_id=user_id,
-            channel=_user_channel(),
         )
         if error:
             typer.echo(f"Refused: {error}")
@@ -252,7 +368,7 @@ def register(review_app: typer.Typer) -> None:
 
         scope = canonical_mr_scope(mr_url)
         try:
-            approval = LivePostApproval.record(mr_url=scope, slack_ts=slack_ts, slack_user_id=user_id)
+            approval = LivePostApproval.record(mr_url=scope, slack_ts=token_ts, slack_user_id=user_id)
         except LivePostApprovalError as err:
             typer.echo(f"Refused: {err}")
             raise typer.Exit(code=1) from None

@@ -1,5 +1,6 @@
 """Tests for the db management command."""
 
+import io
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -414,3 +415,47 @@ class TestDbResetPasswords(TestCase):
                 call_command("db", "reset-passwords", path=str(wt_dir))
 
             assert exc_info.value.code == 1
+
+
+class TestDbApproveCommand(TestCase):
+    """``t3 db approve <op> <tenant> --approver <id>`` records the no-TTY satisfier (#953/#126)."""
+
+    def test_records_a_dbapproval_row(self) -> None:
+        from teatree.core.models import DbApproval  # noqa: PLC0415
+
+        out = io.StringIO()
+        call_command("db", "approve", "fresh-dump", "test_db", "--approver", "souliane", stdout=out)
+
+        approval = DbApproval.objects.get()
+        assert approval.op == "fresh-dump"
+        assert approval.tenant == "test_db"
+        assert approval.approver_id == "souliane"
+        assert "OK recorded" in out.getvalue()
+
+    def test_refuses_an_agent_role_approver(self) -> None:
+        from teatree.core.models import DbApproval  # noqa: PLC0415
+
+        err = io.StringIO()
+        with pytest.raises(SystemExit) as exc:
+            call_command("db", "approve", "fresh-dump", "test_db", "--approver", "loop", stderr=err)
+        assert exc.value.code == 1
+        assert "maker/coding-agent/loop" in err.getvalue()
+        assert not DbApproval.objects.exists()
+
+    def test_recorded_approval_satisfies_the_gate_end_to_end(self) -> None:
+        """The escape works: a recorded approval lets a non-TTY caller consume it."""
+        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+        from teatree.core.models import DbApproval  # noqa: PLC0415
+
+        call_command("db", "approve", "fresh-dump", "test_db", "--approver", "souliane", stdout=io.StringIO())
+
+        stdin = io.StringIO()
+        stdout = io.StringIO()
+        # No TTY (StringIO.isatty() is False) — only the recorded approval can satisfy it.
+        require_approval(
+            "Pull fresh DEV dump?",
+            ApprovalScope(op="fresh-dump", tenant="test_db", user_authorized="souliane"),
+            stdin=stdin,
+            stdout=stdout,
+        )
+        assert DbApproval.objects.get().consumed_at is not None

@@ -1135,32 +1135,163 @@ def _load_protected_branches() -> set[str]:
     return branches
 
 
-def handle_protect_default_branch(data: dict) -> bool:
-    """Block Edit/Write on files that live on a protected branch."""
-    tool_name = data.get("tool_name", "")
-    if tool_name not in _FILE_PATH_TOOLS:
-        return False
+# Agent-harness state dirs that may sit UNDER a git repo's working tree
+# (e.g. ``~/.claude`` inside a dotfiles repo) but whose files are never
+# repo source. A Write here must never be blocked by the protected-branch
+# gate — editing agent memory / todos / per-project state on `main` is
+# exactly what the agent is supposed to do. Mirrors ``_KEEP_PATTERNS``.
+_AGENT_STATE_PATH_RE = re.compile(
+    r"/\.(claude|codex|cursor|copilot)/(projects/.*/memory/|memory/|todos/|statsig/|.*\.log$)",
+)
 
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not file_path:
-        return False
 
-    parent = str(Path(file_path).parent)
+def _is_agent_state_path(file_path: str) -> bool:
+    """True iff *file_path* is agent-harness state, not repo source.
+
+    Resolved to an absolute, symlink-free path first so a relative or
+    ``..``-laden path can't dodge the pattern. A resolution failure (a
+    path under a missing dir) falls back to the raw string — the regex
+    is anchored on the harness-dir segment, which survives either form.
+    """
     try:
-        branch = subprocess.check_output(  # noqa: S603
-            ["git", "-C", parent, "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = file_path
+    return _AGENT_STATE_PATH_RE.search(resolved) is not None
+
+
+def _file_is_inside_worktree(repo_root: str, file_path: str) -> bool:
+    """True iff *file_path* resolves to a path inside *repo_root*'s working tree.
+
+    ``git -C <parent> rev-parse`` walks UP to the nearest enclosing
+    ``.git``, so the resolved repo root can be an ANCESTOR of the file
+    (a dotfiles/home repo the file merely sits under). Confirming the
+    file is genuinely within that root is what scopes the gate to the
+    TARGET FILE's repo rather than whatever happens to enclose its parent
+    dir (#126). A resolution failure means we cannot confirm containment —
+    fail open (return ``False``, do not block).
+    """
+    try:
+        file_resolved = Path(file_path).expanduser().resolve()
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        file_resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def _repo_root_is_teatree_managed(repo_root: str) -> bool:
+    """True iff *repo_root* is a teatree-MANAGED source repo.
+
+    The protected-branch gate guards only teatree core + the active
+    overlay's registered repos (``~/.teatree.toml``
+    ``workspace_repos`` / ``frontend_repos`` / ``public_repos`` slugs,
+    plus each overlay ``path``) — NOT every git repo (#126). An unmanaged
+    repo on ``main`` (a dotfiles repo, an unrelated clone) must not block,
+    so this returns ``False`` for any repo the managed-signal set does not
+    cover, and ``False`` on any classification error (fail OPEN — the
+    gate-over-deny class this whole change closes).
+
+    Reuses :func:`_overlay_managed_repo_signals` (the same signal source
+    as the out-of-band-merge gate) and ``publish_surface._slug_for_cwd``
+    so the slug shape matches the rest of the managed-repo machinery.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    try:
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            root_resolved.relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(root_resolved).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    return any(entry in slug for entry in slugs) if slug else False
+
+
+def _resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
+    """Return ``(branch, repo_root)`` for the repo enclosing *parent*, or ``None``.
+
+    ``None`` when *parent* is not inside a git repo, on a git error, or on
+    a timeout — every one of which fails the gate open. ``git -C`` walks UP
+    to the nearest ``.git``, so the returned root can be an ancestor of the
+    file; :func:`_file_is_inside_worktree` is what re-scopes it.
+    """
+
+    def _rev_parse(*flags: str) -> str:
+        return subprocess.check_output(  # noqa: S603
+            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,
         ).strip()
+
+    try:
+        return _rev_parse("--abbrev-ref", "HEAD"), _rev_parse("--show-toplevel")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def handle_protect_default_branch(data: dict) -> bool:
+    """Block Edit/Write on a source file in a teatree-MANAGED protected-branch repo.
+
+    Scoped to the TARGET FILE's own repo, never to the cwd's branch and
+    never to "any git repo" (#126). The block fires only when ALL hold:
+
+    1. the tool is ``Edit``/``Write``/``Read`` with a ``file_path``;
+    2. the path is NOT agent-harness state (memory / todos / per-project
+        state) — those are git-tracked scratch state, never protected
+        source, so they are exempt even on ``main``;
+    3. the file's enclosing git repo is on a protected branch;
+    4. the file genuinely lives inside that repo's working tree;
+    5. that repo is teatree-MANAGED (core + the active overlay's
+        registered repos) — an unmanaged repo on ``main`` (a dotfiles
+        clone, an unrelated project) is NOT this gate's concern.
+
+    Any condition unmet → allow (fail open). A git error, an
+    unresolvable repo, or an unclassifiable slug all allow — the
+    gate-over-deny class this change closes means uncertainty errs toward
+    letting the write through, not blocking it.
+    """
+    tool_name = data.get("tool_name", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    # Agent-harness state is never repo source — allow it even on `main`.
+    if tool_name not in _FILE_PATH_TOOLS or not file_path or _is_agent_state_path(file_path):
         return False
 
-    if branch in _load_protected_branches():
-        return emit_pretooluse_deny(
-            f"BLOCKED: file is on protected branch '{branch}'. Create a worktree first with `t3 workspace ticket`."
-        )
-    return False
+    resolved = _resolve_branch_and_root(str(Path(file_path).parent))
+    if resolved is None:
+        return False
+    branch, repo_root = resolved
+
+    if (
+        branch not in _load_protected_branches()
+        or not _file_is_inside_worktree(repo_root, file_path)
+        or not _repo_root_is_teatree_managed(repo_root)
+    ):
+        return False
+
+    return emit_pretooluse_deny(
+        f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
+        "Create a worktree first with `t3 workspace ticket`."
+    )
 
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
