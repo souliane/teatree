@@ -68,6 +68,18 @@ class TestGateDisableEnable:
         assert gate_is_enabled() is True
 
 
+class TestGateIsEnabledFailsOpen:
+    """``gate_is_enabled`` fails OPEN so the reported status matches the gate."""
+
+    def test_enabled_on_broken_toml(self, home: Path) -> None:
+        (home / ".teatree.toml").write_text("this is not = valid = toml [[[", encoding="utf-8")
+        assert gate_is_enabled() is True
+
+    def test_enabled_when_teatree_not_a_table(self, home: Path) -> None:
+        (home / ".teatree.toml").write_text('teatree = "oops"\n', encoding="utf-8")
+        assert gate_is_enabled() is True
+
+
 class TestTomlPreservation:
     def test_disable_preserves_other_content(self, app: typer.Typer, home: Path) -> None:
         (home / ".teatree.toml").write_text(
