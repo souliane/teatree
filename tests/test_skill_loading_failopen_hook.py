@@ -166,7 +166,27 @@ class TestResolutionEdgeCases:
         blocked, _, _ = _run({"session_id": "sess-fresh", "tool_name": "Bash"})
         assert blocked is True
 
+    def test_overlay_skill_path_shape_resolves(self, gate: Path) -> None:
+        # An overlay suggestion is a path (``skills/<skill>/SKILL.md``), not
+        # a bare name. A genuinely-installed overlay skill must still
+        # enforce load-first rather than silently fail open.
+        _seed_skill(gate, "t3:acme")
+        _write_pending("sess-overlay", ["t3:acme/SKILL.md"])
+        blocked, payload, _ = _run({"session_id": "sess-overlay", "tool_name": "Bash"})
+        assert blocked is True
+        assert payload is not None
+
+    def test_stale_overlay_skill_path_fails_open(self, gate: Path) -> None:
+        # A path-shaped suggestion for an uninstalled overlay skill must
+        # fail open (warn, not block) — the lockout-prevention contract.
+        _write_pending("sess-overlay-stale", ["skills/t3:gone/SKILL.md"])
+        blocked, payload, warning = _run({"session_id": "sess-overlay-stale", "tool_name": "Bash"})
+        assert blocked is False
+        assert payload is None
+        assert "t3:gone" in warning
+
     def test_empty_segment_is_not_enforceable(self) -> None:
         # A degenerate name whose final segment is empty must never block.
         assert _skill_resolves("ns:", []) is False
         assert _skill_resolves("", []) is False
+        assert _skill_resolves("SKILL.md", []) is False

@@ -497,21 +497,36 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 # loader builds its trigger index from — the repo ``skills/``
 # source-of-truth (lifecycle skills) plus the agent install dirs
 # (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
-# Names that reach ``pending`` are bare (lifecycle ``code``/``debug`` or
-# supplementary ``ac-*``), never ``plugin:skill`` namespaced; the
-# final-segment strip in :func:`_skill_resolves` is a defensive no-op for
-# those.
+# ``<session>.pending`` carries bare names (lifecycle ``code``/``debug``,
+# supplementary ``ac-*``) AND overlay ``skill_path`` values of the shape
+# ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
+# gate keeps enforcing load-first for a genuinely-installed overlay skill
+# while still failing open on a stale name.
 
 
 def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     """True iff *name* resolves to a loadable skill in *search_dirs*.
 
-    The final path segment of a (possibly plugin-namespaced) name is
-    matched against ``<dir>/<segment>/SKILL.md``. Symlinked skill dirs
-    (the common install shape) resolve through ``is_file``.
+    Handles the two shapes that reach ``<session>.pending``. A bare or
+    namespaced skill name (lifecycle ``code``, supplementary ``ac-*``, or
+    a defensive ``plugin:skill``) is matched by its final ``:``/``/``
+    segment against ``<dir>/<segment>/SKILL.md``. An overlay ``skill_path``
+    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) has its
+    ``/SKILL.md`` leaf dropped so the ``<skill>`` directory name is matched,
+    and the literal path is probed against each search dir as a fallback.
+
+    Symlinked skill dirs (the common install shape) resolve through
+    ``is_file``.
     """
-    segment = name.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
-    if not segment:
+    stripped = name.rstrip("/")
+    if stripped.endswith("/SKILL.md"):
+        stripped = stripped[: -len("/SKILL.md")]
+        # An overlay skill_path may be rooted at a search dir's parent
+        # (``skills/<skill>/SKILL.md``); probe the literal path too.
+        if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
+            return True
+    segment = stripped.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    if not segment or segment == "SKILL.md":
         return False
     return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
