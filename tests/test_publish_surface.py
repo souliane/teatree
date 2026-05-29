@@ -24,6 +24,25 @@ from teatree.hooks import publish_surface
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
+class _FakeHomePath:
+    """Drop-in for the module's ``Path`` that pins ``home()`` to a tmp dir.
+
+    Only ``publish_surface``'s ``Path(base)`` and ``Path.home()`` uses need
+    to resolve; everything else delegates to the real ``pathlib.Path``, so a
+    test can relocate the cache root without globally patching
+    ``pathlib.Path.home`` (which would break pytest's own tmp machinery).
+    """
+
+    def __init__(self, home: Path) -> None:
+        self._home = home
+
+    def __call__(self, *args: object, **kwargs: object) -> Path:
+        return Path(*args, **kwargs)
+
+    def home(self) -> Path:
+        return self._home
+
+
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args],  # noqa: S607
@@ -55,6 +74,29 @@ def _make_gh_shim(bin_dir: Path, visibility: str) -> None:
         "#!/usr/bin/env bash\n"
         'if [[ "$*" == *"repo view"* && "$*" == *"visibility"* ]]; then\n'
         f'  echo "{visibility}"\n'
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _make_glab_shim(bin_dir: Path, visibility: str) -> None:
+    # glab 1.80.4 has NO ``--jq`` flag: passing it makes glab exit non-zero
+    # with "Unknown flag". This shim mirrors that — it ONLY succeeds for the
+    # bare ``glab api projects/...`` shape and emits the full project JSON
+    # (the probe must parse ``.visibility`` in Python, not via ``--jq``).
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shim = bin_dir / "glab"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$*" == *"--jq"* ]]; then\n'
+        '  echo "Unknown flag: --jq" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        'if [[ "$*" == *"api projects/"* ]]; then\n'
+        f'  echo \'{{"id": 42, "visibility": "{visibility}", "name": "r"}}\'\n'
         "  exit 0\n"
         "fi\n"
         "exit 1\n",
@@ -157,6 +199,78 @@ class TestVisibilityProbeFallback:
         (bin_dir / "gh").unlink()
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
+
+    def test_gitlab_private_probe_parses_json_without_jq(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Bug 1: ``glab api`` has no ``--jq`` flag. The probe must request the
+        # bare project JSON and parse ``.visibility`` in Python; passing
+        # ``--jq`` (the old code) would make glab exit 1 → None → NOT private.
+        cfg = _config(tmp_path, [])
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/secret.git")
+        bin_dir = tmp_path / "bin"
+        _make_glab_shim(bin_dir, "private")
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
+
+    def test_gitlab_public_probe_parses_json_without_jq(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, [])
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/open.git")
+        bin_dir = tmp_path / "bin"
+        _make_glab_shim(bin_dir, "public")
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is False
+
+
+class TestVisibilityCachePathCollision:
+    """Bug 2: the cache must persist even when ``~/.teatree`` is a FILE.
+
+    The historical default rooted the cache at ``~/.teatree`` — but that
+    path is the shell-sourceable config FILE, not a directory, so every
+    cache write raised "Not a directory" (swallowed as OSError) and the
+    verdict could never persist. The default now lives under the XDG cache
+    dir, which is collision-free.
+    """
+
+    def _patch_home_with_teatree_file(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home.mkdir(exist_ok=True)
+        (home / ".teatree").write_text("# shell-sourceable config FILE\n", encoding="utf-8")
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+
+    def test_default_cache_root_avoids_home_teatree_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        self._patch_home_with_teatree_file(home, monkeypatch)
+        root = publish_surface._cache_root()
+        assert (home / ".teatree") not in root.parents
+        assert root != home / ".teatree"
+
+    def test_cache_round_trips_when_home_teatree_is_a_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        self._patch_home_with_teatree_file(home, monkeypatch)
+
+        publish_surface._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
+
+        assert publish_surface._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
+        assert (home / ".cache" / "teatree" / "repo-visibility-cache.json").is_file()
+
+    def test_cache_falls_back_when_xdg_cache_teatree_is_a_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        (home / ".cache" / "teatree").write_text("not a dir\n", encoding="utf-8")
+        monkeypatch.delenv("T3_DATA_DIR", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+
+        publish_surface._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
+
+        assert publish_surface._read_visibility_cache("gitlab.com/acme/x") == "PUBLIC"
+        assert (home / ".teatree-data" / "repo-visibility-cache.json").is_file()
 
 
 class TestContainsSecret:
