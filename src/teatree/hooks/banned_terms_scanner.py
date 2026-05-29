@@ -93,12 +93,22 @@ def has_override(tool_name: str, tool_input: ToolInput) -> bool:
     The ``--allow-banned-term`` flag is honoured only when it appears as a
     token in the FIRST command segment (anything after a command-separator
     metacharacter is a separate command and must not bypass the gate).
-    ``ALLOW_BANNED_TERM=1`` in the tool-input env mapping also bypasses.
+
+    ``ALLOW_BANNED_TERM=1`` is honoured from the process environment
+    (``os.environ``). The Claude Code PreToolUse payload for a ``Bash``
+    tool carries NO ``env`` block, so the agent's ``ALLOW_BANNED_TERM=1``
+    lives in the hook subprocess's own environment; reading only
+    ``tool_input["env"]`` meant the documented override never reached the
+    wrapper and forced numeric-id + paraphrase workarounds (#126).
+    ``tool_input["env"]`` is still consulted for any harness build that
+    DOES populate it. Mirrors ``quote_scanner.has_quote_ok_override``.
     """
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if _OVERRIDE_FLAG in _first_segment_words(command):
             return True
+    if os.environ.get(_OVERRIDE_ENV, "").strip() == "1":
+        return True
     env = tool_input.get("env") or {}
     return env.get(_OVERRIDE_ENV, "").strip() == "1"
 
