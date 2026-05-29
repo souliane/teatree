@@ -1212,11 +1212,51 @@ def _mr_validate_argv() -> list[str] | None:
     return None
 
 
+_MR_VALIDATE_BROKEN_ENV_DENY = (
+    "Cannot validate MR title/description — the overlay validator "
+    "(`t3 tool validate-mr`) is not resolvable or crashed. Refusing to create "
+    "the MR with unvalidated metadata (fail closed). Fix the environment, or "
+    "set T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
+)
+
+
+def _handle_broken_validate_env() -> bool:
+    """Decide the gate's action when the validator can't run.
+
+    The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
+    must never reach GitLab just because the env could not validate it. The
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the operator's
+    self-rescue — deliberately fall back to fail-open (allow) so a genuinely
+    broken environment is not a hard deadlock.
+    """
+    if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    return emit_pretooluse_deny(_MR_VALIDATE_BROKEN_ENV_DENY)
+
+
+def _run_mr_validator(argv: list[str], title: str, description: str) -> "subprocess.CompletedProcess[str] | None":
+    """Run the validator, or ``None`` if the env is broken (timeout/missing)."""
+    try:
+        return subprocess.run(  # noqa: S603
+            [*argv, "--title", title, "--description", description],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
 def handle_validate_mr_metadata(data: dict) -> bool:
     """Block a non-compliant ``glab mr create/update`` before it runs.
 
     Validates by default via the active overlay's ``validate_pr`` (no
-    env-var opt-in) so the pre-push gate is always live (#119 Part 3).
+    env-var opt-in) so the pre-push gate is always live (#119 Part 3). When
+    the validator cannot be resolved or crashes, the gate FAILS CLOSED — a
+    non-compliant title must never slip onto GitLab on a broken env. The
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open as
+    a deliberate self-rescue.
     """
     fields = _extract_mr_fields(data)
     if fields is None:
@@ -1225,18 +1265,11 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
     argv = _mr_validate_argv()
     if argv is None:
-        return False
+        return _handle_broken_validate_env()
 
-    try:
-        result = subprocess.run(  # noqa: S603
-            [*argv, "--title", title, "--description", description],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+    result = _run_mr_validator(argv, title, description)
+    if result is None:
+        return _handle_broken_validate_env()
 
     if result.returncode != 0:
         return emit_pretooluse_deny(

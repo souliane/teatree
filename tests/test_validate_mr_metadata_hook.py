@@ -60,12 +60,47 @@ class TestDefaultOverlayValidation:
         data = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
         assert handle_validate_mr_metadata(data) is False
 
-    def test_noop_when_t3_not_on_path(self, monkeypatch):
+    def test_fails_closed_when_t3_not_on_path(self, monkeypatch, capsys):
+        # No validator resolvable -> the gate FAILS CLOSED (deny), not open:
+        # a non-compliant title must never reach GitLab just because the env
+        # could not validate it. The escape hatch is the explicit env var.
         monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
         monkeypatch.setattr(router.shutil, "which", lambda _: None)
-        # No t3 binary -> cannot validate -> fail open (don't block the agent
-        # on a broken environment), same posture as other t3-shelling hooks.
+        blocked = handle_validate_mr_metadata(_glab_create("bad", "bad"))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+        assert "validate" in out["permissionDecisionReason"].lower()
+
+    def test_broken_env_escape_hatch_fails_open(self, monkeypatch):
+        # The deliberate self-rescue opt-in: when the operator sets
+        # T3_MR_VALIDATE_ALLOW_BROKEN_ENV, an unresolvable validator falls
+        # back to fail-open so a genuinely broken env is not a hard deadlock.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "1")
+        monkeypatch.setattr(router.shutil, "which", lambda _: None)
         assert handle_validate_mr_metadata(_glab_create("bad", "bad")) is False
+
+    def test_fails_closed_when_validator_times_out(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        with patch.object(router.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="t3", timeout=10)):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+    def test_fails_closed_when_validator_binary_missing(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        with patch.object(router.subprocess, "run", side_effect=FileNotFoundError):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
 
     def test_missing_title_is_validated_not_skipped(self, monkeypatch, capsys):
         # An MR create with no --title is exactly the bad metadata the gate

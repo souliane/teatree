@@ -179,6 +179,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
         ],
+        core_dispatch=True,
     ),
     "availability": DjangoGroup(
         "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
