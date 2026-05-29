@@ -5,7 +5,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_bot, slack_scopes
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.protocols import MessagingBackend
 from teatree.backends.slack_bot import SlackBotBackend
@@ -101,7 +101,9 @@ def test_slack_auth_test_returns_raw_response(monkeypatch: pytest.MonkeyPatch) -
 
     result = backend.auth_test()
 
-    assert result == {"ok": True, "user_id": "UBOT", "team": "T1"}
+    assert result["ok"] is True
+    assert result["user_id"] == "UBOT"
+    assert result["team"] == "T1"
     assert captured["url"] == "https://slack.com/api/auth.test"
 
 
@@ -116,11 +118,54 @@ def test_slack_auth_test_surfaces_ok_false(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
-    assert backend.auth_test() == {"ok": False, "error": "missing_scope"}
+    result = backend.auth_test()
+    assert result["ok"] is False
+    assert result["error"] == "missing_scope"
 
 
 def test_slack_auth_test_returns_empty_when_no_token() -> None:
     assert SlackBotBackend(bot_token="").auth_test() == {}
+
+
+def test_slack_auth_test_surfaces_granted_scopes_from_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slack reports granted OAuth scopes in the ``X-OAuth-Scopes`` *header*, not the JSON body.
+
+    A scope guard built on ``auth_test()`` is dead in production unless the
+    backend surfaces what the header carries. This test puts the scope ONLY in
+    the header (never a fabricated JSON ``scopes`` field) and asserts it is
+    surfaced under ``GRANTED_SCOPES_KEY``.
+    """
+
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"X-OAuth-Scopes": "chat:write,reactions:write,users:read"},
+            json={"ok": True, "user_id": "UBOT", "bot_id": "BBOT"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    result = backend.auth_test()
+
+    assert result["ok"] is True
+    assert result["user_id"] == "UBOT"
+    assert result[slack_scopes.GRANTED_SCOPES_KEY] == ["chat:write", "reactions:write", "users:read"]
+
+
+def test_slack_auth_test_surfaces_empty_scopes_when_header_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_post(url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "user_id": "UBOT"},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    backend = SlackBotBackend(bot_token="xoxb-test")
+
+    assert backend.auth_test()[slack_scopes.GRANTED_SCOPES_KEY] == []
 
 
 def test_slack_post_returns_empty_when_no_token() -> None:

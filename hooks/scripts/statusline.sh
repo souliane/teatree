@@ -2,9 +2,13 @@
 # Claude Code statusline hook.
 #
 # Composes two info streams:
-#  1. The fat loop's pre-rendered zones file (anchors, action_needed, in_flight)
-#     written by `t3 loop tick` to ${TEATREE_STATUSLINE_FILE} or the default
-#     XDG path. Decoupling render from read keeps this hook fast (<10ms).
+#  1. The fat loop's pre-rendered zones file (loop line, anchors,
+#     action_needed, in_flight) written by `t3 loop tick` to
+#     ${TEATREE_STATUSLINE_FILE} or the default XDG path. Decoupling render
+#     from read keeps this hook fast (<10ms). The single dedicated LOOP
+#     line lives at the top of that file (live_loops_anchor) — the header
+#     this hook builds carries NO loop/tick info (#130): loop state has
+#     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
 #     5-hour and 7-day rate-limit usage, and skills loaded this session —
 #     the latter populated by hook_router.py into
@@ -97,7 +101,6 @@ sep="$gsep"   # legacy alias still used by later segments
 # groups together at the end with the outer separator.
 g_context=""
 g_usage=""
-g_loops=""
 g_updates=""
 g_resource=""
 
@@ -132,53 +135,10 @@ if [ -n "$skills" ]; then
     _skills_segment="${_LBL}skills:${_RST} ${_colored_skills}"
 fi
 
-# Active loops from CronCreate / ScheduleWakeup (written by hook_router.py)
-_crons_file="$state_dir/${session_id}.crons"
-_loops_segment=""
-if [ -n "$session_id" ] && [ -r "$_crons_file" ] && command -v jq >/dev/null 2>&1; then
-    _now=${_now:-$(date +%s)}
-    _loop_parts=""
-    for _jid in $(jq -r '.jobs // {} | keys[]' "$_crons_file" 2>/dev/null); do
-        _jname=$(jq -r ".jobs[\"$_jid\"].name // \"loop\"" "$_crons_file" 2>/dev/null)
-        _jcadence=$(jq -r ".jobs[\"$_jid\"].cadence // empty" "$_crons_file" 2>/dev/null)
-        if [ -n "$_jcadence" ] && [ "$_jcadence" != "null" ]; then
-            _jmin=$(( _jcadence / 60 ))
-            _jlabel="${_CYN}${_jname}${_RST}${_LBL}(${_jmin}m)${_RST}"
-        else
-            _jcron=$(jq -r ".jobs[\"$_jid\"].cron // empty" "$_crons_file" 2>/dev/null)
-            _jlabel="${_CYN}${_jname}${_RST}${_LBL}(${_jcron})${_RST}"
-        fi
-        [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
-        _loop_parts="${_loop_parts}${_jlabel}"
-    done
-    _wakeup_epoch=$(jq -r '.wakeup.next_epoch // empty' "$_crons_file" 2>/dev/null)
-    if [ -n "$_wakeup_epoch" ] && [ "$_wakeup_epoch" != "null" ]; then
-        _wname=$(jq -r '.wakeup.name // "loop"' "$_crons_file" 2>/dev/null)
-        _wdiff=$(( _wakeup_epoch - _now ))
-        # The wakeup epoch is written only by ScheduleWakeup and has no clear
-        # path: a long-finished wakeup would otherwise keep rendering as a
-        # live "→now" forever. Treat anything more than the grace window
-        # overdue as stale and omit it. A wakeup within the grace window
-        # (0 to GRACE seconds overdue) still shows "now" — a real imminent
-        # fire, not a stale leftover.
-        _wakeup_stale_grace=120
-        if (( _wdiff > 60 )); then
-            _wtiming="$(( _wdiff / 60 ))m"
-        elif (( _wdiff > 0 )); then
-            _wtiming="${_wdiff}s"
-        elif (( _wdiff >= -_wakeup_stale_grace )); then
-            _wtiming="now"
-        else
-            _wtiming=""
-        fi
-        if [ -n "$_wtiming" ]; then
-            _wlabel="${_CYN}${_wname}${_RST}${_LBL}→${_wtiming}${_RST}"
-            [ -n "$_loop_parts" ] && _loop_parts="${_loop_parts}${isep}"
-            _loop_parts="${_loop_parts}${_wlabel}"
-        fi
-    fi
-    [ -n "$_loop_parts" ] && _loops_segment="${_LBL}loops:${_RST} ${_loop_parts}"
-fi
+# Loop / tick info is intentionally NOT built here (#130). The single
+# dedicated loop line (``loop running · <name> <Nm> · …``) is rendered by
+# the fat loop into the zones file and cat'd below; duplicating it in this
+# header is the pollution the dashboard rework removed.
 
 # RAM usage (macOS/Linux)
 # NOTE(#962): this computation is slated to move into `teatree.system.memory`
@@ -207,34 +167,34 @@ elif [ -r /proc/meminfo ]; then
     _ram_total_gb=$(awk "BEGIN{printf \"%.0f\", $_ram_total_kb / 1048576}")
     _ram_segment="${_LBL}ram=${_RST}$(color_pct "$_ram_pct")${_LBL} ${_ram_used_gb}/${_ram_total_gb}G${_RST}"
 fi
-g_resource="$_ram_segment"
 
-# Next tick countdown from tick-meta.json
+# Free disk space on the volume holding $HOME (cross-platform via POSIX df).
+# Colored by used% so it goes red as the disk fills, mirroring the RAM segment.
+_disk_segment=""
+_df_out=$(df -Pk "$HOME" 2>/dev/null)
+if [ -n "$_df_out" ]; then
+    _disk_avail_kb=$(awk 'NR==2{print $4}' <<< "$_df_out")
+    _disk_used_pct=$(awk 'NR==2{gsub(/%/,"",$5); print $5}' <<< "$_df_out")
+    if [[ "$_disk_avail_kb" =~ ^[0-9]+$ ]] && [[ "$_disk_used_pct" =~ ^[0-9]+$ ]]; then
+        _disk_free_gb=$(awk "BEGIN{printf \"%.0f\", $_disk_avail_kb / 1048576}")
+        _disk_segment="${_LBL}disk=${_RST}$(color_pct "$_disk_used_pct")${_LBL} ${_disk_free_gb}G free${_RST}"
+    fi
+fi
+
+g_resource="$_ram_segment"
+if [ -n "$_disk_segment" ]; then
+    [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
+    g_resource="${g_resource}${_disk_segment}"
+fi
+
+# Repo freshness from tick-meta.json. The next-tick countdown that used to
+# live here is gone (#130): tick timing belongs on the single dedicated
+# loop line, not split between this header and the loop line.
 _tick_meta="${target%.txt}-meta.json"
 # Also check the canonical sidecar name written by tick.py
 [ ! -r "$_tick_meta" ] && _tick_meta="$(dirname "$target")/tick-meta.json"
-_tick_segment=""
 _freshness_segment=""
 if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
-    _next_epoch=$(jq -r '.next_epoch // empty' "$_tick_meta" 2>/dev/null)
-    _tick_cadence=$(jq -r '.cadence // 720' "$_tick_meta" 2>/dev/null)
-    if [ -n "$_next_epoch" ]; then
-        _now=$(date +%s)
-        _diff=$(( _next_epoch - _now ))
-        _overdue=$(( -_diff ))
-        if (( _diff > 0 && _diff < 60 )); then
-            _tick_segment="${_CYN}tick${_RST}${_LBL}→${_diff}s${_RST}"
-        elif (( _diff > 0 && _diff < 120 )); then
-            _tick_segment="${_YLW}tick${_RST}${_LBL}→$(( _diff / 60 ))m${_RST}"
-        elif (( _diff > 0 )); then
-            _tick_segment="${_GRN}tick${_RST}${_LBL}→$(( _diff / 60 ))m${_RST}"
-        elif (( _overdue > _tick_cadence * 2 )); then
-            _tick_segment="${_RED}tick stale${_RST}"
-        else
-            _tick_segment="${_CYN}tick now${_RST}"
-        fi
-    fi
-
     # Repo freshness from tick-meta.json .freshness
     _freshness=$(jq -r '.freshness // empty' "$_tick_meta" 2>/dev/null)
     if [ -n "$_freshness" ] && [ "$_freshness" != "null" ] && [ "$_freshness" != "{}" ]; then
@@ -290,16 +250,13 @@ if [ -r "$_tick_meta" ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
-# Combine tick + loops into the "loops" group (operational signals).
-g_loops="$_tick_segment"
-if [ -n "$_loops_segment" ]; then
-    [ -n "$g_loops" ] && g_loops="${g_loops}${isep}${_loops_segment}" || g_loops="$_loops_segment"
-fi
 g_updates="$_freshness_segment"
 
-# Join all groups with the between-group separator.
+# Join all groups with the between-group separator. There is no loop group
+# (#130) — loop/tick info has exactly one home, the dedicated loop line in
+# the zones file cat'd below.
 header=""
-for _g in g_context g_usage g_loops g_updates g_resource; do
+for _g in g_context g_usage g_updates g_resource; do
     _val=$(eval "printf '%s' \"\${$_g}\"")
     [ -z "$_val" ] && continue
     if [ -z "$header" ]; then

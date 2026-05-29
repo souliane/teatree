@@ -99,20 +99,12 @@ def _render_pr_group(
 
     ctx = _LinkCtx(colorize=colorize, link=_link)
 
-    def _label(ref: _PRRef) -> str:
-        rendered = _format_mr_ref(ref, ctx)
-        # #1113 enhancement: surface the review-channel post permalink so the
-        # operator can jump from the statusline straight to the thread.
-        if ref.review_permalink:
-            rendered += " " + _link("(review)", ref.review_permalink, colorize=colorize)
-        return rendered
-
     chunks: list[str] = []
     for tnum in sorted(by_ticket):
-        bucket = " ".join(_label(r) for r in by_ticket[tnum])
+        bucket = " ".join(_format_mr_ref(r, ctx) for r in by_ticket[tnum])
         chunks.append(f"#{tnum}: {bucket}")
     if orphans:
-        chunks.append(" ".join(_label(r) for r in orphans))
+        chunks.append(" ".join(_format_mr_ref(r, ctx) for r in orphans))
     return f"{prefix}{' · '.join(chunks)}"
 
 
@@ -124,17 +116,21 @@ def _render_ticket_line(
     live_pr_urls: set[str] | None = None,
     colorize: bool,
 ) -> str:
-    """Render the per-overlay anchor line in the terse format (#1377).
+    """Render the per-overlay anchor line grouped by FSM state (#130).
 
-    Bare canonical shape ``[overlay] #N (short desc) !M1 !M2 …`` — the
-    state-group prefix (``started:``) is dropped because filtering
-    ``not_started`` and ``in_review`` into ``_NOISE_STATES`` reduces the
-    anchor row to the actively-shipping slice the user actually wants to
-    see at a glance.
+    One physical dim line per overlay (HARD RULE: max 1 line per overlay
+    per color). Tickets are bucketed by their FSM ``state:`` label
+    (``coded:`` / ``tested:`` / ``scoped:`` …), the buckets render in
+    :data:`_STATE_PRIORITY` order, and the buckets are joined by `` · ``
+    into the single line::
 
-    State groups still render in priority order when multiple
-    actively-shipping states coexist (rare), but the ``state:`` label is
-    suppressed — the row reads as a flat list of canonical items.
+        [overlay] coded: #N (topic !chip) · tested: #M (topic) · scoped: #K
+
+    The ``state:`` label is the in-line group header the user explicitly
+    asked for — it makes the grouping legible and answers "what state is
+    #X" at a glance. #1377 dropped it; the latest authoritative
+    requirement (group BY STATUS, reusing the FSM state) restores it. The
+    terse per-item shape ``#N (topic !chips)`` from #1377 is unchanged.
 
     ``pr_map`` is the overlay's MR-iid → child-refs map; entries appear
     here either because the MR's iid equals the ticket number (legacy
@@ -160,15 +156,16 @@ def _render_ticket_line(
         )
     if not by_state:
         return ""
-    items: list[str] = []
+    state_chunks: list[str] = []
     for state in sorted(by_state, key=_state_sort_key):
         bucket = by_state[state]
         shown = bucket[:_MAX_PER_STATE]
         overflow = len(bucket) - len(shown)
-        items.extend(shown)
+        items = list(shown)
         if overflow > 0:
             items.append(f"(+{overflow} more)")
-    return f"{prefix}{' '.join(items)}"
+        state_chunks.append(f"{state}: {' '.join(items)}")
+    return f"{prefix}{' · '.join(state_chunks)}"
 
 
 def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> list[str]:
@@ -181,8 +178,16 @@ def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> li
     """
     parts: list[str] = []
     for reason, refs in action_refs.disposition_refs.items():
+        # Defense-in-depth against the dispatch leak (#130): a disposition
+        # whose refs ALL resolve to the bare ``?`` token carries no usable
+        # identity — it is scanner bookkeeping that slipped through, not a
+        # real ticket. Rendering it produces the ``<reason>: ?`` garbage row
+        # the dashboard rework exists to kill, so drop the whole part.
+        usable = [r for r in refs if r.label != "?"]
+        if not usable:
+            continue
         label = _DISPOSITION_LABELS.get(reason, reason)
-        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in refs)
+        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in usable)
         parts.append(f"{label}: {items}")
     for rr in action_refs.reassign_refs:
         to = ", ".join(rr.new_owners)

@@ -1,4 +1,4 @@
-"""Database operations: refresh, restore from CI, reset passwords, introspect."""
+"""Database operations: migrate, refresh, restore from CI, reset passwords, introspect."""
 
 import json
 import os
@@ -12,6 +12,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
+from teatree.core.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
 
@@ -106,6 +107,37 @@ def _run_read_only(sql: str) -> list[SqlRow]:
 
 
 class Command(TyperCommand):
+    @command()
+    def migrate(self) -> None:
+        """Apply pending migrations to the runtime self-DB, non-destructively.
+
+        The always-available self-rescue for a stale runtime control DB —
+        the exact gap that locks out the sanctioned merge path
+        (``ticket clear``/``merge`` refuse on ANY pending migration). It
+        delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+        runs ``migrate --no-input`` *in this process* against the same
+        connection the merge gate reads, so "migrate then re-check"
+        converges on one DB.
+
+        Unlike ``resetdb`` this drops nothing — live ticket/session/lease
+        rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
+        cannot target a different (auto-isolated) DB than the runtime
+        resolves. Dispatched via teatree-core (``python -m teatree``) so it
+        reaches the runtime self-DB regardless of which overlay invokes it.
+
+        Fail-closed: a real migrate failure exits non-zero with the captured
+        error, never leaving a half-migrated DB look like a success.
+        """
+        try:
+            applied = migrate_self_db()
+        except SelfDbMigrationError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from exc
+        if not applied:
+            self.stdout.write("Self-DB already current — no migrations to apply.")
+            return
+        self.stdout.write(f"Applied {len(applied)} migration(s): {', '.join(applied)}")
+
     @command()
     def refresh(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public `db refresh` surface (path/dslr/dump/force/fresh-dump/user-authorized); the arg list IS the CLI contract, not an internal design smell (same rationale as ticket.py:clear).
         self,
@@ -209,6 +241,41 @@ class Command(TyperCommand):
         worktree.db_refresh()
         worktree.save()
         return f"DB refreshed for {worktree.db_name}"
+
+    @command()
+    def approve(
+        self,
+        op: str = typer.Argument(help="The DB op to authorize (e.g. `fresh-dump`)."),
+        tenant: str = typer.Argument(help="The tenant / source database the op is scoped to."),
+        *,
+        approver: str = typer.Option(
+            ...,
+            "--approver",
+            help=(
+                "Id of the human user recording the approval. Refused if it names a "
+                "maker/coding-agent/loop role — the executing agent can never "
+                "self-authorize the op (#953, mirrors MergeClear §17.8 / approve-on-behalf #960)."
+            ),
+        ),
+    ) -> str:
+        """Record a single-use ``DbApproval`` that satisfies the #777 gate without a TTY (#953/#126).
+
+        The recorded-approval channel is the no-TTY satisfier for
+        ``db refresh --fresh-dump``: a chat-only operator records the
+        approval here, then the agent re-runs ``db refresh --fresh-dump
+        --user-authorized <id>`` which consumes the row single-use. The
+        scope is normalized identically at record and consume, so the
+        recorded ``(op, tenant)`` matches the gate's expected scope (named
+        in its refusal message) regardless of case/whitespace.
+        """
+        from teatree.core.models.db_approval import DbApproval, DbApprovalError  # noqa: PLC0415
+
+        try:
+            approval = DbApproval.record(op, tenant, approver)
+        except DbApprovalError as err:
+            self.stderr.write(f"Refused: {err}")
+            raise SystemExit(1) from err
+        return f"OK recorded DbApproval id={approval.pk} op={approval.op!r} tenant={approval.tenant!r}"
 
     @command(name="restore-ci")
     def restore_ci(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:

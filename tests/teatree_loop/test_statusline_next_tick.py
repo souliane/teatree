@@ -51,7 +51,7 @@ def _ready(num: str, *, overlay: str = "ov") -> DispatchAction:
 
 
 class TestConsolidatedLoopAnchor:
-    """Line 1 = ``loop · <name> <Nm> · <name> <Nm>`` (per-loop relative ticks)."""
+    """Line 1 = ``loop running · <name> <Nm> · <name> <Nm>`` (per-loop relative ticks)."""
 
     def test_includes_relative_minutes_when_acquired_at_known(self) -> None:
         # Each lease carries its own acquire instant; 2 minutes elapsed of
@@ -65,7 +65,7 @@ class TestConsolidatedLoopAnchor:
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
         line = lines[0]
-        assert line.startswith("loop · "), line
+        assert line.startswith("loop running · "), line
         # Per-loop name + relative minutes, no headline count.
         assert "loops live" not in line, line
         assert "tick 10m" in line, line
@@ -78,7 +78,7 @@ class TestConsolidatedLoopAnchor:
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · tick"], repr(lines)
+        assert lines == ["loop running · tick"], repr(lines)
 
     def test_reports_due_when_overdue(self) -> None:
         # Acquired 1 hour ago; cadence 12 minutes → due now.
@@ -89,7 +89,7 @@ class TestConsolidatedLoopAnchor:
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · tick due"], repr(lines)
+        assert lines == ["loop running · tick due"], repr(lines)
 
     def test_no_per_loop_lines_anymore(self) -> None:
         """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
@@ -196,7 +196,7 @@ class TestZonesForIntegration:
         render(zones, target=target, colorize=False)
         body = target.read_text()
         first_line = body.splitlines()[0]
-        assert first_line.startswith("loop · "), repr(first_line)
+        assert first_line.startswith("loop running · "), repr(first_line)
         # 60s elapsed of 720s → next tick in 11m; each loop named.
         assert "tick 11m" in first_line, first_line
         assert "owner 11m" in first_line, first_line

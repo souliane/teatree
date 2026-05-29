@@ -26,6 +26,12 @@ def check_live_post(*, repo: str, mr: int) -> str:
     :class:`~teatree.core.models.live_post_approval.LivePostApproval`
     has been claimed single-use); a non-empty return is the user-facing
     error the caller short-circuits with as ``(message, 1)``.
+
+    The #1207 live-post token gate is orthogonal to the on-behalf mode:
+    the colleague-visible ``--live`` publish needs an explicit, single-use
+    approval token regardless of mode. The one-step ``t3 review authorize``
+    (#126) is what mints that token in the same command that records the
+    on-behalf authorization, so a single user action satisfies both gates.
     """
     from teatree.core.live_post_gate import LivePostBlockedError, require_live_post_approval  # noqa: PLC0415
 

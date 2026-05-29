@@ -159,14 +159,16 @@ class TestReviewServicePostCommentGated:
 
     @pytest.mark.parametrize("mode", _BLOCKING_MODES)
     def test_post_comment_live_blocked_when_no_approval(self, mode: OnBehalfPostMode) -> None:
-        """The ``--live`` branch keeps the ``post_comment`` on-behalf gate."""
+        """The ``--live`` branch keeps the gate and names the one-step ``authorize`` (#126)."""
         _gate(self.tmp_path, self.monkeypatch, mode=mode)
         service, stub = _service_with_stub()
 
         msg, code = service.post_comment("org/repo", 7, "lgtm", live=True)
 
         assert code == 1
-        assert "approve-on-behalf" in msg
+        # The unified refusal names the single ``t3 review authorize`` command
+        # (the #126 collapse) rather than the old two-command dance.
+        assert "authorize" in msg
         # The HTTP publish MUST NOT have happened.
         assert all(kind != "post_json" for kind, _, _ in stub.calls)
 

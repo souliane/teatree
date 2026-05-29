@@ -151,6 +151,18 @@ Hook JSON output supports event-specific fields:
 > `resume`, `clear`, `compact`), which **does** support `additionalContext`.
 > Teatree writes the durable snapshot in the `PreCompact` hook and re-injects
 > it from `handle_session_start_bootstrap` when `source == "compact"`.
+>
+> **#1452 — SessionStart `additionalContext` MUST be nested under `hookSpecificOutput`.**
+> The harness silently drops the legacy flat top-level form
+> `{"additionalContext": "…"}` for `SessionStart`; only the nested envelope
+> `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "…"}}`
+> is accepted (matches the Agent SDK `SessionStartHookSpecificOutput` typed dict).
+> The flat form parses as valid JSON, so the hook exits 0 and the JSONL records
+> the stdout — but the recovered text never reaches the model. Symptom in the
+> session JSONL: the hook record has `content: ""` while `stdout` contains the
+> JSON payload. PostToolUse-style raw-text stdout still works; SessionStart
+> does not. Symptom in the session JSONL: the hook record has `content: ""`
+> while `stdout` carries the payload.
 
 ### Skills Can Define Their Own Hooks
 
@@ -334,9 +346,11 @@ Neither event supports matchers — they fire on every occurrence.
 
 `{"continue": false, "stopReason": "..."}` in hook output stops the entire teammate.
 
+> **TeaTree uses this seam to close the fan-out skill-loading bypass (#1488).** Because the Task/Workflow vehicle bypasses `PreToolUse` (see Known Limitations below), the `PreToolUse`-only skill-loading gate (`handle_enforce_skill_loading`, matcher `Bash|Edit|Write`) was never consulted on a fanned-out task — which is how a bespoke review workflow ran instead of `/t3:review`. `handle_enforce_skill_loading_on_task_create` now rides `TaskCreated` and emits this `{"continue": false, "stopReason": …}` envelope to force the matching teatree skill onto the dispatched task. The exact firing + schema were confirmed against the Claude Code 2.1.156 binary. See BLUEPRINT.md §17.6.4 gate 17 and `hooks/CLAUDE.md`.
+
 ### Known Limitations
 
-- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite
+- **Task tools bypass `PreToolUse`/`PostToolUse` hooks** — known regression from TodoWrite. TeaTree works around this for the skill-loading gate by riding `TaskCreated` instead (see the note above the Known Limitations heading; #1488).
 - **VSCode extension**: tasks completely disabled due to `isTTY` check on `process.stdout.isTTY`
 - **Task UI freezes during auto-compact** — no status updates on completed tasks
 

@@ -36,7 +36,7 @@ From "code is done" to "PR is merged."
 When the active overlay has `require_ticket = True`, refuse to commit or push without a ticket reference.
 
 - **Detection:** check `overlay.config.require_ticket`. Overlays that dogfood their own workflow enable this flag.
-- **Every commit must include** an issue reference. Default to a ticket-URL parenthetical at the end of the subject line (`type(scope): description (TICKET_URL)`) — that is the linking mechanism teatree's `validate_mr_title_and_description` enforces. When the active overlay sets `mr_close_ticket = True` (the teatree overlay does), the ship path keeps `Closes/Fixes #<number>` so a merged PR auto-closes its issue **by default** — `should_close_ticket` rewrites it to `Relates to #N` only when `Ticket.extra['more_prs_coming']` is set (a declared partial, or an umbrella with remaining tracked scope). Overlays that leave `mr_close_ticket = False` (the class default) never auto-close.
+- **Every commit must include** an issue reference. Default to a ticket-URL parenthetical at the end of the subject line (`type(scope): description (TICKET_URL)`) — that is the linking mechanism the active overlay's `OverlayMetadata.validate_pr(title, description)` enforces (surfaced as the `t3 tool validate-mr` CLI command and the PreToolUse hook in § "PR / MR Creation"). When the active overlay sets `mr_close_ticket = True` (the teatree overlay does), the ship path keeps `Closes/Fixes #<number>` so a merged PR auto-closes its issue **by default** — `should_close_ticket` rewrites it to `Relates to #N` only when `Ticket.extra['more_prs_coming']` is set (a declared partial, or an umbrella with remaining tracked scope). Overlays that leave `mr_close_ticket = False` (the class default) never auto-close.
 - **If no ticket context exists:** ask "Which ticket is this for?" Do not proceed without a ticket reference.
 - **Exception:** commits from `/t3:retro` (format `fix(<skill>): ...`) are exempt — retro findings are small tactical fixes committed directly on the current branch.
 
@@ -48,7 +48,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **Before committing to a branch you did not create this session, check its PR isn't already merged/closed.** A squash-merge leaves the local and remote branch present, so the "refuse commits on a merged-PR branch" pre-commit guard does not fire (it only catches a *deleted* remote). Committing onto a long-lived branch from a prior session then pushes an orphan commit that rides no open PR and never reaches the default branch. `gh pr list --head <branch> --state all` (or `glab mr list --source-branch <branch>`) before staging; if the PR is merged, branch off the freshly-fetched default branch for the follow-up work and open a new PR.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
-- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and `validate_mr_title_and_description` will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
+- **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
 - **No commit-type bypass for the quality gates.** The teatree `quality-gates` and `module-health` hooks have no `relax:` escape hatch (souliane/teatree#525). When the gate fires, fix the architecture: split the file by concern, refactor module-level functions onto a class, replace `dict[str, object]` with a typed dataclass, or delegate the suppressed import/call to a module the hook already exempts (`tests/`, `scripts/hooks/`, `e2e/`, `skills/`, `docs/`). The legitimate house pattern around `subprocess` (`# noqa: S404` on the import, `# noqa: S603` on each call) belongs in a CLI helper module that already lives under one of those exempt paths — not in newly suppressed source files.
 
@@ -81,6 +81,40 @@ If the changes touch architecture, add new modules, rename commands, or change e
 2. If it doesn't, update it **before** pushing. Ask the user before modifying.
 3. This applies to all repos that have a `BLUEPRINT.md`.
 
+### 3a1. Documentation Discipline (Non-Negotiable)
+
+Before creating the PR, ask: did this diff change anything a user or colleague would learn from the README, BLUEPRINT, or any skill file?
+
+Common triggers (not exhaustive):
+
+- New `t3` command, flag, or env var
+- Renamed or removed public symbol, command, or setting
+- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name, a new `MiniLoopMarker` name)
+- New `SKILL.md` added, or one removed
+- User-observable behaviour change (default flips, UI flow, error message shape, response payload)
+- New feature flag
+
+**If YES:** the same MR includes the doc update — README for user-facing changes, BLUEPRINT for architectural ones, the relevant `SKILL.md` for skill behaviour changes.
+
+**If NO:** the MR description carries this line on its own:
+
+```text
+docs: n/a — <one-line reason>
+```
+
+Examples:
+
+- `docs: n/a — internal refactor, no user-visible change`
+- `docs: n/a — bug fix preserving existing contract`
+- `docs: n/a — test-only change`
+- `docs: n/a — generated-doc regeneration, source unchanged`
+
+The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
+
+**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` / `MiniLoopMarker` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+
+Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
+
 ### 3b. Self-Review Against Repo Rules
 
 **Before every push**, run the self-review gate from [`../review/SKILL.md`](../review/SKILL.md) § "Active Verification Against Repo Rules":
@@ -111,7 +145,7 @@ Before creating a PR, the `pr create` command automatically checks the session g
 
 - **shipping** requires prior `testing` and `reviewing` phases. (#837: it no longer requires a per-ticket `retro` visit — retro is orchestrator-only.)
 - If no review session ran for this ticket, `pr create` returns an error with a hint to run `/t3:review`.
-- `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice.
+- `--skip-validation` is reserved for bypasses the **user explicitly authorised** in the same session — never the agent's own choice. It skips only the **heavy** gates (visual QA, branch currency, FSM phase check) and STILL runs the cheap MR title/description format check (#1486), so a non-canonical title can never slip onto the remote via this bypass. The separate `--skip-mr-format-check` is the explicit opt-in that disables that format check too — needed only in the rare case a non-canonical title must ship anyway (and likewise user-authorised, never the agent's own choice).
 
 **The `reviewing` phase MUST be earned by spawning the `t3:reviewer` sub-agent — not by self-review against repo rules alone.** § 3b ("Self-Review Against Repo Rules") is necessary but not sufficient: it is the implementer reviewing their own work, which is the exact pattern that allowed #545 to claim "implementation finished" while review later found six rounds of missed renames, broken tests, undocumented contract changes, and a bypassed shipping gate. An independent reviewer that has not seen the implementation conversation is the corrective.
 
@@ -189,6 +223,17 @@ The commit body keeps `Closes/Fixes #N` and the issue auto-closes on merge **by 
 - List the unshipped phases/AC in the PR body under a "Remaining scope" heading so the next agent sees the gap.
 - Do NOT rely on "I'll do the rest later" memory. The issue body is the contract; a partial PR that auto-closes the issue silently discards the rest of the contract.
 
+#### Per-Namespace Close-Trailer Gate (`[teatree.publish_gates]`)
+
+Some namespaces drive their issue lifecycle through a separate workflow and forbid the platform's auto-close behaviour entirely. Configure those namespaces in `~/.teatree.toml`:
+
+```toml
+[teatree.publish_gates]
+ban_close_trailers_on_namespaces = ["my-group/*"]
+```
+
+When the target PR/MR repo matches one of these fnmatch patterns and the body still carries a `Closes|Fixes|Resolves` trailer (the `part of` and full-URL variants too), `ShipExecutor._build_pr_spec` silently strips those lines before opening the PR — the publish proceeds, the issue does not auto-close on merge. Default empty list keeps legacy behaviour. This is the user-scoped sibling of the overlay-scoped `forbid_close_keywords` gate (#1012) which refuses the publish entirely.
+
 **STOP — resolve the ticket URL before typing the glab command.**
 
 Before composing any `glab mr create` or `glab mr update` call, answer these three questions:
@@ -197,7 +242,7 @@ Before composing any `glab mr create` or `glab mr update` call, answer these thr
 2. **What is the feature flag?** Use `[none]` if there is no flag.
 3. **Is the title in the exact format?** `type(scope): description [flag] (ticket_url)` — both `--title` and the first line of `--description` must be identical and match this format exactly.
 
-This gate exists because the CI `validate_mr_title_and_description` job fails on every PR that skips the ticket URL, causing a red pipeline that requires a separate fix push. The CI validator is the safety net — not the first line of defence. **Always resolve the URL before creating the PR.**
+This gate exists because the overlay's own CI MR-title validator (the validating overlay mirrors the same `validate_pr` rules in its `release_notes/validate_mr.py`, packaged as `src/<overlay>/mr_validation.py`) fails on every PR that skips the ticket URL, causing a red pipeline that requires a separate fix push. The CI validator is the safety net — not the first line of defence. **Always resolve the URL before creating the PR.**
 
 **Read the project's delivery hooks reference** (e.g. `references/delivery-hooks.md`) for the concrete PR creation template. Critical rules:
 

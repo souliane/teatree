@@ -16,9 +16,37 @@ convention (``raise SystemExit``, never ``typer.Exit``).
 
 import logging
 
+from teatree.backends.protocols import MessagingBackend
+from teatree.backends.slack_scopes import GRANTED_SCOPES_KEY
 from teatree.core.overlay_loader import get_all_overlays
 
 logger = logging.getLogger(__name__)
+
+
+def assert_slack_scope(backend: MessagingBackend, scope: str) -> None:
+    """Raise ``RuntimeError`` when *backend*'s token lacks *scope*.
+
+    Reads the granted OAuth scopes that ``auth.test`` surfaces from the
+    ``X-OAuth-Scopes`` response header (under
+    :data:`~teatree.backends.slack_bot.GRANTED_SCOPES_KEY`). An overlay's
+    connector-preflight callable wires this so the loop refuses to continue
+    when a required scope (e.g. ``reactions:write``) is missing — rather than
+    discovering ``missing_scope`` mid-tick via a phantom write success.
+    """
+    response = backend.auth_test()
+    if not response.get("ok"):
+        error = response.get("error", "unknown error")
+        msg = f"Slack auth.test failed: {error}"
+        raise RuntimeError(msg)
+    raw = response.get(GRANTED_SCOPES_KEY)
+    granted = [s for s in raw if isinstance(s, str)] if isinstance(raw, list) else []
+    if scope not in granted:
+        msg = (
+            f"Slack token is missing the {scope!r} scope "
+            f"(granted: {', '.join(granted) or 'none'}). "
+            "Re-run `t3 setup slack-user-token` after updating the app manifest."
+        )
+        raise RuntimeError(msg)
 
 
 def run_connector_preflight(overlay_name: str = "") -> None:
@@ -54,4 +82,4 @@ def run_connector_preflight(overlay_name: str = "") -> None:
                 raise SystemExit(msg) from exc
 
 
-__all__ = ["run_connector_preflight"]
+__all__ = ["assert_slack_scope", "run_connector_preflight"]

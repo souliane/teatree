@@ -39,8 +39,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, TypedDict
 
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL as _FAIL_CLOSED_SENTINEL
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
+from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 
 Severity = str  # "high" | "medium"
@@ -252,10 +254,23 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
 
     Smart-quote variants in the input are normalised to ASCII before
     matching so a single regex catches all typographic forms.
+
+    A body the parser could not resolve carries the fail-closed sentinel
+    (``FAIL_CLOSED_SENTINEL``). That sentinel is recognised EXPLICITLY as
+    a HIGH finding rather than relying on it tripping a content pattern —
+    the old wording self-matched ``the-user-said-colon`` and produced a
+    bogus user-quote finding on a body the scanner never saw (#126). The
+    sentinel is excised before content matching so the fail-closed marker
+    text itself can never produce a second, content-shaped finding.
     """
     result = ScanResult()
     if not text:
         return result
+    if _is_fail_closed_sentinel(text):
+        result.findings.append(Finding(name="fail-closed-sentinel", severity=HIGH, excerpt="unresolved body source"))
+        text = text.replace(_FAIL_CLOSED_SENTINEL, "")
+        if not text.strip():
+            return result
     normalized = _normalize_quotes(text)
     for pattern in (*_BUILTIN_PATTERNS, *_load_blocklist_patterns(blocklist_path)):
         match = pattern.regex.search(normalized)
@@ -342,7 +357,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
 def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     """Return True iff the caller explicitly opted out of the gate.
 
-    Two surfaces are accepted. The flag ``--quote-ok`` may appear as a
+    Three surfaces are accepted. The flag ``--quote-ok`` may appear as a
     standalone token in the FIRST shell command segment — any
     ``--quote-ok`` that lives after a command-separator metacharacter
     (``;`` / ``|`` / ``&`` / ``&&`` / ``||`` / literal newline) is part
@@ -351,13 +366,21 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
     (``cmd "x";echo --quote-ok``) so the first-segment rule holds
     regardless of whitespace.
 
-    The env mapping on the tool input may set ``QUOTE_OK=1`` (the
-    harness exposes the env block separately from the command string).
+    ``QUOTE_OK=1`` is honoured from the process environment
+    (``os.environ``) — the documented env escape (#1213 AC §3). The
+    Claude Code PreToolUse payload for a ``Bash`` tool carries NO ``env``
+    block, so the agent's ``QUOTE_OK=1`` lives in the hook subprocess's
+    own environment; reading only ``tool_input["env"]`` meant the
+    documented escape never reached the wrapper and the gate could only
+    be cleared by paraphrasing (#126). ``tool_input["env"]`` is still
+    consulted for any harness build that DOES populate it.
     """
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if "--quote-ok" in _first_segment_words(command):
             return True
+    if os.environ.get("QUOTE_OK", "").strip() == "1":
+        return True
     env = tool_input.get("env") or {}
     return env.get("QUOTE_OK", "").strip() == "1"
 

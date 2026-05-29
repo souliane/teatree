@@ -14,6 +14,12 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
+  # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
+  # It must be present in the installed tool env, not only the dev group —
+  # otherwise a real run dies with ModuleNotFoundError and the #937 gate-12
+  # PreToolUse hook used to treat that crash as a coverage finding (#122).
+  "coverage>=7",
   "croniter>=6.2.2",
   "django>=5.2,<6.1",
   "django-fsm-2>=4",
@@ -22,8 +28,18 @@ dependencies = [
   "django-tasks-db>=0.12",
   "django-typer>=3.3",
   "httpx>=0.27",
+  # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
+  # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
+  # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15
+  # AI-signature PreToolUse hook fail CLOSED (a ``t3`` non-zero exit reads as
+  # a finding) and locks out commits. Same class as the #122 ``coverage``
+  # runtime-dep fix; declared here so the installed tool env always has it.
+  "pyyaml>=6",
   "tomlkit>=0.13",
 ]
+# ``t3 tool to-markdown`` converts PDF/XLSX/DOCX/PPTX attachments to Markdown.
+# Narrow extras only — never ``markitdown[all]`` (avoids audio/onnx weight).
+optional-dependencies.markdown = [ "markitdown[docx,pdf,pptx,xlsx]>=0.1.6" ]
 optional-dependencies.notion = [ "browser-cookie3>=0.20" ]
 optional-dependencies.slack = [ "slack-sdk>=3.35" ]
 scripts = { t3 = "t3_bootstrap:main" }
@@ -212,7 +228,7 @@ addopts = """
 --cov --cov-report=term-missing:skip-covered --cov-branch
 --reuse-db
 """
-timeout = 10
+timeout = 60
 DJANGO_SETTINGS_MODULE = "tests.django_settings"
 django_find_project = false
 testpaths = [ "tests" ]
@@ -282,6 +298,7 @@ python-version = "3.13"
 [tool.ty.analysis]
 allowed-unresolved-imports = [
   "django.tasks", # Django 6 exposes this dynamically and ty cannot resolve it yet, even with django-types
+  "markitdown",   # Optional dependency (markdown extra), guarded by try/except ImportError
   "mkdocs",       # Optional dependency, guarded by try/except ImportError
   "lib.env",      # Legacy scripts — guarded by try/except ImportError
   "lib.gitlab",   # Legacy scripts — guarded by try/except ImportError

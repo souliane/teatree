@@ -108,6 +108,42 @@ class TestStatuslineHook:
         assert "model=Claude Sonnet" in plain
         assert "ctx=41%" in plain
 
+    def test_renders_free_disk_segment_after_ram(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {"session_id": "s-disk", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        match = re.search(r"disk=\d+% \d+G free", plain)
+        assert match is not None, plain
+        # The disk segment follows the RAM segment within the resource group.
+        assert plain.index("ram=") < match.start()
+
+    def test_disk_segment_omitted_when_df_target_unreadable(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        env = os.environ.copy()
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["HOME"] = str(tmp_path / "does-not-exist")
+
+        result = subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": "s-nodisk", "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "disk=" not in _strip_ansi(result.stdout)
+
     def test_appends_pre_rendered_loop_zones_file(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
@@ -140,124 +176,47 @@ class TestStatuslineHook:
         assert result.returncode == 0, result.stderr
         assert "model=Claude Opus" in _strip_ansi(result.stdout)
 
-    def test_renders_cron_jobs_from_state_file(self, tmp_path: Path) -> None:
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        crons = {
-            "jobs": {
-                "job-1": {"name": "tick", "cron": "*/12 * * * *", "cadence": 720, "created_at": 0},
-                "job-2": {"name": "followup", "cron": "*/5 * * * *", "cadence": 300, "created_at": 0},
-            },
-            "wakeup": None,
-        }
-        (state_dir / "s-cron.crons").write_text(json.dumps(crons), encoding="utf-8")
+    def test_header_carries_no_loop_or_tick_fragment(self, tmp_path: Path) -> None:
+        """#130: loop/tick info has exactly one home — the dedicated loop line.
 
-        result = _run(
-            {"session_id": "s-cron", "model": {"display_name": "Claude Opus"}},
-            state_dir=state_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        plain = _strip_ansi(result.stdout)
-        assert "loops:" in plain
-        assert "tick(12m)" in plain
-        assert "followup(5m)" in plain
-
-    def test_renders_schedule_wakeup_countdown(self, tmp_path: Path) -> None:
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        crons = {
-            "jobs": {},
-            "wakeup": {"name": "checking build", "next_epoch": int(time.time()) + 180},
-        }
-        (state_dir / "s-wake.crons").write_text(json.dumps(crons), encoding="utf-8")
-
-        result = _run(
-            {"session_id": "s-wake", "model": {"display_name": "Claude Opus"}},
-            state_dir=state_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        plain = _strip_ansi(result.stdout)
-        assert "loops:" in plain
-        assert "checking build" in plain
-
-    def test_future_wakeup_renders_normally(self, tmp_path: Path) -> None:
-        """A wakeup whose epoch is in the future renders with its countdown."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        crons = {
-            "jobs": {},
-            "wakeup": {"name": "future build", "next_epoch": int(time.time()) + 600},
-        }
-        (state_dir / "s-future.crons").write_text(json.dumps(crons), encoding="utf-8")
-
-        result = _run(
-            {"session_id": "s-future", "model": {"display_name": "Claude Opus"}},
-            state_dir=state_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        plain = _strip_ansi(result.stdout)
-        assert "loops:" in plain
-        assert "future build" in plain
-
-    def test_expired_wakeup_beyond_grace_not_rendered_as_live(self, tmp_path: Path) -> None:
-        """A wakeup overdue beyond the grace window is stale — not a live '→now'.
-
-        Anti-vacuous: reverting the staleness guard makes this assertion fail
-        because the unguarded `else` branch would print "stale build→now".
+        Even with a populated ``.crons`` state file and a ``tick-meta.json``
+        next-tick epoch present, the header this hook builds must carry NO
+        ``loops:`` / ``tick→`` / wakeup fragment. The single loop line is
+        rendered by the fat loop into the zones file (``live_loops_anchor``)
+        and cat'd verbatim — duplicating it in the header is the pollution
+        the dashboard rework removed.
         """
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         crons = {
-            "jobs": {},
-            # ~4h overdue — a long-finished wakeup that never got cleared.
-            "wakeup": {"name": "stale build", "next_epoch": int(time.time()) - 14400},
+            "jobs": {"job-1": {"name": "tick", "cron": "*/12 * * * *", "cadence": 720, "created_at": 0}},
+            "wakeup": {"name": "checking build", "next_epoch": int(time.time()) + 180},
         }
-        (state_dir / "s-stale.crons").write_text(json.dumps(crons), encoding="utf-8")
+        (state_dir / "s-no-loop.crons").write_text(json.dumps(crons), encoding="utf-8")
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("loop running · tick 11m\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(
+            json.dumps({"next_epoch": int(time.time()) + 120, "cadence": 720, "freshness": {}}),
+            encoding="utf-8",
+        )
 
         result = _run(
-            {"session_id": "s-stale", "model": {"display_name": "Claude Opus"}},
+            {"session_id": "s-no-loop", "model": {"display_name": "Claude Opus"}},
             state_dir=state_dir,
+            statusline_file=statusline_file,
         )
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "stale build" not in plain
-        assert "stale build→now" not in plain
-
-    def test_recently_overdue_wakeup_within_grace_still_shows_now(self, tmp_path: Path) -> None:
-        """A wakeup ~30s overdue is a real imminent fire — still shows 'now'."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        crons = {
-            "jobs": {},
-            "wakeup": {"name": "imminent build", "next_epoch": int(time.time()) - 30},
-        }
-        (state_dir / "s-imminent.crons").write_text(json.dumps(crons), encoding="utf-8")
-
-        result = _run(
-            {"session_id": "s-imminent", "model": {"display_name": "Claude Opus"}},
-            state_dir=state_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        plain = _strip_ansi(result.stdout)
-        assert "loops:" in plain
-        assert "imminent build→now" in plain
-
-    def test_omits_loops_when_no_crons_file(self, tmp_path: Path) -> None:
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-
-        result = _run(
-            {"session_id": "s-none", "model": {"display_name": "Claude Opus"}},
-            state_dir=state_dir,
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert "loops:" not in _strip_ansi(result.stdout)
+        header = plain.splitlines()[0]
+        assert "loops:" not in header, header
+        assert "tick→" not in header, header
+        assert "tick(" not in header, header
+        assert "checking build" not in header, header
+        # The one loop line (from the zones file) is still cat'd verbatim.
+        assert "loop running · tick 11m" in plain, plain
+        # And it appears exactly once.
+        assert plain.count("loop running") == 1, plain
 
     def test_no_session_id_emits_no_skills_section(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"

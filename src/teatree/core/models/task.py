@@ -43,6 +43,11 @@ class Task(models.Model):
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
+    # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
+    # checked via an atomic conditional UPDATE before verifying its artifact,
+    # so two concurrent ticks never double-verify (or double-complete) the
+    # same task. Null = never swept.
+    last_sweep_check_ts = models.DateTimeField(null=True, blank=True)
 
     objects = TaskManager()
 

@@ -17,9 +17,12 @@ The parser walks a Bash command string in two passes:
     command segment and pull out body-flag values, heredoc-style content,
     and attached short-option payloads (``-d'{...}'``).
 
-Indirect body sources we cannot inspect (``gh api --input -``, missing
-files, opaque ``-d @file`` references) fail closed via a sentinel
-string that downstream scanning treats as a HIGH match.
+Indirect body sources we cannot inspect (``gh api --input -``, opaque
+``-d @file`` references, a missing ``git commit -F`` message file) fail
+closed via a sentinel string that downstream scanning treats as a HIGH
+match. A missing ``gh``/``glab`` ``--body-file`` is the one exception:
+an absent drafted PR/issue body is "needs-inline", not a leak, so it
+contributes no payload rather than a fail-closed HIGH (#126).
 """
 
 import json
@@ -85,9 +88,26 @@ _T3_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
 # Sentinel string that downstream scanning treats as a HIGH match. Any
 # indirect or undecodable body source surfaces this so the gate fails
 # closed (codex CRITICAL #5 round 1, codex round-2 #4).
-FAIL_CLOSED_SENTINEL: Final[str] = (
-    "the user said: pre-publish quote-scanner could not parse a body source — fail closed"
-)
+#
+# The wording must NOT itself match any quote-scanner HIGH pattern,
+# otherwise the gate self-matches its own injected sentinel and reports
+# a bogus user-quote finding on a body it never actually saw (#126: the
+# old "the user said: …" phrasing tripped ``the-user-said-colon``). The
+# sentinel is recognised explicitly by :func:`is_fail_closed_sentinel`
+# so a scanner can fail closed on a NAMED reason instead of an
+# accidental content-pattern self-match.
+FAIL_CLOSED_SENTINEL: Final[str] = "[teatree-gate] pre-publish scanner could not resolve a body source; failing closed"
+
+
+def is_fail_closed_sentinel(text: str) -> bool:
+    """Return True iff ``text`` carries the injected fail-closed sentinel.
+
+    Callers fail closed on a NAMED reason rather than rely on the
+    sentinel accidentally tripping a content pattern (#126). The sentinel
+    can be one of several concatenated payload fragments, so a substring
+    test is used rather than equality.
+    """
+    return FAIL_CLOSED_SENTINEL in text
 
 
 def normalize_for_substring_match(command: str) -> str:
@@ -129,6 +149,37 @@ _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
     r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
     re.DOTALL,
 )
+
+# A redirect (``> path`` / ``>| path`` / ``>> path``) that writes a
+# heredoc body to a file, e.g. ``cat > /tmp/msg.txt <<'EOF' … EOF``. The
+# common agent idiom is to write a commit message to a temp file and
+# then ``git commit -F /tmp/msg.txt`` — at PreToolUse scan time that file
+# does NOT exist yet (the hook runs BEFORE the command), so the only
+# place the body lives is the in-command heredoc. This regex pairs the
+# redirect target path with the heredoc delimiter so :func:`extract_bash_payload`
+# can resolve a ``-F <path>`` reference to the body the command is about
+# to write there (#126).
+_HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    re.DOTALL,
+)
+
+
+def _heredoc_file_bodies(command: str) -> dict[str, str]:
+    """Map each ``> path <<EOF … EOF`` redirect target to its heredoc body.
+
+    Resolves the agent idiom of writing a body to a temp file and then
+    referencing it via ``git commit -F <path>``. The path is normalised
+    (surrounding quotes stripped) so a quoted redirect target matches the
+    later bare ``-F`` reference (#126).
+    """
+    bodies: dict[str, str] = {}
+    for match in _HEREDOC_TO_FILE_RE.finditer(command):
+        raw_path = match.group("path")
+        path = raw_path.strip("'\"")
+        bodies[path] = match.group("body")
+    return bodies
+
 
 # Per-command argument-walker dispatch tables --------------------------
 
@@ -295,50 +346,82 @@ def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _walk_body_file_flags(words: list[str], payloads: list[str], *, is_git: bool) -> None:
+def _walk_body_file_flags(
+    words: list[str], payloads: list[str], *, is_git: bool, heredoc_files: dict[str, str]
+) -> None:
     """Extract ``--body-file``/``--file``/``-F`` style file payloads.
 
     The git-style ``-F <path>`` form is a file reference ONLY for the
     ``git`` command (codex round-3 #6 — ``gh api -F body=x`` is a field
     assignment, NOT a file reference). The ``is_git`` flag scopes the
     short-form ``-F`` reader.
+
+    ``heredoc_files`` maps a path written by a ``> path <<EOF … EOF``
+    redirect earlier in the same command to its body, so a ``-F <path>``
+    reference resolves to the in-command heredoc when the file does not
+    exist on disk yet (#126).
     """
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=False)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = _attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=False)
                 break
         if attached is not None:
             i += 1
             continue
         if is_git and word == "-F" and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=True)
             i += 2
             continue
         if is_git:
             attached = _attached_value(word, "-F")
             if attached is not None:
-                _append_file_payload(attached, payloads)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=True)
                 i += 1
                 continue
         i += 1
 
 
-def _append_file_payload(path: str, payloads: list[str]) -> None:
+def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str, str], *, fail_closed: bool) -> None:
+    """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
+
+    Resolution order: the on-disk file, then an in-command heredoc that
+    writes to that path (``cat > path <<EOF … EOF``), then the
+    ``fail_closed`` branch. The heredoc fallback closes the #126 false
+    positive where a body written to a temp file and committed via ``-F``
+    in the same command was unreadable at PreToolUse scan time (the hook
+    runs BEFORE the file is created).
+
+    ``fail_closed`` selects what an unresolvable path does:
+
+    * ``True`` (``git commit -F <path>``) — append the fail-closed
+        sentinel. A commit message cannot be amended post-push without a
+        force-push we do not permit, so an unreadable commit-message file
+        must hard-block, matching the #1207 rationale.
+    * ``False`` (``gh``/``glab`` ``--body-file`` / ``--description-file``
+        / ``--file``) — append NOTHING. A drafted PR/issue body file that
+        does not exist at scan time is "needs-inline", not a leak: there
+        is nothing to scan, and a public post that genuinely carries a
+        quote still reaches the gate via its inline ``--body`` text.
+        Treating an absent draft file as a HIGH match denied every such
+        publish (#126).
+    """
     content = _read_file_arg(path)
     if content is None:
-        payloads.append(FAIL_CLOSED_SENTINEL)
-    else:
+        content = heredoc_files.get(path)
+    if content is not None:
         payloads.append(content)
+    elif fail_closed:
+        payloads.append(FAIL_CLOSED_SENTINEL)
 
 
 def _handle_api_input(arg: str, payloads: list[str]) -> None:
@@ -412,7 +495,7 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
     return first, second
 
 
-def _walk_command_segment(segment: list[Token], payloads: list[str]) -> None:
+def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_files: dict[str, str]) -> None:
     """Route a single command segment to the right argument walkers."""
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
@@ -421,7 +504,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str]) -> None:
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads)
-    _walk_body_file_flags(words, payloads, is_git=(first == "git"))
+    _walk_body_file_flags(words, payloads, is_git=(first == "git"), heredoc_files=heredoc_files)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, payloads)
@@ -443,12 +526,15 @@ def extract_bash_payload(command: str) -> str:
     right per-command argument walker.
 
     Indirect body sources (``gh api --input -``, missing files, opaque
-    ``-d @file`` references) fail closed via the sentinel.
+    ``-d @file`` references) fail closed via the sentinel. A ``-F <path>``
+    reference whose file is written by a ``> path <<EOF … EOF`` redirect
+    in the same command resolves to that heredoc body instead (#126).
     """
     parts: list[str] = []
+    heredoc_files = _heredoc_file_bodies(command)
     tokens = tokenize(command)
     for segment in split_commands(tokens):
-        _walk_command_segment(segment, parts)
+        _walk_command_segment(segment, parts, heredoc_files)
     # Heredocs still need to be parsed against the raw command — the
     # lexer treats them as regular content since heredoc bodies live on
     # subsequent physical lines. The regex below tolerates that shape.

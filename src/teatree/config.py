@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.paths import DATA_DIR, get_data_dir
+from teatree.types import SlackVoiceClassifierMode
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
@@ -153,6 +154,24 @@ def _parse_excluded_skills(raw: object) -> list[str]:
     return [str(s) for s in raw] if isinstance(raw, list) else []
 
 
+_DEFAULT_DISK_CACHE_ALLOWLIST = ("~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes")
+
+
+def _parse_disk_cache_allowlist(raw: object) -> list[str]:
+    """Coerce the disk cache allow-list, falling back to the regenerable-cache default.
+
+    A missing key (``None``) yields the curated default set of regenerable
+    caches; an explicit list (even empty) is honoured verbatim so a user can
+    narrow the allow-list to nothing. Non-list scalars degrade to the default
+    rather than raising.
+    """
+    if raw is None:
+        return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
+    if not isinstance(raw, list):
+        return list(_DEFAULT_DISK_CACHE_ALLOWLIST)
+    return [str(s) for s in raw]
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -202,8 +221,27 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "resource_pressure_disabled": bool,
+    "resource_pressure_cadence_minutes": int,
+    "resource_pressure_min_free_interval_minutes": int,
+    "disk_warn_free_gb": float,
+    "disk_crit_free_gb": float,
+    "ram_warn_avail_gb": float,
+    "ram_crit_avail_gb": float,
+    "disk_cache_allowlist": _parse_excluded_skills,
+    "allow_destructive_disk": bool,
+    "worktree_stale_days": int,
+    "max_worktree_gc_per_tick": int,
+    "allow_destructive_ram": bool,
+    "ram_kill_allowlist": _parse_excluded_skills,
+    "todo_sweep_disabled": bool,
+    "todo_sweep_recheck_interval_hours": int,
+    "max_concurrent_local_stacks": int,
+    "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
+    "review_nag_enabled": bool,
+    "orchestrator_bash_gate_enabled": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -383,6 +421,82 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # #128 Resource-pressure scanner — teatree-controlled auto-free before
+    # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
+    # (``os.statvfs`` for disk, ``vm_stat`` reclaimable pages for RAM) — never
+    # percent-of-nominal (the APFS shared-container total and macOS "99 % RAM
+    # used" both mislead). Monitoring + regenerable-cache purge are on by
+    # default; every irreversible lever (worktree GC, process SIGTERM) is
+    # flag-gated OFF. ``resource_pressure_disabled = true`` is the durable
+    # kill-switch (mirrors ``self_update_disabled``): the scanner is never
+    # wired. All knobs are per-overlay overridable.
+    resource_pressure_disabled: bool = False
+    resource_pressure_cadence_minutes: int = 5
+    resource_pressure_min_free_interval_minutes: int = 30
+    disk_warn_free_gb: float = 25.0
+    disk_crit_free_gb: float = 10.0
+    ram_warn_avail_gb: float = 3.0
+    ram_crit_avail_gb: float = 1.5
+    # Allow-LIST only (never a denylist): exactly these regenerable cache dirs
+    # are auto-purged at CRITICAL. ``uv`` is handled via ``uv cache prune``.
+    # ``~/.cache/prek`` and ``~/.claude/projects`` are deliberately absent —
+    # the latter is hard-protected even if a user adds it.
+    disk_cache_allowlist: list[str] = field(
+        default_factory=lambda: ["~/.cache/pre-commit", "~/.cache/puppeteer", "~/.cache/codex-runtimes"],
+    )
+    # Opt-in: enables stale-worktree GC (clean + fully pushed + unmodified
+    # ``worktree_stale_days``) at CRITICAL, capped at
+    # ``max_worktree_gc_per_tick`` per pass and never the active session's
+    # worktree. Always logged + DM.
+    allow_destructive_disk: bool = False
+    worktree_stale_days: int = 30
+    max_worktree_gc_per_tick: int = 3
+    # Opt-in: enables SIGTERM (never SIGKILL) of allow-listed renderer
+    # processes after >= 2 consecutive CRITICAL-RAM ticks, never a process in
+    # the active-session ancestry. Empty ``ram_kill_allowlist`` means no
+    # process is ever killed even when ``allow_destructive_ram = true``.
+    allow_destructive_ram: bool = False
+    ram_kill_allowlist: list[str] = field(default_factory=list)
+    # #129 TODO-sweep scanner — per-overlay; verifies open Task rows against
+    # their artifact's terminal state (issue closed / PR merged) and completes
+    # only on durable proof, never in bulk and never on a stale read. On by
+    # default; ``todo_sweep_disabled = true`` is the escape hatch.
+    # ``todo_sweep_recheck_interval_hours`` is the per-task anti-thrash window
+    # (a task swept within it is skipped this tick) and the idempotency window
+    # for the atomic ``last_sweep_check_ts`` stamp.
+    todo_sweep_disabled: bool = False
+    todo_sweep_recheck_interval_hours: int = 1
+    # #1397 Cap on concurrent locally-running stacks for a single overlay.
+    # Each running worktree (``services_up``/``ready``) holds docker
+    # containers, browsers, language servers, and CI processes — on a
+    # memory-constrained host (one OOM observed 2026-05-27 when two stacks
+    # ran in parallel), one stack at a time is the workable limit. The
+    # ``t3 <overlay> worktree start`` / ``workspace start`` gate refuses to
+    # advance a second stack into ``SERVICES_UP`` while another is already
+    # there, naming the blockers and pointing at ``worktree teardown``.
+    # Default ``0`` keeps the legacy unbounded behaviour so the gate is
+    # opt-in; set ``1`` (or any positive integer) to enforce the cap.
+    # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
+    # cheap dogfood overlay stays unbounded.
+    max_concurrent_local_stacks: int = 0
+    # #1395 Slack voice/token mismatch classifier. The pre-publish gate
+    # between ``chat.postMessage`` and the Slack API refuses (or warns)
+    # when the body's voice ("PR merged" / "evidence" → agent vs "please
+    # review" / "RR for" → user) and the token kind it would go out under
+    # (``xoxp-`` = user, ``xoxb-`` = bot) disagree on a confident case
+    # (the recurrence: agent-voice DM via the personal token to the user's
+    # own DM channel, which Slack does not notify on). ``warn`` is the
+    # backward-compat default — log the mismatch but allow the post;
+    # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
+    # ``off`` disables the classifier entirely.
+    slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
+    # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
+    # ``namespace/repo``: when an MR/PR target repo matches one of these
+    # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
+    # the trailer line is silently stripped before publishing. Default
+    # empty preserves legacy behaviour. Parsed from
+    # ``[teatree.publish_gates] ban_close_trailers_on_namespaces``.
+    ban_close_trailers_on_namespaces: list[str] = field(default_factory=list)
     # Pull-main-clone scanner — fast-forwards each work-repo *main clone*
     # under ``$T3_WORKSPACE_DIR`` to ``origin/<default>`` once the cadence
     # has elapsed, so a clone never drifts behind after a merge and
@@ -392,6 +506,23 @@ class UserSettings:
     # per-overlay) as the escape hatch.
     pull_main_clone_disabled: bool = False
     pull_main_clone_cadence_hours: int = 1
+    # Fibonacci review-channel nag scanner (#1038). Ships DISABLED: a
+    # concurrent-tick race on ``ReviewRequestPost.last_nag_step`` let two
+    # sessions double-post bump replies into the colleague review channel,
+    # including against already-merged MRs. Re-enable per-overlay via
+    # ``[overlays.<name>].review_nag_enabled = true`` only after the
+    # concurrency + merged-MR fixes are validated.
+    review_nag_enabled: bool = False
+    # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
+    # enabled (default), the main agent is blocked from running a HEAVY /
+    # long-running foreground Bash command (test suite, build, dev
+    # server, long sleep, full-tree sweep); ``run_in_background: true`` is
+    # the escape hatch and sub-agents are unrestricted. The one-line
+    # kill-switch ``[teatree] orchestrator_bash_gate_enabled = false``
+    # disables the gate entirely (also read directly by the hook layer's
+    # ``_orchestrator_bash_gate_enabled`` so a `t3 update` that reinstalls
+    # the gate stays off until the user flips it back).
+    orchestrator_bash_gate_enabled: bool = True
 
 
 @dataclass
@@ -420,6 +551,12 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
 
     on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
+
+    publish_gates = teatree.get("publish_gates", {}) if isinstance(teatree, dict) else {}
+    raw_ban = publish_gates.get("ban_close_trailers_on_namespaces", []) if isinstance(publish_gates, dict) else []
+    ban_close_trailers_on_namespaces = (
+        [str(p) for p in raw_ban if isinstance(p, str) and p] if isinstance(raw_ban, list) else []
+    )
 
     user = UserSettings(
         workspace_dir=workspace_dir,
@@ -458,11 +595,56 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        resource_pressure_disabled=bool(teatree.get("resource_pressure_disabled", False)),
+        resource_pressure_cadence_minutes=int(teatree.get("resource_pressure_cadence_minutes", 5)),
+        resource_pressure_min_free_interval_minutes=int(
+            teatree.get("resource_pressure_min_free_interval_minutes", 30),
+        ),
+        disk_warn_free_gb=float(teatree.get("disk_warn_free_gb", 25.0)),
+        disk_crit_free_gb=float(teatree.get("disk_crit_free_gb", 10.0)),
+        ram_warn_avail_gb=float(teatree.get("ram_warn_avail_gb", 3.0)),
+        ram_crit_avail_gb=float(teatree.get("ram_crit_avail_gb", 1.5)),
+        disk_cache_allowlist=_parse_disk_cache_allowlist(teatree.get("disk_cache_allowlist")),
+        allow_destructive_disk=bool(teatree.get("allow_destructive_disk", False)),
+        worktree_stale_days=int(teatree.get("worktree_stale_days", 30)),
+        max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
+        allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
+        ram_kill_allowlist=_parse_excluded_skills(teatree.get("ram_kill_allowlist", [])),
+        todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
+        todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
+        max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
+        slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
+        ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
+        review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
+        orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
+
+
+def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceClassifierMode:
+    """Resolve ``slack_voice_classifier_mode`` from ``[teatree]`` (#1395).
+
+    Accepts either a flat key ``[teatree] slack_voice_classifier_mode``
+    or a nested ``[teatree.publish_gates] slack_voice_classifier_mode``
+    (the table the issue brief sketches for grouping future
+    pre-publish gates). The flat key wins when both are present;
+    falling back through the nested table then to the conservative
+    default keeps the backward-compat upgrade path clean — existing
+    configs that don't know about the gate inherit ``WARN`` (log the
+    mismatch, allow the post) rather than ``STRICT`` (refuse).
+    """
+    flat = teatree.get("slack_voice_classifier_mode")
+    if flat is not None:
+        return SlackVoiceClassifierMode.parse(flat)
+    nested = teatree.get("publish_gates")
+    if isinstance(nested, dict):
+        scoped = nested.get("slack_voice_classifier_mode")
+        if scoped is not None:
+            return SlackVoiceClassifierMode.parse(scoped)
+    return SlackVoiceClassifierMode.WARN
 
 
 def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:

@@ -4,6 +4,8 @@ import json
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import teatree.backends.github as github_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import (
@@ -155,6 +157,48 @@ class TestFetchProjectItems:
         with patch.object(github_mod, "_gh_graphql", return_value={"data": {"user": {}}}):
             items = fetch_project_items("testuser", 1)
         assert items == []
+
+    @pytest.mark.parametrize(
+        "graphql_response",
+        [
+            {"data": {"user": None}},
+            {"data": {"user": {"projectV2": None}}},
+            {"data": {"user": {"projectV2": {"items": None}}}},
+            {"data": {"user": {"projectV2": {"items": {"nodes": None}}}}},
+            {"data": None},
+        ],
+    )
+    def test_returns_empty_when_graphql_hop_is_null(self, graphql_response: dict[str, object]) -> None:
+        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+            items = fetch_project_items("testuser", 1)
+        assert items == []
+
+    def test_handles_null_labels_block(self) -> None:
+        graphql_response = {
+            "data": {
+                "user": {
+                    "projectV2": {
+                        "items": {
+                            "nodes": [
+                                {
+                                    "fieldValueByName": {"name": "Todo"},
+                                    "content": {
+                                        "number": 7,
+                                        "title": "No labels block",
+                                        "url": "https://github.com/org/repo/issues/7",
+                                        "labels": None,
+                                    },
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+            items = fetch_project_items("testuser", 1)
+        assert len(items) == 1
+        assert items[0].labels == []
 
     def test_skips_non_dict_nodes(self) -> None:
         graphql_response = {"data": {"user": {"projectV2": {"items": {"nodes": [None, "invalid"]}}}}}

@@ -1,5 +1,6 @@
 """``t3 review-request`` — batch review request commands."""
 
+import os
 from pathlib import Path
 
 import typer
@@ -35,6 +36,41 @@ def _active_project() -> tuple[Path, str]:
     return project, (active.name if active else "")
 
 
+def _overlay_name_for_mr(mr_url: str) -> str:
+    """Resolve the overlay that owns *mr_url* for a review-request dispatch.
+
+    Prefers the cwd/env resolution of :func:`_active_project` (``T3_OVERLAY_NAME``
+    env, then cwd-``manage.py`` dev fallback, then the single configured
+    overlay). When that yields no overlay — the common case when ``t3`` is
+    run from a clone whose directory name is not an overlay name (e.g. the
+    teatree clone) on a multi-overlay install — fall back to inferring the
+    owner from the MR URL via :func:`infer_overlay_for_url`.
+
+    Without this fallback the dispatch ran with an empty ``T3_OVERLAY_NAME``,
+    so the command subprocess hit ``get_overlay()``'s multi-overlay
+    ambiguity, ``resolve_guard_target()`` returned ``None``, and every
+    cross-overlay review request suppressed with
+    ``no_review_channel_or_token`` regardless of cwd (#1471).
+
+    Inference instantiates the registered overlays, so it needs the Django
+    app registry. The ``review-request`` Typer group is otherwise
+    Django-free (it only dispatches to a ``python -m teatree`` subprocess),
+    so ``django.setup()`` is run here — idempotent — before inferring,
+    matching the other DB-touching CLI wrappers.
+    """
+    _, overlay_name = _active_project()
+    if overlay_name:
+        return overlay_name
+
+    import django  # noqa: PLC0415
+
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+    django.setup()
+    return infer_overlay_for_url(mr_url)
+
+
 @review_request_app.command()
 def discover() -> None:
     """Discover open merge requests awaiting review."""
@@ -53,7 +89,7 @@ def check(mr_url: str = typer.Option(..., "--mr-url", help="Canonical MR/PR URL 
     ``ReviewRequestPost`` claim (``peek_should_post_review_request``), so
     it can never leave an orphan that wedges a later real post (#1103).
     """
-    _, overlay_name = _active_project()
+    overlay_name = _overlay_name_for_mr(mr_url)
     managepy_core("review_request_check", "--mr-url", mr_url, overlay_name=overlay_name)
 
 
@@ -70,7 +106,7 @@ def post(
     the only way to satisfy it), then the post. Refuses with the exact
     ``approve-on-behalf`` remediation when no recorded approval matches.
     """
-    _, overlay_name = _active_project()
+    overlay_name = _overlay_name_for_mr(mr_url)
     extra = ("--title", title) if title else ()
     managepy_core(
         "review_request_post",

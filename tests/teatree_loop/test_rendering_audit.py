@@ -98,14 +98,16 @@ class TestActiveTicketAnchors:
         )
         text = _blob(zones.anchors)
         assert "[teatree]" in text
-        # Terse format drops the ``state:`` prefix — all surviving actively-
-        # shipping items appear on the same line as bare ``#N`` tokens.
+        # All surviving actively-shipping items appear on ONE line per
+        # overlay, grouped by FSM state.
         assert "#10" in text
         assert "#11" in text
         assert "#12" in text
-        # State-group prefix dropped (#1377).
-        assert "coded:" not in text
-        assert "started:" not in text
+        # #130 restores the FSM ``state:`` group label (#1377 had dropped
+        # it); tickets group by status, ordered by state priority.
+        assert "coded:" in text
+        assert "started:" in text
+        assert text.index("started:") < text.index("coded:"), text
         # One line per overlay.
         assert text.count("[teatree]") == 1
 
@@ -237,13 +239,13 @@ class TestInflightPrRows:
         text = _blob(zones.in_flight)
         assert text.count("!123") == 1, repr(text)
 
-    def test_in_flight_pr_failed_annotation_renders_once(self) -> None:
+    def test_in_flight_pr_failed_renders_bare_chip_no_annotation(self) -> None:
+        """Per #1377 the chip is bare ``!N`` — ``(pipeline failed)`` removed."""
         zones = zones_for([_my_pr(456, zone="action_needed", status="failed")], colorize=False)
         text = _blob(zones.action_needed)
-        # #1156: NO_COLOR renders ``!N <url>`` plus the annotation chunk.
         assert "!456" in text, repr(text)
-        assert "(pipeline failed)" in text, repr(text)
-        assert text.count("(pipeline failed)") == 1, repr(text)
+        # Annotation decoration removed by #1377.
+        assert "(pipeline failed)" not in text, repr(text)
 
 
 class TestNoRunningTasksLine(django.test.TestCase):

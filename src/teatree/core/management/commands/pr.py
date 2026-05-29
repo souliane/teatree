@@ -158,6 +158,7 @@ class Command(TyperCommand):
         title: str = "",
         dry_run: bool = False,
         skip_validation: bool = False,
+        skip_mr_format_check: bool = False,
         skip_visual_qa: str = "",
         sync: bool = False,
     ) -> (
@@ -189,6 +190,12 @@ class Command(TyperCommand):
 
         ``--title`` overrides the PR title (default: last commit subject).
         Stored on ``ticket.extra['pr_title_override']`` so the ship reads it.
+
+        ``--skip-validation`` skips the heavy ship gates (visual QA, branch
+        currency, FSM phase check) but STILL runs the cheap MR
+        title/description format check. ``--skip-mr-format-check`` is the
+        separate, explicit opt-in that disables that format check too — needed
+        only in the rare case where a non-canonical title must ship anyway.
         """
         try:
             ticket = resolve_ticket(ticket_id)
@@ -245,6 +252,15 @@ class Command(TyperCommand):
             # FSM must follow the authorization or ship() is structurally
             # impossible from a non-REVIEWED state (#748).
             reconcile_fsm_for_ship(ticket)
+            # --skip-validation skips the HEAVY gates (visual QA, branch
+            # currency, FSM phase check) — but NOT the cheap, deterministic
+            # MR title/description format check. A non-compliant title must
+            # not slip onto GitLab via the bypass; only the explicit
+            # --skip-mr-format-check opt-in disables the format check too.
+            if not skip_mr_format_check:
+                format_error = validate_pr_metadata(ticket, worktree)
+                if format_error is not None:
+                    return format_error
 
         return _dispatch_ship(ticket, worktree, title=title, dry_run=dry_run, sync=sync)
 

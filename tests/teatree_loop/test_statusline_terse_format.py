@@ -1,15 +1,14 @@
-"""Statusline terse-format anchor row (#1377).
+"""Statusline terse-format anchor row (#1377 item shape, #130 state labels).
 
-The anchor "what am I working on" line for an overlay must stay terse:
-only ``started`` state surfaces (``not_started`` and ``in_review`` are
-filtered out — the in-flight zone surfaces in-review work via PR/MR
-chips, and the not_started backlog is not user-actionable from the
-statusline).
+The anchor "what am I working on" line for an overlay stays terse:
+``not_started`` and ``in_review`` are filtered out — the in-flight zone
+surfaces in-review work via PR/MR chips, and the not_started backlog is
+not user-actionable from the statusline.
 
-With only one state surviving, the state-group prefix (``started:``)
-is also dropped — the line collapses to the bare canonical shape
-``[overlay] #N (title) !M1 !M2 …`` which matches the user-spec
-``[overlay] #ticket (2-3 word topic !MR1 !MR2 …)``.
+The per-item shape is the terse #1377 form ``#N (2-3 word topic !MR1
+!MR2 …)``. #130 restores the FSM ``state:`` group label that #1377 had
+dropped, so the line reads ``[overlay] started: #N (topic !chips)`` —
+grouping tickets by status was the user's explicit, latest requirement.
 """
 
 import re
@@ -78,10 +77,10 @@ class TestInReviewDroppedFromAnchor:
         assert "in_review" in _NOISE_STATES
 
 
-class TestStartedStateRendersBareCanonicalShape:
-    """With only ``started`` surviving the state filter, the state-group prefix is dropped."""
+class TestStartedStateRendersStateLabelledCanonicalShape:
+    """The FSM ``state:`` group label prefixes the terse canonical item (#130)."""
 
-    def test_started_anchor_has_no_state_prefix(self, tmp_path: Path) -> None:
+    def test_started_anchor_has_state_prefix(self, tmp_path: Path) -> None:
         zones = zones_for(
             [_ticket_action("8495", "started", overlay="acme", title="extra margin")],
             colorize=False,
@@ -89,11 +88,11 @@ class TestStartedStateRendersBareCanonicalShape:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "started:" not in body, repr(body)
+        assert "started:" in body, repr(body)
         assert "#8495" in body, repr(body)
         assert "(extra margin)" in body, repr(body)
 
-    def test_anchor_line_matches_terse_format_regex(self, tmp_path: Path) -> None:
+    def test_anchor_line_matches_state_labelled_format_regex(self, tmp_path: Path) -> None:
         zones = zones_for(
             [_ticket_action("8495", "started", overlay="acme", title="extra margin")],
             colorize=True,
@@ -107,9 +106,9 @@ class TestStartedStateRendersBareCanonicalShape:
         visible = re.sub(r"\x1b\]8;[^\x07\x1b]*(?:\x1b\\|\x07)", "", visible)
         anchor_lines = [line for line in visible.splitlines() if line.startswith("[acme]") and "#" in line]
         assert anchor_lines, repr(visible)
-        pattern = re.compile(r"^\[[^\]]+\] #\d+ \(.+\)$")
+        pattern = re.compile(r"^\[[^\]]+\] started: #\d+ \(.+\)$")
         for line in anchor_lines:
-            assert pattern.match(line), f"line {line!r} does not match terse format"
+            assert pattern.match(line), f"line {line!r} does not match state-labelled terse format"
 
 
 class TestOnlyOneAnchorLinePerOverlay:

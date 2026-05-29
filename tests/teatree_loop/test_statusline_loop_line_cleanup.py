@@ -86,7 +86,7 @@ class TestPerLoopRelativeTicks:
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop · my-prs · tickets"], repr(lines)
+        assert lines == ["loop running · my-prs · tickets"], repr(lines)
 
     def test_empty_when_no_loops_live(self) -> None:
         with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):

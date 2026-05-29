@@ -195,3 +195,7 @@ def main(  # noqa: PLR0913, PLR0917
         ts = idx * interval if not scene_detect else -1
         ts_str = f" ({ts:.1f}s)" if ts >= 0 else ""
         print(f"  {f}{ts_str}")
+
+
+if __name__ == "__main__":
+    app()

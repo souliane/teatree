@@ -573,7 +573,8 @@ def test_zones_groups_prs_per_overlay_on_one_line() -> None:
     assert "!7370" in text
 
 
-def test_zones_pr_annotations_show_notes_and_failures() -> None:
+def test_zones_pr_chips_are_bare_no_annotation_decoration() -> None:
+    """Per #1377 the chip is just the number — no ``(N notes)`` / ``(pipeline …)``."""
     from teatree.loop.dispatch import DispatchAction  # noqa: PLC0415
     from teatree.loop.rendering import zones_for as _zones_for  # noqa: PLC0415
 
@@ -593,11 +594,11 @@ def test_zones_pr_annotations_show_notes_and_failures() -> None:
     ]
     zones = _zones_for(actions)
     text = zones.action_needed[0] if isinstance(zones.action_needed[0], str) else zones.action_needed[0].text
-    # #1156: NO_COLOR puts the URL between the iid and annotation chunks.
     assert "!330" in text
-    assert "(7 notes)" in text
     assert "!99" in text
-    assert "(pipeline failed)" in text
+    # The annotation chunks are gone — bare chips only.
+    assert "(7 notes)" not in text, repr(text)
+    assert "(pipeline failed)" not in text, repr(text)
 
 
 def test_active_tickets_shown_in_anchors() -> None:
@@ -881,7 +882,8 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     run_tick(TickRequest(backends=backends), statusline_path=statusline, colorize=False)
     contents = statusline.read_text(encoding="utf-8")
     assert "[teatree]" in contents
-    assert "!545" in contents
+    # GitHub PR URL → ``#545`` chip glyph (#1377). GitLab URLs use ``!``.
+    assert "#545" in contents
 
 
 def test_repos_from_toml_extracts_path_and_workspace_repos(
@@ -1067,8 +1069,9 @@ def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
     zones = zones_for(actions)
     rendered = "\n".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
     assert "!371" in rendered
-    assert "review" in rendered
     assert "[acme]" in rendered
+    # #1377: the chip is bare — no ``(review)`` annotation suffix.
+    assert "(review)" not in rendered, repr(rendered)
 
 
 class TestLoopOwnerAnchorWiring(django.test.TestCase):
@@ -1086,13 +1089,13 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
             # A live LoopLease row surfaces in the consolidated loop line
-            # — ``loop · <name> <Nm> · …`` — at the top of the statusline,
-            # listing each live loop by its short name. The pre-refit
-            # one-line-per-loop dump (``loop:owner``, ``loop:tick``, …) and
-            # the later useless ``N loops live`` count were both removed at
-            # the user's explicit request.
+            # — ``loop running · <name> <Nm> · …`` — at the top of the
+            # statusline, listing each live loop by its short name. The
+            # pre-refit one-line-per-loop dump (``loop:owner``,
+            # ``loop:tick``, …) and the later useless ``N loops live`` count
+            # were both removed at the user's explicit request.
             body = sl.read_text(encoding="utf-8")
-            assert "loop · " in body, body
+            assert "loop running · " in body, body
             assert "loops live" not in body, body
             assert "owner" in body.splitlines()[0], body
 

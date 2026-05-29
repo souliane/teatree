@@ -13,8 +13,8 @@ pre-commit gate that fails the commit until the regression is removed.
 Budget (bytes):
 
 - Top-level ``BLUEPRINT.md``:   80 000  (~78 KB)
-- ``docs/blueprint/`` corpus:  100 000  (~98 KB)
-- Combined corpus total:       180 000  (~176 KB)
+- ``docs/blueprint/`` corpus:  102 000  (~100 KB)
+- Combined corpus total:       182 000  (~178 KB)
 
 Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the check. Use only
 when a planned, reviewed addition deliberately grows the corpus and the
@@ -30,8 +30,13 @@ _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
 _BUDGET_TOP_LEVEL_BYTES = 80_000
-_BUDGET_APPENDICES_BYTES = 100_000
-_BUDGET_TOTAL_BYTES = 180_000
+# Reviewed bump (#1474): the §17.6.4 gate-2 self-rescue invariant is a
+# load-bearing safety fact, and the appendix corpus was already at capacity.
+# Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
+# gate that closes the ultracode fan-out bypass) is the same class of
+# load-bearing safety fact, and the corpus was again at capacity.
+_BUDGET_APPENDICES_BYTES = 103_500
+_BUDGET_TOTAL_BYTES = 183_500
 
 
 def _repo_root() -> pathlib.Path:

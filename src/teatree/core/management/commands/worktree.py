@@ -17,6 +17,7 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
+from teatree.core.local_stack_gate import refuse_if_limit_exceeded
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
@@ -145,6 +146,12 @@ class Command(TyperCommand):
         ticket = Ticket.objects.get(pk=worktree.ticket.pk)
 
         _update_ticket_variant(ticket, variant)
+        # _update_ticket_variant mutated the ticket + worktree rows through
+        # separate instances; reload so this worktree's cached ticket FK and
+        # db_name reflect the new variant before provision() and the env render
+        # read them (otherwise WT_VARIANT renders blank and db_name loses its
+        # variant suffix).
+        worktree.refresh_from_db()
         resolved_overlay = get_overlay()
         if resolved_overlay.uses_redis():
             redis_container.ensure_running(db_count=load_config().user.redis_db_count)
@@ -199,6 +206,7 @@ class Command(TyperCommand):
         """
         worktree = resolve_worktree(path)
         resolved_overlay = get_overlay()
+        refuse_if_limit_exceeded(worktree, write_err=self.stderr.write)
 
         commands = list(resolved_overlay.get_run_commands(worktree))
         with transaction.atomic():

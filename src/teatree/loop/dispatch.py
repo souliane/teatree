@@ -82,6 +82,17 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.merge_blocked": "action_needed",
     "incoming_event.merge_escalation": "action_needed",
     "incoming_event.recorded": "in_flight",
+    # #128 resource-pressure scanner — WARN-band advisories and any
+    # cleanup failure surface in action_needed; the freeing itself routes
+    # through the mechanical handler below. ``ram_kill_candidate`` is
+    # statusline-only (never an agent) so a flagged process-kill remains a
+    # user-visible advisory, not an autonomous action.
+    "resource.pressure_warn": "action_needed",
+    "resource.cleanup_failed": "action_needed",
+    "resource.ram_kill_candidate": "action_needed",
+    # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
+    # review; the completion path routes through the mechanical handler below.
+    "todo.orphaned": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -93,15 +104,31 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 
 # Signal-kind *prefixes* whose every outcome is internal scanner state, not
-# user-facing statusline content. The ``self_update.*`` family
-# (``cadence_not_elapsed``, ``up_to_date``, ``updated``, ``skipped``,
-# ``failed``) is the auto-update scanner's per-repo bookkeeping; its
-# ``reason`` payload (e.g. ``recent_marker``) used to leak into the
-# statusline as a mystery ``recent_marker: ?`` row because the renderer
-# treats any ``reason``-bearing action as a ticket disposition. The
-# update outcome is logged and persisted on ``SelfUpdateMarker`` — the
-# statusline is the wrong surface for it.
-_STATUSLINE_DROP_PREFIXES: tuple[str, ...] = ("self_update.",)
+# user-facing statusline content. Each family is per-scanner bookkeeping
+# that, without this drop, falls through the catch-all at the end of
+# :func:`_dispatch_one` and renders as a garbage row (often
+# ``<reason>: ?``) that drowns the real tickets and MRs the dashboard
+# exists to show. The outcome is logged / persisted on the scanner's own
+# ledger; the statusline is the wrong surface for it.
+#
+# ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
+# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
+# ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
+# ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
+# explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
+# reviewer-ping reconciler's per-MR bookkeeping; and the ``*.queued``
+# dispatch markers (``architectural_review``, ``dogfood_smoke``,
+# ``scanning_news``) that only record an agent was queued.
+_STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
+    "self_update.",
+    "pull_main_clone.",
+    "pr_sweep.",
+    "outbound.",
+    "review_nag.",
+    "architectural_review.",
+    "dogfood_smoke.",
+    "scanning_news.",
+)
 
 
 def _is_statusline_dropped(kind: str) -> bool:
@@ -182,6 +209,15 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # is permanently absent yet fully OPEN). The mechanical handler then
     # completes the task so ``pending-spawn`` stops surfacing it.
     "reviewer_pr.task_orphaned": ("mechanical", "reviewer_task_orphaned"),
+    # #1321: ``list_review_requested_prs`` can surface an MR the user
+    # authored (under any of their configured identities). Own MRs must
+    # never dispatch ``t3:reviewer`` — they route to coder/debugger + a
+    # colleague review-request. The scanner emits this signal when a
+    # reviewing task already exists for a self-authored MR so the
+    # mechanical handler completes it and the queue self-heals on the next
+    # tick (the orphan sweep only reaps MERGED/CLOSED PRs, not open
+    # self-authored ones).
+    "reviewer_pr.task_self_authored": ("mechanical", "reviewer_task_self_authored"),
     # #1113 Defect 2: ``SlackDmInboundScanner`` emits ``slack.user_reply`` per
     # drained user reply. The real consumer is the reactive Slack-answer loop
     # (``teatree.loop.slack_answer`` — drains the ``PendingChatInjection`` rows
@@ -201,6 +237,12 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #1295 cap H: ac-reviewing-codebase auto-fix sweep emits this per
     # new finding → routes to ``t3:coder`` for the drift fix.
     "skill_drift_detected": ("agent", "t3:coder"),
+    # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
+    # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
+    "resource.cleanup_needed": ("mechanical", "free_resources"),
+    # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
+    # handler RE-checks then completes it (never bulk, never on a stale read).
+    "todo.completion_detected": ("mechanical", "todo_completion"),
 }
 
 

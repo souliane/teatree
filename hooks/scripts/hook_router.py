@@ -22,8 +22,13 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 STATE_DIR = Path(
     os.environ.get(
@@ -130,26 +135,12 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
     ),
-    (
-        re.compile(r"\bgh\s+pr\s+merge\b"),
-        (
-            "BLOCKED: raw `gh pr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "expected_head_oid SHA-binding, privacy/AI-signature scan, "
-            "mark_merged). Use the sanctioned keystone transition "
-            "`t3 <overlay> ticket merge <clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
-    (
-        re.compile(r"\bglab\s+mr\s+merge\b"),
-        (
-            "BLOCKED: raw `glab mr merge` — out-of-band merge bypasses the FSM "
-            "coherence mechanism (ledger update, MergeClear validation, "
-            "SHA-binding, privacy/AI-signature scan, mark_merged). Use the "
-            "sanctioned keystone transition `t3 <overlay> ticket merge "
-            "<clear_id>` (BLUEPRINT §17.1 invariant 8 / §17.4)."
-        ),
-    ),
+    # NOTE: ``gh pr merge`` / ``glab mr merge`` are NOT static-blocked here.
+    # A pure regex cannot tell a teatree-managed repo (must use the keystone
+    # `t3 <overlay> ticket merge` transition) from a lightweight repo with no
+    # ticket/overlay FSM (which had no way to merge at all — a permanent
+    # lockout). The cwd-aware ``handle_block_out_of_band_merge`` gate enforces
+    # this with a managed-repo carve-out instead (#126).
     (
         re.compile(r"\bsafety\s+(?:check|scan)\b"),
         "BLOCKED: `safety` — use `pip-audit` instead (#1264; `uv audit` is preview-only).",
@@ -171,8 +162,64 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Per-session state files (``<session>.skills`` / ``.agents`` / ``.crons`` …)
+# are never cleaned up when a session ends, so the state dir accumulates
+# hundreds of stale files over time (#130). A throttled mtime sweep removes
+# anything older than the retention window. The throttle sentinel keeps the
+# sweep from walking the directory on every single state write — it runs at
+# most once per ``_SWEEP_THROTTLE_SECONDS``.
+_STATE_FILE_MAX_AGE_SECONDS = 2 * 24 * 60 * 60
+_SWEEP_THROTTLE_SECONDS = 60 * 60
+_SWEEP_SENTINEL = ".last-sweep"
+
+# Suffixes the sweep must never delete by age, because a live reader gates
+# behaviour on the file's presence AND the file's mtime does not refresh for
+# the life of an active session. ``.crons`` is written once by
+# ``handle_track_cron_jobs`` at registration and then read on every prompt by
+# ``_session_has_loop`` to gate the loop-registration directive/deny; an active
+# long-lived session that never changes its crons keeps an unmodified ``.crons``
+# that ages past the retention window. Sweeping it would make
+# ``_session_has_loop`` return False and re-emit the loop-registration nag for a
+# session that is already running the loop. The throttle-and-recreate markers
+# (``loop-pending`` / ``pump-armed`` / ``mr_refreshed`` …) are NOT listed: their
+# absence is the safe default and they are re-armed on demand.
+_SWEEP_PROTECTED_SUFFIXES = frozenset({"crons"})
+
+
+def _sweep_stale_state_files() -> None:
+    """Remove ephemeral state files older than the retention window (throttled).
+
+    Files whose suffix is in ``_SWEEP_PROTECTED_SUFFIXES`` are skipped — they
+    are read live by gates whose mtime does not refresh for an active session,
+    so age is not a liveness signal for them.
+
+    Best-effort and crash-proof: any OS error is swallowed so a sweep can
+    never break the state write it piggybacks on. Throttled via the
+    ``_SWEEP_SENTINEL`` mtime so the directory is walked at most once per
+    ``_SWEEP_THROTTLE_SECONDS``.
+    """
+    sentinel = STATE_DIR / _SWEEP_SENTINEL
+    now = time.time()
+    try:
+        if sentinel.is_file() and now - sentinel.stat().st_mtime < _SWEEP_THROTTLE_SECONDS:
+            return
+        sentinel.write_text("", encoding="utf-8")
+        cutoff = now - _STATE_FILE_MAX_AGE_SECONDS
+        for entry in STATE_DIR.iterdir():
+            if entry.name == _SWEEP_SENTINEL or not entry.is_file():
+                continue
+            if entry.name.rsplit(".", 1)[-1] in _SWEEP_PROTECTED_SUFFIXES:
+                continue
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+    except OSError:
+        return
+
+
 def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # _sweep_stale_state_files swallows its own OSError, so no guard here.
+    _sweep_stale_state_files()
 
 
 def _read_input() -> dict:
@@ -180,6 +227,45 @@ def _read_input() -> dict:
         return json.loads(sys.stdin.read())
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def emit_pretooluse_deny(reason: str) -> bool:
+    """Emit a PreToolUse deny in the modern nested ``hookSpecificOutput`` schema.
+
+    Claude Code 2.1.146 honours deny payloads only when (a) the JSON
+    envelope places ``permissionDecision`` inside ``hookSpecificOutput``
+    (the modern SDK schema in
+    ``claude_agent_sdk.types.PreToolUseHookSpecificOutput``), AND (b)
+    the router exits with code 2 (the changelog fix: "Fixed
+    ``PreToolUse`` hooks that emit JSON to stdout and exit with code 2
+    not correctly blocking the tool call").
+
+    This helper centralises the schema so adding a new deny gate cannot
+    drift back to the legacy flat shape. The legacy top-level
+    ``permissionDecision`` / ``permissionDecisionReason`` keys are
+    written alongside the nested envelope for backward-compat with
+    in-process tests that read ``out["permissionDecision"]`` directly.
+
+    The caller still returns ``True`` to short-circuit the handler chain
+    in ``main()``; ``main()`` translates that into ``sys.exit(2)``.
+
+    Returns ``True`` so handlers can ``return emit_pretooluse_deny(...)``.
+    """
+    payload = {
+        # Legacy flat shape — kept for in-process consumers (existing
+        # handler tests). Harmless to the harness because it ignores
+        # unknown top-level keys.
+        "permissionDecision": "deny",
+        "permissionDecisionReason": reason,
+        # Modern shape — the one the harness actually reads.
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }
+    json.dump(payload, sys.stdout)
+    return True
 
 
 def _state_file(session_id: str, suffix: str) -> Path:
@@ -399,8 +485,7 @@ def handle_enforce_loop_registration(data: dict) -> bool:
         f"Please call CronCreate with "
         f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
@@ -433,10 +518,75 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
+#
+# The gate blocks Bash/Edit/Write until every suggested-but-unloaded
+# skill is loaded. A suggestion lands in ``<session>.pending`` from the
+# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# lifecycle/intent detection.
+#
+# Fail-open contract (the lockout class this closes): a config entry can
+# map a keyword to a skill NAME that no longer resolves (renamed or
+# removed skill — e.g. ``ac-auditing-repos`` after the rename to
+# ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
+# load ("Unknown skill") would block ALL Bash/Edit/Write for the whole
+# session with no in-session self-rescue. So before blocking, the gate
+# verifies each required name resolves to a loadable skill; an
+# unresolvable name does NOT block — it emits a one-line warning naming
+# the stale skill + the config file and is dropped from the demand. Only
+# skills that genuinely resolve but are not yet loaded enforce load-first.
+#
+# Resolution reuses the canonical :func:`_skill_search_dirs` (defined
+# below for skill-usage tracking) so the gate scans the SAME dirs the
+# loader builds its trigger index from — the repo ``skills/``
+# source-of-truth (lifecycle skills) plus the agent install dirs
+# (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
+# ``<session>.pending`` carries bare names (lifecycle ``code``/``debug``,
+# supplementary ``ac-*``) AND overlay ``skill_path`` values of the shape
+# ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
+# gate keeps enforcing load-first for a genuinely-installed overlay skill
+# while still failing open on a stale name.
+
+
+def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
+    """True iff *name* resolves to a loadable skill in *search_dirs*.
+
+    Resolution is deliberately CONSERVATIVE: a name resolves only when its
+    own skill directory exists VERBATIM. Two shapes reach
+    ``<session>.pending``. A bare name (lifecycle ``code``, supplementary
+    ``ac-*``) matches ``<dir>/<name>/SKILL.md``. An overlay ``skill_path``
+    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) matches
+    when the literal path is a file under a search dir (or its parent), or
+    when its ``<skill>`` parent-dir name exists as a skill dir.
+
+    No namespace ``:``-stripping is performed in either branch — stripping
+    would mis-resolve a stale ``old:code`` / ``skills/old:code/SKILL.md``
+    onto an installed bare ``code`` and re-introduce the very fail-closed
+    lockout class this gate exists to prevent. A name that resolves only by
+    discarding its namespace is treated as unresolvable (fail open).
+
+    Symlinked skill dirs (the common install shape) resolve through
+    ``is_file``.
+    """
+    stripped = name.rstrip("/")
+    if stripped.endswith("/SKILL.md"):
+        # Path-shaped overlay ``skill_path``: literal path, then the
+        # ``<skill>`` parent-dir name — both taken verbatim.
+        if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
+            return True
+        segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
+    else:
+        segment = stripped.rsplit("/", 1)[-1]
+    if not segment or segment == "SKILL.md":
+        return False
+    return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when suggested skills haven't been loaded."""
+    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+
+    Fails open on a stale/unresolvable required skill (see the module
+    comment above): such a name is warned about, never blocked on.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return False
@@ -446,16 +596,217 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         return False
 
     loaded = set(_read_lines(_state_file(session_id, "skills")))
-    unloaded = [f"/{s}" for s in pending_lines if s not in loaded]
+    unloaded = [s for s in pending_lines if s not in loaded]
     if not unloaded:
         return False
 
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in unloaded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in unloaded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
-        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
+        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
+    return emit_pretooluse_deny(reason)
+
+
+# ── TaskCreated: enforce-skill-loading-on-task-create (#1488) ─────────
+#
+# ``ultracode`` (and any harness Workflow/Task fan-out) spawns sub-agents
+# through the Task/Workflow vehicle, which BYPASSES ``PreToolUse`` hooks
+# (a known regression from TodoWrite — see ``docs/claude-code-internals.md``
+# §9). The ``PreToolUse`` skill-loading gate above
+# (:func:`handle_enforce_skill_loading`, matcher ``Bash|Edit|Write``) is
+# therefore never consulted on the fan-out, so sub-agents skip
+# auto-loading the matching teatree lifecycle skill. That is the loophole
+# that let a bespoke review workflow run instead of ``/t3:review``.
+#
+# The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
+# against the Claude Code 2.1.156 binary: ``hook_event_name:"TaskCreated"``
+# with ``task_id``/``task_subject``/``task_description``; a hook output of
+# ``{"continue": false, ...}`` sets ``preventContinuation``). This handler
+# rides that event to force the matching lifecycle skill + its
+# already-transitive companions onto the dispatched task.
+#
+# It enforces SKILL-LOADING ONLY — it never inspects agent count, token
+# budget, ``run_in_background``, or any workflow-size field, so ultracode
+# keeps maximal fan-out room. The deny schema is the teammate-stop
+# envelope (``{"continue": false, "stopReason": ...}``), NOT the
+# ``PreToolUse`` ``hookSpecificOutput`` deny; ``main`` translates the
+# handler's ``True`` return into ``sys.exit(2)`` the same as the
+# ``PreToolUse`` gates.
+
+# Mandatory reason, mirroring the #1302 ``[skip-plan-gate: <reason>]``
+# token: ``[skip-skill-gate: <non-empty-reason>]`` anywhere in the
+# subject/description head unblocks the dispatch; an empty reason rejects.
+_SKIP_SKILL_GATE_RE = re.compile(r"\[skip-skill-gate:\s*(\S[^\]]*?)\s*\]")
+
+
+def _skill_loading_gate_enabled() -> bool:
+    """Whether the skill-loading-on-task-create gate is enabled (default True).
+
+    Best-effort read of ``[teatree] skill_loading_gate_enabled`` from
+    ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`'s
+    toml-read shape. Fails OPEN to enabled on a missing/broken config so the
+    gate keeps its protective default; an explicit ``false`` is the
+    one-line kill-switch (never a code edit).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("skill_loading_gate_enabled") is not False
+
+
+def _task_text_skip_token(text: str) -> str | None:
+    """Return the reason from a ``[skip-skill-gate: <reason>]`` token, else None.
+
+    Scans only the first 512 characters (matching
+    :func:`_agent_prompt_skip_token`) so a buried token in a long task body
+    does not silently authorise dispatch.
+    """
+    match = _SKIP_SKILL_GATE_RE.search(text[:512])
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def _companions_for_task_text(task_text: str) -> list[str]:
+    """Resolve the lifecycle skill for *task_text* plus its companion closure.
+
+    Routes the task text through the production
+    :meth:`SkillLoadingPolicy.lifecycle_for_task_text` (text → lifecycle
+    skill: ``review``/``code``/``ship``/…) and then expands that single
+    skill through :func:`resolve_companions` against the real trigger index
+    (parsed from real ``SKILL.md`` frontmatter). The companions are already
+    transitive — ``review`` pulls in ``code``/``workspace``/``platforms``/
+    … — so no companion-resolution logic is rebuilt here. On any
+    resolution failure (teatree not importable in this hook process, no
+    lifecycle match) the closure is empty and the gate falls back to the
+    ``<session>.pending`` demand set alone.
+    """
+    if not task_text:
+        return []
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added: list[str] = []
+    for extra in (str(scripts_dir), str(src_dir)):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
+            added.append(extra)
+    try:
+        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
+
+        from teatree.skill_deps import resolve_companions  # noqa: PLC0415
+        from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+
+        index = build_trigger_index(_skill_search_dirs())
+        lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(task_text, trigger_index=index)
+        resolved, _missing = resolve_companions([lifecycle], index) if lifecycle else ([], [])
+    except Exception:  # noqa: BLE001
+        return []
+    else:
+        return resolved
+    finally:
+        for extra in added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(extra)
+
+
+def emit_task_create_deny(reason: str) -> bool:
+    """Emit the ``TaskCreated`` deny envelope and return ``True``.
+
+    The harness blocks task creation when a hook emits ``continue: false``
+    (it sets ``preventContinuation``) — a DIFFERENT schema from the
+    ``PreToolUse`` ``hookSpecificOutput`` deny. ``main`` translates the
+    ``True`` return into ``sys.exit(2)``, the documented block signal for
+    the ``TaskCreated``/``TaskCompleted`` events.
+    """
+    json.dump({"continue": False, "stopReason": reason}, sys.stdout)
     return True
+
+
+def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
+    """Force the matching lifecycle skill + companions onto a fanned-out task.
+
+    Demand set = ``(<session>.pending minus <session>.skills)`` union the
+    companion closure of ``lifecycle_for_task_text(task_description)``, with each name
+    dropped if it does not resolve via :func:`_skill_resolves` (fail-open on
+    a renamed/stale skill — this also defuses the auto-loader's observed
+    demand for an ``ac-exporting-webhook-mapping`` that errors "Unknown
+    skill"). The gate denies only when a RESOLVABLE skill is still unloaded.
+
+    Skill-loading ONLY: no agent-count / token-budget / workflow-size field
+    is read, so ultracode keeps maximal fan-out room. Fails open (passes
+    through) on the kill-switch, a valid ``[skip-skill-gate: <reason>]``
+    token, or a missing session id.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id or not _skill_loading_gate_enabled():
+        return False
+
+    subject = data.get("task_subject", "") or ""
+    description = data.get("task_description", "") or ""
+    if _task_text_skip_token(f"{subject}\n{description}"):
+        return False
+
+    loaded = set(_read_lines(_state_file(session_id, "skills")))
+    pending = [s for s in _read_lines(_state_file(session_id, "pending")) if s not in loaded]
+    detected = [s for s in _companions_for_task_text(description) if s not in loaded]
+
+    demanded: list[str] = []
+    for name in [*pending, *detected]:
+        if name and name not in demanded:
+            demanded.append(name)
+    if not demanded:
+        return False
+
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in demanded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in demanded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading-on-task gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
+    reason = (
+        "SKILL LOADING ENFORCEMENT (TaskCreated): this fanned-out task must "
+        f"load these teatree skills first: {skill_list}. Call the Skill tool "
+        "for each one in the task before doing its work — do NOT run a bespoke "
+        "workflow that skips them. (Disable with `t3 <overlay> gate "
+        "skill-loading disable` or prefix the task with "
+        "`[skip-skill-gate: <reason>]`.)"
+    )
+    return emit_task_create_deny(reason)
 
 
 # ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
@@ -603,8 +954,7 @@ def handle_enforce_plan_gate(data: dict) -> bool:
         "before Edit. (Plan-gate is opt-in per overlay via "
         "`[overlays.<name>] plan_gate = true`.)"
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: enforce-agent-plan-gate (#1302) ──────────────────────
@@ -616,7 +966,10 @@ def handle_enforce_plan_gate(data: dict) -> bool:
 #    ``$XDG_DATA_HOME/teatree/last-plan-skill-ts`` (default
 #    ``~/.local/share/teatree/last-plan-skill-ts``) within the cooldown
 #    window (default 30 minutes, configurable via
-#    ``TEATREE_PLAN_GATE_WINDOW_MINUTES``).
+#    ``TEATREE_PLAN_GATE_WINDOW_MINUTES``; the sentinel ``0`` disables the
+#    freshness window entirely, so a single up-front ``/plan`` authorises a
+#    big multi-wave ultracode fan-out across many turns without re-planning
+#    each wave — #1488).
 # 2. The Agent prompt carries an explicit per-call opt-out token
 #    ``[skip-plan-gate: <reason>]`` (reason is mandatory — empty rejects).
 #
@@ -643,6 +996,14 @@ _SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
 
 
 def _plan_gate_window_minutes() -> int:
+    """Resolve the plan-gate freshness window in minutes.
+
+    Returns the default (30) when the env var is unset or unparsable. The
+    sentinel ``0`` is honoured verbatim — it disables the freshness window
+    so a single up-front ``/plan`` authorises an arbitrarily long
+    multi-wave fan-out (#1488). A NEGATIVE value falls back to the default
+    (it is meaningless, not a disable signal).
+    """
     raw = os.environ.get("TEATREE_PLAN_GATE_WINDOW_MINUTES", "").strip()
     if not raw:
         return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
@@ -650,7 +1011,7 @@ def _plan_gate_window_minutes() -> int:
         value = int(raw)
     except ValueError:
         return _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
-    return value if value > 0 else _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
+    return value if value >= 0 else _AGENT_PLAN_GATE_DEFAULT_WINDOW_MINUTES
 
 
 def _plan_skill_timestamp_file() -> Path:
@@ -725,13 +1086,19 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
     if tool_name not in _AGENT_PLAN_GATE_TOOLS:
         return False
 
+    window = _plan_gate_window_minutes()
+    # Sentinel 0 disables the freshness window — a single up-front /plan
+    # authorises a big multi-wave ultracode fan-out without re-planning each
+    # wave (#1488). The gate then never blocks on staleness.
+    if window == 0:
+        return False
+
     prompt = data.get("tool_input", {}).get("prompt", "") or ""
     if _agent_prompt_skip_token(prompt):
         return False
     if _plan_skill_recently_invoked():
         return False
 
-    window = _plan_gate_window_minutes()
     reason = (
         f"BLOCKED: `{tool_name}` dispatch requires a recent `/plan` invocation "
         f"(within the last {window} minutes) or an explicit per-call opt-out. "
@@ -741,8 +1108,7 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
         "`[skip-plan-gate: trivial-bug-fix]`. "
         "Override the window via `TEATREE_PLAN_GATE_WINDOW_MINUTES`. (#1302)"
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -769,40 +1135,163 @@ def _load_protected_branches() -> set[str]:
     return branches
 
 
-def handle_protect_default_branch(data: dict) -> bool:
-    """Block Edit/Write on files that live on a protected branch."""
-    tool_name = data.get("tool_name", "")
-    if tool_name not in _FILE_PATH_TOOLS:
-        return False
+# Agent-harness state dirs that may sit UNDER a git repo's working tree
+# (e.g. ``~/.claude`` inside a dotfiles repo) but whose files are never
+# repo source. A Write here must never be blocked by the protected-branch
+# gate — editing agent memory / todos / per-project state on `main` is
+# exactly what the agent is supposed to do. Mirrors ``_KEEP_PATTERNS``.
+_AGENT_STATE_PATH_RE = re.compile(
+    r"/\.(claude|codex|cursor|copilot)/(projects/.*/memory/|memory/|todos/|statsig/|.*\.log$)",
+)
 
-    file_path = data.get("tool_input", {}).get("file_path", "")
-    if not file_path:
-        return False
 
-    parent = str(Path(file_path).parent)
+def _is_agent_state_path(file_path: str) -> bool:
+    """True iff *file_path* is agent-harness state, not repo source.
+
+    Resolved to an absolute, symlink-free path first so a relative or
+    ``..``-laden path can't dodge the pattern. A resolution failure (a
+    path under a missing dir) falls back to the raw string — the regex
+    is anchored on the harness-dir segment, which survives either form.
+    """
     try:
-        branch = subprocess.check_output(  # noqa: S603
-            ["git", "-C", parent, "--no-optional-locks", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
+        resolved = str(Path(file_path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        resolved = file_path
+    return _AGENT_STATE_PATH_RE.search(resolved) is not None
+
+
+def _file_is_inside_worktree(repo_root: str, file_path: str) -> bool:
+    """True iff *file_path* resolves to a path inside *repo_root*'s working tree.
+
+    ``git -C <parent> rev-parse`` walks UP to the nearest enclosing
+    ``.git``, so the resolved repo root can be an ANCESTOR of the file
+    (a dotfiles/home repo the file merely sits under). Confirming the
+    file is genuinely within that root is what scopes the gate to the
+    TARGET FILE's repo rather than whatever happens to enclose its parent
+    dir (#126). A resolution failure means we cannot confirm containment —
+    fail open (return ``False``, do not block).
+    """
+    try:
+        file_resolved = Path(file_path).expanduser().resolve()
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    try:
+        file_resolved.relative_to(root_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def _repo_root_is_teatree_managed(repo_root: str) -> bool:
+    """True iff *repo_root* is a teatree-MANAGED source repo.
+
+    The protected-branch gate guards only teatree core + the active
+    overlay's registered repos (``~/.teatree.toml``
+    ``workspace_repos`` / ``frontend_repos`` / ``public_repos`` slugs,
+    plus each overlay ``path``) — NOT every git repo (#126). An unmanaged
+    repo on ``main`` (a dotfiles repo, an unrelated clone) must not block,
+    so this returns ``False`` for any repo the managed-signal set does not
+    cover, and ``False`` on any classification error (fail OPEN — the
+    gate-over-deny class this whole change closes).
+
+    Reuses :func:`_overlay_managed_repo_signals` (the same signal source
+    as the out-of-band-merge gate) and ``publish_surface._slug_for_cwd``
+    so the slug shape matches the rest of the managed-repo machinery.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    try:
+        root_resolved = Path(repo_root).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            root_resolved.relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(root_resolved).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    return any(entry in slug for entry in slugs) if slug else False
+
+
+def _resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
+    """Return ``(branch, repo_root)`` for the repo enclosing *parent*, or ``None``.
+
+    ``None`` when *parent* is not inside a git repo, on a git error, or on
+    a timeout — every one of which fails the gate open. ``git -C`` walks UP
+    to the nearest ``.git``, so the returned root can be an ancestor of the
+    file; :func:`_file_is_inside_worktree` is what re-scopes it.
+    """
+
+    def _rev_parse(*flags: str) -> str:
+        return subprocess.check_output(  # noqa: S603
+            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,
         ).strip()
+
+    try:
+        return _rev_parse("--abbrev-ref", "HEAD"), _rev_parse("--show-toplevel")
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def handle_protect_default_branch(data: dict) -> bool:
+    """Block Edit/Write on a source file in a teatree-MANAGED protected-branch repo.
+
+    Scoped to the TARGET FILE's own repo, never to the cwd's branch and
+    never to "any git repo" (#126). The block fires only when ALL hold:
+
+    1. the tool is ``Edit``/``Write``/``Read`` with a ``file_path``;
+    2. the path is NOT agent-harness state (memory / todos / per-project
+        state) — those are git-tracked scratch state, never protected
+        source, so they are exempt even on ``main``;
+    3. the file's enclosing git repo is on a protected branch;
+    4. the file genuinely lives inside that repo's working tree;
+    5. that repo is teatree-MANAGED (core + the active overlay's
+        registered repos) — an unmanaged repo on ``main`` (a dotfiles
+        clone, an unrelated project) is NOT this gate's concern.
+
+    Any condition unmet → allow (fail open). A git error, an
+    unresolvable repo, or an unclassifiable slug all allow — the
+    gate-over-deny class this change closes means uncertainty errs toward
+    letting the write through, not blocking it.
+    """
+    tool_name = data.get("tool_name", "")
+    file_path = data.get("tool_input", {}).get("file_path", "")
+    # Agent-harness state is never repo source — allow it even on `main`.
+    if tool_name not in _FILE_PATH_TOOLS or not file_path or _is_agent_state_path(file_path):
         return False
 
-    if branch in _load_protected_branches():
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    f"BLOCKED: file is on protected branch '{branch}'. "
-                    "Create a worktree first with `t3 workspace ticket`."
-                ),
-            },
-            sys.stdout,
-        )
-        return True
-    return False
+    resolved = _resolve_branch_and_root(str(Path(file_path).parent))
+    if resolved is None:
+        return False
+    branch, repo_root = resolved
+
+    if (
+        branch not in _load_protected_branches()
+        or not _file_is_inside_worktree(repo_root, file_path)
+        or not _repo_root_is_teatree_managed(repo_root)
+    ):
+        return False
+
+    return emit_pretooluse_deny(
+        f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
+        "Create a worktree first with `t3 workspace ticket`."
+    )
 
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
@@ -854,11 +1343,51 @@ def _mr_validate_argv() -> list[str] | None:
     return None
 
 
+_MR_VALIDATE_BROKEN_ENV_DENY = (
+    "Cannot validate MR title/description — the overlay validator "
+    "(`t3 tool validate-mr`) is not resolvable or crashed. Refusing to create "
+    "the MR with unvalidated metadata (fail closed). Fix the environment, or "
+    "set T3_MR_VALIDATE_ALLOW_BROKEN_ENV=1 to deliberately bypass."
+)
+
+
+def _handle_broken_validate_env() -> bool:
+    """Decide the gate's action when the validator can't run.
+
+    The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
+    must never reach GitLab just because the env could not validate it. The
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the operator's
+    self-rescue — deliberately fall back to fail-open (allow) so a genuinely
+    broken environment is not a hard deadlock.
+    """
+    if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
+        return False
+    return emit_pretooluse_deny(_MR_VALIDATE_BROKEN_ENV_DENY)
+
+
+def _run_mr_validator(argv: list[str], title: str, description: str) -> "subprocess.CompletedProcess[str] | None":
+    """Run the validator, or ``None`` if the env is broken (timeout/missing)."""
+    try:
+        return subprocess.run(  # noqa: S603
+            [*argv, "--title", title, "--description", description],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
 def handle_validate_mr_metadata(data: dict) -> bool:
     """Block a non-compliant ``glab mr create/update`` before it runs.
 
     Validates by default via the active overlay's ``validate_pr`` (no
-    env-var opt-in) so the pre-push gate is always live (#119 Part 3).
+    env-var opt-in) so the pre-push gate is always live (#119 Part 3). When
+    the validator cannot be resolved or crashes, the gate FAILS CLOSED — a
+    non-compliant title must never slip onto GitLab on a broken env. The
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in restores fail-open as
+    a deliberate self-rescue.
     """
     fields = _extract_mr_fields(data)
     if fields is None:
@@ -867,29 +1396,16 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
     argv = _mr_validate_argv()
     if argv is None:
-        return False
+        return _handle_broken_validate_env()
 
-    try:
-        result = subprocess.run(  # noqa: S603
-            [*argv, "--title", title, "--description", description],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return False
+    result = _run_mr_validator(argv, title, description)
+    if result is None:
+        return _handle_broken_validate_env()
 
     if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (result.stderr or result.stdout or "").strip()
-                or "MR title/description failed overlay validation.",
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            (result.stderr or result.stdout or "").strip() or "MR title/description failed overlay validation."
         )
-        return True
     return False
 
 
@@ -1018,18 +1534,11 @@ def handle_block_ai_signature(data: dict) -> bool:
         return False
 
     if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
-                    "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
-                    + (result.stdout or result.stderr or "").strip()
-                ),
-            },
-            sys.stdout,
+        return emit_pretooluse_deny(
+            "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
+            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
+            + (result.stdout or result.stderr or "").strip()
         )
-        return True
     return False
 
 
@@ -1078,6 +1587,27 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
+def _quote_scanner_high_verdict(
+    quote_scanner: "ModuleType", tool_name: str, result: object, *, carve_out: bool
+) -> bool:
+    """Resolve a HIGH quote-scanner match into a deny / downgrade verdict.
+
+    A HIGH match on a private-repo commit (``carve_out``) downgrades to a
+    warn (#126); every other HIGH match denies. Split out of
+    :func:`_run_quote_scanner_pretool` to keep its return count under the
+    PLR0911 ceiling.
+    """
+    if carve_out:
+        sys.stderr.write(
+            "WARNING: pre-publish quote-scanner gate (#1213) — patterns matched on a "
+            "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
+        )
+        quote_scanner.log_decision(tool_name=tool_name, decision="warn-private-repo", result=result, override=False)
+        return False
+    quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
+    return emit_pretooluse_deny(quote_scanner.format_block_message(result))
+
+
 def _run_quote_scanner_pretool(data: dict) -> bool:
     """Quote-scanner inner body — assumes ``teatree`` is already importable.
 
@@ -1087,7 +1617,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import quote_scanner  # noqa: PLC0415
+    from teatree.hooks import publish_surface, quote_scanner  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1112,20 +1642,9 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         return False
 
     if result.has_high:
-        quote_scanner.log_decision(
-            tool_name=tool_name,
-            decision="deny",
-            result=result,
-            override=False,
-        )
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": quote_scanner.format_block_message(result),
-            },
-            sys.stdout,
-        )
-        return True
+        command = tool_input.get("command", "")
+        carve_out = publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data))
+        return _quote_scanner_high_verdict(quote_scanner, tool_name, result, carve_out=carve_out)
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")
@@ -1191,7 +1710,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -1210,14 +1729,15 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if term is None:
         return False
 
-    json.dump(
-        {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": banned_terms_scanner.format_block_message(term),
-        },
-        sys.stdout,
-    )
-    return True
+    command = tool_input.get("command", "")
+    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
+            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
+        )
+        return False
+
+    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
@@ -1239,8 +1759,18 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 # A draft PR is not yet under review, so draft creation does not fire;
 # ``git commit`` is deliberately NOT a trigger — Gate 12 is pre-MERGE,
 # not pre-commit (the commit-stage gates are §17.1-numbering / sync).
-# Fails open on a broken environment (no ``t3``, timeout), matching the
-# other t3-shelling hooks.
+#
+# Fail-open contract (#122): DENY only on an actual, successfully-computed
+# uncovered-diff finding. The gate shells ``t3 tool diff-coverage --json``
+# and denies *only* when stdout parses as the report JSON with
+# ``passes == false``. A subprocess CRASH (the #122 lockout:
+# ``diff-coverage`` imports the DEV-only ``coverage`` module, absent from
+# the installed ``t3`` tool env, so a real run dies with
+# ``ModuleNotFoundError`` → exit 1, traceback on stderr, no parseable
+# stdout), a timeout, a missing ``t3``, or any nonzero exit without
+# parseable report JSON FAILS OPEN — a broken environment must never deny
+# a merge-class mutation. Treating a crash as a coverage finding turned
+# every ``gh pr create`` into a deny; that is the bug this closes.
 
 _GH_PR_READY_RE = re.compile(r"\bgh\s+pr\s+ready\b")
 _PR_MR_CREATE_RE = re.compile(r"\b(?:gh\s+pr\s+create|glab\s+mr\s+create)\b")
@@ -1265,8 +1795,39 @@ def _is_merge_class_mutation(data: dict) -> bool:
 def _diff_coverage_argv() -> list[str] | None:
     t3_bin = shutil.which("t3")
     if t3_bin:
-        return [t3_bin, "tool", "diff-coverage"]
+        return [t3_bin, "tool", "diff-coverage", "--json"]
     return None
+
+
+def _diff_coverage_finding(stdout: str) -> str | None:
+    """Return a deny reason iff *stdout* is a report JSON with ``passes`` false.
+
+    The fail-open discriminator (#122). ``t3 tool diff-coverage --json``
+    emits exactly ``{"passes": ..., "uncovered": [...],
+    "unreferenced_symbols": [...]}`` on a successful measurement. A crash
+    (e.g. the dev-only ``coverage`` module missing from the installed
+    ``t3`` env) produces a traceback on stderr and no parseable JSON on
+    stdout — so anything that is not a well-formed report with
+    ``passes is False`` is "not a finding" and the caller fails open.
+
+    Returns the human-readable finding summary when there IS a genuine
+    finding, else ``None`` (clean, crashed, or unparsable).
+    """
+    try:
+        report = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("passes") is not False:
+        return None
+    rows = [
+        f"  uncovered new lines in {entry.get('path')}: {entry.get('lines')}"
+        for entry in (report.get("uncovered") or [])
+        if isinstance(entry, dict)
+    ]
+    symbols = report.get("unreferenced_symbols") or []
+    if symbols:
+        rows.append(f"  new production symbols not referenced by any changed test: {sorted(symbols)}")
+    return "\n".join(rows)
 
 
 def handle_block_uncovered_diff(data: dict) -> bool:
@@ -1278,8 +1839,15 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     — a vacuity gate that never fires is itself a false-completion
     surface. This makes it a code gate at the same pre-merge layer as
     the sibling Gate-15 AI-signature scan, reusing ``t3 tool
-    diff-coverage`` as-is. Fails open on a broken environment (no
-    ``t3``, timeout), matching the other t3-shelling hooks.
+    diff-coverage --json`` as-is.
+
+    Fail-open contract (#122): DENY only on an actual, successfully-
+    computed uncovered-diff finding — a report JSON with ``passes`` false.
+    A subprocess crash (``ModuleNotFoundError: No module named
+    'coverage'`` when the dev-only dep is absent from the installed ``t3``
+    env), a timeout, a missing ``t3``, or any nonzero exit without
+    parseable report JSON FAILS OPEN. A broken environment must never deny
+    a merge-class mutation; hooks must be crash-proof.
     """
     if not _is_merge_class_mutation(data):
         return False
@@ -1296,53 +1864,44 @@ def handle_block_uncovered_diff(data: dict) -> bool:
             check=False,
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return False
 
-    if result.returncode != 0:
-        json.dump(
-            {
-                "permissionDecision": "deny",
-                "permissionDecisionReason": (
-                    "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
-                    "An added production line is uncovered or a changed symbol is not "
-                    "referenced by a changed test. Cover/reference it, then re-mark the "
-                    "PR ready (resolve the finding before re-requesting review).\n"
-                    + (result.stdout or result.stderr or "").strip()
-                ),
-            },
-            sys.stdout,
-        )
-        return True
-    return False
+    finding = _diff_coverage_finding(result.stdout or "")
+    if finding is None:
+        return False
+
+    return emit_pretooluse_deny(
+        "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
+        "An added production line is uncovered or a changed symbol is not "
+        "referenced by a changed test. Cover/reference it, then re-mark the "
+        "PR ready (resolve the finding before re-requesting review).\n" + finding
+    )
 
 
 # ── PreToolUse: orchestrator-execution-boundary (#836 §17.6 gate 2) ──
 #
-# The orchestrator (the MAIN agent) is delegate-only: it dispatches
-# sub-agents and makes merge/clear decisions; it must NOT itself perform
-# investigative or implementation work (Edit/Write/NotebookEdit, a
-# mutating Bash command, or an investigative Grep/Glob/Read sweep). That
-# work is what sub-agents are for. The recurring failure this gate
-# extinguishes: the coordinator "just quickly" edits a file or greps the
-# codebase instead of dispatching, which is exactly the conflation §17.4
-# / §17.8 forbid.
+# The orchestrator (the MAIN agent) keeps the session responsive: it
+# dispatches sub-agents and makes merge/clear decisions and should not
+# tie its own session up running a LONG / HEAVY command (a test suite, a
+# build, a dev server, a long sleep, a full-tree sweep) that belongs in a
+# sub-agent (or, when run inline, behind ``run_in_background: true``).
+# Quick orientation Bash — ``git status``, ``cat``, ``ls``, ``grep``, a
+# ``git commit`` — is allowed; only the heavy/long-running shapes below
+# are gated. This is the denylist inversion of the original allow-list
+# (#115): 4.x-class agents need to inspect freely, so the gate now flags
+# the narrow set of commands that actually hurt — never every Bash.
 #
-# Main-vs-sub-agent signal. Claude Code logs every sub-agent (Agent
-# tool) turn into the transcript JSONL with ``isSidechain: true``; the
-# main agent's turns carry ``isSidechain: false`` (or omit the key). The
-# entry that issued the tool call being gated is the most recent
-# transcript entry. So: walk the transcript newest→oldest, and the first
-# entry that carries an explicit ``isSidechain`` boolean tells us which
-# agent is acting. ``True`` ⇒ sub-agent ⇒ allow (sub-agents implement).
-# Anything else (no transcript, no entry with the key) ⇒ treat as the
-# main agent. Limitation (documented in the PR): the harness does not put
-# an agent-kind field directly on the PreToolUse payload, so this reads
-# the transcript sidechain marker — the cleanest reliable signal
-# available. If the transcript is unavailable the gate fails OPEN (does
-# not block) to avoid wedging a legitimate main-agent session on a
-# missing/locked transcript; the trade-off is a missed flag, never a
-# false block.
+# Main-vs-sub-agent signal (#115 root cause). The PreToolUse payload's
+# ``transcript_path`` ALWAYS points at the PARENT session transcript,
+# even for a sub-agent's tool call (a sub-agent's own turns live in a
+# separate ``…/subagents/agent-<id>.jsonl`` the hook never receives), and
+# the parent transcript's tail entries carry ``isSidechain: false`` — so
+# the previous transcript-``isSidechain`` read MISDETECTED every genuine
+# sub-agent as the main agent and blocked it. The reliable signal is on
+# the payload itself: a sub-agent call carries a non-empty ``agent_id``
+# (and ``agent_type``); a main-agent call omits it. ``_call_is_from_subagent``
+# reads that field directly — no transcript needed.
 
 # Pure-orchestration tools — always allowed for the main agent.
 _ORCHESTRATION_TOOLS = {
@@ -1355,128 +1914,174 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# Tool names that are investigative/implementation when the MAIN agent
-# runs them directly. Bash is judged separately (read-only vs mutating).
-_NON_ORCHESTRATION_TOOLS = {
-    "Edit",
-    "Write",
-    "NotebookEdit",
-    "MultiEdit",
-    "Read",
-    "Grep",
-    "Glob",
-}
-# A Bash command the orchestrator MAY run: read-only inspection and the
-# sanctioned t3 orchestration verbs (ticket clear/merge, ticket-state
-# reads, gh/glab *view*/*checks*/*list*). Everything else is treated as
-# mutating/investigative for the main agent.
-#
-# File-content tools (``cat``/``head``/``tail``/``less``/``wc``/``file``/
-# ``grep``/``rg``/``awk``/``sed``) are deliberately NOT in the start-of-
-# command allow-list — see #942: a main-agent ``cat /tmp/screenshot.png``
-# or ``rg TODO src/`` is investigative work that belongs in a sub-agent.
-# Pipelines stay allow-listed because the regex anchors on the START of
-# the command: ``gh pr view ... | grep state`` matches ``gh pr view``
-# (the read-only primary), so a sanctioned status check piped to a
-# read-only filter is still allowed; only a bare investigative read at
-# the head of the command line is blocked.
-_ORCHESTRATOR_BASH_RE = re.compile(
-    r"^\s*(?:"
-    r"t3\s|"
-    r"gh\s+\w+\s+(?:view|list|checks|status)\b|"
-    r"glab\s+\w+\s+(?:view|list|show)\b|"
-    r"git\s+(?:status|log|show|diff|branch|remote)\b|"
-    r"(?:echo|printf|pwd|which|env|ls|date|whoami)\b"
+# HEAVY / long-running Bash shapes the main agent should not run inline.
+# This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
+# the escape hatch is ``run_in_background: true`` (or, for a whole class
+# of work, dispatching a sub-agent). When in doubt the command is
+# ALLOWED — only an explicit match here, foreground, is gated. Patterns
+# cover: Python/test runners, language/asset builds, dev servers,
+# browser E2E, package installs/sync, long sleeps, and full-tree
+# recursive sweeps (the shapes that actually wedge a session).
+_ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
+    r"(?:"
+    r"\bpytest\b|"
+    r"\btox\b|"
+    r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
+    r"manage\.py\s+runserver|"
+    r"\bnx\s+(?:serve|run)\b|"
+    r"docker\s+compose\s+(?:up|build)|"
+    r"(?:npx\s+)?playwright\s+test|"
+    r"\bnpm\s+(?:run|install|ci)\b|"
+    r"\b(?:pipenv|pip)\s+install\b|"
+    r"\buv\s+sync\b|"
+    r"vite\s+build|"
+    r"\bwebpack\b|"
+    r"\bcargo\s+(?:build|test)\b|"
+    r"\bmake\b|"
+    r"\bsleep\s+\d{2,}|"
+    r"\bfind\s+\S+.*-exec\b|"
+    r"\bls\s+-[a-zA-Z]*R\b"
     r")",
 )
-# Even a read-only-prefixed command is mutating if it edits in place or
-# redirects into a file (``sed -i``, ``awk … > out``) or chains a
-# destructive command. These markers disqualify it from the orchestrator
-# read-only allow-list. Pipes/``;``/``&&`` are intentionally NOT markers
-# (``gh pr view … | jq`` is read-only) — only genuine mutation is
-# disqualifying, so a read-only inspection chain is not false-flagged.
-_BASH_MUTATION_MARKERS_RE = re.compile(
-    r"(?:(?<![0-9&])>>?(?!&)|\s-i\b|\s--in-place\b|\b(?:rm|mv|cp|touch|mkdir|tee|install)\s)",
-)
 
 
-def _active_turn_is_sidechain(transcript_path: str) -> bool | None:
-    """Whether the turn issuing this tool call is a sub-agent (sidechain).
+def _call_is_from_subagent(data: dict) -> bool:
+    """True when the gated tool call originates from a sub-agent.
 
-    Returns ``True`` for a sub-agent turn, ``False`` for the main agent,
-    and ``None`` when the transcript is missing/empty or carries no
-    entry with an explicit ``isSidechain`` boolean (caller fails open).
+    The PreToolUse payload carries a non-empty ``agent_id`` (and
+    ``agent_type``) for every sub-agent call and omits it for the main
+    agent — the only reliable main-vs-sub-agent signal, because the
+    payload's ``transcript_path`` always points at the PARENT session
+    transcript (see the #115 root-cause note above). Empty/absent
+    ``agent_id`` ⇒ main agent.
     """
-    for entry in reversed(_read_transcript_entries(transcript_path)):
-        flag = entry.get("isSidechain")
-        if isinstance(flag, bool):
-            return flag
-    return None
+    return bool(data.get("agent_id"))
 
 
 def _is_orchestration_action(data: dict) -> bool:
-    """True when the tool call is a sanctioned orchestration verb."""
+    """True when the tool call is a sanctioned orchestration verb.
+
+    Only the non-Bash orchestration surfaces are judged here. Bash is
+    decided by the heavy-command denylist in
+    :func:`handle_enforce_orchestrator_boundary` (it needs the
+    ``run_in_background`` flag the denylist consults).
+    """
     tool_name = data.get("tool_name", "")
     if tool_name in _ORCHESTRATION_TOOLS:
         return True
     # MCP orchestration surfaces: Slack/messaging sends, GitHub/GitLab
     # *view*-class MCP reads. A conservative allow-list keeps the gate
     # from flagging the orchestrator's own coordination calls.
-    if tool_name.startswith("mcp__") and (
+    return tool_name.startswith("mcp__") and (
         "send_message" in tool_name or tool_name.endswith(("_view", "_get", "_list", "_read")) or "_view_" in tool_name
-    ):
+    )
+
+
+def _orchestrator_bash_gate_enabled() -> bool:
+    """Whether the heavy-Bash boundary gate is enabled (default True).
+
+    Best-effort read of ``[teatree] orchestrator_bash_gate_enabled`` from
+    ``~/.teatree.toml``, mirroring :func:`_plan_gate_enabled`'s toml-read
+    shape. Fails OPEN to enabled on a missing/broken config so the gate
+    keeps its protective default; an explicit ``false`` is the kill-switch
+    that lets the user disable it with one config line (never a code
+    edit).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
         return True
-    if tool_name == "Bash":
-        command = data.get("tool_input", {}).get("command", "")
-        if _BASH_MUTATION_MARKERS_RE.search(command):
-            return False
-        return bool(_ORCHESTRATOR_BASH_RE.match(command))
-    return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("orchestrator_bash_gate_enabled") is not False
+
+
+def _deny_foreground_agent_dispatch(data: dict) -> bool:
+    """#1442: deny a main-agent foreground ``Agent`` dispatch.
+
+    A foreground dispatch blocks the orchestrator for the entire
+    sub-agent runtime (often 30+ min) — a recurring failure (memory rule
+    ``feedback_always_run_in_background_for_sub_agent_dispatch``). Only
+    the main agent is governed; a sub-agent dispatching its own ``Agent``
+    may pick foreground.
+    """
+    if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is True:
+        return False
+    return emit_pretooluse_deny(
+        "[main-agent-orchestration-guard] Foreground Agent dispatch "
+        "DENIED in main agent context.\n"
+        "Pass `run_in_background: true` to every Agent invocation "
+        "from the main agent.\n"
+        "Memory rule: "
+        "feedback_always_run_in_background_for_sub_agent_dispatch "
+        "(RED CARD recurrence)."
+    )
+
+
+def _deny_heavy_main_agent_bash(data: dict) -> bool:
+    """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
+
+    Passes through when the call is a sanctioned orchestration verb,
+    comes from a sub-agent, is dispatched with ``run_in_background:
+    true``, or does not match the heavy denylist
+    (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+    """
+    if _is_orchestration_action(data) or _call_is_from_subagent(data):
+        return False
+    tool_input = data.get("tool_input", {})
+    if tool_input.get("run_in_background") is True:
+        return False
+    command = tool_input.get("command", "")
+    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+        return False
+    return emit_pretooluse_deny(
+        "BLOCKED: the orchestrator (main agent) ran a command that looks "
+        "long-running / heavy and would tie up this session: "
+        f"`{command[:120]}`.\n"
+        "The orchestrator is delegate-only for heavy work (BLUEPRINT "
+        "§17.4 / §17.8 / §17.6 gate 2). Either pass `run_in_background: "
+        "true` to run it without blocking the session, dispatch a "
+        "sub-agent (Task/Agent) to do it, or — if this is a false "
+        "positive — set `orchestrator_bash_gate_enabled = false` under "
+        "`[teatree]` in ~/.teatree.toml to disable the gate."
+    )
 
 
 def handle_enforce_orchestrator_boundary(data: dict) -> bool:
-    """Flag the MAIN agent doing investigative/implementation work.
+    """Flag the MAIN agent running a HEAVY/long-running Bash command.
 
     Deterministic enforcement of the orchestrator-decides /
     loop-executes topology (BLUEPRINT §17.4 / §17.8 / §17.6 gate 2): the
-    orchestrator is delegate-only. When the main agent (not a sub-agent —
-    see ``_active_turn_is_sidechain``) invokes a mutating/investigative
-    tool that is not a sanctioned orchestration verb, the call is blocked
-    with an actionable message. Sub-agents are unaffected — they are the
-    hands that implement. Fails open when the transcript cannot
-    distinguish the agent (documented limitation), never blocking on an
-    ambiguous signal.
+    orchestrator keeps its session responsive by delegating long work.
+    When the main agent (not a sub-agent — see
+    :func:`_call_is_from_subagent`) runs a foreground Bash command that
+    matches the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`) and
+    is not dispatched with ``run_in_background: true``, the call is
+    blocked with an actionable message. Everything else — quick
+    orientation Bash, ``git`` reads/commits, ``cat``/``ls``/``grep`` —
+    passes. Sub-agents are unaffected: they are the hands that implement
+    and may run any command, heavy or not. The ``Agent`` foreground guard
+    (#1442) rides the same handler.
+
+    Disabled entirely (pass-through) when
+    ``[teatree] orchestrator_bash_gate_enabled = false`` — the one-line
+    kill-switch (#115).
     """
-    if _is_orchestration_action(data):
+    if not _orchestrator_bash_gate_enabled():
         return False
-
     tool_name = data.get("tool_name", "")
-    is_non_orch = tool_name in _NON_ORCHESTRATION_TOOLS or tool_name == "Bash"
-    if not is_non_orch:
+    if tool_name == "Agent":
+        return _deny_foreground_agent_dispatch(data)
+    if tool_name != "Bash":
         return False
-
-    sidechain = _active_turn_is_sidechain(data.get("transcript_path", ""))
-    # True ⇒ sub-agent (allowed to implement). None ⇒ cannot tell ⇒ fail
-    # open. Only an explicit False (main agent) is blocked.
-    if sidechain is not False:
-        return False
-
-    json.dump(
-        {
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"BLOCKED: the orchestrator (main agent) invoked `{tool_name}` — a "
-                "non-orchestration investigative/implementation action. The "
-                "orchestrator is delegate-only (BLUEPRINT §17.4 / §17.8 / §17.6 "
-                "gate 2): it dispatches sub-agents and makes merge/clear "
-                "decisions; it does not itself Edit/Write/Read-sweep/Grep or run "
-                "mutating Bash. Dispatch a sub-agent to do this work (the Task/"
-                "Agent tools), or use a sanctioned orchestration verb."
-            ),
-        },
-        sys.stdout,
-    )
-    return True
+    return _deny_heavy_main_agent_bash(data)
 
 
 # ── PostToolUse: track-active-repo ──────────────────────────────────
@@ -2547,6 +3152,46 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
+def _evict_stale_db_lease_owner(session_id: str) -> None:
+    """Orphan any ``LoopLease`` ``loop-owner`` row not held by ``session_id``.
+
+    #1380 (#1107 follow-up). Context compaction rotates the Claude
+    ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
+    rewritten to the new id, but the DB ``LoopLease`` row name=
+    ``loop-owner`` still carries the OLD id with an unexpired
+    ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
+    subprocesses (#1107) so the next ``t3 loop tick`` resolves the NEW
+    id via the registry fallback and the ``claim_ownership`` CAS fails
+    (DB row's session != new session, lease not expired) — the same
+    session can never own its own loop until ``t3 loop claim
+    --take-over`` runs manually.
+
+    Compaction is the natural eviction point. Whenever the SessionStart
+    handler records a new session as the tick-owner, any stale DB row
+    (session_id != new id, including the empty-string baseline) is
+    orphaned so the new session's next tick CAS-claims it cleanly. The
+    lease stays the authoritative liveness source; the registry is the
+    discovery channel.
+
+    Best-effort: any Django bootstrap / DB error fails open. The hook
+    must never block the SessionStart directive over a DB hiccup.
+    """
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        LoopLease.objects.filter(name="loop-owner").exclude(session_id=session_id).update(
+            session_id="",
+            acquired_at=None,
+            lease_expires_at=None,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
@@ -2605,6 +3250,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     agent_id = data.get("agent_id", "")
 
+    became_owner_after_rotation = False
     with _loop_registry_txn() as box:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
@@ -2622,9 +3268,27 @@ def handle_session_start_bootstrap(data: dict) -> None:
             # No live owner, or this session already owns it (incl. the
             # post-compaction same-session restart — nothing to re-spawn,
             # the cron keeps ticking). This session is the tick-owner.
+            # ``owner is None`` here = a fresh machine OR a dead-owner
+            # prune; both can leave a stale DB lease behind. The
+            # ``same-session refresh`` case (``owner.session_id ==
+            # session_id``) does not need eviction — gating on this flag
+            # spares those SessionStarts the Django startup cost.
+            became_owner_after_rotation = owner is None
             box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
             context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
+
+    # #1380: orphan any stale DB ``loop-owner`` row from a rotated session
+    # (compaction rotated the Claude ``session_id``, leaving the DB lease
+    # under the previous id with an unexpired ``lease_expires_at``). The
+    # lease stays the authoritative liveness source; this aligns it with
+    # the file registry we just rewrote so the new session's next
+    # ``t3 loop tick`` CAS-claims cleanly without ``--take-over``. Outside
+    # the flock — the DB has its own CAS serialization; holding the
+    # registry flock across a Django bootstrap would needlessly stall
+    # sibling SessionStart hooks.
+    if became_owner_after_rotation:
+        _evict_stale_db_lease_owner(session_id)
 
     # OSC write is a tty side effect, not registry state — keep it out of
     # the flock critical section.
@@ -2647,7 +3311,21 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if advisory:
         context = f"{context}\n\n---\n\n{advisory}"
 
-    json.dump({"additionalContext": context}, sys.stdout)
+    # #1452: the harness silently drops the legacy flat top-level
+    # ``{"additionalContext": ...}`` form for SessionStart events; the
+    # documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
+    # requires the nested envelope. Confirmed empirically: 24 compactions
+    # in session a1e3d2d8-… emitted the flat form and zero of them
+    # injected the snapshot text into the post-compact model context.
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            },
+        },
+        sys.stdout,
+    )
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
@@ -3548,8 +4226,127 @@ def handle_block_direct_commands(data: dict) -> bool:
     reason = _deny_match(command)
     if reason is None:
         return False
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
+
+
+# ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
+#
+# ``gh pr merge`` / ``glab mr merge`` bypass the FSM coherence mechanism
+# (ledger update, MergeClear validation, SHA-binding, privacy/AI-signature
+# scan, mark_merged), so a TEATREE-MANAGED repo must use the keystone
+# transition ``t3 <overlay> ticket merge <clear_id>`` (BLUEPRINT §17.1
+# invariant 8 / §17.4). But the previous static-regex block hard-denied
+# EVERY repo — a lightweight repo with no ticket/overlay FSM had no merge
+# path at all, a permanent lockout (#126).
+#
+# This cwd-aware gate carves out the unmanaged case: a merge is ALLOWED
+# only when the cwd repo is confidently NOT teatree-managed (no overlay
+# claims it). The gate stays STRICT for managed repos AND fail-safe on
+# uncertainty: when the cwd or its slug cannot be resolved, the repo is
+# treated as managed and the merge is BLOCKED — detection failure never
+# weakens the gate.
+
+_OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+_OUT_OF_BAND_MERGE_REASON = (
+    "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
+    "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
+    "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
+    "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
+    "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
+    "teatree-managed and the cwd could not be resolved, run the merge from inside "
+    "the repo's working tree so the gate can classify it."
+)
+
+
+def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
+    """Return ``(repo_slug_substrings, overlay_base_paths)`` from config.
+
+    Offline read of ``~/.teatree.toml`` (mirroring :func:`_load_protected_branches`'s
+    shape) collecting the two signals that mark a repo teatree-managed: the
+    per-overlay repo slug lists (``workspace_repos`` / ``frontend_repos`` /
+    ``public_repos``) and each overlay's ``path`` working-tree base. Teatree
+    core's own slug (``souliane/teatree``) is always included. Fails to an
+    empty signal set on a missing/broken config — the caller treats "no
+    resolvable signal + a resolvable slug" as unmanaged, never as a license
+    to weaken the gate on uncertainty.
+    """
+    import tomllib  # noqa: PLC0415
+
+    slugs: list[str] = ["souliane/teatree"]
+    paths: list[Path] = []
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return slugs, paths
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return slugs, paths
+    for overlay_cfg in (config.get("overlays") or {}).values():
+        if not isinstance(overlay_cfg, dict):
+            continue
+        for key in ("workspace_repos", "frontend_repos", "public_repos"):
+            slugs.extend(str(s).strip().lower() for s in overlay_cfg.get(key, []) if str(s).strip())
+        base = overlay_cfg.get("path")
+        if isinstance(base, str) and base.strip():
+            with contextlib.suppress(OSError, RuntimeError):
+                paths.append(Path(base).expanduser().resolve())
+    return slugs, paths
+
+
+def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
+    """Whether *cwd* belongs to a teatree-managed repo.
+
+    Returns ``True`` (managed — keep the keystone-merge block), ``False``
+    (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
+    caller fails safe and BLOCKS). Reuses ``publish_surface._slug_for_cwd``
+    for slug resolution so the host/owner/repo shape matches the
+    private-repo carve-out's.
+    """
+    slugs, paths = _overlay_managed_repo_signals()
+    for base in paths:
+        with contextlib.suppress(OSError, RuntimeError):
+            cwd.resolve().relative_to(base)
+            return True
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.hooks import publish_surface  # noqa: PLC0415
+
+        slug = publish_surface._slug_for_cwd(cwd).lower()  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    if not slug:
+        return None
+    return any(entry in slug for entry in slugs)
+
+
+def handle_block_out_of_band_merge(data: dict) -> bool:
+    """Block a raw ``gh pr merge`` / ``glab mr merge`` on a managed repo.
+
+    Carve-out for the permanent-lockout case (#126): a merge is allowed only
+    when the cwd repo is confidently NOT teatree-managed. Managed repos and
+    any case the gate cannot classify stay BLOCKED — fail-safe on uncertainty.
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _OUT_OF_BAND_MERGE_RE.search(command):
+        return False
+    cwd = _resolve_cwd_repo(data)
+    if cwd is None:
+        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+    managed = _cwd_is_teatree_managed(cwd)
+    if managed is False:
+        return False
+    return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
@@ -3808,8 +4605,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
         "Proceed with any work that does not depend on the answer; the response will surface "
         "in a future turn's additionalContext when the user resolves it."
     )
-    json.dump({"permissionDecision": "deny", "permissionDecisionReason": reason}, sys.stdout)
-    return True
+    return emit_pretooluse_deny(reason)
 
 
 # ── UserPromptSubmit: inject pending-question backlog into context ────────────
@@ -4388,6 +5184,7 @@ _HANDLERS: dict[str, list] = {
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
+        handle_block_out_of_band_merge,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
@@ -4406,6 +5203,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
     ],
+    "TaskCreated": [handle_enforce_skill_loading_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
@@ -4433,11 +5231,20 @@ def main() -> None:
     if not data:
         return
 
+    deny_emitted = False
     for handler in handlers:
         # Handlers that return True emitted a deny — stop the chain to avoid
         # writing multiple JSON objects to stdout (which would be invalid JSON).
         if handler(data) is True:
+            deny_emitted = True
             break
+
+    # Claude Code 2.1.146 changelog: PreToolUse hooks that emit deny JSON
+    # are only honoured when the process exits with code 2. An exit-0 deny
+    # is silently dropped and falls through to the auto-mode classifier.
+    # See #1447.
+    if deny_emitted:
+        sys.exit(2)
 
 
 if __name__ == "__main__":
