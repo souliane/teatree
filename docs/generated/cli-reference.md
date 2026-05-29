@@ -494,31 +494,49 @@ Usage: t3 review post-draft-note [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file                 TEXT     File path for inline comment — REQUIRED      │
-│                                 unless --general is passed.                  │
-│ --line                 INTEGER  Line number in the new file (must be an      │
-│                                 added line) — REQUIRED unless --general is   │
-│                                 passed.                                      │
-│ --general                       Post a general (MR-wide) note instead of an  │
-│                                 inline one. Mutually exclusive with          │
-│                                 --file/--line. Without this flag, --file AND │
-│                                 --line are both required — omitting either   │
-│                                 is refused upfront so a missed-flag          │
-│                                 invocation can no longer silently degrade an │
-│                                 intended-inline draft into a general note    │
-│                                 (souliane/teatree#72).                       │
-│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
-│                                 'missing/wrong/broken' finding               │
-│                                 (souliane/teatree#1280). Required when the   │
-│                                 note asserts something is                    │
-│                                 missing/wrong/broken/stale or does not       │
-│                                 exist. JSON keys: master_check_paths (list), │
-│                                 ticket_dep_refs (list),                      │
-│                                 helper_indirection_paths (list),             │
-│                                 recent_merge_sweep_query (str), confidence   │
-│                                 ('verified'|'speculative'). Schema:          │
-│                                 teatree.cli.review_evidence_gate.FindingEvi… │
-│ --help                          Show this message and exit.                  │
+│ --file                      TEXT     File path for inline comment — REQUIRED │
+│                                      unless --general is passed.             │
+│ --line                      INTEGER  Line number in the new file (must be an │
+│                                      added line) — REQUIRED unless --general │
+│                                      is passed.                              │
+│ --general                            Post a general (MR-wide) note instead   │
+│                                      of an inline one. Mutually exclusive    │
+│                                      with --file/--line. Without this flag,  │
+│                                      --file AND --line are both required —   │
+│                                      omitting either is refused upfront so a │
+│                                      missed-flag invocation can no longer    │
+│                                      silently degrade an intended-inline     │
+│                                      draft into a general note               │
+│                                      (souliane/teatree#72).                  │
+│ --evidence-json             TEXT     Structured-evidence record (JSON) for a │
+│                                      'missing/wrong/broken' finding          │
+│                                      (souliane/teatree#1280). Required when  │
+│                                      the note asserts something is           │
+│                                      missing/wrong/broken/stale or does not  │
+│                                      exist. JSON keys: master_check_paths    │
+│                                      (list), ticket_dep_refs (list),         │
+│                                      helper_indirection_paths (list),        │
+│                                      recent_merge_sweep_query (str),         │
+│                                      confidence ('verified'|'speculative').  │
+│                                      Schema:                                 │
+│                                      teatree.cli.review_evidence_gate.Findi… │
+│ --allow-long-review                  Escape the colleague-MR review-shape    │
+│                                      cap (souliane/teatree#1114) for ONE     │
+│                                      post — the documented over-deny escape  │
+│                                      (#126), consistent with the sibling     │
+│                                      --quote-ok / --allow-banned-term        │
+│                                      overrides. Use only when a long-form    │
+│                                      review on a colleague's MR is genuinely │
+│                                      authorized; the cap still fires by      │
+│                                      default.                                │
+│ --allow-todo-blocker                 Escape the TODO-anchor blocker gate     │
+│                                      (souliane/teatree#1186) for ONE post —  │
+│                                      the documented over-deny escape (#126). │
+│                                      Use only when a blocker anchored on an  │
+│                                      author-marked TODO/FIXME genuinely must │
+│                                      be addressed in THIS MR; the gate still │
+│                                      refuses by default.                     │
+│ --help                               Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -537,6 +555,10 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
  :class:`~teatree.core.models.live_post_approval.LivePostApproval`
  for the MR (mint via ``t3 review approve-live-post``).
 
+ ``--allow-long-review`` / ``--allow-todo-blocker`` are the documented
+ per-post escapes for the colleague-MR shape and TODO-anchor gates
+ respectively (#126), mirroring the sibling override flags.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    repo      TEXT     GitLab project path (e.g., my-org/my-repo)           │
 │                         [required]                                           │
@@ -544,30 +566,48 @@ Usage: t3 review post-comment [OPTIONS] REPO MR NOTE
 │ *    note      TEXT     Comment text (markdown) [required]                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --file                 TEXT     File path for inline comment (omit for       │
-│                                 general note)                                │
-│ --line                 INTEGER  Line number in the new file (must be an      │
-│                                 added line)                                  │
-│                                 [default: 0]                                 │
-│ --live                          Publish a colleague-visible comment directly │
-│                                 instead of creating a draft. Requires a      │
-│                                 single-use Slack-recorded approval token     │
-│                                 minted via `t3 review approve-live-post      │
-│                                 <mr-url> --slack-ts <ts>` (#1207). The       │
-│                                 default (no flag) creates a DRAFT and DMs    │
-│                                 the user the link — safe-by-default.         │
-│ --evidence-json        TEXT     Structured-evidence record (JSON) for a      │
-│                                 'missing/wrong/broken' finding               │
-│                                 (souliane/teatree#1280). Required when the   │
-│                                 note asserts something is                    │
-│                                 missing/wrong/broken/stale or does not       │
-│                                 exist. JSON keys: master_check_paths (list), │
-│                                 ticket_dep_refs (list),                      │
-│                                 helper_indirection_paths (list),             │
-│                                 recent_merge_sweep_query (str), confidence   │
-│                                 ('verified'|'speculative'). Schema:          │
-│                                 teatree.cli.review_evidence_gate.FindingEvi… │
-│ --help                          Show this message and exit.                  │
+│ --file                      TEXT     File path for inline comment (omit for  │
+│                                      general note)                           │
+│ --line                      INTEGER  Line number in the new file (must be an │
+│                                      added line)                             │
+│                                      [default: 0]                            │
+│ --live                               Publish a colleague-visible comment     │
+│                                      directly instead of creating a draft.   │
+│                                      Requires a single-use Slack-recorded    │
+│                                      approval token minted via `t3 review    │
+│                                      approve-live-post <mr-url> --slack-ts   │
+│                                      <ts>` (#1207). The default (no flag)    │
+│                                      creates a DRAFT and DMs the user the    │
+│                                      link — safe-by-default.                 │
+│ --evidence-json             TEXT     Structured-evidence record (JSON) for a │
+│                                      'missing/wrong/broken' finding          │
+│                                      (souliane/teatree#1280). Required when  │
+│                                      the note asserts something is           │
+│                                      missing/wrong/broken/stale or does not  │
+│                                      exist. JSON keys: master_check_paths    │
+│                                      (list), ticket_dep_refs (list),         │
+│                                      helper_indirection_paths (list),        │
+│                                      recent_merge_sweep_query (str),         │
+│                                      confidence ('verified'|'speculative').  │
+│                                      Schema:                                 │
+│                                      teatree.cli.review_evidence_gate.Findi… │
+│ --allow-long-review                  Escape the colleague-MR review-shape    │
+│                                      cap (souliane/teatree#1114) for ONE     │
+│                                      post — the documented over-deny escape  │
+│                                      (#126), consistent with the sibling     │
+│                                      --quote-ok / --allow-banned-term        │
+│                                      overrides. Use only when a long-form    │
+│                                      review on a colleague's MR is genuinely │
+│                                      authorized; the cap still fires by      │
+│                                      default.                                │
+│ --allow-todo-blocker                 Escape the TODO-anchor blocker gate     │
+│                                      (souliane/teatree#1186) for ONE post —  │
+│                                      the documented over-deny escape (#126). │
+│                                      Use only when a blocker anchored on an  │
+│                                      author-marked TODO/FIXME genuinely must │
+│                                      be addressed in THIS MR; the gate still │
+│                                      refuses by default.                     │
+│ --help                               Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

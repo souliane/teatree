@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "privacy_scan.py"
 
 
@@ -29,17 +31,60 @@ def _run(stdin: str) -> subprocess.CompletedProcess[str]:
 
 
 class TestPrivacyScanScriptEntrypoint:
-    def test_planted_api_key_exits_nonzero(self) -> None:
+    def test_planted_api_key_exits_findings_code(self) -> None:
         result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
 
-    def test_internal_home_path_exits_nonzero(self) -> None:
+    def test_internal_home_path_exits_findings_code(self) -> None:
         result = _run("see /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
 
     def test_clean_text_exits_zero(self) -> None:
         result = _run("a perfectly ordinary line of prose\n")
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestPrivacyScanDedicatedFindingsExitCode:
+    """A genuine finding exits on a dedicated code distinct from any crash (#126 gap 3).
+
+    The pre-push leak gate previously treated ANY non-zero scan exit as a
+    finding and BLOCKED — so a scanner crash, a missing script, or an
+    argparse usage error (all non-zero, none of them a real finding) wedged
+    every push closed. Reserving a dedicated ``PRIVACY_FINDINGS_EXIT_CODE``
+    for "findings present" lets the hook block on THAT code only and fail
+    open on every other non-zero.
+    """
+
+    def test_findings_exit_code_is_distinct_from_generic_failure_codes(self) -> None:
+        """The findings code must not collide with the generic exception (1) or usage (2) codes."""
+        assert PRIVACY_FINDINGS_EXIT_CODE not in {0, 1, 2}
+
+    def test_genuine_finding_uses_the_dedicated_code(self) -> None:
+        result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+
+    def test_argparse_usage_error_is_not_the_findings_code(self) -> None:
+        """A bad flag (typer usage error) must exit on a code the hook reads as 'crash, allow'."""
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "-", "--no-such-flag"],
+            input="clean\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert proc.returncode != PRIVACY_FINDINGS_EXIT_CODE, proc.stdout + proc.stderr
+
+    def test_missing_input_file_is_not_the_findings_code(self) -> None:
+        """A missing input file (crash) must NOT masquerade as a finding."""
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "/no/such/file/exists.txt"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode != 0
+        assert proc.returncode != PRIVACY_FINDINGS_EXIT_CODE, proc.stdout + proc.stderr
 
 
 class TestPrivacyScanCallerVisibleSummary:
@@ -56,7 +101,7 @@ class TestPrivacyScanCallerVisibleSummary:
 
     def test_planted_secret_summary_is_on_stdout_for_piped_caller(self) -> None:
         result = _run("token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         # The caller (run_script / the gate) reads stdout — the finding
         # detail must be there, not only in a stderr rich table.
         assert "api_key" in result.stdout
@@ -65,7 +110,7 @@ class TestPrivacyScanCallerVisibleSummary:
 
     def test_internal_path_category_and_line_visible_on_stdout(self) -> None:
         result = _run("ok\nsee /Users/someone/secret/path\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "home_path" in result.stdout
         assert "2" in result.stdout  # finding is on the second line
 
@@ -120,13 +165,13 @@ class TestPrivacyScanAllowAnnotation:
             "real = glpat-YYYYYYYYYYYYYYYY\n"  # privacy-scan:allow self-fixture
         )
         result = _run(text)
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
 
     def test_annotation_only_exempts_its_own_line_not_a_substring_match(self) -> None:
         # The annotation must be the literal marker, not any line that
         # merely mentions the word "allow".
         result = _run("token = glpat-XXXXXXXXXXXXXXXX  # allow this please\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
 
 
 class TestDecoratorIsNotAnEmail:
@@ -170,20 +215,20 @@ class TestDecoratorIsNotAnEmail:
     )
     def test_real_email_still_caught(self, line: str) -> None:
         result = _run(line + "\n")
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "email" in result.stdout
 
     def test_real_secret_on_same_line_as_decorator_still_flagged(self) -> None:
         # A decorator that is *not* an email must not mask a genuine
         # secret sharing the line.
         result = _run("@pytest.fixture  # token = glpat-XXXXXXXXXXXXXXXX\n")  # privacy-scan:allow self-fixture
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "api_key" in result.stdout
 
     def test_real_email_on_same_line_as_decorator_still_flagged(self) -> None:
         line = "@app.route  # owner someone@gmail.com"  # privacy-scan:allow (dummy example address, test input)
         result = _run(line + "\n")
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "email" in result.stdout
 
 
@@ -221,5 +266,5 @@ class TestGitSshRemoteIsNotAnEmail:
         # elsewhere on the same line.
         line = "git@github.com:o/r.git  # owner someone@gmail.com"  # privacy-scan:allow self-fixture
         result = _run(line + "\n")
-        assert result.returncode == 1, result.stdout + result.stderr
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "email" in result.stdout

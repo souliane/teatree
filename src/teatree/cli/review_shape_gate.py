@@ -114,18 +114,23 @@ def _count_words(body: str) -> int:
     return len(body.split())
 
 
-def check_review_shape(
+def check_review_shape(  # noqa: PLR0913 — gate entry-point; each kwarg is a documented gate input (MR coordinate + body + inline flag + the #126 override).
     *,
     api: "GitLabHTTPClient",
     encoded_repo: str,
     mr: int,
     body: str,
     inline: bool,
+    allow_long_review: bool = False,
 ) -> str:
     """Return a non-empty steering error when the colleague-MR shape rule is breached.
 
     Returns ``""`` (proceed) when:
 
+    * ``allow_long_review`` is set — the documented escape for a
+        legitimately long-form colleague-MR review (the CLI surfaces this
+        as ``--allow-long-review``, consistent with the sibling override
+        pattern), OR
     * the MR is the current identity's own MR (carve-out), OR
     * the body fits both the paragraph cap
         (:data:`COLLEAGUE_PROSE_CAP_PARAGRAPHS`) and the word cap
@@ -135,6 +140,8 @@ def check_review_shape(
     word count) so the agent knows exactly what to tighten, and points
     at the inline ``Nit:`` form that satisfies the rule.
     """
+    if allow_long_review:
+        return ""
     if not body:
         return ""
     if not is_colleague_mr(api, encoded_repo, mr):
