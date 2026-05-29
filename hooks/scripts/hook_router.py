@@ -532,10 +532,75 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 
 
 # ── PreToolUse: enforce-skill-loading ───────────────────────────────
+#
+# The gate blocks Bash/Edit/Write until every suggested-but-unloaded
+# skill is loaded. A suggestion lands in ``<session>.pending`` from the
+# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# lifecycle/intent detection.
+#
+# Fail-open contract (the lockout class this closes): a config entry can
+# map a keyword to a skill NAME that no longer resolves (renamed or
+# removed skill — e.g. ``ac-auditing-repos`` after the rename to
+# ``ac-reviewing-codebase``). Demanding a skill the ``Skill`` tool cannot
+# load ("Unknown skill") would block ALL Bash/Edit/Write for the whole
+# session with no in-session self-rescue. So before blocking, the gate
+# verifies each required name resolves to a loadable skill; an
+# unresolvable name does NOT block — it emits a one-line warning naming
+# the stale skill + the config file and is dropped from the demand. Only
+# skills that genuinely resolve but are not yet loaded enforce load-first.
+#
+# Resolution reuses the canonical :func:`_skill_search_dirs` (defined
+# below for skill-usage tracking) so the gate scans the SAME dirs the
+# loader builds its trigger index from — the repo ``skills/``
+# source-of-truth (lifecycle skills) plus the agent install dirs
+# (supplementary skills), honouring the ``T3_SKILL_SEARCH_DIRS`` override.
+# ``<session>.pending`` carries bare names (lifecycle ``code``/``debug``,
+# supplementary ``ac-*``) AND overlay ``skill_path`` values of the shape
+# ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
+# gate keeps enforcing load-first for a genuinely-installed overlay skill
+# while still failing open on a stale name.
+
+
+def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
+    """True iff *name* resolves to a loadable skill in *search_dirs*.
+
+    Resolution is deliberately CONSERVATIVE: a name resolves only when its
+    own skill directory exists VERBATIM. Two shapes reach
+    ``<session>.pending``. A bare name (lifecycle ``code``, supplementary
+    ``ac-*``) matches ``<dir>/<name>/SKILL.md``. An overlay ``skill_path``
+    (``skills/<skill>/SKILL.md``, emitted by the overlay generator) matches
+    when the literal path is a file under a search dir (or its parent), or
+    when its ``<skill>`` parent-dir name exists as a skill dir.
+
+    No namespace ``:``-stripping is performed in either branch — stripping
+    would mis-resolve a stale ``old:code`` / ``skills/old:code/SKILL.md``
+    onto an installed bare ``code`` and re-introduce the very fail-closed
+    lockout class this gate exists to prevent. A name that resolves only by
+    discarding its namespace is treated as unresolvable (fail open).
+
+    Symlinked skill dirs (the common install shape) resolve through
+    ``is_file``.
+    """
+    stripped = name.rstrip("/")
+    if stripped.endswith("/SKILL.md"):
+        # Path-shaped overlay ``skill_path``: literal path, then the
+        # ``<skill>`` parent-dir name — both taken verbatim.
+        if any((d.parent / name).is_file() or (d / name).is_file() for d in search_dirs):
+            return True
+        segment = stripped[: -len("/SKILL.md")].rsplit("/", 1)[-1]
+    else:
+        segment = stripped.rsplit("/", 1)[-1]
+    if not segment or segment == "SKILL.md":
+        return False
+    return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
 
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when suggested skills haven't been loaded."""
+    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+
+    Fails open on a stale/unresolvable required skill (see the module
+    comment above): such a name is warned about, never blocked on.
+    """
     session_id = data.get("session_id", "")
     if not session_id:
         return False
@@ -545,12 +610,27 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         return False
 
     loaded = set(_read_lines(_state_file(session_id, "skills")))
-    unloaded = [f"/{s}" for s in pending_lines if s not in loaded]
+    unloaded = [s for s in pending_lines if s not in loaded]
     if not unloaded:
         return False
 
+    search_dirs = _skill_search_dirs()
+    enforceable = [s for s in unloaded if _skill_resolves(s, search_dirs)]
+    stale = [s for s in unloaded if s not in enforceable]
+
+    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
+    for name in stale:
+        sys.stderr.write(
+            f"WARNING: skill-loading gate skipped unresolvable skill '{name}' "
+            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
+        )
+
+    if not enforceable:
+        return False
+
+    skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
-        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {' '.join(unloaded)}. "
+        f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
     return emit_pretooluse_deny(reason)
