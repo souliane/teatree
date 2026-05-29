@@ -90,6 +90,9 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "resource.pressure_warn": "action_needed",
     "resource.cleanup_failed": "action_needed",
     "resource.ram_kill_candidate": "action_needed",
+    # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
+    # review; the completion path routes through the mechanical handler below.
+    "todo.orphaned": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -221,6 +224,9 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #128 resource-pressure CRITICAL → mechanical freeing pass (allow-list
     # cache purge / idle-container stop; flag-gated worktree GC + SIGTERM).
     "resource.cleanup_needed": ("mechanical", "free_resources"),
+    # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
+    # handler RE-checks then completes it (never bulk, never on a stale read).
+    "todo.completion_detected": ("mechanical", "todo_completion"),
 }
 
 

@@ -234,6 +234,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "max_worktree_gc_per_tick": int,
     "allow_destructive_ram": bool,
     "ram_kill_allowlist": _parse_excluded_skills,
+    "todo_sweep_disabled": bool,
+    "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "pull_main_clone_disabled": bool,
@@ -455,6 +457,15 @@ class UserSettings:
     # process is ever killed even when ``allow_destructive_ram = true``.
     allow_destructive_ram: bool = False
     ram_kill_allowlist: list[str] = field(default_factory=list)
+    # #129 TODO-sweep scanner — per-overlay; verifies open Task rows against
+    # their artifact's terminal state (issue closed / PR merged) and completes
+    # only on durable proof, never in bulk and never on a stale read. On by
+    # default; ``todo_sweep_disabled = true`` is the escape hatch.
+    # ``todo_sweep_recheck_interval_hours`` is the per-task anti-thrash window
+    # (a task swept within it is skipped this tick) and the idempotency window
+    # for the atomic ``last_sweep_check_ts`` stamp.
+    todo_sweep_disabled: bool = False
+    todo_sweep_recheck_interval_hours: int = 1
     # #1397 Cap on concurrent locally-running stacks for a single overlay.
     # Each running worktree (``services_up``/``ready``) holds docker
     # containers, browsers, language servers, and CI processes — on a
@@ -599,6 +610,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
         allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
         ram_kill_allowlist=_parse_excluded_skills(teatree.get("ram_kill_allowlist", [])),
+        todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
+        todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,

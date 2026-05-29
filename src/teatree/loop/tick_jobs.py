@@ -55,6 +55,7 @@ from teatree.loop.scanners import (
     StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
+    TodoSweepScanner,
 )
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
@@ -374,6 +375,29 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
         repos=repos,
         api=GhCodexPrApi(token=github_token),
         overlay=backend.name,
+    )
+
+
+def _todo_sweep_scanner_for(backend: OverlayBackends) -> TodoSweepScanner | None:
+    """Build a per-overlay TODO-sweep scanner (#129).
+
+    Verifies open Task rows against their artifact's terminal state via the
+    overlay's ``is_issue_done`` hook. Returns ``None`` when the overlay has no
+    Python class (the scanner needs the overlay object as its terminal-state
+    oracle) or when ``todo_sweep_disabled = true`` (the escape hatch). The
+    per-task recheck/idempotency window comes from
+    ``todo_sweep_recheck_interval_hours``.
+    """
+    overlay = backend.overlay
+    if overlay is None:
+        return None
+    settings = _effective_settings_for_overlay(backend.name)
+    if settings.todo_sweep_disabled:
+        return None
+    return TodoSweepScanner(
+        overlay=overlay,
+        overlay_name=backend.name,
+        recheck_interval_hours=settings.todo_sweep_recheck_interval_hours,
     )
 
 
@@ -762,6 +786,12 @@ def _jobs_for_overlay_backend(
     arch_scanner = _architectural_review_scanner_for(backend)
     if arch_scanner is not None:
         jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
+    # #129 TODO-sweep scanner — verifies open Task rows against artifact
+    # terminal state and completes only on durable proof. Per-overlay
+    # because the Task/Ticket rows it walks are overlay-scoped.
+    todo_sweep_scanner = _todo_sweep_scanner_for(backend)
+    if todo_sweep_scanner is not None:
+        jobs.append(_ScannerJob(scanner=todo_sweep_scanner, overlay=tag))
     # #1257 PR-sweep scanner — auto-merge-green-PRs sibling wired
     # per-overlay (not per-host). The overlay's followup-repos list
     # (full ``owner/repo`` slugs) is the sweep target.

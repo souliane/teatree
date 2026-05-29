@@ -46,6 +46,7 @@ from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.stale_tickets import StaleTicketsScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.ticket_dispositions import TicketDispositionScanner
+from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 
 __all__ = [
     "ActiveTicketsScanner",
@@ -83,4 +84,5 @@ __all__ = [
     "StaleTicketsScanner",
     "TicketCompletionScanner",
     "TicketDispositionScanner",
+    "TodoSweepScanner",
 ]
