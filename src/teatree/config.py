@@ -208,6 +208,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
     "review_nag_enabled": bool,
+    "orchestrator_bash_gate_enabled": bool,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -434,6 +435,16 @@ class UserSettings:
     # ``[overlays.<name>].review_nag_enabled = true`` only after the
     # concurrency + merged-MR fixes are validated.
     review_nag_enabled: bool = False
+    # Orchestrator-execution-boundary gate (#115, §17.6 gate 2). When
+    # enabled (default), the main agent is blocked from running a HEAVY /
+    # long-running foreground Bash command (test suite, build, dev
+    # server, long sleep, full-tree sweep); ``run_in_background: true`` is
+    # the escape hatch and sub-agents are unrestricted. The one-line
+    # kill-switch ``[teatree] orchestrator_bash_gate_enabled = false``
+    # disables the gate entirely (also read directly by the hook layer's
+    # ``_orchestrator_bash_gate_enabled`` so a `t3 update` that reinstalls
+    # the gate stays off until the user flips it back).
+    orchestrator_bash_gate_enabled: bool = True
 
 
 @dataclass
@@ -512,6 +523,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
         review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
+        orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
