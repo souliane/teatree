@@ -306,6 +306,33 @@ def _resolve_user_id() -> str:
     return str(teatree_cfg.get("slack_user_id", ""))
 
 
+def resolve_user_channel() -> str:
+    """Resolve the Slack DM channel id the user reads (overlay override → global → empty).
+
+    The canonical resolver for the ``slack_user_channel`` config key,
+    walking the SAME overlay→global→empty order :func:`_resolve_user_id`
+    uses for ``slack_user_id``. Both DM-channel call sites (the bot→user
+    DM path and the live-post-approval CLI verifier) consult this single
+    helper, so a change to the resolution order can never drift between
+    two private copies (the config-trap the #126 redesign closes).
+
+    An empty return means no channel is configured; the caller treats it
+    as "open a DM to the resolved user_id" rather than pinning to a
+    specific ``D...`` channel.
+    """
+    import os  # noqa: PLC0415
+
+    cfg = load_config().raw
+    overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
+    overlays = cfg.get("overlays") or {}
+    if overlay_name and isinstance(overlays.get(overlay_name), dict):
+        channel = overlays[overlay_name].get("slack_user_channel", "")
+        if channel:
+            return str(channel)
+    teatree_cfg = cfg.get("teatree") or {}
+    return str(teatree_cfg.get("slack_user_channel", ""))
+
+
 def _maybe_linkify(text: str) -> str:
     """Apply :func:`slack_linkify` using the active overlay's resolvers, if any.
 
