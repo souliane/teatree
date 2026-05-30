@@ -27,7 +27,7 @@ def _auto_ship_enabled() -> bool:
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
-    from teatree.core.models.types import TicketExtra, TicketSiblingFields
+    from teatree.core.models.types import ReviewSkillRun, TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
 
@@ -863,6 +863,16 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             for field, value in (also_set or {}).items():
                 setattr(self, field, value)
             type(self).objects.filter(pk=self.pk).update(extra=merged, **(also_set or {}))
+
+    def record_review_skill_run(self, skill: str) -> None:
+        """Stamp durable evidence that the deep-review ``skill`` ran (#1539).
+
+        Written through the canonical locked ``merge_extra`` primitive so a
+        concurrent ``extra`` writer's key survives. The timestamp is UTC ISO
+        so the reviewing-phase gate's audit trail is timezone-unambiguous.
+        """
+        run: ReviewSkillRun = {"skill": skill, "at": timezone.now().isoformat()}
+        self.merge_extra(set_keys={"review_skill_run": run})
 
     def append_context(self, entry: str) -> str:
         r"""Append a timestamped block to the durable per-ticket knowledge store (#627).

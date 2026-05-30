@@ -12,8 +12,11 @@ from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.models import Ticket
 from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.phases import normalize_phase, phase_transition
+from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["Command", "ReviewSkillEvidenceError", "ReviewerAttestationError"]
 
 
 class ReviewerAttestationError(RuntimeError):
@@ -67,6 +70,10 @@ class Command(TyperCommand):
         # false-success.
         if canonical == "reviewing":
             _assert_reviewer_attestation(ticket, agent_id)
+            # Gate C (#1539): when a review skill is configured, the reviewing
+            # attestation must be backed by durable evidence the skill ran —
+            # NO-OP when ``review_skill`` is unset (opt-in default preserved).
+            check_review_skill_evidence(ticket)
         # #801 SSOT: the canonical earliest+locked policy — never the
         # old -pk-latest pick nor a raw blank-agent_id create. The
         # explicit --agent-id seeds a created session's identity.
@@ -133,6 +140,20 @@ class Command(TyperCommand):
             cleared,
         )
         return f"Cleared phase ledger for ticket {ticket.pk} across {cleared} session(s)"
+
+    @command(name="record-review-skill-run")
+    def record_review_skill_run(self, ticket_id: str, skill: str) -> str:
+        """Record durable evidence that the deep-review ``skill`` ran (#1539).
+
+        Stamps ``ticket.extra['review_skill_run']`` (skill name + UTC ISO
+        timestamp) so the reviewing-phase gate can attest that the configured
+        ``review_skill`` actually executed before ``visit-phase ... reviewing``
+        records the attestation.
+        """
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        ticket.record_review_skill_run(skill)
+        return f"Recorded review-skill run {skill!r} for ticket {ticket.pk}"
 
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:

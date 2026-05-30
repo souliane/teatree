@@ -3944,9 +3944,12 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ visit-phase   Mark a phase as visited on the ticket's latest session.        │
-│ clear-ledger  Clear a reused ticket's stale phase ledger (sanctioned         │
-│               session-retire).                                               │
+│ visit-phase              Mark a phase as visited on the ticket's latest      │
+│                          session.                                            │
+│ clear-ledger             Clear a reused ticket's stale phase ledger          │
+│                          (sanctioned session-retire).                        │
+│ record-review-skill-run  Record evidence the configured review skill ran     │
+│                          (reviewing-phase gate).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4007,6 +4010,27 @@ Usage: t3 teatree lifecycle clear-ledger [OPTIONS] TICKET_ID
 │                                phase-ledger clear.                           │
 │                                [default: no-confirm]                         │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-review-skill-run`
+
+```
+Usage: t3 teatree lifecycle record-review-skill-run [OPTIONS] TICKET_ID SKILL
+
+ Record durable evidence that the deep-review ``skill`` ran (#1539).
+
+ Stamps ``ticket.extra['review_skill_run']`` (skill name + UTC ISO
+ timestamp) so the reviewing-phase gate can attest that the configured
+ ``review_skill`` actually executed before ``visit-phase ... reviewing``
+ records the attestation.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+│ *    skill          TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

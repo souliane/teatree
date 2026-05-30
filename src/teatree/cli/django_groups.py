@@ -161,6 +161,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         [
             ("visit-phase", "Mark a phase as visited on the ticket's latest session."),
             ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
+            ("record-review-skill-run", "Record evidence the configured review skill ran (reviewing-phase gate)."),
         ],
     ),
     "env": DjangoGroup(
