@@ -21,7 +21,7 @@ from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.worktree_recovery import capture_recovery_artifact
+from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -355,19 +355,66 @@ def _remove_git_worktree(
     # completed-but-uncommitted change set): a dirty or unpushed worktree gets a
     # restorable bundle + working-tree diff under the system temp dir first. A
     # clean, fully-pushed worktree captures nothing — the hard-delete path is
-    # unchanged. A capture failure is surfaced (not raised): blocking the prune
-    # would re-create the stuck-cleanup state #835 explicitly rejects, so we log
-    # loudly, record the error, and still remove the worktree.
+    # unchanged.
     try:
         capture_recovery_artifact(repo_main, wt_path, worktree)
     except Exception as exc:
+        # #1506 — under force the recovery artifact is the ONLY protection, so a
+        # capture failure must not silently fall through to the destructive
+        # remove. Re-check (with the fail-closed probe) whether this worktree
+        # actually had work to lose; if so, refuse the teardown for it just like
+        # the non-force #706 guard does — raise before the destructive
+        # remove + the ``worktree.delete()`` DB-row drop, so the worktree is
+        # left intact on disk AND still tracked (no orphaned-on-disk row). #835's
+        # non-blocking intent is preserved for the safe case: a clean +
+        # fully-pushed worktree (where the failed capture was a no-op anyway)
+        # falls through and is still reaped.
         logger.exception("recovery capture failed for %s (%s)", worktree.repo_path, worktree.branch)
+        if _worktree_has_work_to_lose(repo_main, wt_path, worktree):
+            msg = (
+                f"{worktree.repo_path} ({worktree.branch}): "
+                f"refused teardown — recovery capture failed ({exc}) and the worktree has "
+                f"unrecoverable work (dirty or unpushed). Kept it on disk at {wt_path}; "
+                f"restore or push it, then re-run cleanup."
+            )
+            raise RuntimeError(msg) from exc
         errors.append(f"recovery capture failed for {worktree.branch}: {exc}")
     if not git.worktree_remove(str(repo_main), wt_path):
         errors.append(f"git worktree remove failed for {wt_path}")
     if not git.branch_delete(str(repo_main), worktree.branch):
         errors.append(f"git branch -D failed for {worktree.branch}")
     return errors
+
+
+def _worktree_has_work_to_lose(repo_main: Path, wt_path: str, worktree: Worktree) -> bool:
+    """Whether removing this worktree would destroy unrecoverable work.
+
+    Re-evaluates the same dirty/unpushed criteria :func:`capture_recovery_artifact`
+    uses, but **fails closed** at every step: this guards an irreversible
+    ``branch -D`` + ``worktree remove`` after the recovery capture already
+    failed, so "couldn't determine" must mean "might lose work", not "safe".
+
+    Unpushed commits are checked first via the same fail-open probe the capture
+    uses (it returns ``True`` on an inconclusive ``git log``). Those commits
+    live in the main clone's object store, so a missing worktree dir does not
+    make them safe — the branch is the only copy.
+
+    The dirty working-tree check runs only when the dir is present and uses the
+    strict porcelain probe; an inconclusive ``git status`` (lock contention,
+    corrupt index) raises and is treated as "might be dirty".
+
+    Returns ``False`` only when both checks positively confirm there is nothing
+    to lose — a clean (or already-gone) worktree whose branch is fully pushed,
+    the safe case #835's non-blocking intent still reaps.
+    """
+    if _has_unpushed_commits(repo_main, worktree.branch):
+        return True
+    if not Path(wt_path).is_dir():
+        return False
+    try:
+        return bool(git.status_porcelain_strict(wt_path))
+    except CommandFailedError:
+        return True
 
 
 def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
@@ -394,6 +441,15 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     backends and interactive ``clean-all`` keep this on; the automated FSM
     teardown path passes ``strict_hygiene=False`` (the ticket is MERGED and the
     branch is already on its remote).
+
+    Recovery-capture backstop (#1506, ``force=True`` only): when the #706/#835
+    guards are bypassed by force, the recovery capture is the only protection.
+    If that capture *fails* and the worktree still has work to lose (dirty or
+    unpushed, determined fail-closed), this raises ``RuntimeError`` too — before
+    the destructive remove and the DB-row delete — so the worktree is left
+    intact and tracked rather than silently destroyed. A proven clean+pushed
+    worktree whose (no-op) capture failed is still reaped, with the failure in
+    ``result.errors``.
 
     Pass ``force=True`` only from trusted callers (explicit operator override,
     tests, programmatic API).
