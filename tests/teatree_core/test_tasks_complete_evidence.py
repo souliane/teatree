@@ -37,11 +37,25 @@ class TestTasksCompleteEvidenceGate(TestCase):
         stderr = io.StringIO()
 
         with pytest.raises(SystemExit) as exc:
-            call_command("tasks", "complete", task.pk, note="shipped the feature", stderr=stderr)
+            call_command("tasks", "complete", task.pk, note="shipped to prod", stderr=stderr)
 
         assert exc.value.code == 1
         assert "no resolvable artifact pointer" in stderr.getvalue()
         # Fail-closed: the task is NOT completed and no attempt was recorded.
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_spoofed_pointer_is_refused_fail_closed(self) -> None:
+        # A note that asserts an outcome but whose "pointer" is vacuous
+        # (a bare word/word token, a dictionary-word hex run) is refused —
+        # the assertion holds, the evidence does not.
+        task = self._claimed_task()
+
+        with pytest.raises(SystemExit) as exc:
+            call_command("tasks", "complete", task.pk, note="merged the deadbeef branch")
+
+        assert exc.value.code == 1
         task.refresh_from_db()
         assert task.status == Task.Status.CLAIMED
         assert not TaskAttempt.objects.filter(task=task).exists()
@@ -69,6 +83,20 @@ class TestTasksCompleteEvidenceGate(TestCase):
         attempt = TaskAttempt.objects.filter(task=task).first()
         assert attempt is not None
         assert attempt.result == {"complete_note": "refactored the parser and split the module"}
+
+    def test_internal_note_containing_outcome_verb_still_succeeds(self) -> None:
+        # Regression guard: a note that merely CONTAINS an outcome verb while
+        # describing internal code work asserts no external outcome — it must
+        # complete ungated even though "merged" appears in it.
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk, note="merged the two helper functions into one")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.result == {"complete_note": "merged the two helper functions into one"}
 
     def test_completion_with_no_note_still_succeeds(self) -> None:
         # The plainest internal path: no note at all is never gated.
