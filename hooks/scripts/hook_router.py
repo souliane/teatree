@@ -2182,22 +2182,49 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
+# ``pytest`` must match only in a VERB POSITION — never inside a quoted
+# arg, a branch name, a ``-m``/``--title`` message, or a hyphenated
+# package name (``pytest-django``). A bare ``\bpytest\b`` mis-denied the
+# loop owner's ``git commit -m 'fix pytest fixture'`` / ``git branch
+# x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
+# So anchor it to a command head: start-of-string OR a shell separator
+# (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
+# assignments and an optional Python runner prefix (``uv/uvx/poetry/pdm/
+# hatch run`` or ``python[3] -m``), then ``pytest`` NOT followed by a word
+# char or hyphen. The separator branch keeps the shell-grammar bypass
+# guard intact (``git status && pytest`` still denies).
+_PYTEST_VERB_RE = (
+    r"(?:^|[;&|\n(){}])"
+    r"\s*"
+    r"(?:\w+=\S+\s+)*"
+    r"(?:(?:uv|uvx|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
+    r"pytest(?![\w-])"
+)
+
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
 # the escape hatch is ``run_in_background: true`` (or, for a whole class
-# of work, dispatching a sub-agent). When in doubt the command is
-# ALLOWED — only an explicit match here, foreground, is gated. Patterns
-# cover: Python/test runners, language/asset builds, dev servers,
-# browser E2E, package installs/sync, long sleeps, and full-tree
-# recursive sweeps (the shapes that actually wedge a session).
+# of work, dispatching a sub-agent), plus a per-call ``[fg-ok: <reason>]``
+# marker. When in doubt the command is ALLOWED — only an explicit match
+# here, foreground, is gated. Patterns cover: Python/test runners, the
+# interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
+# — the original 1h-hung RED-FLAG incident #1178), language/asset builds,
+# dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
+# ``nx e2e <target>``), container image AND compose builds (``docker
+# build`` / ``docker compose build``), package installs/sync, long sleeps,
+# and full-tree recursive sweeps (the shapes that actually wedge a
+# session). ``manage.py migrate`` is gated elsewhere (the
+# ``_BLOCKED_COMMANDS`` t3-CLI redirect); short ``t3 loop tick``/``ci``/
+# ``doctor`` are NOT slow and are deliberately not listed.
 _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:"
-    r"\bpytest\b|"
+    r"(?:" + _PYTEST_VERB_RE + r"|"
     r"\btox\b|"
     r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
     r"manage\.py\s+runserver|"
-    r"\bnx\s+(?:serve|run)\b|"
+    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
+    r"\bnx\s+(?:serve|run|e2e)\b|"
     r"docker\s+compose\s+(?:up|build)|"
+    r"\bdocker\s+build\b|"
     r"(?:npx\s+)?playwright\s+test|"
     r"\bnpm\s+(?:run|install|ci)\b|"
     r"\b(?:pipenv|pip)\s+install\b|"
@@ -2211,6 +2238,12 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\bls\s+-[a-zA-Z]*R\b"
     r")",
 )
+
+# ``[fg-ok: <non-empty-reason>]`` anywhere in the command is the per-call
+# opt-out for the rare case the loop owner truly needs heavy output inline,
+# mirroring the ``[skip-plan-gate: <reason>]`` / ``[skip-skill-gate:
+# <reason>]`` tokens. An empty reason does not unblock.
+_FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
 
 def _call_is_from_subagent(data: dict) -> bool:
@@ -2298,8 +2331,8 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
 
     Passes through when the call is a sanctioned orchestration verb,
     comes from a sub-agent, is dispatched with ``run_in_background:
-    true``, or does not match the heavy denylist
-    (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+    true``, carries a ``[fg-ok: <reason>]`` opt-out marker, or does not
+    match the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
     """
     if _is_orchestration_action(data) or _call_is_from_subagent(data):
         return False
@@ -2307,7 +2340,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     if tool_input.get("run_in_background") is True:
         return False
     command = tool_input.get("command", "")
-    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+    if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
         return False
     return emit_pretooluse_deny(
         "BLOCKED: the orchestrator (main agent) ran a command that looks "
@@ -2316,9 +2349,11 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "The orchestrator is delegate-only for heavy work (BLUEPRINT "
         "§17.4 / §17.8 / §17.6 gate 2). Either pass `run_in_background: "
         "true` to run it without blocking the session, dispatch a "
-        "sub-agent (Task/Agent) to do it, or — if this is a false "
-        "positive — set `orchestrator_bash_gate_enabled = false` under "
-        "`[teatree]` in ~/.teatree.toml to disable the gate."
+        "sub-agent (Task/Agent) to do it, add an explicit "
+        "`[fg-ok: <reason>]` marker if you truly need the output inline, "
+        "or — if this is a false positive — set "
+        "`orchestrator_bash_gate_enabled = false` under `[teatree]` in "
+        "~/.teatree.toml to disable the gate."
     )
 
 
@@ -2331,12 +2366,14 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     When the main agent (not a sub-agent — see
     :func:`_call_is_from_subagent`) runs a foreground Bash command that
     matches the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`) and
-    is not dispatched with ``run_in_background: true``, the call is
-    blocked with an actionable message. Everything else — quick
-    orientation Bash, ``git`` reads/commits, ``cat``/``ls``/``grep`` —
-    passes. Sub-agents are unaffected: they are the hands that implement
-    and may run any command, heavy or not. The ``Agent`` foreground guard
-    (#1442) rides the same handler.
+    is not dispatched with ``run_in_background: true`` (nor carrying a
+    ``[fg-ok: <reason>]`` opt-out), the call is blocked with an actionable
+    message. Everything else — quick orientation Bash, ``git``
+    reads/commits, ``cat``/``ls``/``grep`` — passes; the ``pytest`` verb
+    is anchored so a ``git commit -m '…pytest…'`` / ``uv add
+    pytest-django`` is NOT a false-deny. Sub-agents are unaffected: they
+    are the hands that implement and may run any command, heavy or not.
+    The ``Agent`` foreground guard (#1442) rides the same handler.
 
     Disabled entirely (pass-through) when
     ``[teatree] orchestrator_bash_gate_enabled = false`` — the one-line
