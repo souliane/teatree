@@ -1775,6 +1775,102 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: pre-dispatch quote-scanner gate (#1401) ─────────────
+
+
+def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
+    """Refuse an ``Agent``/``Task`` dispatch whose prompt carries verbatim user-voice/PII.
+
+    Companion to the #1213 publish-boundary gate
+    (:func:`handle_quote_scanner_pretool`). The publish gate fires too late
+    to stop a leak that travels through dispatch: the orchestrator pastes a
+    verbatim user quote into a sub-agent brief as "context", the sub-agent
+    loads it into model context, and faithfully echoes it into a later
+    published MR/issue/note — by which point the verbatim is already in
+    play. This gate closes that boundary: it scans the dispatch prompt
+    BEFORE the sub-agent is spawned.
+
+    REUSES the existing ``quote_scanner.scan_text`` detector (no second
+    matcher). Only a HIGH-confidence match denies — MEDIUM attribution
+    shapes pass silently, because the fleet dispatches constantly and a
+    false-deny on an ordinary brief is costlier here than a warn. The
+    opt-out is an in-prompt ``[quote-ok: <reason>]`` token (reason
+    mandatory), mirroring the ``[skip-plan-gate: <reason>]`` convention —
+    the publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env have no
+    analogue inside a prompt body.
+
+    Fail-open on any internal error (a crashing gate is worse than no
+    scan): the ``sys.path`` bootstrap + exception swallow mirror the #1314
+    posture of the publish gate. Every decision lands in the shared
+    quote-scanner ledger so cold review can audit what the gate saw.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_dispatch_quote_scanner(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_dispatch_quote_scanner(data: dict) -> bool:
+    """Dispatch quote-scanner inner body — assumes ``teatree`` is importable.
+
+    Split out of :func:`handle_dispatch_prompt_quote_scanner` so the outer
+    wrapper owns the ``sys.path`` bootstrap + fail-open handler without
+    inflating its return count (mirrors the #1213 split).
+    """
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import quote_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("quote_scanner.ToolInput", raw_input)
+
+    payload = quote_scanner.extract_dispatch_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    result = quote_scanner.scan_text(payload)
+
+    if quote_scanner.dispatch_quote_ok_reason(payload):
+        quote_scanner.log_decision(
+            tool_name=f"{tool_name}:dispatch",
+            decision="allow-override",
+            result=result,
+            override=True,
+        )
+        return False
+
+    if result.has_high:
+        quote_scanner.log_decision(
+            tool_name=f"{tool_name}:dispatch",
+            decision="deny",
+            result=result,
+            override=False,
+        )
+        return emit_pretooluse_deny(quote_scanner.format_dispatch_block_message(result))
+
+    # MEDIUM-only or clean: allow silently (no stderr warning on dispatch —
+    # the fleet dispatches constantly; only HIGH is actionable here).
+    quote_scanner.log_decision(
+        tool_name=f"{tool_name}:dispatch",
+        decision="allow",
+        result=result,
+        override=False,
+    )
+    return False
+
+
 # ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
 
 
@@ -5395,6 +5491,7 @@ _HANDLERS: dict[str, list] = {
         handle_protect_default_branch,
         handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
+        handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
