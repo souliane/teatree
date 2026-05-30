@@ -58,6 +58,18 @@ def _diff(path: str, *added_lines: str) -> str:
     )
 
 
+def _diff_at(path: str, start: int, *added_lines: str) -> str:
+    body = "".join(f"+{line}\n" for line in added_lines)
+    return (
+        f"diff --git a/{path} b/{path}\n"
+        f"index 0000000..1111111 100644\n"
+        f"--- a/{path}\n"
+        f"+++ b/{path}\n"
+        f"@@ -{start},0 +{start},{len(added_lines)} @@\n"
+        f"{body}"
+    )
+
+
 class TestDetectorUnit:
     """Direct coverage of the pure diff-parsing detector."""
 
@@ -244,6 +256,92 @@ class TestDetectorUnit:
         )
         findings = privacy_diff_comment_density.scan_diff(diff)
         assert any(c == _CATEGORY for _, c, _ in findings)
+
+    def test_leading_license_header_is_not_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "# Copyright 2026 Example",
+            "# SPDX-License-Identifier: Apache-2.0",
+            "# Licensed under the Apache License, Version 2.0",
+            "",
+            "import os",
+            "value = os.getcwd()",
+        )
+        assert privacy_diff_comment_density.scan_diff(diff) == []
+
+    def test_four_line_leading_header_is_not_flagged(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "#!/usr/bin/env python",
+            "# -*- coding: utf-8 -*-",
+            "# Copyright 2026 Example",
+            "# SPDX-License-Identifier: MIT",
+            "",
+            "import sys",
+            "print(sys.argv)",
+        )
+        assert privacy_diff_comment_density.scan_diff(diff) == []
+
+    def test_license_marker_header_not_at_line_one_is_not_flagged(self) -> None:
+        diff = _diff_at(
+            "src/teatree/x.py",
+            40,
+            "# Copyright 2026 Example",
+            "# Licensed under the Apache License, Version 2.0",
+            "# SPDX-License-Identifier: Apache-2.0",
+            "value = compute()",
+        )
+        assert privacy_diff_comment_density.scan_diff(diff) == []
+
+    def test_mid_code_narration_after_leading_header_still_flags(self) -> None:
+        diff = _diff(
+            "src/teatree/x.py",
+            "# Copyright 2026 Example",
+            "# SPDX-License-Identifier: Apache-2.0",
+            "",
+            "def handle(value):",
+            "    # increment the counter by one",
+            "    # then store it in the cache",
+            "    # so later reads are fast",
+            "    counter += 1",
+        )
+        findings = privacy_diff_comment_density.scan_diff(diff)
+        assert any(c == _CATEGORY for _, c, _ in findings)
+
+    def test_context_lines_advance_target_line_so_mid_file_comments_still_flag(self) -> None:
+        # Context (unchanged) lines advance the new-side line number, so a
+        # comment run added below them is mid-file WHAT-narration, not a
+        # leading header, and stays flagged.
+        diff = (
+            "diff --git a/src/teatree/x.py b/src/teatree/x.py\n"
+            "--- a/src/teatree/x.py\n"
+            "+++ b/src/teatree/x.py\n"
+            "@@ -1,3 +1,6 @@\n"
+            " import os\n"
+            " import sys\n"
+            " value = os.getcwd()\n"
+            "+    # narrate the first step\n"
+            "+    # narrate the second step\n"
+            "+    # narrate the third step\n"
+        )
+        findings = privacy_diff_comment_density.scan_diff(diff)
+        assert any(c == _CATEGORY for _, c, _ in findings)
+
+    def test_blank_context_line_keeps_top_of_file_header_exempt(self) -> None:
+        # A blank context line is not prior content, so a license header
+        # added just below it is still a leading preamble, not narration.
+        diff = (
+            "diff --git a/src/teatree/x.py b/src/teatree/x.py\n"
+            "--- a/src/teatree/x.py\n"
+            "+++ b/src/teatree/x.py\n"
+            "@@ -1,1 +1,5 @@\n"
+            " \n"
+            "+# Copyright 2026 Example\n"
+            "+# SPDX-License-Identifier: Apache-2.0\n"
+            "+# Licensed under the Apache License, Version 2.0\n"
+            "+import os\n"
+        )
+        assert privacy_diff_comment_density.scan_diff(diff) == []
 
 
 class TestDetectorFailsOpen:
