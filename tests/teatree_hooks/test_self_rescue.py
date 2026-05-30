@@ -310,6 +310,45 @@ class TestIsSelfRescue:
         # value) are allowed after the entry — these stay a rescue.
         assert is_self_rescue(command) is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 acme gate disable --reason=cleanup",  # glued value-flag, plain value
+            "t3 acme gate disable --reason=",  # glued EMPTY value — ``--reason ''``
+            "t3 acme gate disable --reason cleanup",  # separate value-flag form
+        ],
+    )
+    def test_value_flag_in_glued_and_separate_forms_still_rescues(self, command: str) -> None:
+        # A recognised value-flag is allowed in both ``--name value`` and glued
+        # ``--name=value`` forms (including an empty glued value). These pass via
+        # the CLOSED trailing-token policy (a matched flag SHAPE), not a
+        # permissive ``any --``-prefixed-token catch-all.
+        assert is_self_rescue(command) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # A glued value-flag whose VALUE carries a shell operator / redirect
+            # / substitution character must reject under the closed policy. The
+            # operator-aware lexer already splits most of these into their own
+            # tokens; the glued-value regex is the closing backstop.
+            "t3 acme gate disable --reason=a;b",
+            "t3 acme gate disable --reason=a|b",
+            "t3 acme gate disable --reason=>",
+            "t3 acme gate disable --reason=$(x)",
+            "t3 acme gate disable --reason=`x`",
+            "t3 acme gate disable --reason=a&b",
+        ],
+    )
+    def test_glued_value_flag_with_operator_value_is_not_rescue(self, command: str) -> None:
+        assert is_self_rescue(command) is False
+
+    def test_trailing_whitespace_after_a_rescue_still_rescues(self) -> None:
+        # A trailing space is stripped by the shell (and by the lexer, which
+        # emits no empty WORD token), so it is BENIGN: the command is the bare
+        # rescue. Asserted explicitly so the intentional acceptance is pinned.
+        assert is_self_rescue("t3 acme gate disable ") is True
+
     def test_chain_of_only_self_rescue_segments_still_rescues(self) -> None:
         # Every segment is itself a self-rescue command — the whole call is a
         # rescue. Self-rescue must stay always-allowed for the genuine case.

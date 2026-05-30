@@ -37,10 +37,14 @@ prefix (and, for the ``manage.py`` entry only, a single leading
     tokens — ``entry[0]`` is ``argv[0]``, the ``OVERLAY`` slot eats one
     token, every other entry token equals the segment token at the same
     position. NO arbitrary token may appear BETWEEN entry tokens; and
-2. every REMAINING segment token after the entry is an allowed trailing
-    FLAG (starts with ``-``) or the plain-word value immediately following
-    a recognised value-flag. A bare positional trailing token (a command
-    word, a URL, a path) rejects the segment.
+2. every REMAINING segment token after the entry satisfies a CLOSED
+    trailing-token policy — it is a boolean flag (``--name`` / ``-x``), a
+    glued value-flag (``--name=value``, value a plain word), or a recognised
+    value-flag plus its plain-word value (``--reason cleanup``). A bare
+    positional (a command word, a URL, a path, a lone ``-``/``--``), an
+    operator/redirect token, or a glued value carrying an operator rejects
+    the segment. It is an allow-list of flag SHAPES, not a permissive
+    "any ``--``-prefixed token" catch-all.
 
 So ``t3 acme gate disable`` and ``t3 acme gate disable --yes`` match, but
 ``t3 acme git push gate disable`` (positional ``git push`` between the
@@ -145,6 +149,19 @@ _VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--reason"})
 # character (``-x`` / ``--reason`` / ``--no-input``). A lone ``-`` / ``--``
 # is a positional, not a flag, so it must NOT pass the trailing-token check.
 _FLAG_RE: Final[re.Pattern[str]] = re.compile(r"^-{1,2}[^-]")
+
+# A complete BOOLEAN long/short flag with NO glued value: dash(es), then a
+# flag name of word characters (and internal dashes, ``--no-input``). No
+# ``=``, no operator/redirect characters. ``--yes`` / ``-x`` / ``--no-input``.
+_BOOLEAN_FLAG_RE: Final[re.Pattern[str]] = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9-]*$")
+
+# A glued value-flag ``--name=value``: a long-flag name then ``=`` then a
+# value that is a PLAIN word — no shell operator / redirect / substitution
+# characters (``< > & | ; $ `` ( ) `` and whitespace). An EMPTY value
+# (``--reason=``) is allowed (it is ``--reason ''``). The value is checked
+# for the FULL operator-char class so the closed policy rejects a smuggled
+# operator even if the lexer had not already split it into its own token.
+_GLUED_VALUE_FLAG_RE: Final[re.Pattern[str]] = re.compile(r"^--[A-Za-z0-9][A-Za-z0-9-]*=[^<>&|;$`()\s]*$")
 
 # An I/O redirect operator RUN, recognised ANYWHERE inside a word so a
 # redirect glued to an adjacent word (``FOO=>``, ``--reason FOO=>``) is
@@ -253,43 +270,60 @@ def _consume_entry(entry: tuple[_EntryToken, ...], words: list[str]) -> int | No
 
 
 def _trailing_tokens_are_flags_only(trailing: list[str]) -> bool:
-    """True iff every trailing token is a flag (or a recognised flag value).
+    """True iff every trailing token satisfies the CLOSED trailing-token policy.
 
-    A self-rescue command takes no positional arguments, so after the matched
-    entry only ``-``-prefixed flags are allowed, plus the plain-word value
-    immediately following a recognised value-flag (``--reason cleanup``). A
-    bare positional token (a command word, URL, path) rejects the segment.
+    A self-rescue command takes no positional arguments. After the matched
+    entry, each trailing token is allowed IFF it is exactly one of:
 
-    I/O redirects are NOT supported by design (see the module docstring): a
-    token beginning with a redirect operator — anywhere, including in a
-    value-flag's value position — rejects the segment.
+    (a) a BOOLEAN long/short flag — ``--name`` / ``-x`` — whose name is plain
+        word characters with no ``=`` and no operator/redirect characters;
+    (b) a VALUE-FLAG in either form — ``--reason cleanup`` (a recognised
+        value-flag followed by a PLAIN-word value token) or glued
+        ``--name=value`` where ``value`` is a plain word with NO operator /
+        redirect / substitution characters (an empty ``--name=`` is allowed).
+
+    ANYTHING ELSE rejects: a bare positional (``foo`` / a lone ``-`` / ``--``),
+    any operator or redirect token, a command/process substitution, or a glued
+    ``--name=value`` whose value carries an operator. This is a closed
+    allow-list, not a permissive ``any --``-prefixed-token catch-all: a token
+    must affirmatively match a recognised flag SHAPE, so a fragile edge cannot
+    ride in on the prefix.
+
+    I/O redirects stay unsupported by design (see the module docstring): the
+    operator-aware tokenization splits a redirect into its own token, which
+    matches none of (a)/(b) and so rejects.
     """
     i = 0
     n = len(trailing)
     while i < n:
         token = trailing[i]
-        if not _is_flag(token):
-            return False  # redirect token, bare positional, or a lone ``-``/``--``
-        if token in _VALUE_FLAGS and "=" not in token:
+        if _GLUED_VALUE_FLAG_RE.match(token):
+            i += 1
+            continue
+        if not _BOOLEAN_FLAG_RE.match(token):
+            return False  # bare positional, lone ``-``/``--``, redirect, or operator
+        if token in _VALUE_FLAGS:
             value = trailing[i + 1] if i + 1 < n else None
             # A value-flag consumes its value ONLY when a PLAIN word follows
-            # (not a flag/lone-dash, not a redirect operator). Otherwise the
-            # flag stands alone and the next token is judged on its own.
-            if value is not None and not _is_flag(value) and not _REDIRECT_TOKEN_RE.match(value):
+            # (not a flag/lone-dash, not a redirect/operator token). Otherwise
+            # the flag stands alone and the next token is judged on its own.
+            if value is not None and _is_plain_value_word(value):
                 i += 2
                 continue
         i += 1
     return True
 
 
-def _is_flag(token: str) -> bool:
-    """True iff ``token`` is a real CLI flag (``-x`` / ``--reason``).
+def _is_plain_value_word(token: str) -> bool:
+    """True iff ``token`` is a PLAIN value word a value-flag may consume.
 
-    Requires a leading ``-`` followed by at least one non-dash character, so
-    a lone ``-`` / ``--`` (a positional, not a flag) is NOT a flag and a
-    redirect token never qualifies.
+    A value-flag's separate value (``--reason cleanup``) must be an ordinary
+    word — not another flag, not a lone ``-``/``--``, not a redirect or
+    operator token. Operator/substitution characters are rejected upstream
+    (operator-split + substitution check), so the remaining disqualifiers are
+    a flag-shaped token or a redirect token.
     """
-    return bool(_FLAG_RE.match(token))
+    return not _FLAG_RE.match(token) and not _REDIRECT_TOKEN_RE.match(token)
 
 
 def _segment_matches_entry(entry: tuple[_EntryToken, ...], cmd_words: list[str]) -> bool:
