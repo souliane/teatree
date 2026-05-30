@@ -6,6 +6,8 @@ text for the overlay's redact-terms + the default quote-anchor
 patterns, and refuses when any match fires.
 """
 
+import pytest
+
 from teatree.core.privacy_gate import format_refusal, scan_for_publication
 
 PUBLIC = "souliane/teatree"
@@ -96,16 +98,37 @@ def test_custom_block_patterns_match() -> None:
     assert any(m.pattern_name.startswith("block:") for m in result.matches)
 
 
-def test_invalid_regex_in_block_patterns_skipped_gracefully() -> None:
-    """A malformed pattern logs nothing and just gets skipped — never crashes."""
+def test_invalid_regex_in_block_patterns_fails_closed(caplog: pytest.LogCaptureFixture) -> None:
+    """A malformed pattern must fail closed — block the publish and log, never silently pass."""
+    import logging  # noqa: PLC0415
+
+    with caplog.at_level(logging.WARNING, logger="teatree.core.privacy_gate"):
+        result = scan_for_publication(
+            text="Body content",
+            target_repo=PUBLIC,
+            public_repos=[PUBLIC],
+            block_patterns=["[unclosed", ""],
+        )
+
+    # Fail-closed: a rule that can't be evaluated blocks rather than passes.
+    assert result.refused
+    assert any(m.pattern_name.startswith("block:") for m in result.matches)
+    assert "[unclosed" in caplog.text
+
+
+def test_invalid_default_pattern_does_not_break_valid_matches() -> None:
+    """A bad block pattern fails closed but valid patterns still surface their own matches."""
     result = scan_for_publication(
-        text="Body content",
+        text="secret token ABC-12345 leaked here",
         target_repo=PUBLIC,
         public_repos=[PUBLIC],
-        block_patterns=["[unclosed", ""],
+        block_patterns=[r"ABC-\d{5}", "(unbalanced"],
     )
-    # Invalid pattern is skipped; empty pattern filtered by the comprehension.
-    assert not result.refused
+    assert result.refused
+    names = {m.pattern_name for m in result.matches}
+    # Both the valid match and the fail-closed bad-pattern marker are present.
+    assert any(n.startswith("block:ABC") for n in names)
+    assert any("unbalanced" in n for n in names)
 
 
 def test_format_refusal_renders_matches_block() -> None:
