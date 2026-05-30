@@ -21,6 +21,12 @@ Load `ac-python` and `ac-django` — all code must follow their review checklist
 3. **For each ticket**, in order. The main conversation acts as the **orchestrator only** — it queues tickets, spawns one delivery sub-agent per ticket, records the structured result, and moves on. It holds no per-ticket implementation context (see § Rules "Singleton delivery sub-agent"):
    - The orchestrator reads only enough of the issue to decide routing. A ticket that needs design decisions or user input is skipped and the next one starts.
    - One delivery sub-agent owns the ticket's full cycle: it creates a worktree via `t3 teatree workspace ticket <ticket_url>` (uses `$T3_WORKSPACE_DIR`), implements to `ac-python`/`ac-django` standards (when a teatree change affects the overlay API, the corresponding overlay fix lands in the same session), runs tests + lint, and self-reviews with a `t3:reviewer` sub-agent.
+   - The orchestrator's delivery-sub-agent dispatch prompt MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+
+     ```text
+     NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
+     ```
+
    - **Privacy gate.** A push to a PUBLIC repo is gated by the `refuse-public-push-with-leak` pre-push hook: it runs `t3 tool privacy-scan` on the branch-vs-base diff and the push is refused on any finding. The delivery sub-agent treats a clean scan as a precondition for the push, not an afterthought — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Verify Repo Visibility Before Filing External Issues".
    - The sub-agent pushes, creates the PR, waits for CI, merges, cleans up the worktree, and updates main, then returns a structured result the orchestrator records before starting the next ticket.
    - Delivery is sequential — each PR merges before the next ticket's sub-agent is spawned, never in parallel.

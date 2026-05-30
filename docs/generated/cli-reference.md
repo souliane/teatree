@@ -470,6 +470,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      ``<mr-url>``.                                           │
 │ authorize            Record a one-step authorization that lets               │
 │                      ``post-comment --live`` publish.                        │
+│ gate                 Review-gate master switches.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -939,6 +940,76 @@ Usage: t3 review authorize [OPTIONS] SCOPE
 │                            17.8).                                            │
 │                            [required]                                        │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review gate`
+
+```
+Usage: t3 review gate [OPTIONS] COMMAND [ARGS]...
+
+ Review-gate master switches.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ fail-open  Master fail-open switch for the over-deny gates.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 review gate fail-open`
+
+```
+Usage: t3 review gate fail-open [OPTIONS] COMMAND [ARGS]...
+
+ Master fail-open switch for the over-deny gates.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the master fail-open switch is on.                     │
+│ enable   Turn the master fail-open switch ON (self-rescue from an over-deny  │
+│          lockout).                                                           │
+│ disable  Turn the master fail-open switch OFF (restore normal gate           │
+│          enforcement).                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open status`
+
+```
+Usage: t3 review gate fail-open status [OPTIONS]
+
+ Show whether the master fail-open switch is on.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open enable`
+
+```
+Usage: t3 review gate fail-open enable [OPTIONS]
+
+ Turn the master fail-open switch ON (self-rescue from an over-deny lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open disable`
+
+```
+Usage: t3 review gate fail-open disable [OPTIONS]
+
+ Turn the master fail-open switch OFF (restore normal gate enforcement).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2333,6 +2404,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ tasks         Async task queue.                                              │
 │ followup      Follow-up snapshots.                                           │
 │ standup       Auto-generated daily update (read-only).                       │
+│ checking      Terse 'what did I miss' report since the last check            │
+│               (read-only).                                                   │
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
@@ -3894,6 +3967,40 @@ Usage: t3 teatree standup stale [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --days        INTEGER  Inactivity threshold in days. [default: 3]            │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree checking`
+
+```
+Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
+
+ Terse 'what did I miss' report since the last check (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Print grouped merged/in-flight/needs-you changes since the last check  │
+│       (read-only).                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree checking show`
+
+```
+Usage: t3 teatree checking show [OPTIONS]
+
+ Print a terse, grouped, clickable report of changes since the last check.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since             TEXT  ISO timestamp override for the window start (does  │
+│                           NOT advance the marker).                           │
+│ --json                    Emit the structured report as JSON instead of the  │
+│                           terse view.                                        │
+│ --no-advance              Read the window without advancing the last-checked │
+│                           marker.                                            │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

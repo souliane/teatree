@@ -19,8 +19,10 @@ Deferred increments (each its own follow-up PR):
             ``expires_at`` replacing the two parallel approval tables.
 * TDD-4  — ``authorize --uses N`` / ``--standing`` multi-use semantics
             (one authorize, N live posts) — needs the TDD-1 model.
-* TDD-6  — ``gate_fail_open`` master switch + self-rescue allow-list.
 * TDD-9  — Slack-phrase control of the master switch.
+
+TDD-6 (``gate_fail_open`` master switch + self-rescue allow-list) has
+LANDED — its eval below is now a live guard, no longer xfail.
 """
 
 import pytest
@@ -54,7 +56,9 @@ class TestDeferredRedesignBehaviors:
         )
         assert result.exit_code == 0, result.output
 
-    @pytest.mark.xfail(reason="TDD-6 deferred: gate_fail_open master switch", strict=True)
     def test_gate_fail_open_status_command_exists(self) -> None:
+        # TDD-6 landed (NEVER-LOCKOUT): the master fail-open switch is now a
+        # live ``t3 review gate fail-open status`` command — this flipped from
+        # an xfail deferral marker to a live guard.
         result = _runner.invoke(app, ["review", "gate", "fail-open", "status"])
         assert result.exit_code == 0, result.output

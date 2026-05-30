@@ -23,6 +23,7 @@ import subprocess  # noqa: S404
 import sys
 import tempfile
 import time
+import traceback
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -266,6 +267,113 @@ def emit_pretooluse_deny(reason: str) -> bool:
     }
     json.dump(payload, sys.stdout)
     return True
+
+
+# ── Shared fail-open / self-rescue routing for the OVER-DENY gates ──
+#
+# The OVER-DENY gates (skill-loading, protect-default-branch, validate-mr
+# broken-env, block-uncovered-diff, agent-plan-gate, and the PRIVATE-surface
+# quote/banned downgrade) can wedge the factory when their detection
+# misbehaves. They route every deny through ``_fail_open_or_deny`` so two
+# always-available escapes apply uniformly:
+#
+# * a SELF-RESCUE command (``t3 <overlay> gate disable``, ``db migrate``,
+#   ``t3 review gate fail-open enable``) is NEVER denied — no gate may block
+#   the very commands that rescue a lockout (#1472/#1474 deadlocked twice);
+# * with the master ``[teatree] gate_fail_open`` switch ON, every over-deny
+#   gate flips to fail-open at once.
+#
+# The HARD INVARIANT (regression-guarded in test_public_leak_gate_*): the
+# PUBLIC-egress leak path (quote/banned on a PUBLIC surface,
+# ``publish_surface`` carve-out) MUST NEVER call this helper and MUST NEVER
+# read ``gate_fail_open`` — it stays fail-CLOSED always. Relaxing a public
+# leak block is a privacy regression, not a lockout rescue.
+#
+# Both resolvers fail CLOSED to ENFORCEMENT (deny): a broken import or a
+# raising resolver must never silently relax a gate. This is the OPPOSITE of
+# the gates' own broken-env posture, because THIS helper is the relax path.
+
+
+def _bootstrap_teatree_src() -> "tuple[ModuleType, ModuleType] | None":
+    """Import the self-rescue + fail-open resolvers from the sibling ``src/``.
+
+    The hook runs in the user's session shell with no guarantee ``teatree``
+    is importable (#1314), so ``src/`` is bootstrapped onto ``sys.path``.
+    Returns ``(self_rescue, teatree_gate)`` modules, or ``None`` on any
+    import failure — the caller then fails CLOSED (deny).
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.cli import teatree_gate  # noqa: PLC0415
+        from teatree.hooks import self_rescue  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+    return self_rescue, teatree_gate
+
+
+def _is_self_rescue(command: str) -> bool:
+    """True iff ``command``'s first segment is an always-allowed self-rescue command.
+
+    Fails CLOSED to "not a rescue" (return ``False``) on any import/resolution
+    error so a broken environment cannot fabricate a rescue verdict that
+    bypasses a gate.
+    """
+    if not command:
+        return False
+    modules = _bootstrap_teatree_src()
+    if modules is None:
+        return False
+    self_rescue, _ = modules
+    try:
+        return bool(self_rescue.is_self_rescue(command))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _gate_fail_open_enabled() -> bool:
+    """True iff the master ``[teatree] gate_fail_open`` switch is ON.
+
+    Fails CLOSED to disabled (return ``False``) on any import/resolution
+    error so a broken environment never silently relaxes every gate.
+    """
+    modules = _bootstrap_teatree_src()
+    if modules is None:
+        return False
+    _, teatree_gate = modules
+    try:
+        return bool(teatree_gate.gate_fail_open_is_enabled())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fail_open_or_deny(data: dict, reason: str) -> bool:
+    """Deny with ``reason`` unless a self-rescue command or fail-open says allow.
+
+    The single chokepoint every OVER-DENY gate routes its deny through. A
+    self-rescue command is always allowed; an enabled master fail-open switch
+    allows everything; otherwise the deny is emitted. Returns ``True`` (deny
+    emitted) or ``False`` (allow), so callers ``return _fail_open_or_deny(...)``.
+
+    NEVER call this from the PUBLIC-egress leak path — that path stays
+    fail-closed (see the module note above).
+    """
+    try:
+        command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+        if _is_self_rescue(command):
+            return False
+        if _gate_fail_open_enabled():
+            return False
+    except Exception:  # noqa: BLE001 — a raising resolver must NEVER relax a gate; fail CLOSED to deny.
+        return emit_pretooluse_deny(reason)
+    return emit_pretooluse_deny(reason)
 
 
 def _state_file(session_id: str, suffix: str) -> Path:
@@ -619,7 +727,7 @@ def handle_enforce_skill_loading(data: dict) -> bool:
         f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
         "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
     )
-    return emit_pretooluse_deny(reason)
+    return _fail_open_or_deny(data, reason)
 
 
 # ── TaskCreated: enforce-skill-loading-on-task-create (#1488) ─────────
@@ -1108,7 +1216,7 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
         "`[skip-plan-gate: trivial-bug-fix]`. "
         "Override the window via `TEATREE_PLAN_GATE_WINDOW_MINUTES`. (#1302)"
     )
-    return emit_pretooluse_deny(reason)
+    return _fail_open_or_deny(data, reason)
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -1288,9 +1396,10 @@ def handle_protect_default_branch(data: dict) -> bool:
     ):
         return False
 
-    return emit_pretooluse_deny(
+    return _fail_open_or_deny(
+        data,
         f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
-        "Create a worktree first with `t3 workspace ticket`."
+        "Create a worktree first with `t3 workspace ticket`.",
     )
 
 
@@ -1351,18 +1460,19 @@ _MR_VALIDATE_BROKEN_ENV_DENY = (
 )
 
 
-def _handle_broken_validate_env() -> bool:
+def _handle_broken_validate_env(data: dict) -> bool:
     """Decide the gate's action when the validator can't run.
 
     The MR-metadata gate FAILS CLOSED by default (deny): a non-compliant title
     must never reach GitLab just because the env could not validate it. The
-    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the operator's
-    self-rescue — deliberately fall back to fail-open (allow) so a genuinely
-    broken environment is not a hard deadlock.
+    explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
+    self-rescue, and the broken-env deny additionally routes through
+    :func:`_fail_open_or_deny` so the master ``gate_fail_open`` switch and the
+    always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
     """
     if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
         return False
-    return emit_pretooluse_deny(_MR_VALIDATE_BROKEN_ENV_DENY)
+    return _fail_open_or_deny(data, _MR_VALIDATE_BROKEN_ENV_DENY)
 
 
 def _run_mr_validator(argv: list[str], title: str, description: str) -> "subprocess.CompletedProcess[str] | None":
@@ -1396,11 +1506,11 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
     argv = _mr_validate_argv()
     if argv is None:
-        return _handle_broken_validate_env()
+        return _handle_broken_validate_env(data)
 
     result = _run_mr_validator(argv, title, description)
     if result is None:
-        return _handle_broken_validate_env()
+        return _handle_broken_validate_env(data)
 
     if result.returncode != 0:
         return emit_pretooluse_deny(
@@ -1740,6 +1850,67 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
+# ── PreToolUse: bare-reference link gate (#1530) ────────────────────
+
+
+def handle_bare_reference_pretool(data: dict) -> bool:
+    """Refuse a publish whose body cites a bare reference instead of a link.
+
+    Sibling of the #1213 quote-scanner and #1415 banned-terms gates.
+    Promotes the prose-only "always a clickable link, never a bare id"
+    rule (``feedback_always_clickable_links_never_bare_ids.md``) to a
+    deterministic pre-publish gate. Reuses the shared #1213
+    ``_command_parser`` publish-surface detection + body extraction, then
+    matches the extracted body against the bare-reference catalogue.
+
+    A bare ``#NNNN`` / ``!NNNN`` / Slack ``ts`` / forge-or-Notion URL not
+    wrapped in a clickable link ⇒ refuse via ``permissionDecision: deny``
+    + a reason naming each offending ref. Outgoing surfaces only
+    (gh/glab/git-commit/t3-notify/slack-send) — never internal reads.
+
+    Fail-open on any internal error: a crashing hook is worse than no
+    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
+    the sibling ``src/`` directory (#1314) and swallows any exception,
+    returning ``False`` so the tool use proceeds unchanged.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_bare_reference_pretool(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_bare_reference_pretool(data: dict) -> bool:
+    """Bare-reference inner body — assumes ``teatree`` is already importable."""
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
+
+    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    refs = bare_reference_scanner.scan_text(payload)
+    if not refs:
+        return False
+
+    return emit_pretooluse_deny(bare_reference_scanner.format_block_message(refs))
+
+
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
 #
 # Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -1871,11 +2042,12 @@ def handle_block_uncovered_diff(data: dict) -> bool:
     if finding is None:
         return False
 
-    return emit_pretooluse_deny(
+    return _fail_open_or_deny(
+        data,
         "BLOCKED: per-diff coverage gate 12 failed (BLUEPRINT §17.6.3). "
         "An added production line is uncovered or a changed symbol is not "
         "referenced by a changed test. Cover/reference it, then re-mark the "
-        "PR ready (resolve the finding before re-requesting review).\n" + finding
+        "PR ready (resolve the finding before re-requesting review).\n" + finding,
     )
 
 
@@ -4921,6 +5093,47 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
+def handle_bare_reference_stop(data: dict) -> bool | None:
+    """Warn when the assistant's final chat text cites a bare reference (#1530).
+
+    The Stop-time soft sibling of the #1530 PreToolUse hard gate. The
+    shown chat message cannot be retracted, so this never denies — it
+    emits a top-level ``systemMessage`` WARNING that surfaces the
+    violation next turn and gives a recurrence signal. Low-noise:
+    matches only clear bare ``#NNNN`` / ``!NNNN`` tokens not already
+    wrapped in a clickable link, reusing the shared detector.
+
+    Fail-safe-to-silent: any malformed input or missing transcript
+    returns ``None`` so the Stop chain is never crashed.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_bare_reference_stop(data)
+    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_bare_reference_stop(data: dict) -> bool | None:
+    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
+
+    turn = _last_assistant_turn(data.get("transcript_path", ""))
+    if turn is None:
+        return None
+    refs = bare_reference_scanner.find_bare_references(turn[0])
+    if not refs:
+        return None
+    json.dump({"systemMessage": bare_reference_scanner.format_warn_message(refs)}, sys.stdout)
+    return True
+
+
 def handle_consideration_gate(data: dict) -> bool | None:
     """Emit a CONSIDERATION GATE reminder when promotable edits land (#1129).
 
@@ -5180,6 +5393,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_plan_gate,
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
+        handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
@@ -5215,6 +5429,7 @@ _HANDLERS: dict[str, list] = {
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
+        handle_bare_reference_stop,
         handle_consideration_gate,
         handle_loop_self_pump,
     ],
@@ -5233,9 +5448,19 @@ def main() -> None:
 
     deny_emitted = False
     for handler in handlers:
-        # Handlers that return True emitted a deny — stop the chain to avoid
-        # writing multiple JSON objects to stdout (which would be invalid JSON).
-        if handler(data) is True:
+        # A handler's own crash is cannot-evaluate, NOT a content deny: skip the
+        # broken gate and continue the chain so a handler whose internal
+        # fail-open is incomplete can neither (a) surface its crash as a deny
+        # that hard-blocks the tool, nor (b) disable every downstream gate. The
+        # diagnostic goes to stderr (never stdout) so it cannot be read as a
+        # deny payload. Only an explicit ``True`` return is a deny — it stops the
+        # chain to avoid writing multiple JSON objects to stdout (invalid JSON).
+        try:
+            verdict = handler(data)
+        except Exception:  # noqa: BLE001 — crash-proof router: a broken gate fails open, never denies.
+            traceback.print_exc(file=sys.stderr)
+            continue
+        if verdict is True:
             deny_emitted = True
             break
 
