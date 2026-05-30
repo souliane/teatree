@@ -28,7 +28,7 @@ from typing import Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
-from teatree.loop.tick import TickReport
+from teatree.loop.tick import TickReport, TickRequest
 
 # The persistent ``loop-owner`` claim TTL reader lives in
 # ``teatree.loop.tick_piggyback`` alongside its sibling per-loop cadence
@@ -38,6 +38,27 @@ from teatree.loop.tick import TickReport
 from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
 
 type ReportDict = dict[str, Any]
+
+
+def _registry_jobs_builder(request: "TickRequest", started_at: dt.datetime) -> list[Any]:
+    """Drive the live tick's scanner fan-out from the mini-loop registry (#1481).
+
+    Bridges the up-stack :mod:`teatree.loops` registry into
+    :func:`teatree.loop.tick.run_tick` so the registry is the single
+    source of which scanners run a live tick, gated by the same
+    enable + cadence decision the orchestrator uses.
+    """
+    from teatree.loops.config import LoopsConfig  # noqa: PLC0415
+    from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
+
+    scanner_context: dict[str, Any] = {
+        "backends": request.backends,
+        "host": request.host,
+        "messaging": request.messaging,
+        "notion_client": request.notion_client,
+        "ready_labels": request.ready_labels,
+    }
+    return build_registry_jobs(scanner_context, config=LoopsConfig.load(), now=started_at)
 
 
 def _report_to_dict(report: TickReport) -> ReportDict:
@@ -121,7 +142,7 @@ class Command(TyperCommand):
         from teatree.core.connector_preflight import run_connector_preflight  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
-        from teatree.loop.tick import TickRequest, run_tick  # noqa: PLC0415
+        from teatree.loop.tick import run_tick  # noqa: PLC0415
 
         # Refuse to tick into silent no-ops when a hard-dependency
         # connector is unreachable. Raises SystemExit naming the down
@@ -178,7 +199,7 @@ class Command(TyperCommand):
                 request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
             else:
                 request = TickRequest(backends=iter_overlay_backends())
-            report = run_tick(request, statusline_path=statusline_file)
+            report = run_tick(request, statusline_path=statusline_file, jobs_builder=_registry_jobs_builder)
         finally:
             LoopLease.objects.release("loop-tick", owner=owner)
 

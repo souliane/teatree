@@ -470,6 +470,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      ``<mr-url>``.                                           │
 │ authorize            Record a one-step authorization that lets               │
 │                      ``post-comment --live`` publish.                        │
+│ gate                 Review-gate master switches.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -939,6 +940,76 @@ Usage: t3 review authorize [OPTIONS] SCOPE
 │                            17.8).                                            │
 │                            [required]                                        │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review gate`
+
+```
+Usage: t3 review gate [OPTIONS] COMMAND [ARGS]...
+
+ Review-gate master switches.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ fail-open  Master fail-open switch for the over-deny gates.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 review gate fail-open`
+
+```
+Usage: t3 review gate fail-open [OPTIONS] COMMAND [ARGS]...
+
+ Master fail-open switch for the over-deny gates.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the master fail-open switch is on.                     │
+│ enable   Turn the master fail-open switch ON (self-rescue from an over-deny  │
+│          lockout).                                                           │
+│ disable  Turn the master fail-open switch OFF (restore normal gate           │
+│          enforcement).                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open status`
+
+```
+Usage: t3 review gate fail-open status [OPTIONS]
+
+ Show whether the master fail-open switch is on.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open enable`
+
+```
+Usage: t3 review gate fail-open enable [OPTIONS]
+
+ Turn the master fail-open switch ON (self-rescue from an over-deny lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open disable`
+
+```
+Usage: t3 review gate fail-open disable [OPTIONS]
+
+ Turn the master fail-open switch OFF (restore normal gate enforcement).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3944,9 +4015,12 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ visit-phase   Mark a phase as visited on the ticket's latest session.        │
-│ clear-ledger  Clear a reused ticket's stale phase ledger (sanctioned         │
-│               session-retire).                                               │
+│ visit-phase              Mark a phase as visited on the ticket's latest      │
+│                          session.                                            │
+│ clear-ledger             Clear a reused ticket's stale phase ledger          │
+│                          (sanctioned session-retire).                        │
+│ record-review-skill-run  Record evidence the configured review skill ran     │
+│                          (reviewing-phase gate).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4007,6 +4081,27 @@ Usage: t3 teatree lifecycle clear-ledger [OPTIONS] TICKET_ID
 │                                phase-ledger clear.                           │
 │                                [default: no-confirm]                         │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-review-skill-run`
+
+```
+Usage: t3 teatree lifecycle record-review-skill-run [OPTIONS] TICKET_ID SKILL
+
+ Record durable evidence that the deep-review ``skill`` ran (#1539).
+
+ Stamps ``ticket.extra['review_skill_run']`` (skill name + UTC ISO
+ timestamp) so the reviewing-phase gate can attest that the configured
+ ``review_skill`` actually executed before ``visit-phase ... reviewing``
+ records the attestation.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+│ *    skill          TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

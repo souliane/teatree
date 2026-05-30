@@ -20,6 +20,7 @@ from teatree.loops.followup.loop import MINI_LOOP as FOLLOWUP_LOOP
 from teatree.loops.housekeeping.loop import MINI_LOOP as HOUSEKEEPING_LOOP
 from teatree.loops.inbox.loop import MINI_LOOP as INBOX_LOOP
 from teatree.loops.news.loop import MINI_LOOP as NEWS_LOOP
+from teatree.loops.resource_pressure.loop import MINI_LOOP as RESOURCE_PRESSURE_LOOP
 from teatree.loops.review.loop import MINI_LOOP as REVIEW_LOOP
 from teatree.loops.ship.loop import MINI_LOOP as SHIP_LOOP
 from teatree.loops.tickets.loop import MINI_LOOP as TICKETS_LOOP
@@ -98,6 +99,31 @@ class TestHousekeepingLoopBuildJobs:
     def test_runs_with_backends(self, stub_backend: Any) -> None:
         jobs = HOUSEKEEPING_LOOP.build_jobs(backends=[stub_backend])
         assert isinstance(jobs, list)
+
+
+class TestResourcePressureLoopBuildJobs:
+    def test_short_cadence_matches_legacy_per_tick_construction(self) -> None:
+        # The scanner carries its own 5-minute internal cadence, so the loop
+        # must stay at the registry floor — never throttled to the hourly
+        # housekeeping cadence.
+        assert RESOURCE_PRESSURE_LOOP.default_cadence_seconds == 60
+
+    def test_wires_resource_pressure_scanner(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
+
+        fake = ResourcePressureScanner()
+        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=fake):
+            jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
+        assert any(j.scanner is fake and j.overlay == "" for j in jobs)
+
+    def test_omits_scanner_when_disabled(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=None):
+            jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
+        assert jobs == []
 
 
 class TestInboxLoopBuildJobs:
