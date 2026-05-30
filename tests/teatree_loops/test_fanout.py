@@ -183,6 +183,22 @@ class RegistryLegacyParityTestCase(TestCase):
         assert len(legacy_nags) == 1
         assert len(nags) == 1
 
+    def test_default_off_issue_implementer_keeps_parity_and_emits_nothing(self) -> None:
+        """The default-OFF ``ISSUE_IMPLEMENTER`` domain leaves both fan-out paths unchanged (#1553).
+
+        With ``issue_implementer_enabled`` defaulting to False the per-overlay
+        slice is empty, so neither the registry path nor the legacy path emits
+        the scanner — the byte-for-byte parity guard stays green even though the
+        new domain is a partition member.
+        """
+        backends = [self._production_backend()]
+        legacy = build_default_jobs(backends=backends)
+        MiniLoopMarker.objects.all().delete()
+        registry = build_registry_jobs(_context(backends), config=LoopsConfig(), now=NOW)
+        assert _signature_multiset(registry) == _signature_multiset(legacy)
+        assert "issue_implementer" not in {j.scanner.name for j in legacy}
+        assert "issue_implementer" not in {j.scanner.name for j in registry}
+
     def test_my_prs_and_reviewer_prs_carry_url_attribution(self) -> None:
         """The ship/review domain slices pass the same non-empty URL-attribution the legacy fan-out does.
 
