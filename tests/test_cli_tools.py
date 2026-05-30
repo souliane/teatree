@@ -384,7 +384,8 @@ class TestValidateMrCommand:
         driver = (
             "import sys\n"
             "from teatree.cli import main\n"
-            "sys.argv = ['t3', 'tool', 'validate-mr', '--title', 'feat: x (#1)', '--description', 'body']\n"
+            "sys.argv = ['t3', 'tool', 'validate-mr', '--title', 'feat: x (#1)', "
+            "'--description', '## What\\nx\\n\\n## Why\\ny']\n"
             "main()\n"
         )
         env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}

@@ -305,7 +305,21 @@ class OverlayConfig:
 
 class OverlayMetadata:
     def validate_pr(self, title: str, description: str) -> ValidationResult:
-        return {"errors": [], "warnings": []}
+        """Reject a non-conforming MR title/description (#1540).
+
+        The title must match the effective ``mr_title_regex`` (Conventional
+        Commits by default, per-overlay overridable) and the description must
+        carry a What/Why header. Resolved via ``get_effective_settings()`` so
+        the active overlay's ``[overlays.<name>].mr_title_regex`` wins. An
+        overlay assembling a canonical title in ``build_pr_title`` can still
+        override this hook, but the default is now a real gate rather than a
+        no-op so the convention is enforced for every overlay.
+        """
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.mr_metadata import validate_mr_metadata  # noqa: PLC0415
+
+        errors = validate_mr_metadata(title, description, get_effective_settings().mr_title_regex)
+        return {"errors": errors, "warnings": []}
 
     def build_pr_title(self, *, branch: str, subject: str, body: str, issue_url: str) -> str:
         """Produce the PR title from structured data instead of copying the subject.
