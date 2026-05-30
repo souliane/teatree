@@ -21,6 +21,7 @@ import typer
 
 from teatree.cli._doctor_checks import (
     _check_editable_sanity,
+    _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
     _check_single_db,
     _check_singletons,
@@ -56,6 +57,7 @@ __all__ = (
     "IntrospectionHelpers",
     "PackageNotFoundError",
     "_check_editable_sanity",
+    "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
     "_check_single_db",
     "_check_singletons",
@@ -525,6 +527,10 @@ def check() -> bool:
             typer.echo(f"FAIL  Required tool not found: {tool}")
             ok = False
 
+    # Must precede _check_editable_sanity: under contribute=true that check can
+    # auto-make-editable against the cwd worktree, creating the exact stale
+    # worktree-anchored install this guard exists to catch (#1507).
+    ok = _check_entrypoint_is_primary_clone() and ok
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok

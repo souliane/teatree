@@ -239,13 +239,34 @@ def update_repo(name: str, repo: Path) -> RepoUpdate:
     return RepoUpdate(name, UpdateStatus.UPDATED, old_sha=old_sha, new_sha=new_sha)
 
 
+def _running_clone() -> Path | None:
+    """The git work-tree the *running* interpreter imports ``teatree`` from.
+
+    Resolved from ``teatree.__file__`` — independent of cwd/``T3_REPO``. A
+    stale editable ``.pth`` anchored to a worktree makes this differ from the
+    configured main clone, which is exactly the silent-isolation case the
+    currency gate must catch (#1507).
+    """
+    import teatree  # noqa: PLC0415
+
+    pkg = teatree.__file__
+    if pkg is None:
+        return None
+    return _git_toplevel(Path(pkg).resolve().parent)
+
+
 def _collect_repos() -> list[tuple[str, Path]]:
-    """Discover teatree core and every registered overlay repo.
+    """Discover teatree core, the running clone, and every registered overlay repo.
 
     Core is resolved via the same ``T3_REPO``/cwd logic ``t3 setup`` uses.
-    Overlays come from ``discover_overlays()`` (the ``teatree.overlays`` entry
-    points merged with ``[overlays.*]`` TOML config); each entry's
-    ``project_path`` is walked up to its containing git work tree.
+    The *running* clone — the work-tree the interpreter actually imports
+    ``teatree`` from — is collected separately so the clone-currency gate
+    audits the code the process runs, not just the configured main clone: a
+    worktree-anchored editable install would otherwise sail past the #948 gate
+    (#1507). Overlays come from ``discover_overlays()`` (the
+    ``teatree.overlays`` entry points merged with ``[overlays.*]`` TOML
+    config); each entry's ``project_path`` is walked up to its containing git
+    work tree.
     """
     from teatree.cli.setup import _find_main_clone  # noqa: PLC0415
     from teatree.config import discover_overlays  # noqa: PLC0415
@@ -258,6 +279,11 @@ def _collect_repos() -> list[tuple[str, Path]]:
         resolved = core.resolve()
         repos.append(("teatree", resolved))
         seen.add(resolved)
+
+    running = _running_clone()
+    if running is not None and running not in seen:
+        seen.add(running)
+        repos.append(("teatree (running)", running))
 
     for entry in discover_overlays():
         if entry.project_path is None:

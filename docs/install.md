@@ -193,5 +193,11 @@ The `t3` CLI uses this to auto-detect which Django settings module to use.
   Otherwise you risk accidentally modifying framework code.
 - Same rules apply to the overlay package.
 
+It also **FAILs when the installed `t3` is anchored to a git worktree**
+instead of the primary clone (a stale editable `.pth`): the worktree-resident
+code auto-isolates onto a per-worktree DB while the loop and canonical state
+live in the canonical DB, so work silently diverges. The fix is to re-anchor
+the editable install at the primary clone (re-run `t3 setup` from it).
+
 These checks run automatically on `t3 doctor check` and as a Django
 system check (warns on every `t3` invocation if misconfigured).
