@@ -244,7 +244,7 @@ Public-repo diff privacy-scan (#685, #730, #1415): the pre-push hook `scripts/ho
 
 ## 10. Configuration
 
-The resolved-order config chain (`~/.teatree.toml` global → `[overlays.<name>]` override → env), Django settings, `OverlayConfig` methods, logging, data storage, and the state-placement rule (cache vs intent, #628) live in [docs/blueprint/configuration.md](docs/blueprint/configuration.md). The `### 10.1 ~/.teatree.toml` subsection cited from `src/teatree/core/management/commands/followup.py` is preserved there.
+The resolved-order config chain (`~/.teatree.toml` global → `[overlays.<name>]` override → env), Django settings, `OverlayConfig` methods, logging, data storage, and the state-placement rule (cache vs intent, #628) live in [docs/blueprint/configuration.md](docs/blueprint/configuration.md). The `### 10.1 ~/.teatree.toml` subsection cited from `src/teatree/core/management/commands/followup.py` is preserved there. The per-overlay `mr_title_regex` knob ([#1540](https://github.com/souliane/teatree/issues/1540)) — the Conventional-Commits-by-default title pattern the `pr create` gate enforces alongside a required What/Why description, with no `--force` bypass — is documented in that appendix's per-overlay override table.
 
 ---
 
