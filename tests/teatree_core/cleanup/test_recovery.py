@@ -96,6 +96,16 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
 
+    def _branch_exists(self) -> bool:
+        branches = subprocess.run(
+            [_GIT, "-C", str(self.repo_main), "branch", "--format=%(refname:short)"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        ).stdout.split()
+        return self.branch in branches
+
     def test_uncommitted_changes_recovered_before_prune(self) -> None:
         # Uncommitted work in the worktree: an edit + a brand-new file.
         (self.wt_path / "base.txt").write_text("base\nDIRTY EDIT\n", encoding="utf-8")
@@ -237,14 +247,21 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nDIRTY EDIT\n"
         assert (restore / "newfile.txt").read_text(encoding="utf-8") == "brand new\n"
 
-    def test_capture_failure_surfaced_and_prune_still_proceeds(self) -> None:
-        """#835/#877 — a capture failure must NOT block the prune (stuck-cleanup).
+    def test_capture_failure_on_dirty_worktree_aborts_removal(self) -> None:
+        """#1506 — capture failure on a DIRTY worktree must NOT destroy the work.
+
+        Under ``force=True`` the data-loss guards are skipped, so the recovery
+        artifact is the only protection. When that capture itself fails (disk
+        full, bundle error) the prior behaviour fell through to ``worktree
+        remove`` + ``branch -D``, destroying the very commits/edits the capture
+        was meant to save. The corrected contract: re-check whether the worktree
+        actually had work to lose and, if so, refuse the teardown (raise, like
+        the non-force #706 guard) — leaving the worktree on disk, its branch,
+        and its tracking DB row all intact.
 
         Drives the production seam (``cleanup_worktree`` → ``_remove_git_worktree``)
         with the real on-disk worktree; only the (unstoppable, deliberately
-        failing) capture is patched to raise. The ticket mandates: do not raise,
-        still remove the worktree, surface the failure in ``errors`` (#877 —
-        the structured channel, not a swallowed label string).
+        failing) capture is patched to raise.
         """
         (self.wt_path / "base.txt").write_text("base\nDIRTY EDIT\n", encoding="utf-8")
         wt = self._make_worktree()
@@ -257,13 +274,128 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         ):
             mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
+            with pytest.raises(RuntimeError, match="refused teardown"):
+                cleanup_worktree(wt, force=True)
+
+        assert self.wt_path.exists(), "dirty worktree must NOT be removed when capture failed"
+        assert self._branch_exists(), "branch must survive when capture failed on dirty work"
+        assert Worktree.objects.filter(branch=self.branch).exists(), "DB row must survive (not orphaned on disk)"
+
+    def test_capture_failure_on_clean_pushed_worktree_still_reaped(self) -> None:
+        """#1506/#835 — capture failure on a CLEAN+PUSHED worktree still reaps.
+
+        Capture is a no-op for a clean, fully-pushed worktree (nothing to lose),
+        so a failure of that no-op must not block the prune — preserving #835's
+        non-blocking-cleanup intent for the safe case. The worktree is removed
+        and its branch deleted; the capture error is still surfaced.
+        """
+        _run_git("push", "-q", "origin", f"{self.branch}:main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        wt = self._make_worktree()
+        boom = RuntimeError("disk full while bundling")
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
             result = cleanup_worktree(wt, force=True)  # must NOT raise
 
-        assert not self.wt_path.exists(), "worktree must still be removed despite capture failure"
+        assert not self.wt_path.exists(), "clean+pushed worktree must still be reaped"
         assert result.clean is False
         assert any(f"recovery capture failed for {self.branch}" in e for e in result.errors)
         assert any("disk full while bundling" in e for e in result.errors)
         assert _recovery_dirs(self.temp_root) == [], "no artifact when capture itself failed"
+
+    def test_capture_failure_on_clean_unpushed_worktree_aborts_removal(self) -> None:
+        """#1506 — a clean working tree with UNPUSHED commits still aborts.
+
+        The branch holds the only copy of the committed work; a clean working
+        tree does not make it safe. Capture-failure must abort the destructive
+        ``branch -D`` so the commits survive.
+        """
+        (self.wt_path / "feature.txt").write_text("feature work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: unpushed feature", cwd=self.wt_path)
+        wt = self._make_worktree()
+        boom = RuntimeError("disk full while bundling")
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            with pytest.raises(RuntimeError, match="refused teardown"):
+                cleanup_worktree(wt, force=True)
+
+        assert self._branch_exists(), "branch with unpushed commits must survive"
+        assert Worktree.objects.filter(branch=self.branch).exists()
+
+    def test_capture_failure_with_missing_dir_and_unpushed_commits_aborts(self) -> None:
+        """#1506 — a gone worktree dir does NOT make unpushed branch commits safe.
+
+        The unpushed-commit probe must run independently of the worktree dir's
+        existence; the commits live in the main clone's object store. With the
+        dir already removed but the branch unpushed, ``branch -D`` must still be
+        aborted.
+        """
+        (self.wt_path / "feature.txt").write_text("feature work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: unpushed feature", cwd=self.wt_path)
+        # Remove the worktree dir out-of-band (the capture-failure re-check then
+        # sees a missing dir but a branch that is still unpushed).
+        _run_git("worktree", "remove", "--force", str(self.wt_path), cwd=self.repo_main)
+        assert not self.wt_path.exists()
+        wt = self._make_worktree()
+        boom = RuntimeError("disk full while bundling")
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            with pytest.raises(RuntimeError, match="refused teardown"):
+                cleanup_worktree(wt, force=True)
+
+        assert self._branch_exists(), "unpushed branch must survive a gone-dir capture failure"
+        assert Worktree.objects.filter(branch=self.branch).exists()
+
+    def test_capture_failure_with_inconclusive_status_aborts(self) -> None:
+        """#1506 — an inconclusive ``git status`` must fail closed (might be dirty).
+
+        Branch is pushed (no unpushed commits), but the strict dirty probe
+        raises (lock contention / corrupt index). The re-check must treat the
+        un-determinable working-tree state as "might have work to lose" and
+        abort the destructive remove rather than assume clean.
+        """
+        _run_git("push", "-q", "origin", self.branch, cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        wt = self._make_worktree()
+        boom = RuntimeError("disk full while bundling")
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
+            patch(
+                "teatree.core.cleanup.git.status_porcelain_strict",
+                side_effect=CommandFailedError(["git"], 128, "", "index.lock"),
+            ),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            with pytest.raises(RuntimeError, match="refused teardown"):
+                cleanup_worktree(wt, force=True)
+
+        assert self.wt_path.exists(), "inconclusive status must abort the remove (fail closed)"
+        assert self._branch_exists()
+        assert Worktree.objects.filter(branch=self.branch).exists()
 
     def test_clean_merged_worktree_hard_deletes_with_no_artifact(self) -> None:
         # Branch tip == origin/main, clean working tree: nothing to lose.

@@ -68,6 +68,19 @@ def status_porcelain(repo: str = ".") -> str:
     return run(repo=repo, args=["status", "--porcelain"])
 
 
+def status_porcelain_strict(repo: str = ".") -> str:
+    """Like :func:`status_porcelain` but raises on a non-zero ``git status`` exit.
+
+    :func:`status_porcelain` swallows git errors and returns whatever (possibly
+    empty) stdout it got, so an inconclusive status (lock contention, corrupt
+    index, missing dir) is indistinguishable from a genuinely clean tree. For a
+    data-loss decision that must fail closed, use this variant: a git error
+    raises ``CommandFailedError`` so the caller can treat "couldn't determine"
+    as "might be dirty" rather than "clean".
+    """
+    return run_strict(repo=repo, args=["status", "--porcelain"])
+
+
 def soft_reset(repo: str = ".", target: str = "") -> None:
     run_strict(repo=repo, args=["reset", "--soft", target])
 
