@@ -285,6 +285,59 @@ class TestSelfRescueEscapeHatchNeverGated:
         assert _orchestrator_bash_gate_enabled() is True
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "VAR=x t3 teatree gate disable",
+            "t3 teatree gate disable > /tmp/out.log",
+            "t3 teatree gate disable >| /tmp/out.log 2>&1",
+        ],
+    )
+    def test_self_rescue_passes_even_with_env_prefix_or_redirect(self, command: str) -> None:
+        # The escape hatch stays reachable when wrapped in the shell-grammar
+        # shapes an agent naturally types (env-prefix, output redirect): none
+        # of these turn the pure self-rescue into a heavy-denylist match.
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    def test_durable_killswitch_unlocks_every_command_for_the_main_agent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # never-lockout: once the durable toml kill-switch is written (what
+        # ``t3 <overlay> gate disable`` does), EVERY main-agent command —
+        # including the heaviest foreground Bash — passes. The escape is
+        # always effective, not merely reachable.
+        (tmp_path / ".teatree.toml").write_text("[teatree]\norchestrator_bash_gate_enabled = false\n", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        assert _orchestrator_bash_gate_enabled() is False
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is False
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("docker compose up -d")) is False
+
+
+class TestHeavyBashGateResistsShellGrammarBypass:
+    """A heavy command can't be smuggled past the gate by shell-grammar tricks.
+
+    The denylist matches the heavy token wherever it sits in the command line,
+    so an env-prefix, a command separator (``;``/``&&``/``|``), or a trailing
+    redirect cannot hide it. This is the dual of the self-rescue carve-out: the
+    carve-out must stay narrow (only the pure ``t3 … gate`` form is exempt) so
+    that pairing a self-rescue with a heavy command does not launder the heavy
+    half through the exemption.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "FOO=1 uv run pytest",
+            "git status; uv run pytest",
+            "git status && pytest -q",
+            "echo hi | pytest",
+            "uv run pytest > /tmp/out.log 2>&1",
+            "t3 teatree gate disable && uv run pytest",
+        ],
+    )
+    def test_heavy_command_is_blocked_despite_grammar_wrapping(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
 
 class TestRegisteredInChain:
     def test_handler_is_in_pretooluse_chain(self) -> None:
