@@ -233,7 +233,7 @@ class DbOverlay(CommandOverlay):
     """CommandOverlay with a DB import strategy that always fails."""
 
     def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
-        return DbImportStrategy(kind="dslr", source_database="development-client-term-redacted")
+        return DbImportStrategy(kind="dslr", source_database="development-acme")
 
     def db_import(  # noqa: PLR0913 — mirrors the OverlayBase.db_import extension-point contract.
         self,
@@ -269,7 +269,7 @@ class TestDbRefreshFreshDumpApproval(TestCase):
             repo_path="/tmp/backend",
             branch="feature",
             extra={"worktree_path": "/tmp/backend"},
-            db_name="wt_777_client-term-redacted",
+            db_name="wt_777_acme",
         )
 
     @override_settings(**COMMAND_SETTINGS)
