@@ -3,13 +3,33 @@
 Covers apply_merged_status and apply_closed_status.
 """
 
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from teatree.backends.gitlab_sync_terminal import apply_closed_status, apply_merged_status
+from teatree.core import dod_gate
+from teatree.core.e2e_workitem import record_run
 from teatree.core.models import Ticket, Worktree
 from teatree.types import SyncResult
+
+_FRONTEND = "frontend"
+
+
+@dataclass
+class _FakeConfig:
+    frontend_repos: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _FakeOverlay:
+    config: _FakeConfig
+
+
+def _patch_dod_overlay(frontend_repos: list[str]) -> AbstractContextManager[MagicMock]:
+    return patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_FakeConfig(frontend_repos)))
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
@@ -179,3 +199,66 @@ class TestApplyClosedStatus(TestCase):
             apply_closed_status(ticket, {"url1"}, result)
         mock_cleanup.assert_not_called()
         assert result.worktrees_cleaned == 0
+
+
+class TestMergedTerminalDodGate(TestCase):
+    """A genuinely-merged PR is terminal reality: keep MERGED, but audit a DoD gap (#1426).
+
+    Demoting a merged-PR ticket to STARTED would make it contradict reality,
+    so the sync follows the merge and instead records a durable
+    ``dod_e2e_violation`` marker when the DoD local-E2E gate was unmet.
+    """
+
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    def test_ui_visible_no_e2e_keeps_merged_but_records_violation(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/501",
+            state=Ticket.State.IN_REVIEW,
+            repos=[_FRONTEND],
+            extra={"prs": {"url1": {"title": "MR1"}}},
+        )
+        result = SyncResult()
+        with _patch_dod_overlay([_FRONTEND]):
+            apply_merged_status(ticket, {"url1"}, result)
+
+        ticket.refresh_from_db()
+        # Terminal reality is kept (not demoted to STARTED).
+        assert ticket.state == Ticket.State.MERGED
+        # The unmet DoD is recorded for audit rather than silently bypassed.
+        assert ticket.extra["dod_e2e_violation"]["state"] == Ticket.State.MERGED
+
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    def test_ui_visible_with_green_e2e_keeps_merged_no_violation(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/502",
+            state=Ticket.State.IN_REVIEW,
+            repos=[_FRONTEND],
+            extra={"prs": {"url1": {"title": "MR1"}}},
+        )
+        record_run(ticket, result="green", per_repo_shas={_FRONTEND: "sha"}, env="local")
+        result = SyncResult()
+        with _patch_dod_overlay([_FRONTEND]):
+            apply_merged_status(ticket, {"url1"}, result)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert "dod_e2e_violation" not in ticket.extra
+
+    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    def test_backend_only_keeps_merged_no_violation(self, mock_cleanup: MagicMock) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/503",
+            state=Ticket.State.IN_REVIEW,
+            repos=["backend"],
+            extra={"prs": {"url1": {"title": "MR1"}}},
+        )
+        result = SyncResult()
+        with _patch_dod_overlay([_FRONTEND]):
+            apply_merged_status(ticket, {"url1"}, result)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert "dod_e2e_violation" not in ticket.extra

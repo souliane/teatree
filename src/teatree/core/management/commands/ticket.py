@@ -56,6 +56,13 @@ class ContextResult(TypedDict, total=False):
     context: str
 
 
+class DodOverrideResult(TypedDict, total=False):
+    ticket_id: int
+    reason: str
+    by: str
+    at: str
+
+
 class ReattributeResult(TypedDict, total=False):
     ticket_id: int
     issue_url: str
@@ -121,6 +128,45 @@ class Command(TyperCommand):
             }
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
+
+    @command(name="dod-override")
+    def dod_override(
+        self,
+        ticket_id: int,
+        *,
+        reason: Annotated[
+            str,
+            typer.Option(help="Why this UI-visible ticket may ship without a local-stack E2E (#88)."),
+        ],
+        by: Annotated[
+            str,
+            typer.Option(help="Who is recording the override (audit trail)."),
+        ] = "",
+    ) -> DodOverrideResult:
+        """Record the DoD local-E2E gate escape hatch for a ticket (#88).
+
+        The gate refuses to ship a UI-visible ticket without a green
+        local-stack E2E artifact. This records an explicit, audited override
+        so a genuinely non-UI or exempt ticket the heuristic mis-flags can
+        still ship — the gate can never hard-trap a legitimate ticket. A
+        blank ``--reason`` is refused: a silent bypass is exactly what #88
+        forecloses.
+        """
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models.types import DodE2EOverride  # noqa: PLC0415
+
+        cleaned = reason.strip()
+        if not cleaned:
+            self.stderr.write("  refused: --reason is required (a silent DoD-gate bypass is not allowed).")
+            raise SystemExit(1)
+        ticket = self._resolve_ticket(ticket_id)
+        recorded_at = timezone.now().isoformat()
+        ticket.merge_extra(
+            set_keys={"dod_e2e_override": DodE2EOverride(reason=cleaned, by=by.strip(), at=recorded_at)},
+        )
+        self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
+        return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
 
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).

@@ -225,6 +225,20 @@ class ProvenanceTests(TestCase):
         assert "timestamp" in recipe.last_run
         assert recipe.last_run["timestamp"]
 
+    def test_env_defaults_to_local(self) -> None:
+        record_run(self.ticket, result="green", per_repo_shas={"r": "s"})
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert recipe.last_run["env"] == "local"
+
+    def test_dev_env_is_recorded(self) -> None:
+        record_run(self.ticket, result="green", per_repo_shas={"r": "s"}, env="dev")
+
+        recipe = load_recipe(self.ticket)
+        assert recipe.last_run is not None
+        assert recipe.last_run["env"] == "dev"
+
 
 class GitHelpersTests(TestCase):
     def test_head_sha_returns_full_sha(self, tmp_path: Path | None = None) -> None:

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, SupportsInt, cast
 
 from teatree.backends.gitlab_sync_approvals import detect_approval_dismissal
+from teatree.core.dod_gate import workflow_capped_state
 from teatree.core.models import Ticket
 from teatree.types import DiscussionSummary, PREntry, PREntryDict, RawAPIDict, SyncResult
 
@@ -115,13 +116,14 @@ def upsert_ticket_from_pr(
 
     tickets = list(Ticket.objects.filter(issue_url=lookup_url).order_by("pk"))
     if not tickets:
-        Ticket.objects.create(
+        new_ticket = Ticket(
             issue_url=lookup_url,
             repos=[ctx.repo_short],
             extra={"prs": {web_url: pr_entry_dict}},
-            state=inferred_state,
             overlay=overlay_name,
         )
+        new_ticket.state = workflow_capped_state(new_ticket, inferred_state)
+        new_ticket.save()
         result.tickets_created += 1
     else:
         ticket = tickets[0]
@@ -231,6 +233,10 @@ def update_ticket(
     repos = ticket.repos if isinstance(ticket.repos, list) else []
     if repo_short not in repos:
         repos = [*repos, repo_short]
+    # The DoD gate's UI-visibility check reads ``ticket.repos``; reflect the
+    # synced repo set in-memory first so a newly-scoped frontend repo cannot
+    # let a SHIPPED write slip past the gate on the stale (smaller) set.
+    ticket.repos = repos
 
     # #800 N3: canonical locked RMW; narrow set_keys to the only top-level
     # key this fn mutates (prs) so merge_extra's locked re-read does not
@@ -238,8 +244,9 @@ def update_ticket(
     # (#1505). repos (+ optional state) ride along via also_set in the
     # same atomic write (no split).
     also_set: TicketSiblingFields = {"repos": repos}
-    if inferred_state and _STATE_ORDER.index(inferred_state) > _STATE_ORDER.index(ticket.state):
-        also_set["state"] = inferred_state
+    capped_state = workflow_capped_state(ticket, inferred_state) if inferred_state else inferred_state
+    if capped_state and _STATE_ORDER.index(capped_state) > _STATE_ORDER.index(ticket.state):
+        also_set["state"] = capped_state
 
     set_keys = cast("TicketExtra", {"prs": prs})
     ticket.merge_extra(set_keys=set_keys, also_set=also_set)

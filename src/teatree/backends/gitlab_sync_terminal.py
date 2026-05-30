@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.cleanup import cleanup_worktree
+from teatree.core.dod_gate import record_terminal_dod_violation
 from teatree.core.models import Ticket, Worktree
 from teatree.types import PREntryDict, RawAPIDict, SyncResult
 
@@ -72,12 +73,20 @@ def apply_merged_status(ticket: Ticket, merged_urls: set[str], result: SyncResul
 
     set_keys = cast("TicketExtra", {"prs": prs}) if changed else None
     also_set: TicketSiblingFields = {}
-    if all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state):
+    advancing_to_merged = all_merged and _STATE_ORDER.index(Ticket.State.MERGED) > _STATE_ORDER.index(ticket.state)
+    if advancing_to_merged:
         also_set["state"] = Ticket.State.MERGED
     if set_keys or also_set:
         # #800 N3: canonical locked RMW; extra (prs) + optional state
         # one atomic write via also_set (no split, no unlocked clobber).
         ticket.merge_extra(set_keys=set_keys, also_set=also_set or None)
+
+    if advancing_to_merged:
+        # #1426: MERGED reflects a real external merge, so the sync follows
+        # reality rather than demoting (which would make the ticket lie). When
+        # the DoD local-E2E gate was unmet, the gap is recorded as a durable
+        # audit marker + loud log instead of being silently bypassed.
+        record_terminal_dod_violation(ticket, Ticket.State.MERGED)
 
     if all_merged:
         _cleanup_merged_worktrees(ticket, result)

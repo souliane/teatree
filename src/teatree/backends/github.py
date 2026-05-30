@@ -17,6 +17,20 @@ from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
 
+
+def issue_repo_short(url: str) -> str:
+    """The repo short-name from a GitHub issue/PR URL, or ``""`` if unparsable.
+
+    The board item's URL (e.g. ``https://github.com/souliane/teatree/issues/4``)
+    is the authoritative source of the issue's repo. The project *owner* is NOT
+    a reliable repo (a Projects v2 board spans repos), so scoping a ticket by
+    the owner mis-classifies UI-visibility for the DoD gate (#1426).
+    """
+    path = urlparse(url).path
+    match = _ISSUE_URL_RE.match(path) or _PR_URL_RE.match(path)
+    return match.group("repo") if match else ""
+
+
 _GH_REVIEW_STATE_MAP: dict[str, ReviewState] = {
     "APPROVED": ReviewState.APPROVED,
     "CHANGES_REQUESTED": ReviewState.CHANGES_REQUESTED,

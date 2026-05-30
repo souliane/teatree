@@ -373,6 +373,158 @@ class TestSyncGitHub(TestCase):
         assert result.worktrees_cleaned == 1
         assert any("dropdb failed for wt_47" in e for e in result.errors)
 
+    def test_done_board_move_keeps_delivered_but_records_dod_violation(self) -> None:
+        """#1426: board 'Done' -> DELIVERED is terminal reality (kept), with an audit marker.
+
+        A UI-visible ticket with no local E2E keeps DELIVERED but gets a durable
+        dod_e2e_violation marker recorded.
+        """
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.core import dod_gate  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/48",
+            state=Ticket.State.IN_REVIEW,
+            repos=["teatree"],
+        )
+        item = ProjectItem(
+            issue_number=48,
+            title="Delivered without local E2E",
+            url="https://github.com/souliane/teatree/issues/48",
+            status="Done",
+            position=7,
+            labels=[],
+        )
+        fake_overlay = MagicMock()
+        fake_overlay.config.frontend_repos = ["teatree"]
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+        ):
+            GitHubSyncBackend().sync(overlay)
+
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/48")
+        assert ticket.state == Ticket.State.DELIVERED  # terminal reality kept
+        assert ticket.extra["dod_e2e_violation"]["state"] == Ticket.State.DELIVERED
+
+    def test_done_board_move_no_violation_when_not_ui_visible(self) -> None:
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.core import dod_gate  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/49",
+            state=Ticket.State.IN_REVIEW,
+            repos=["teatree"],
+        )
+        item = ProjectItem(
+            issue_number=49,
+            title="Backend-only delivered",
+            url="https://github.com/souliane/teatree/issues/49",
+            status="Done",
+            position=8,
+            labels=[],
+        )
+        fake_overlay = MagicMock()
+        fake_overlay.config.frontend_repos = ["some-frontend"]  # ticket repo not in it
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+        ):
+            GitHubSyncBackend().sync(overlay)
+
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/49")
+        assert ticket.state == Ticket.State.DELIVERED
+        assert "dod_e2e_violation" not in ticket.extra
+
+    def test_newly_created_done_item_scopes_repo_from_url_and_records_violation(self) -> None:
+        """#1426: a board-created 'Done' ticket scopes repos from the issue URL.
+
+        Scoping from the URL (not the project owner) lets the DoD gate see the
+        real repo and record the violation.
+        """
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.core import dod_gate  # noqa: PLC0415
+
+        overlay = self._make_overlay()  # github_owner="souliane"
+        item = ProjectItem(
+            issue_number=50,
+            title="Delivered via board, never seen before",
+            url="https://github.com/souliane/teatree/issues/50",
+            status="Done",
+            position=9,
+            labels=[],
+        )
+        fake_overlay = MagicMock()
+        fake_overlay.config.frontend_repos = ["teatree"]
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+        ):
+            GitHubSyncBackend().sync(overlay)
+
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/50")
+        # Repo scoped from the URL ("teatree"), NOT the project owner ("souliane").
+        assert ticket.repos == ["teatree"]
+        assert ticket.state == Ticket.State.DELIVERED
+        assert ticket.extra["dod_e2e_violation"]["state"] == Ticket.State.DELIVERED
+
+    def test_already_delivered_ticket_gets_violation_on_resync_after_repo_repair(self) -> None:
+        """#1426: a stuck-DELIVERED ticket gets the audit on re-sync after repo repair.
+
+        A ticket the old owner-scoping bug left at DELIVERED with no marker
+        gets the audit once its repo scope is repaired from the URL.
+        """
+        from teatree.backends.github import ProjectItem  # noqa: PLC0415
+        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.core import dod_gate  # noqa: PLC0415
+
+        overlay = self._make_overlay()
+        # Pre-existing ticket: already DELIVERED, mis-scoped to the owner slug,
+        # and crucially missing the dod_e2e_violation marker.
+        Ticket.objects.create(
+            issue_url="https://github.com/souliane/teatree/issues/51",
+            state=Ticket.State.DELIVERED,
+            repos=["souliane"],
+        )
+        item = ProjectItem(
+            issue_number=51,
+            title="Stuck delivered, no marker",
+            url="https://github.com/souliane/teatree/issues/51",
+            status="Done",
+            position=10,
+            labels=[],
+        )
+        fake_overlay = MagicMock()
+        fake_overlay.config.frontend_repos = ["teatree"]
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+        ):
+            GitHubSyncBackend().sync(overlay)
+
+        ticket = Ticket.objects.get(issue_url="https://github.com/souliane/teatree/issues/51")
+        assert "teatree" in ticket.repos  # repo scope repaired from the URL
+        assert ticket.extra["dod_e2e_violation"]["state"] == Ticket.State.DELIVERED
+        # No transition happened (already DELIVERED) so cleanup must not re-run.
+        mock_cleanup.assert_not_called()
+
     def test_returns_error_for_non_overlay(self) -> None:
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
 
