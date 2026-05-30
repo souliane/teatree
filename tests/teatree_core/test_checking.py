@@ -180,7 +180,10 @@ class TestNeedsYouGroup(CheckingTestBase):
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.needs_you.total == 1
         item = report.needs_you.items[0]
-        assert item.label.startswith(f"Q#{question.pk}:")
+        # Local handle, never a bare ``#NNN`` (that reads like an unlinked
+        # forge issue ref and breaks the all-refs-clickable contract).
+        assert item.label.startswith(f"Q{question.pk}:")
+        assert "#" not in item.label
         assert f"questions answer {question.pk}" in item.detail
 
     def test_failed_attempt_surfaces_blocker_with_clickable_url(self) -> None:
@@ -249,19 +252,29 @@ class TestTerseFormatting(CheckingTestBase):
         assert terse.count("](") == 5
 
     def test_no_bare_numeric_ids_in_reference_lines(self) -> None:
+        # Exercise ALL three groups, including a pending DeferredQuestion —
+        # the question path sets url="" and previously rendered a bare ``Q#N``,
+        # which this test must now catch.
         merged_ticket = self._ticket(number=42)
         self._merge(merged_ticket, pr_id=7, slug="acme/widgets", hours_ago=2)
         inflight_ticket = self._ticket(number=43, state=Ticket.State.CODED)
         self._transition(inflight_ticket, frm=Ticket.State.STARTED, to=Ticket.State.CODED, hours_ago=1)
+        DeferredQuestion.record("Should I ship the widget rename?")
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="github")
         terse = report.to_terse(overlay_name=self.OVERLAY)
-        # Every reference line carries a markdown link; a bare "#N" or "slug#N"
-        # token that is NOT inside a [..](..) link is a contract violation.
         for line in terse.splitlines():
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
-            assert re.search(r"\]\(https?://", stripped), f"reference line without clickable link: {line!r}"
+            # A reference line either carries a clickable markdown link
+            # (PR/issue/ticket) or is a question line whose content is an
+            # actionable CLI command. In BOTH cases, no bare ``#NNN`` token may
+            # appear OUTSIDE a [..](..) link — that is the contract violation.
+            outside_links = re.sub(r"\[[^\]]*\]\([^)]*\)", "", stripped)
+            assert not re.search(r"#\d", outside_links), f"bare #-id outside a link: {line!r}"
+            has_link = bool(re.search(r"\]\(https?://", stripped))
+            is_command = "t3 " in stripped and "questions answer" in stripped
+            assert has_link or is_command, f"reference line is neither a link nor a command: {line!r}"
 
 
 class TestJsonShape(CheckingTestBase):

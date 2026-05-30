@@ -101,6 +101,26 @@ def advance_checkpoint(now: datetime, path: Path | None = None) -> Path:
     return target
 
 
+def advance_checkpoint_monotonic(now: datetime, path: Path | None = None) -> Path:
+    """Advance the marker to *now* only when that moves it forward in time.
+
+    The marker records "the user has now seen everything up to *now*". Writing
+    a value earlier than the stored one would re-open an already-seen window on
+    the next run (double-reporting) and, more dangerously, a backward write
+    after a clock regression could mark events as seen that were never
+    reported. So the write is monotonic: when the stored marker is already at
+    or ahead of *now* (a future/skewed marker, or a clock that went backward),
+    the existing marker is kept untouched. A normal forward-moving *now* writes
+    as usual. Returns the marker path either way.
+    """
+    target = path or checkpoint_path()
+    stored = load_checkpoint(target)
+    now_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    if stored is not None and stored >= now_utc:
+        return target
+    return advance_checkpoint(now_utc, target)
+
+
 def resolve_window_start(*, since: str = "", now: datetime, path: Path | None = None) -> datetime:
     """Resolve the report window start by a single-precedence chain.
 
@@ -111,22 +131,42 @@ def resolve_window_start(*, since: str = "", now: datetime, path: Path | None = 
 
     Each layer is independently testable: pass *since* to exercise (1), seed
     the checkpoint file to exercise (2), leave both unset to exercise (3).
+
+    **Future-start guard.** A resolved start at or after *now* would yield an
+    empty ``[start, now)`` window — a future ``--since`` (typo / wrong tz) or a
+    clock-skewed checkpoint written ahead of the current clock. An empty window
+    silently reports nothing real, and on the default path the marker would
+    then advance to *now*, permanently skipping the events between the real
+    last-check and *now*. So any resolved start ``>= now`` falls back to the
+    default lookback: the window is never empty, the report never silently
+    skips, and the subsequent advance stays monotonic (start is always
+    ``< now``).
     """
     explicit = since.strip()
     if explicit:
         parsed = datetime.fromisoformat(explicit)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
-        return parsed
+        return _clamp_future_start(parsed, now=now)
     stored = load_checkpoint(path)
     if stored is not None:
-        return stored
+        return _clamp_future_start(stored, now=now)
     return now - DEFAULT_LOOKBACK
+
+
+def _clamp_future_start(start: datetime, *, now: datetime) -> datetime:
+    """Return *start* unless it is at/after *now*, in which case the default lookback.
+
+    A start ``>= now`` collapses the half-open ``[start, now)`` window to
+    empty; the default lookback restores a real, non-empty window.
+    """
+    return start if start < now else now - DEFAULT_LOOKBACK
 
 
 __all__ = [
     "DEFAULT_LOOKBACK",
     "advance_checkpoint",
+    "advance_checkpoint_monotonic",
     "checkpoint_path",
     "load_checkpoint",
     "resolve_window_start",

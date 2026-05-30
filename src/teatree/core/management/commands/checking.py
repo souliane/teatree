@@ -23,7 +23,7 @@ from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.checking import gather_checking_report
-from teatree.core.checkpoint import advance_checkpoint, resolve_window_start
+from teatree.core.checkpoint import advance_checkpoint_monotonic, resolve_window_start
 
 
 class Command(TyperCommand):
@@ -60,8 +60,11 @@ class Command(TyperCommand):
         )
         # Advance only on the default path: an explicit --since or --no-advance
         # is an inspection that must not move the user's last-checked marker.
+        # The advance is monotonic — it never writes a marker earlier than the
+        # stored one, so a clock regression or a future/skewed marker cannot
+        # collapse a real window or mark unreported events as seen.
         if not since and not no_advance:
-            advance_checkpoint(now)
+            advance_checkpoint_monotonic(now)
         if json_output:
             return json.dumps(report.to_dict())
         return report.to_terse(overlay_name=overlay_name)

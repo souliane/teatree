@@ -17,7 +17,7 @@ import pytest
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.checkpoint import load_checkpoint
+from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
 
@@ -129,3 +129,20 @@ class TestCheckingShow:
         assert "Merged" in first
         second = _call("checking", "show").strip()
         assert second.startswith("Nothing since ")
+
+    def test_future_checkpoint_does_not_collapse_window_or_advance_backward(self, checkpoint_file: Path) -> None:
+        """A skewed future marker must still report recent events, not collapse.
+
+        A checkpoint written ahead of the clock would yield an empty
+        ``[future, now)`` window and then advance the marker forward, silently
+        skipping the real events. The guard restores the default lookback so the
+        recent merge surfaces, and the monotonic advance leaves the future
+        marker untouched (never rewound).
+        """
+        _merged_ticket()
+        future_marker = timezone.now() + timedelta(hours=6)
+        advance_checkpoint(future_marker, checkpoint_file)
+        out = _call("checking", "show")
+        assert "Merged" in out  # the recent merge is NOT skipped
+        # The marker is not rewound to ``now`` (which would lose the bound).
+        assert load_checkpoint(checkpoint_file) == future_marker

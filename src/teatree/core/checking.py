@@ -280,14 +280,17 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
     items: list[CheckItem] = []
 
     # Pending questions are NOT window-bounded — an old pending question still
-    # needs the user. The actionable answer command is the reference (an
-    # actionable command, not a bare id).
+    # needs the user. The id is a LOCAL DeferredQuestion handle, not an external
+    # forge ref, so it must not render as a bare ``#NNN`` (that reads like an
+    # unlinked issue and breaks the all-refs-clickable contract). Use the
+    # bare-``#``-free ``Q<id>`` handle, and let the actionable answer command
+    # carry the line's content — a command is an acceptable non-URL reference.
     overlay_slug = overlay_name or "<overlay>"
     for question in DeferredQuestion.pending():
         snippet = question.question.strip().replace("\n", " ")[:60]
         items.append(
             CheckItem(
-                label=f"Q#{question.pk}: {snippet}",
+                label=f"Q{question.pk}: {snippet}",
                 url="",
                 detail=f"t3 {overlay_slug} questions answer {question.pk} <text>",
             ),

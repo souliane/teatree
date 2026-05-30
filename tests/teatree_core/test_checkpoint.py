@@ -16,6 +16,7 @@ from pathlib import Path
 from teatree.core.checkpoint import (
     DEFAULT_LOOKBACK,
     advance_checkpoint,
+    advance_checkpoint_monotonic,
     checkpoint_path,
     load_checkpoint,
     resolve_window_start,
@@ -113,6 +114,84 @@ class TestResolveWindowStart:
         now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
         start = resolve_window_start(since="", now=now, path=tmp_path / "cp.json")
         assert start == now - DEFAULT_LOOKBACK
+
+    def test_future_since_falls_back_to_default_lookback(self, tmp_path: Path) -> None:
+        # A future explicit --since would yield an empty [future, now) window;
+        # the guard restores the default lookback so the report is never empty.
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        start = resolve_window_start(since="2026-06-01T00:00:00+00:00", now=now, path=tmp_path / "cp.json")
+        assert start == now - DEFAULT_LOOKBACK
+
+    def test_since_equal_to_now_falls_back(self, tmp_path: Path) -> None:
+        # A start exactly at now collapses [now, now) to empty — also clamped.
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        start = resolve_window_start(since=now.isoformat(), now=now, path=tmp_path / "cp.json")
+        assert start == now - DEFAULT_LOOKBACK
+
+    def test_future_checkpoint_falls_back_to_default_lookback(self, tmp_path: Path) -> None:
+        # A clock-skewed checkpoint written ahead of now must not yield an empty
+        # window that then advances the marker forward, silently skipping events.
+        path = tmp_path / "cp.json"
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        advance_checkpoint(now + timedelta(hours=6), path)
+        start = resolve_window_start(since="", now=now, path=path)
+        assert start == now - DEFAULT_LOOKBACK
+
+
+class TestMonotonicAdvance:
+    def test_advances_forward_when_now_is_later(self, tmp_path: Path) -> None:
+        path = tmp_path / "cp.json"
+        advance_checkpoint(datetime(2026, 5, 30, 9, 0, tzinfo=UTC), path)
+        later = datetime(2026, 5, 30, 15, 0, tzinfo=UTC)
+        advance_checkpoint_monotonic(later, path)
+        assert load_checkpoint(path) == later
+
+    def test_does_not_move_marker_backward(self, tmp_path: Path) -> None:
+        # A clock regression (now earlier than the stored marker) must NOT
+        # rewind the marker — rewinding would mark already-seen events unseen.
+        path = tmp_path / "cp.json"
+        stored = datetime(2026, 5, 30, 15, 0, tzinfo=UTC)
+        advance_checkpoint(stored, path)
+        earlier = datetime(2026, 5, 30, 9, 0, tzinfo=UTC)
+        advance_checkpoint_monotonic(earlier, path)
+        assert load_checkpoint(path) == stored
+
+    def test_keeps_future_marker_untouched(self, tmp_path: Path) -> None:
+        path = tmp_path / "cp.json"
+        future = datetime(2026, 5, 30, 23, 0, tzinfo=UTC)
+        advance_checkpoint(future, path)
+        advance_checkpoint_monotonic(datetime(2026, 5, 30, 18, 0, tzinfo=UTC), path)
+        assert load_checkpoint(path) == future
+
+    def test_writes_when_no_existing_marker(self, tmp_path: Path) -> None:
+        path = tmp_path / "cp.json"
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        advance_checkpoint_monotonic(now, path)
+        assert load_checkpoint(path) == now
+
+
+class TestFutureWindowGuardEndToEnd:
+    def test_future_checkpoint_does_not_collapse_then_advance(self, tmp_path: Path) -> None:
+        """A future marker must not produce an empty window that then advances.
+
+        The default command path: resolve the start, gather, then advance
+        monotonically. A future/skewed checkpoint must (a) resolve to a real
+        non-empty window via the default lookback, and (b) leave the marker
+        untouched by the monotonic advance — so no real event is ever skipped.
+        """
+        path = tmp_path / "cp.json"
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        future_marker = now + timedelta(hours=6)
+        advance_checkpoint(future_marker, path)
+
+        start = resolve_window_start(since="", now=now, path=path)
+        assert start == now - DEFAULT_LOOKBACK  # non-empty real window
+        assert start < now
+
+        advance_checkpoint_monotonic(now, path)
+        # The future marker is preserved (never rewound), so the next run still
+        # bounds correctly and no events between were silently skipped.
+        assert load_checkpoint(path) == future_marker
 
 
 class TestCollapsePreventionProperty:
