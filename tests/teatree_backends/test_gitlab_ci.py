@@ -168,6 +168,30 @@ def test_fetch_pipeline_errors_returns_message_for_no_pipeline() -> None:
     assert result == ["No pipeline found for ref: main"]
 
 
+def test_latest_pipeline_url_encodes_ref_with_plus() -> None:
+    # A '+' in a ref decodes to a space server-side, so it must be percent-encoded.
+    client, mock = _make_client(project=_project())
+    mock.get_json.return_value = [{"id": 900}]
+    service = GitLabCIService(client=client)
+
+    service.quality_check(project="org/repo", ref="release+1.2")
+
+    endpoint = mock.get_json.call_args_list[0][0][0]
+    assert "ref=release%2B1.2" in endpoint
+    assert "ref=release+1.2" not in endpoint
+
+
+def test_latest_pipeline_url_encodes_ref_with_slash() -> None:
+    client, mock = _make_client(project=_project())
+    mock.get_json.return_value = [{"id": 901}]
+    service = GitLabCIService(client=client)
+
+    service.quality_check(project="org/repo", ref="feature/abc")
+
+    endpoint = mock.get_json.call_args_list[0][0][0]
+    assert "ref=feature%2Fabc" in endpoint
+
+
 def test_fetch_pipeline_errors_returns_empty_when_jobs_not_a_list() -> None:
     client, mock = _make_client(project=_project())
     mock.get_json.side_effect = [
