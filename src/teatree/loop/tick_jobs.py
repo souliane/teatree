@@ -495,11 +495,23 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     Returns ``None`` (no job emitted) whenever either gate is shut, so with
     the default-OFF config neither ``build_registry_jobs`` nor
     ``build_default_jobs`` emits anything for this domain — the registry
-    fan-out stays byte-for-byte unchanged until an overlay opts in. Dispatch
-    routing of the emitted signals lands in C4 (#1554).
+    fan-out stays byte-for-byte unchanged until an overlay opts in.
+
+    A loop that is enabled with an empty ``issue_implementer_label`` is a
+    safe but silent no-op (the scanner short-circuits on a blank label so no
+    issue is ever claimed). That fails closed by design, but an operator who
+    flipped the master gate without setting a label sees nothing dispatch and
+    no reason why — so we emit one WARNING naming the missing label (#1554).
     """
     settings = _effective_settings_for_overlay(backend.name)
     if not settings.issue_implementer_enabled:
+        return None
+    if not settings.issue_implementer_label:
+        logger.warning(
+            "issue-implementer loop enabled for overlay %r but issue_implementer_label is empty — "
+            "nothing will be dispatched until a label is set",
+            backend.name,
+        )
         return None
     code_host = backend.host
     if code_host is None:
