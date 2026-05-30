@@ -65,10 +65,37 @@ class TestIsUiVisible(TestCase):
         with _patch_overlay([]):
             assert is_ui_visible(ticket) is False
 
-    def test_unresolvable_overlay_fails_open_to_not_ui_visible(self) -> None:
+    def test_unresolvable_overlay_fails_closed_to_presumed_ui_visible(self) -> None:
+        """#1426: an unresolvable overlay must FAIL CLOSED — presume UI-visible.
+
+        The safety gate must not be silently skipped on a misconfigured instance.
+        """
         from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
+        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+            assert is_ui_visible(ticket) is True
+
+    def test_config_without_frontend_repos_attr_fails_closed(self) -> None:
+        """A config that does not expose ``frontend_repos`` fails CLOSED (presumed UI-visible), not a crash."""
+
+        class _ConfigNoAttr:
+            pass
+
+        ticket = Ticket.objects.create(overlay="acme", repos=["acme-frontend"])
+        with patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_ConfigNoAttr())):
+            assert is_ui_visible(ticket) is True
+
+    def test_no_scoped_repos_is_not_ui_visible_even_when_overlay_undeterminable(self) -> None:
+        """A ticket with no scoped repos cannot be UI-visible, so fail-closed does not apply.
+
+        Nothing in an empty repo set can intersect ``frontend_repos``; the
+        fail-closed branch is reserved for the ambiguous "repos exist but
+        cannot be classified" case.
+        """
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="missing", repos=[])
         with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
             assert is_ui_visible(ticket) is False
 
@@ -96,6 +123,17 @@ class TestHasLocalE2EArtifact(TestCase):
 
     def test_no_recipe_does_not_satisfy(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/i/5")
+        assert has_local_e2e_artifact(ticket) is False
+
+    def test_malformed_non_mapping_last_run_does_not_crash(self) -> None:
+        """A non-mapping ``last_run`` (corrupt durable JSON) is no valid artifact, not a raise."""
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/i/6")
+        ticket.merge_extra(set_keys={"e2e_recipe": {"repos": [], "last_run": "garbage"}})
+        assert has_local_e2e_artifact(ticket) is False
+
+    def test_malformed_list_last_run_does_not_crash(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/i/7")
+        ticket.merge_extra(set_keys={"e2e_recipe": {"repos": [], "last_run": ["not", "a", "mapping"]}})
         assert has_local_e2e_artifact(ticket) is False
 
 
@@ -152,6 +190,35 @@ class TestCheckLocalE2EDod(TestCase):
         ticket = Ticket.objects.create(overlay="acme", repos=["acme-frontend"])
         ticket.merge_extra(set_keys={"dod_e2e_override": {"reason": "exempt: backend-only despite repo set"}})
         with _patch_overlay(["acme-frontend"]):
+            check_local_e2e_dod(ticket)  # no raise
+
+    def test_blocks_when_overlay_undeterminable_and_no_e2e_or_override(self) -> None:
+        """#1426 fail-closed: an undeterminable overlay presumes UI-visible and the gate fires."""
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
+        with (
+            patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")),
+            pytest.raises(DodLocalE2EError),
+        ):
+            check_local_e2e_dod(ticket)
+
+    def test_undeterminable_overlay_is_not_a_lockout_with_override(self) -> None:
+        """Never-lockout: the override escape hatch still passes under fail-closed."""
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
+        ticket.merge_extra(set_keys={"dod_e2e_override": {"reason": "exempt config-only change"}})
+        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+            check_local_e2e_dod(ticket)  # no raise
+
+    def test_undeterminable_overlay_is_not_a_lockout_with_green_e2e(self) -> None:
+        """Never-lockout: a green local E2E still passes under fail-closed."""
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="missing", issue_url="https://example.com/i/12", repos=["acme-frontend"])
+        record_run(ticket, result="green", per_repo_shas={"acme-frontend": "sha"}, env="local")
+        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
             check_local_e2e_dod(ticket)  # no raise
 
 

@@ -76,6 +76,12 @@ class TicketExtra(TypedDict, total=False):
     # exempt or genuinely non-UI ticket the heuristic mis-flags). When present
     # with a non-empty ``reason`` the gate passes and logs it.
     dod_e2e_override: "DodE2EOverride"
+    # #1426 durable audit marker: a sync writer advanced the ticket to a
+    # TERMINAL state (MERGED/DELIVERED) reflecting a real external merge/deploy
+    # while the DoD local-E2E gate was unmet. The terminal state is kept (it
+    # mirrors reality) but the violation is recorded here rather than silently
+    # bypassed, so the gap is auditable.
+    dod_e2e_violation: "DodE2EViolation"
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):
@@ -97,6 +103,21 @@ class DodE2EOverride(TypedDict, total=False):
     reason: str
     by: str
     at: str
+
+
+class DodE2EViolation(TypedDict, total=False):
+    """Durable audit marker for a terminal-state DoD violation (#1426).
+
+    Recorded when automated sync advances a UI-visible ticket to a TERMINAL
+    state (MERGED/DELIVERED) reflecting a real external merge/deploy while no
+    green local-stack E2E artifact (or override) existed. The terminal state
+    is kept because it mirrors reality; this marker makes the unmet DoD
+    auditable instead of a silent bypass.
+    """
+
+    state: str
+    at: str
+    detail: str
 
 
 class E2ERepoEntrySerialized(TypedDict, total=False):
