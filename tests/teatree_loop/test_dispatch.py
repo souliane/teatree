@@ -54,6 +54,25 @@ def test_reviewer_pr_new_sha_dispatches_to_reviewer_agent() -> None:
     assert actions[0].zone == "t3:reviewer"
 
 
+def test_issue_implementer_claimed_dispatches_to_orchestrator_and_statusline() -> None:
+    """A claimed auto-implement issue is a maker-side kickoff to ``t3:orchestrator`` (#1554)."""
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="issue_implementer.claimed",
+                summary="Claimed for auto-implement: do it",
+                payload={"url": "https://github.com/souliane/teatree/issues/100"},
+            ),
+        ],
+    )
+    kinds_zones = [(a.kind, a.zone) for a in actions]
+    assert ("agent", "t3:orchestrator") in kinds_zones
+    assert ("statusline", "action_needed") in kinds_zones
+    # Payload carries the issue URL through to the dispatched agent.
+    agent = next(a for a in actions if a.kind == "agent")
+    assert agent.payload["url"] == "https://github.com/souliane/teatree/issues/100"
+
+
 def test_reviewer_pr_approval_dismissed_dispatches_to_reviewer_agent() -> None:
     actions = dispatch([ScanSignal(kind="reviewer_pr.approval_dismissed", summary="MR x")])
     kinds = [(a.kind, a.zone) for a in actions]
