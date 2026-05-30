@@ -85,13 +85,22 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     # able to retry under the same key (#1306). We delete the recoverable
     # row so the verify-by-re-read invariant still holds: the terminal
     # ledger entry reflects the eventual outcome, not a transient miss.
-    existing = BotPing.objects.filter(idempotency_key=idempotency_key).first()
-    if existing is not None:
-        if existing.status == BotPing.Status.SENT:
-            logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
-            return True
-        logger.info("notify_user retrying key=%s (prior status=%s)", idempotency_key, existing.status)
-        existing.delete()
+    #
+    # The ledger lookup/cleanup is a DB read+delete before any delivery;
+    # a DatabaseError here (e.g. SQLite "database is locked") must not
+    # escape the never-raise contract. We fail closed — return False
+    # without delivering — so the caller's FSM transition keeps moving.
+    try:
+        existing = BotPing.objects.filter(idempotency_key=idempotency_key).first()
+        if existing is not None:
+            if existing.status == BotPing.Status.SENT:
+                logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
+                return True
+            logger.info("notify_user retrying key=%s (prior status=%s)", idempotency_key, existing.status)
+            existing.delete()
+    except DatabaseError as exc:
+        logger.warning("notify_user idempotency-ledger access failed for key=%s: %s", idempotency_key, exc)
+        return False
 
     resolved_backend = backend if backend is not None else messaging_from_overlay()
     resolved_user_id = user_id if user_id is not None else _resolve_user_id()
@@ -142,6 +151,11 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+    except DatabaseError as exc:
+        # The DM has already landed; a locked/failed audit write must
+        # never escape and break the caller's FSM transition (the
+        # never-raise contract). Mirror ``_record_outbound_claim``.
+        logger.warning("notify_user audit write failed for key=%s: %s", idempotency_key, exc)
 
     _maybe_stamp_answered(
         idempotency_key=idempotency_key,
@@ -377,6 +391,8 @@ def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: s
             )
     except IntegrityError:
         logger.debug("notify_user noop race on key=%s", idempotency_key)
+    except DatabaseError as exc:
+        logger.warning("notify_user noop audit write failed for key=%s: %s", idempotency_key, exc)
 
 
 def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: str) -> None:
@@ -391,6 +407,8 @@ def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: 
             )
     except IntegrityError:
         logger.debug("notify_user failed-row race on key=%s", idempotency_key)
+    except DatabaseError as exc:
+        logger.warning("notify_user failed-row audit write failed for key=%s: %s", idempotency_key, exc)
 
 
 __all__ = ["NotifyKind", "notify_user"]
