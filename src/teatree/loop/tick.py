@@ -18,6 +18,7 @@ imports.
 
 import datetime as dt
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -120,12 +121,16 @@ class TickRequest:
     ready_labels: tuple[str, ...] = ()
 
 
+type JobsBuilder = Callable[[TickRequest, dt.datetime], list[_ScannerJob]]
+
+
 def run_tick(
     request: TickRequest | None = None,
     *,
     statusline_path: Path | None = None,
     colorize: bool | None = None,
     now: dt.datetime | None = None,
+    jobs_builder: JobsBuilder | None = None,
 ) -> TickReport:
     """Run all scanners in parallel, dispatch, render statusline, return report.
 
@@ -135,12 +140,22 @@ def run_tick(
     *host*/*messaging* are provided. *now* and *statusline_path* are test
     overrides. *colorize* defaults to ``True`` unless ``NO_COLOR`` is set
     in the environment.
+
+    *jobs_builder* is the source of scanner jobs for the no-``scanners``
+    path. The ``loop_tick`` management command injects the registry-driven
+    fan-out (:func:`teatree.loops.fanout.build_registry_jobs`) so the
+    mini-loop registry is the single source of which scanners run a live
+    tick (#1481); the default falls back to :func:`build_default_jobs`.
+    The seam keeps :mod:`teatree.loop` from importing :mod:`teatree.loops`
+    up-stack.
     """
     request = request or TickRequest()
     started_at = now or dt.datetime.now(dt.UTC)
     _reap_stale_task_claims()
     if request.scanners is not None:
         jobs = [_ScannerJob(scanner=s, overlay="") for s in request.scanners]
+    elif jobs_builder is not None:
+        jobs = jobs_builder(request, started_at)
     else:
         jobs = build_default_jobs(
             backends=request.backends,

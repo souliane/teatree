@@ -99,6 +99,25 @@ class TestHousekeepingLoopBuildJobs:
         jobs = HOUSEKEEPING_LOOP.build_jobs(backends=[stub_backend])
         assert isinstance(jobs, list)
 
+    def test_wires_resource_pressure_scanner(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
+
+        fake = ResourcePressureScanner()
+        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=fake):
+            jobs = HOUSEKEEPING_LOOP.build_jobs()
+        assert any(j.scanner is fake and j.overlay == "" for j in jobs)
+
+    def test_omits_resource_pressure_when_disabled(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
+
+        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=None):
+            jobs = HOUSEKEEPING_LOOP.build_jobs()
+        assert not any(isinstance(j.scanner, ResourcePressureScanner) for j in jobs)
+
 
 class TestInboxLoopBuildJobs:
     def test_returns_empty_with_no_inputs(self) -> None:

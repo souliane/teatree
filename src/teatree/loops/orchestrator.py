@@ -31,6 +31,7 @@ from typing import Any
 from teatree.loops.base import MiniLoop
 from teatree.loops.cadence_ledger import MiniLoopMarker
 from teatree.loops.config import LoopsConfig
+from teatree.loops.gating import elapsed_and_enabled
 from teatree.loops.registry import iter_loops
 from teatree.loops.summary import OrchestratorReport, build_summary_dm
 
@@ -104,13 +105,9 @@ class Orchestrator:
 
         kwargs = _kwargs_for_request(request)
         for loop in self.registry_fn():
-            if not self.config.is_enabled(loop):
-                skipped[loop.name] = "disabled"
-                continue
-            cadence = self.config.cadence_for(loop)
-            elapsed = MiniLoopMarker.objects.elapsed_since(loop.name, started_at)
-            if elapsed is not None and elapsed < cadence:
-                skipped[loop.name] = "cadence"
+            decision = elapsed_and_enabled(self.config, loop, started_at)
+            if not decision.should_fire:
+                skipped[loop.name] = decision.skip_reason or ""
                 continue
             try:
                 jobs = loop.build_jobs(**kwargs)
