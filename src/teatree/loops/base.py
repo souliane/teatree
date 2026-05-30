@@ -14,7 +14,29 @@ the orchestrator is unchanged, only the *grouping* is new.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
+
+if TYPE_CHECKING:
+    from teatree.backends.protocols import CodeHostBackend, MessagingBackend
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.scanners.notion_view import NotionLike
+    from teatree.loop.tick_jobs import _ScannerJob
+
+
+class BuildJobsContext(TypedDict, total=False):
+    """The per-tick context the orchestrator spreads into ``build_jobs``.
+
+    Mirrors :class:`teatree.loop.tick.TickRequest`'s fields. ``total=False``
+    because each mini-loop's ``build_jobs`` accepts only the subset of
+    keys it needs (the rest are swallowed by its ``**_`` catch-all), and
+    the live tick's single-overlay path omits ``backends``.
+    """
+
+    backends: "list[OverlayBackends] | None"
+    host: "CodeHostBackend | None"
+    messaging: "MessagingBackend | None"
+    notion_client: "NotionLike | None"
+    ready_labels: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,5 +63,5 @@ class MiniLoop:
 
     name: str
     default_cadence_seconds: int
-    build_jobs: Callable[..., list[Any]]
+    build_jobs: Callable[..., list["_ScannerJob"]]
     always_on: bool = False

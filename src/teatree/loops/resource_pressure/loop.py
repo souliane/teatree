@@ -9,14 +9,17 @@ matching the legacy per-tick construction rather than the hourly
 housekeeping cadence.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.loop.tick_jobs import _ScannerJob
 
 _REGISTRY_CADENCE_FLOOR = 60
 
 
-def _build_jobs(**_: Any) -> list[Any]:  # noqa: ANN401 — orchestrator passes extra context as open kwargs
+def _build_jobs(**_: object) -> "list[_ScannerJob]":
     from teatree.loop.tick_jobs import _resource_pressure_scanner, _ScannerJob  # noqa: PLC0415
 
     scanner = _resource_pressure_scanner()
