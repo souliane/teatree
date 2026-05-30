@@ -200,6 +200,16 @@ _BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset(
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
 
+# Title-bearing flags. ``gh``/``glab`` accept ``--title``/``-t``; the value
+# is the forge-rendered TITLE, a surface distinct from the body. Used by
+# :func:`extract_title_fragments` so a gate can treat a title differently
+# from a description (#1544).
+_TITLE_LONG_FLAG: Final[str] = "--title"
+_TITLE_SHORT_FLAG: Final[str] = "-t"
+# Short flags that carry the git-commit message. The FIRST occurrence is
+# the subject line; later ones are body paragraphs.
+_GIT_COMMIT_MESSAGE_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message"})
+
 # Long options for ``gh api`` / ``glab api`` field assignments.
 _API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
 _API_FIELD_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-f", "-F"})
@@ -510,6 +520,80 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_fil
         _walk_api_fields(words, payloads)
     if first == "curl":
         _walk_curl_args(words, payloads)
+
+
+# ── Title / commit-subject extraction (#1544) ───────────────────────
+
+
+def _forge_title_value(words: list[str]) -> str | None:
+    """Return the ``--title``/``-t`` value of a ``gh``/``glab`` segment.
+
+    Handles space-separated (``--title "x"``), equals (``--title=x``), and
+    attached short (``-tx``) forms. ``None`` when the segment carries no
+    title flag.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in {_TITLE_LONG_FLAG, _TITLE_SHORT_FLAG} and i + 1 < n:
+            return words[i + 1]
+        attached = _attached_value(word, _TITLE_LONG_FLAG + "=")
+        if attached is not None:
+            return attached
+        if word != _TITLE_SHORT_FLAG:
+            attached = _attached_value(word, _TITLE_SHORT_FLAG)
+            if attached is not None:
+                return attached
+        i += 1
+    return None
+
+
+def _git_commit_subject(words: list[str]) -> str | None:
+    """Return the SUBJECT line of a ``git commit`` segment.
+
+    The subject is the first physical line of the first ``-m``/``--message``
+    value (later ``-m`` values are body paragraphs). ``None`` when the
+    segment carries no inline message.
+    """
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in _GIT_COMMIT_MESSAGE_FLAGS and i + 1 < n:
+            return words[i + 1].split("\n", 1)[0]
+        attached = _attached_value(word, "--message=")
+        if attached is not None:
+            return attached.split("\n", 1)[0]
+        attached = _attached_value(word, "-m")
+        if attached is not None:
+            return attached.split("\n", 1)[0]
+        i += 1
+    return None
+
+
+def extract_title_fragments(command: str) -> list[str]:
+    """Return the TITLE / commit-SUBJECT fragments the command publishes.
+
+    A title (``gh``/``glab`` ``--title``) or git-commit subject is a forge
+    surface distinct from a description body: the forge auto-links a
+    trailing ``(#NNNN)``/``(!NNNN)`` reference there. A gate that wants to
+    treat that conventional suffix differently from a body reads these
+    fragments instead of the flattened body blob (#1544).
+    """
+    fragments: list[str] = []
+    for segment in split_commands(tokenize(command)):
+        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+        first, _ = _first_two_words(segment)
+        if first in {"gh", "glab"}:
+            title = _forge_title_value(words)
+            if title is not None:
+                fragments.append(title)
+        elif first == "git":
+            subject = _git_commit_subject(words)
+            if subject is not None:
+                fragments.append(subject)
+    return fragments
 
 
 # ── Body extraction ─────────────────────────────────────────────────
