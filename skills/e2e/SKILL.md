@@ -96,6 +96,18 @@ When using visual snapshot plugins (`pytest-playwright-visual`, `assert_snapshot
 
 This gate is **not a replacement for E2E evidence** — it only catches silent-render regressions before push.
 
+## DoD Local-E2E Gate (UI-visible tickets)
+
+`Ticket.ship()` refuses to ship a **UI-visible** ticket — one whose scope includes a repo in the active overlay's `frontend_repos` — until a **green local-stack E2E artifact** exists. The durable `Ticket.extra['e2e_recipe'].last_run` must be `result == "green"` AND `env == "local"`; a `dev` run records provenance but does NOT satisfy the gate. A dev-after-merge run is deliberately not enough — the whole point is to catch missing scope *before* the merge, not after. A green local run is recorded automatically by `t3 <overlay> e2e run <work-item>` (which resolves an on-disk workspace, so `env` defaults to `local`).
+
+The gate raises `DodLocalE2EError` (a transition refusal, like the dirty-worktree preflight) and the FSM stays put. Escape hatch for a genuinely non-UI or exempt ticket the heuristic mis-flags:
+
+```bash
+t3 <overlay> ticket dod-override <ticket-id> --reason "<why this is exempt>"
+```
+
+The override is recorded on `Ticket.extra['dod_e2e_override']` (audited; a blank reason is refused) so the bypass is explicit, not silent.
+
 ## Private Test Suite
 
 Sometimes a **separate test repo** reduces friction — no conflicts with the QA team's tests, no build pipeline overhead, freedom to use different tooling or test data.

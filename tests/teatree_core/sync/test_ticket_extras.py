@@ -3,15 +3,36 @@
 Covers update_ticket field preservation and merge_ticket_extras.
 """
 
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.backends.gitlab_sync_prs import merge_ticket_extras, update_ticket
+from teatree.backends.gitlab_sync_prs import _PRContext, merge_ticket_extras, update_ticket, upsert_ticket_from_pr
+from teatree.core import dod_gate
+from teatree.core.e2e_workitem import record_run
 from teatree.core.models import Ticket
+from teatree.types import SyncResult
 
 if TYPE_CHECKING:
     from teatree.types import PREntryDict
+
+
+@dataclass
+class _FakeConfig:
+    frontend_repos: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _FakeOverlay:
+    config: _FakeConfig
+
+
+def _patch_dod_overlay(frontend_repos: list[str]) -> AbstractContextManager[MagicMock]:
+    """Patch the DoD gate's overlay so a scoped repo can be UI-visible in sync tests."""
+    return patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_FakeConfig(frontend_repos)))
 
 
 class TestUpdateTicket(TestCase):
@@ -154,3 +175,207 @@ class TestMergeTicketExtras(TestCase):
         assert target.extra["prs"]["https://mr/1"]["title"] == "MR 1"
         assert "https://mr/3" in target.extra["prs"]
         assert target.repos == ["repo-a", "repo-b", "repo-c"]
+
+
+_FRONTEND_REPO = "frontend"
+_BACKEND_REPO = "backend"
+
+
+def _non_draft_pr_ctx(repo: str, *, iid: int = 60) -> _PRContext:
+    """A _PRContext whose raw MR is non-draft (so it infers SHIPPED)."""
+    web_url = f"https://gitlab.com/org/repo/-/merge_requests/{iid}"
+    raw = {
+        "web_url": web_url,
+        "title": "feat: visible change",
+        "description": "feat: visible change",
+        "source_branch": "feat/visible",
+        "draft": False,
+        "iid": iid,
+    }
+    # project=None keeps build_pr_entry on the cheap path (no pipeline/approval
+    # fetches) so the entry is a plain non-draft PR with no approvals: SHIPPED.
+    return _PRContext(raw=raw, repo_short=repo, client=MagicMock(), project=None)
+
+
+class TestSyncRespectsDodGate(TestCase):
+    """The PR-sync path must not bypass the #88 DoD gate to write SHIPPED.
+
+    ``infer_state_from_prs`` returns SHIPPED for a non-draft PR with no
+    approvals. Both sync write paths (``upsert_ticket_from_pr`` create and
+    ``update_ticket``) wrote that state DIRECTLY, never through ``ship()``,
+    so the DoD local-E2E gate never fired. A UI-visible ticket with no green
+    local-stack E2E must NOT reach SHIPPED via sync.
+    """
+
+    def test_create_does_not_ship_ui_visible_ticket_without_local_e2e(self) -> None:
+        ctx = _non_draft_pr_ctx(_FRONTEND_REPO, iid=61)
+        result = SyncResult()
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            upsert_ticket_from_pr(ctx, result, overlay_name="acme")
+
+        ticket = Ticket.objects.get(issue_url=ctx.raw["web_url"])
+        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_create_ships_ui_visible_ticket_with_green_local_e2e(self) -> None:
+        ctx = _non_draft_pr_ctx(_FRONTEND_REPO, iid=62)
+        result = SyncResult()
+        with (
+            _patch_dod_overlay([_FRONTEND_REPO]),
+            patch.object(dod_gate, "has_local_e2e_artifact", return_value=True),
+        ):
+            upsert_ticket_from_pr(ctx, result, overlay_name="acme")
+
+        ticket = Ticket.objects.get(issue_url=ctx.raw["web_url"])
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_create_ships_backend_only_ticket(self) -> None:
+        ctx = _non_draft_pr_ctx(_BACKEND_REPO, iid=63)
+        result = SyncResult()
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            upsert_ticket_from_pr(ctx, result, overlay_name="acme")
+
+        ticket = Ticket.objects.get(issue_url=ctx.raw["web_url"])
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_create_ships_ui_visible_ticket_with_override(self) -> None:
+        ctx = _non_draft_pr_ctx(_FRONTEND_REPO, iid=64)
+        result = SyncResult()
+        with (
+            _patch_dod_overlay([_FRONTEND_REPO]),
+            patch.object(
+                dod_gate,
+                "override_reason",
+                return_value="exempt: backend-only despite repo set",
+            ),
+        ):
+            upsert_ticket_from_pr(ctx, result, overlay_name="acme")
+
+        ticket = Ticket.objects.get(issue_url=ctx.raw["web_url"])
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_update_does_not_ship_ui_visible_ticket_without_local_e2e(self) -> None:
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/65"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/365",
+            repos=[_FRONTEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.SHIPPED)
+
+        ticket.refresh_from_db()
+        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_update_ships_ui_visible_ticket_with_green_local_e2e(self) -> None:
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/66"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/366",
+            repos=[_FRONTEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        record_run(ticket, result="green", per_repo_shas={_FRONTEND_REPO: "sha"}, env="local")
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.SHIPPED)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SHIPPED
+
+    def test_update_does_not_advance_ui_visible_no_e2e_to_in_review(self) -> None:
+        """IN_REVIEW is past SHIPPED on the FSM, so it is gated too.
+
+        IN_REVIEW is reached only via ``ship() -> request_review()``, so a
+        UI-visible no-E2E ticket must not be synced there either.
+        """
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/67"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/367",
+            repos=[_FRONTEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.IN_REVIEW)
+
+        ticket.refresh_from_db()
+        assert ticket.state != Ticket.State.IN_REVIEW
+        assert ticket.state == Ticket.State.STARTED
+
+    def test_update_advances_ui_visible_with_green_e2e_to_in_review(self) -> None:
+        """A green local E2E satisfies the gate, so IN_REVIEW sync applies."""
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/70"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/370",
+            repos=[_FRONTEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        record_run(ticket, result="green", per_repo_shas={_FRONTEND_REPO: "sha"}, env="local")
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.IN_REVIEW)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_update_advances_backend_only_to_in_review(self) -> None:
+        """A backend-only (not UI-visible) ticket syncs to IN_REVIEW unimpeded."""
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/71"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/371",
+            repos=[_BACKEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _BACKEND_REPO, "title": "fix: backend", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _BACKEND_REPO, Ticket.State.IN_REVIEW)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_update_does_not_downgrade_in_review_to_started(self) -> None:
+        """Capping a blocked SHIPPED must not drag a higher current state down."""
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/68"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/368",
+            repos=[_FRONTEND_REPO],
+            state=Ticket.State.IN_REVIEW,
+        )
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.SHIPPED)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_update_gates_when_sync_first_adds_the_frontend_repo(self) -> None:
+        """A frontend repo newly scoped by this very sync still triggers the gate.
+
+        The gate's UI-visibility check reads ``ticket.repos``; the synced
+        repo must be reflected in-memory BEFORE the check, or a sync that is
+        the first to scope the frontend repo would slip a SHIPPED write past
+        the gate on the stale (backend-only) repo set.
+        """
+        pr_url = "https://gitlab.com/org/repo/-/merge_requests/69"
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab.com/org/repo/-/issues/369",
+            repos=[_BACKEND_REPO],
+            state=Ticket.State.STARTED,
+        )
+        pr_entry: PREntryDict = {"url": pr_url, "repo": _FRONTEND_REPO, "title": "feat: visible", "draft": False}
+        with _patch_dod_overlay([_FRONTEND_REPO]):
+            update_ticket(ticket, pr_entry, pr_url, _FRONTEND_REPO, Ticket.State.SHIPPED)
+
+        ticket.refresh_from_db()
+        assert _FRONTEND_REPO in ticket.repos
+        assert ticket.state != Ticket.State.SHIPPED
+        assert ticket.state == Ticket.State.STARTED

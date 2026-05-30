@@ -37,7 +37,7 @@ class GitHubSyncBackend(SyncBackend):
 
     @override
     def sync(self, overlay: object) -> SyncResult:
-        from teatree.backends.github import fetch_project_items  # noqa: PLC0415
+        from teatree.backends.github import fetch_project_items, issue_repo_short  # noqa: PLC0415
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
 
@@ -67,6 +67,10 @@ class GitHubSyncBackend(SyncBackend):
         for item in items:
             result.prs_found += 1
             state = status_map.get(item.status, Ticket.State.NOT_STARTED)
+            # The board item's URL is the authoritative repo source; the
+            # project owner is not (a board spans repos), and scoping by owner
+            # mis-classifies UI-visibility for the DoD gate (#1426).
+            repo_short = issue_repo_short(item.url) or owner.split("/")[-1]
             extra: RawAPIDict = {
                 "issue_title": item.title,
                 "board_position": item.position,
@@ -77,27 +81,59 @@ class GitHubSyncBackend(SyncBackend):
 
             tickets = list(Ticket.objects.filter(issue_url=item.url).order_by("pk"))
             if not tickets:
-                Ticket.objects.create(
+                created = Ticket.objects.create(
                     issue_url=item.url,
-                    repos=[owner.split("/")[-1]],
+                    repos=[repo_short],
                     state=state,
                     extra=extra,
                     overlay=self._overlay_name(overlay),
                 )
                 result.tickets_created += 1
+                if state == Ticket.State.DELIVERED:
+                    self._record_delivered_dod_violation(created)
             else:
                 ticket = tickets[0]
                 prior_state = ticket.state
-                # #800 N3: canonical locked RMW; extra + state stay one
+                # Repair the repo scope from the authoritative URL before the
+                # DoD check so the gate sees the real repo set (#1426).
+                repos = ticket.repos if isinstance(ticket.repos, list) else []
+                if repo_short and repo_short not in repos:
+                    repos = [*repos, repo_short]
+                ticket.repos = repos
+                # #800 N3: canonical locked RMW; extra + repos + state stay one
                 # atomic write via also_set (no split).
-                ticket.merge_extra(set_keys=cast("TicketExtra", dict(extra)), also_set={"state": state})
+                ticket.merge_extra(
+                    set_keys=cast("TicketExtra", dict(extra)),
+                    also_set={"state": state, "repos": repos},
+                )
                 result.tickets_updated += 1
-                if state == Ticket.State.DELIVERED and prior_state != Ticket.State.DELIVERED:
-                    self._cleanup_ticket_worktrees(ticket, result)
+                if state == Ticket.State.DELIVERED:
+                    # Audit runs on EVERY Done sync (idempotent — dedups on the
+                    # existing marker), so a ticket the old owner-scoping bug
+                    # already left at DELIVERED still gets the marker once its
+                    # repo scope is repaired. Worktree cleanup, by contrast,
+                    # stays gated on the transition so it never re-runs (#1426).
+                    self._record_delivered_dod_violation(ticket)
+                    if prior_state != Ticket.State.DELIVERED:
+                        self._cleanup_ticket_worktrees(ticket, result)
 
         self._sync_reviewer_prs(token, result)
 
         return result
+
+    @staticmethod
+    def _record_delivered_dod_violation(ticket: "Ticket") -> None:
+        """Audit a DELIVERED board move that skipped the DoD local-E2E gate (#1426).
+
+        The project board reporting "Done" is an external terminal fact the
+        sync follows, so the ticket is not demoted; but when the DoD was unmet
+        the gap is recorded as a durable marker + loud log rather than being
+        silently bypassed (mirrors the merged-PR terminal handling).
+        """
+        from teatree.core.dod_gate import record_terminal_dod_violation  # noqa: PLC0415
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        record_terminal_dod_violation(ticket, Ticket.State.DELIVERED)
 
     @classmethod
     def _cleanup_ticket_worktrees(cls, ticket: "Ticket", result: SyncResult) -> None:

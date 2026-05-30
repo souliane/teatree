@@ -18,8 +18,23 @@ from teatree.backends.github import (
     _gh_graphql,
     _run_gh,
     fetch_project_items,
+    issue_repo_short,
 )
 from teatree.backends.protocols import PullRequestSpec
+
+
+class TestIssueRepoShort:
+    def test_parses_issue_url(self) -> None:
+        assert issue_repo_short("https://github.com/souliane/teatree/issues/50") == "teatree"
+
+    def test_parses_pr_url(self) -> None:
+        assert issue_repo_short("https://github.com/org/widget/pull/7") == "widget"
+
+    def test_returns_empty_for_unparseable(self) -> None:
+        assert issue_repo_short("https://example.com/not/an/issue") == ""
+
+    def test_returns_empty_for_blank(self) -> None:
+        assert issue_repo_short("") == ""
 
 
 class TestRunGh:
