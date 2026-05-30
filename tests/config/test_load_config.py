@@ -201,6 +201,77 @@ def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
     assert load_config(config_path).user.loop_cadence_seconds == 300
 
 
+class TestIssueImplementerSettings:
+    """Config surface for the opt-in, default-OFF issue-implementer loop (#1548).
+
+    The loop is a hard NO-OP unless ``issue_implementer_enabled`` is set;
+    mirrors the ``review_skill = ""`` opt-in (#1541) and the
+    ``scanning_news_*`` cadence pattern. This PR adds only the config
+    knobs — the scanner/dispatch land in later PRs.
+    """
+
+    def test_defaults_are_opt_in_off(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        user = load_config(config_path).user
+        assert user.issue_implementer_enabled is False
+        assert user.issue_implementer_label == ""
+        assert user.issue_implementer_max_concurrent == 1
+        assert user.issue_implementer_cadence_hours == 1
+
+    def test_enabled_reads_toml_bool(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nissue_implementer_enabled = true\n")
+        assert load_config(config_path).user.issue_implementer_enabled is True
+
+    def test_label_reads_toml_str(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, '[teatree]\nissue_implementer_label = "auto-implement"\n')
+        assert load_config(config_path).user.issue_implementer_label == "auto-implement"
+
+    def test_max_concurrent_reads_toml_int(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nissue_implementer_max_concurrent = 3\n")
+        assert load_config(config_path).user.issue_implementer_max_concurrent == 3
+
+    def test_cadence_hours_reads_toml_int(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nissue_implementer_cadence_hours = 6\n")
+        assert load_config(config_path).user.issue_implementer_cadence_hours == 6
+
+    def test_env_kill_switch_overrides_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``T3_ISSUE_IMPLEMENTER_ENABLED`` is the operational fast-disable.
+
+        Env wins over the toml global, so an enabled loop can be killed
+        without editing ``~/.teatree.toml``.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\nissue_implementer_enabled = true\n")
+        monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
+
+        assert get_effective_settings().issue_implementer_enabled is False
+
+    def test_env_kill_switch_applies_without_toml(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        del config_file, elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
+
+        assert get_effective_settings().issue_implementer_enabled is True
+
+
 class TestMode:
     """Parse and resolution of the ``t3.mode`` setting.
 
