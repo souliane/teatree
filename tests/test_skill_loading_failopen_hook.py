@@ -89,6 +89,91 @@ def _run(data: dict) -> tuple[bool, dict | None, str]:
     return blocked, payload, err.getvalue()
 
 
+class TestPerCallSkillLoadOkEscape:
+    """``[skill-load-ok: <reason>]`` in the tool call unblocks a real demand (#1567).
+
+    The escape is the structural guarantee that a false skill-trigger can
+    never wedge an autonomous loop: a genuine, resolvable, unloaded skill
+    still blocks every Bash/Edit/Write that does NOT carry the token, but a
+    single call carrying the token proceeds. An empty reason is rejected.
+    """
+
+    def test_token_in_bash_command_unblocks(self, gate: Path) -> None:
+        _write_pending("sess-tok-bash", ["ac-reviewing-codebase"])
+        blocked, payload, err = _run(
+            {
+                "session_id": "sess-tok-bash",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status  # [skill-load-ok: unrelated loop work]"},
+            }
+        )
+        assert blocked is False
+        assert payload is None
+        assert "skill-load-ok" in err
+
+    def test_token_in_edit_new_string_unblocks(self, gate: Path) -> None:
+        _write_pending("sess-tok-edit", ["ac-reviewing-codebase"])
+        blocked, payload, _ = _run(
+            {
+                "session_id": "sess-tok-edit",
+                "tool_name": "Edit",
+                "tool_input": {"new_string": "x = 1  # [skill-load-ok: false trigger]"},
+            }
+        )
+        assert blocked is False
+        assert payload is None
+
+    def test_token_in_write_content_unblocks(self, gate: Path) -> None:
+        _write_pending("sess-tok-write", ["ac-reviewing-codebase"])
+        blocked, payload, _ = _run(
+            {
+                "session_id": "sess-tok-write",
+                "tool_name": "Write",
+                "tool_input": {"content": "# [skill-load-ok: scaffolding]\nprint('hi')\n"},
+            }
+        )
+        assert blocked is False
+        assert payload is None
+
+    def test_empty_reason_does_not_unblock(self, gate: Path) -> None:
+        _write_pending("sess-tok-empty", ["ac-reviewing-codebase"])
+        blocked, payload, _ = _run(
+            {
+                "session_id": "sess-tok-empty",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status  # [skill-load-ok: ]"},
+            }
+        )
+        assert blocked is True
+        assert payload is not None
+        assert payload["permissionDecision"] == "deny"
+
+    def test_no_token_still_blocks(self, gate: Path) -> None:
+        _write_pending("sess-tok-none", ["ac-reviewing-codebase"])
+        blocked, payload, _ = _run(
+            {
+                "session_id": "sess-tok-none",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status"},
+            }
+        )
+        assert blocked is True
+        assert payload is not None
+
+    def test_token_beyond_512_chars_does_not_unblock(self, gate: Path) -> None:
+        _write_pending("sess-tok-far", ["ac-reviewing-codebase"])
+        buried = "echo " + ("a" * 600) + " [skill-load-ok: buried]"
+        blocked, payload, _ = _run(
+            {
+                "session_id": "sess-tok-far",
+                "tool_name": "Bash",
+                "tool_input": {"command": buried},
+            }
+        )
+        assert blocked is True
+        assert payload is not None
+
+
 class TestStaleSkillFailsOpen:
     """A pending skill whose name does not resolve must NOT block tools."""
 
