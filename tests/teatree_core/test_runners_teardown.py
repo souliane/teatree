@@ -242,11 +242,15 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
         assert self.wt_path.exists(), "worktree destroyed despite an inconclusive data-loss probe"
         assert Worktree.objects.filter(branch="branch-git-never-heard-of").exists()
 
-    def test_force_still_overrides_when_probe_would_error(self) -> None:
-        """Force bypasses the probe entirely.
+    def test_force_with_inconclusive_probe_and_capture_failure_keeps_worktree(self) -> None:
+        """#1506 — force skips the *guard* but the recovery capture still protects.
 
-        The explicit force escape hatch skips the data-loss probe, so an
-        unknown branch does not block a forced teardown.
+        Force bypasses the pre-remove data-loss guard, but the recovery capture
+        becomes the only safety net. When the branch is unknown to git the
+        capture (a ``git bundle`` of that branch) fails, and the post-failure
+        re-check cannot prove there is nothing to lose — so it fails closed and
+        the worktree is kept rather than hard-deleted. (Pre-#1506 this forced
+        teardown destroyed the worktree on a capture failure.)
         """
         ticket = Ticket.objects.create(
             overlay="test",
@@ -263,5 +267,5 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         result = self._teardown(ticket, force=True)
 
-        assert result.ok is True, result.detail
-        assert not self.wt_path.exists()
+        assert result.ok is False, result.detail
+        assert self.wt_path.exists(), "inconclusive capture must fail closed, not destroy the worktree"
