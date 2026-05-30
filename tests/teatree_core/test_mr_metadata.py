@@ -26,6 +26,9 @@ class TestTitleRegex:
             "perf: cache the lookup",
             "build: pin the wheel",
             "ci: add the job",
+            "feat(auth): normal",
+            "feat!: drop legacy API",
+            "feat(auth)!: rework login",
         ],
     )
     def test_conforming_title_passes(self, title: str) -> None:
