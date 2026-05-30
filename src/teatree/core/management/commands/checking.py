@@ -57,6 +57,7 @@ class Command(TyperCommand):
             now=now,
             overlay_name=overlay_name,
             code_host=self._resolve_code_host(),
+            overlay_repos=self._resolve_overlay_repos(),
         )
         # Advance only on the default path: an explicit --since or --no-advance
         # is an inspection that must not move the user's last-checked marker.
@@ -83,3 +84,22 @@ class Command(TyperCommand):
             return get_overlay().config.code_host or ""
         except Exception:  # noqa: BLE001 — config read must never wedge a read-only report
             return ""
+
+    @staticmethod
+    def _resolve_overlay_repos() -> list[str]:
+        """Resolve the overlay's repo identifiers used to scope NULL-ticket merges (#1559).
+
+        Unions ``get_followup_repos()`` (``owner/repo``) with ``get_repos()``
+        (often a bare ``repo`` name) so a ceremony CLEAR whose resolved repo
+        matches either shape is scoped to this overlay. A missing or unloadable
+        overlay (or a hook that raises) degrades to an empty list — the merged
+        group then keeps the ticket-bearing back-compat scope only.
+        """
+        try:
+            from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+            overlay = get_overlay()
+            repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())
+            return [repo for repo in repos if isinstance(repo, str) and repo]
+        except Exception:  # noqa: BLE001 — config read must never wedge a read-only report
+            return []

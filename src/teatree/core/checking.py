@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import TypedDict
 
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.merge_clear import MergeAudit
+from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.models.task import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -152,27 +152,49 @@ class CheckingReport:
 
 
 def build_pr_url(*, slug: str, pr_id: int, code_host: str) -> str:
-    """Build a clickable PR/MR web URL from a ``owner/name`` slug + id.
+    """Build a clickable PR/MR web URL from a real ``owner/repo`` slug + id.
 
     GitLab uses ``/-/merge_requests/<id>``; GitHub (and the default) uses
-    ``/pull/<id>``. Returns ``""`` when the slug is blank — a caller with no
-    slug falls back to the ticket's issue URL rather than emitting a guessed
-    link, so a reader never gets a wrong-host link.
+    ``/pull/<id>``. Returns ``""`` unless *slug* is a genuine ``owner/repo``
+    identifier (per :func:`merge_execution._looks_like_owner_repo`): a CLEAR's
+    ``slug`` is a *workstream* slug (e.g. ``statusline-stale-wakeup``) or a
+    branch name (``fix/foo``), never a repo, so emitting
+    ``github.com/<workstream>/pull/<id>`` would be a wrong-host, unclickable
+    link (#1559). A caller with no real repo slug falls back to the stored PR
+    URL or the ticket's issue URL instead.
     """
+    from teatree.core.merge_execution import _looks_like_owner_repo  # noqa: PLC0415
+
     clean = slug.strip().strip("/")
-    if not clean:
+    if not _looks_like_owner_repo(clean):
         return ""
     if code_host.strip().lower() == "gitlab":
         return f"https://gitlab.com/{clean}/-/merge_requests/{pr_id}"
     return f"https://github.com/{clean}/pull/{pr_id}"
 
 
-def gather_checking_report(
+@dataclass(frozen=True, slots=True)
+class _MergedScope:
+    """How the merged group is scoped to one overlay (#1559).
+
+    ``overlay_name`` is the ticket-FK back-compat scope for ticket-bearing
+    CLEARs; ``overlay_repos`` (``owner/repo`` or bare ``repo``) is the
+    resolved-repo scope for NULL-ticket ceremony CLEARs; ``code_host`` picks
+    the PR URL shape.
+    """
+
+    overlay_name: str
+    code_host: str
+    overlay_repos: list[str]
+
+
+def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each kwarg is a documented window/scope input.
     *,
     since: datetime,
     now: datetime,
     overlay_name: str = "",
     code_host: str = "",
+    overlay_repos: list[str] | None = None,
     cap: int = DEFAULT_CAP,
 ) -> CheckingReport:
     """Build a :class:`CheckingReport` for the window ``[since, now)``.
@@ -182,22 +204,32 @@ def gather_checking_report(
     window is half-open — ``merged_at``/``created_at``/``ended_at`` in
     ``[since, now)`` — and every group except pending questions is scoped to
     *overlay_name*.
+
+    ``overlay_repos`` are the overlay's ``owner/repo`` (or bare ``repo``)
+    identifiers used to scope a NULL-ticket ceremony merge to this overlay by
+    its resolved repo — the ceremony ``ticket clear`` is normally issued
+    without ``--ticket-id``, so a ticket-FK JOIN would silently drop it. The
+    caller resolves the list from the active overlay; an empty list scopes the
+    merged group to ticket-bearing CLEARs only (the back-compat behaviour).
     """
+    scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos or [])
     return CheckingReport(
         since=since,
-        merged=_merged_group(since=since, now=now, overlay_name=overlay_name, code_host=code_host, cap=cap),
+        merged=_merged_group(since=since, now=now, scope=scope, cap=cap),
         in_flight=_in_flight_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
         needs_you=_needs_you_group(since=since, now=now, overlay_name=overlay_name, cap=cap),
     )
 
 
-def _pr_url_for(ticket: Ticket | None, *, slug: str, pr_id: int, code_host: str) -> str:
+def _pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: str) -> str:
     """Prefer an exact stored PR URL, else a host-aware built URL, else issue URL.
 
     A stored ``extra['pr_urls']`` entry that mentions the pr_id is the exact
     forge web_url/html_url and wins. Otherwise the host-aware builder produces
-    a slug-based URL; if even the slug is blank, fall back to the ticket's
-    issue URL so the reference is still clickable.
+    a URL from *repo_slug* — but only when it is a real ``owner/repo`` (a
+    workstream/branch slug yields ``""`` from :func:`build_pr_url`, #1559). If
+    no real repo is known, fall back to the ticket's issue URL so the reference
+    is still clickable rather than a wrong-host link.
     """
     if ticket is not None:
         stored = (ticket.extra or {}).get("pr_urls") or []
@@ -205,35 +237,96 @@ def _pr_url_for(ticket: Ticket | None, *, slug: str, pr_id: int, code_host: str)
             for url in stored:
                 if isinstance(url, str) and url and str(pr_id) in url:
                     return url
-    built = build_pr_url(slug=slug, pr_id=pr_id, code_host=code_host)
+    built = build_pr_url(slug=repo_slug, pr_id=pr_id, code_host=code_host)
     if built:
         return built
     return ticket.issue_url if ticket is not None else ""
 
 
-def _merged_group(*, since: datetime, now: datetime, overlay_name: str, code_host: str, cap: int) -> CheckGroup:
+def _resolved_repo_slug(clear: MergeClear) -> str:
+    """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable.
+
+    Wraps :func:`merge_execution.resolve_pr_repo_slug` (the same resolver the
+    sanctioned merge keystone uses): an ``owner/repo``-shaped CLEAR slug as-is,
+    else the ticket's ``issue_url`` repo, else the running clone's ``origin``.
+    The resolver fails closed with :class:`MergePreconditionError` when nothing
+    resolves; this read path swallows that into ``""`` so a catch-up report is
+    never wedged by a single unresolvable row.
+    """
+    from teatree.core.merge_execution import MergePreconditionError, resolve_pr_repo_slug  # noqa: PLC0415
+
+    try:
+        return resolve_pr_repo_slug(clear)
+    except MergePreconditionError:
+        return ""
+
+
+def _repo_in_overlay(repo_slug: str, overlay_repos: list[str]) -> bool:
+    """True when *repo_slug* (a resolved ``owner/repo``) belongs to the overlay.
+
+    An overlay declares its repos either as ``owner/repo`` (an exact match) or
+    as a bare ``repo`` name (matching any owner, since a self-hosted namespace
+    varies) — the same two shapes :mod:`teatree.loop.tick_resolvers` honours.
+    """
+    if not repo_slug:
+        return False
+    repo_name = repo_slug.rsplit("/", 1)[-1]
+    for declared in overlay_repos:
+        if not declared:
+            continue
+        if "/" in declared:
+            if declared == repo_slug:
+                return True
+        elif declared == repo_name:
+            return True
+    return False
+
+
+def _merged_group(*, since: datetime, now: datetime, scope: _MergedScope, cap: int) -> CheckGroup:
     qs = (
         MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
         .select_related("clear", "clear__ticket")
         .order_by("-merged_at")
     )
-    if overlay_name:
-        qs = qs.filter(clear__ticket__overlay=overlay_name)
-    audits = list(qs)
+    # Resolve each merge's real repo once (the resolver may read a git remote),
+    # then scope and render from the cached slug — never re-resolving per field.
+    scoped: list[tuple[MergeAudit, str]] = []
+    for audit in qs:
+        repo_slug = _resolved_repo_slug(audit.clear)
+        if _audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
+            scoped.append((audit, repo_slug))
     items = [
         CheckItem(
-            label=f"{audit.clear.slug}#{audit.clear.pr_id}",
+            label=f"{repo_slug or audit.clear.slug}#{audit.clear.pr_id}",
             url=_pr_url_for(
                 audit.clear.ticket,
-                slug=audit.clear.slug,
+                repo_slug=repo_slug,
                 pr_id=audit.clear.pr_id,
-                code_host=code_host,
+                code_host=scope.code_host,
             ),
             detail=(audit.clear.ticket.short_description if audit.clear.ticket else ""),
         )
-        for audit in audits[:cap]
+        for audit, repo_slug in scoped[:cap]
     ]
-    return CheckGroup(title="Merged", items=items, total=len(audits))
+    return CheckGroup(title="Merged", items=items, total=len(scoped))
+
+
+def _audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) -> bool:
+    """Whether *audit*'s merge belongs to the scoped overlay (#1559).
+
+    An unscoped report (no ``overlay_name``) includes every merge. Otherwise a
+    merge is in scope when EITHER its CLEAR's ticket is linked to this overlay
+    (the precise back-compat path for ticket-bearing CLEARs) OR — the ceremony
+    case — the CLEAR has no ticket and its already-resolved repo belongs to
+    this overlay. A NULL-ticket CLEAR whose repo belongs to a *different*
+    overlay is excluded; a blanket ``ticket IS NULL`` rule would over-report it.
+    """
+    if not scope.overlay_name:
+        return True
+    ticket = audit.clear.ticket
+    if ticket is not None:
+        return ticket.overlay == scope.overlay_name
+    return _repo_in_overlay(repo_slug, scope.overlay_repos)
 
 
 def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
