@@ -353,6 +353,74 @@ max_concurrent_local_stacks = 1
 
         assert get_effective_settings().max_concurrent_local_stacks == 1
 
+    def test_overlay_can_override_issue_implementer_settings(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1548: issue-implementer knobs are per-overlay overridable.
+
+        A trusted overlay can enable the loop and raise its concurrency
+        cap while the global default stays OFF. Runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.delenv("T3_ISSUE_IMPLEMENTER_ENABLED", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+issue_implementer_enabled = false
+issue_implementer_max_concurrent = 1
+
+[overlays.trusted]
+class = "x.y:Z"
+issue_implementer_enabled = true
+issue_implementer_label = "auto-implement"
+issue_implementer_max_concurrent = 3
+""",
+        )
+
+        effective = get_effective_settings()
+        assert effective.issue_implementer_enabled is True
+        assert effective.issue_implementer_label == "auto-implement"
+        assert effective.issue_implementer_max_concurrent == 3
+
+    def test_env_kill_switch_beats_overlay_override(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1548: the env kill-switch wins over a per-overlay enable.
+
+        Operational fast-disable must beat an overlay that opted the loop
+        on, mirroring ``T3_MODE`` beating the overlay ``mode`` override.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
+        monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+issue_implementer_enabled = false
+
+[overlays.trusted]
+class = "x.y:Z"
+issue_implementer_enabled = true
+""",
+        )
+
+        assert get_effective_settings().issue_implementer_enabled is False
+
     def test_overlay_can_override_mr_title_regex(
         self,
         config_file: Path,
