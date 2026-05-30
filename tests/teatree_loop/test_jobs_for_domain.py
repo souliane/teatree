@@ -1,0 +1,139 @@
+"""``jobs_for_domain`` partitions the per-overlay fan-out exhaustively and disjointly (#1482).
+
+The per-overlay scanner fan-out (:func:`teatree.loop.tick_jobs._jobs_for_overlay_backend`)
+is the single source of which scanners run for one overlay. ``jobs_for_domain``
+slices it by :class:`Domain` so the mini-loops consume one typed seam instead of
+reaching into ``tick_jobs`` privates. These tests pin the seam's two structural
+invariants: every legacy per-overlay scanner is owned by exactly one domain
+(EXHAUSTIVE), and no scanner is owned by two domains (DISJOINT). A dropped domain
+turns the exhaustiveness assertion RED.
+"""
+
+import dataclasses
+from collections import Counter
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from django.test import TestCase
+
+from teatree.backends.protocols import CodeHostBackend, MessagingBackend
+from teatree.core.backend_factory import OverlayBackends
+from teatree.loop.tick_jobs import PER_OVERLAY_DOMAINS, Domain, _jobs_for_overlay_backend, jobs_for_domain
+
+
+def _signature(job: Any) -> tuple[Any, ...]:
+    scanner = job.scanner
+    fields = sorted(f.name for f in dataclasses.fields(scanner)) if dataclasses.is_dataclass(scanner) else []
+    args = tuple((name, _arg_value(getattr(scanner, name))) for name in fields)
+    return (type(scanner).__name__, getattr(scanner, "name", ""), job.overlay, args)
+
+
+def _arg_value(value: object) -> object:
+    if isinstance(value, MagicMock):
+        return id(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_arg_value(item) for item in value)
+    if isinstance(value, (str, int, float, bool, bytes, type(None))):
+        return value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value).__name__,
+            tuple((f.name, _arg_value(getattr(value, f.name))) for f in dataclasses.fields(value)),
+        )
+    return type(value).__name__
+
+
+class JobsForDomainPartitionTestCase(TestCase):
+    """``jobs_for_domain`` slices the per-overlay fan-out exhaustively + disjointly."""
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.config.get_review_channel.return_value = ("", "")
+        overlay.metadata.get_followup_repos.return_value = []
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=MagicMock(spec=MessagingBackend),
+            ready_labels=("ready",),
+            overlay=overlay,
+        )
+
+    def test_per_overlay_sum_equals_legacy_builder(self) -> None:
+        backend = self._backend()
+        legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        partitioned: list[Any] = []
+        for domain in PER_OVERLAY_DOMAINS:
+            partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
+        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
+
+    def test_partition_is_disjoint(self) -> None:
+        backend = self._backend()
+        counts: Counter[tuple[Any, ...]] = Counter()
+        for domain in PER_OVERLAY_DOMAINS:
+            for job in jobs_for_domain(domain, backend, all_backends=(backend,)):
+                counts[_signature(job)] += 1
+        double_emitted = {sig for sig, n in counts.items() if n > 1}
+        assert not double_emitted
+
+    def test_partition_is_exhaustive_no_scanner_dropped(self) -> None:
+        backend = self._backend()
+        legacy = {_signature(j) for j in _jobs_for_overlay_backend(backend, all_backends=(backend,))}
+        owned: set[tuple[Any, ...]] = set()
+        for domain in PER_OVERLAY_DOMAINS:
+            owned |= {_signature(j) for j in jobs_for_domain(domain, backend, all_backends=(backend,))}
+        assert legacy <= owned, f"legacy scanners owned by no domain: {legacy - owned}"
+
+    def test_dropping_one_domain_breaks_exhaustiveness(self) -> None:
+        backend = self._backend()
+        legacy = {_signature(j) for j in _jobs_for_overlay_backend(backend, all_backends=(backend,))}
+        owned: set[tuple[Any, ...]] = set()
+        for domain in [d for d in PER_OVERLAY_DOMAINS if d is not Domain.TICKETS]:
+            owned |= {_signature(j) for j in jobs_for_domain(domain, backend, all_backends=(backend,))}
+        assert not legacy <= owned
+
+    def test_dispatch_domain_returns_global_triad(self) -> None:
+        backend = self._backend()
+        triad = jobs_for_domain(Domain.DISPATCH, backend)
+        names = {job.scanner.name for job in triad}
+        assert names == {"pending_tasks", "incoming_events", "outbound_audit"}
+        assert all(job.overlay == "" for job in triad)
+
+    def test_dispatch_excluded_from_per_overlay_domains(self) -> None:
+        assert Domain.DISPATCH not in PER_OVERLAY_DOMAINS
+
+    def test_per_overlay_domain_requires_backend(self) -> None:
+        with pytest.raises(ValueError, match="per-overlay domain"):
+            jobs_for_domain(Domain.TICKETS, None)
+
+
+class JobsForDomainTodoSweepTestCase(TestCase):
+    """``todo_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
+
+    The pre-seam mini-loops dropped ``todo_sweep`` (no mini-loop reproduced
+    :func:`teatree.loop.tick_jobs._todo_sweep_scanner_for`). The exhaustive
+    partition assigns it to ``Domain.TICKETS`` (it verifies overlay-scoped Task
+    rows, the same surface as the active/stale ticket scanners).
+    """
+
+    @staticmethod
+    def _backend_with_python_overlay() -> OverlayBackends:
+        overlay = MagicMock()
+        overlay.config.get_review_broadcast_channels.return_value = []
+        overlay.metadata.get_followup_repos.return_value = []
+        overlay.get_workspace_repos.return_value = []
+        return OverlayBackends(
+            name="teatree",
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=(),
+            overlay=overlay,
+        )
+
+    def test_todo_sweep_owned_by_tickets_domain(self) -> None:
+        backend = self._backend_with_python_overlay()
+        tickets_names = {job.scanner.name for job in jobs_for_domain(Domain.TICKETS, backend)}
+        assert "todo_sweep" in tickets_names

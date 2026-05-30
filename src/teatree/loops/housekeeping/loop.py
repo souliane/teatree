@@ -10,17 +10,23 @@ def _build_jobs(
     backends: list[Any] | None = None,
     **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
 ) -> list[Any]:
-    from teatree.loop.tick_jobs import _pull_main_clone_scanner_for, _ScannerJob, _self_update_scanner  # noqa: PLC0415
+    """Wire the global self-update job + each overlay's pull-main-clone slice.
+
+    Self-update is a global (``overlay=""``) job — it fast-forwards the
+    editable installs themselves, not any one overlay's tracked work — so
+    it is built directly here, not via the per-overlay seam. The
+    per-overlay pull-main-clone scanner is owned by ``Domain.HOUSEKEEPING``.
+    """
+    from teatree.loop.tick_jobs import Domain, _ScannerJob, _self_update_scanner, jobs_for_domain  # noqa: PLC0415
 
     jobs: list[Any] = []
     self_update = _self_update_scanner()
     if self_update is not None:
         jobs.append(_ScannerJob(scanner=self_update, overlay=""))
     if backends:
+        all_backends = tuple(backends)
         for backend in backends:
-            pull = _pull_main_clone_scanner_for(backend)
-            if pull is not None:
-                jobs.append(_ScannerJob(scanner=pull, overlay=backend.name))
+            jobs.extend(jobs_for_domain(Domain.HOUSEKEEPING, backend, all_backends=all_backends))
     return jobs
 
 
