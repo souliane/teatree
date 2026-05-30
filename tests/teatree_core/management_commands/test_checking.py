@@ -122,6 +122,32 @@ class TestCheckingShow:
         labels = [item["label"] for item in payload["merged"]["items"]]
         assert labels == ["acme/widgets#10"]
 
+    def test_null_ticket_ceremony_merge_scoped_by_resolved_repo(
+        self, checkpoint_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A NULL-ticket ceremony merge surfaces when its repo is the overlay's (#1559).
+
+        Runs against the real bundled ``t3-teatree`` overlay so the command's
+        own ``_resolve_overlay_repos`` derives the repo set (``souliane/teatree``)
+        — the ticket-FK JOIN that previously dropped every NULL-ticket CLEAR is
+        gone, while a foreign-repo merge stays excluded.
+        """
+        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-teatree")
+        for pr_id, slug in ((50, "souliane/teatree"), (51, "other-org/other-repo")):
+            clear = MergeClear.objects.create(
+                ticket=None,
+                pr_id=pr_id,
+                slug=slug,
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result=MergeClear.VerifyResult.GREEN,
+                blast_class=MergeClear.BlastClass.LOGIC,
+            )
+            MergeAudit.objects.create(clear=clear, merged_sha=_SHA, required_checks_status="success")
+        out = _call("checking", "show", "--json")
+        labels = [item["label"] for item in json.loads(out)["merged"]["items"]]
+        assert labels == ["souliane/teatree#50"]
+
     def test_second_run_after_advance_reports_nothing(self, checkpoint_file: Path) -> None:
         """Gather-then-advance: an immediate second run sees an empty window."""
         _merged_ticket()
