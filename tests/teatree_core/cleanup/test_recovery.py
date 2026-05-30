@@ -237,14 +237,20 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         assert (restore / "base.txt").read_text(encoding="utf-8") == "base\nDIRTY EDIT\n"
         assert (restore / "newfile.txt").read_text(encoding="utf-8") == "brand new\n"
 
-    def test_capture_failure_surfaced_and_prune_still_proceeds(self) -> None:
-        """#835/#877 — a capture failure must NOT block the prune (stuck-cleanup).
+    def test_capture_failure_on_dirty_worktree_aborts_removal(self) -> None:
+        """#1506 — capture failure on a DIRTY worktree must NOT destroy the work.
+
+        Under ``force=True`` the data-loss guards are skipped, so the recovery
+        artifact is the only protection. When that capture itself fails (disk
+        full, bundle error) the prior behaviour fell through to ``worktree
+        remove`` + ``branch -D``, destroying the very commits/edits the capture
+        was meant to save. The corrected contract: re-check whether the worktree
+        actually had work to lose and, if so, abort the destructive removal for
+        this worktree — leave it on disk, keep its branch, surface the error.
 
         Drives the production seam (``cleanup_worktree`` → ``_remove_git_worktree``)
         with the real on-disk worktree; only the (unstoppable, deliberately
-        failing) capture is patched to raise. The ticket mandates: do not raise,
-        still remove the worktree, surface the failure in ``errors`` (#877 —
-        the structured channel, not a swallowed label string).
+        failing) capture is patched to raise.
         """
         (self.wt_path / "base.txt").write_text("base\nDIRTY EDIT\n", encoding="utf-8")
         wt = self._make_worktree()
@@ -259,7 +265,43 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             result = cleanup_worktree(wt, force=True)  # must NOT raise
 
-        assert not self.wt_path.exists(), "worktree must still be removed despite capture failure"
+        assert self.wt_path.exists(), "dirty worktree must NOT be removed when capture failed"
+        branches = subprocess.run(
+            [_GIT, "-C", str(self.repo_main), "branch", "--format=%(refname:short)"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        ).stdout.split()
+        assert self.branch in branches, "branch must survive when capture failed on dirty work"
+        assert result.clean is False
+        assert any(f"recovery capture failed for {self.branch}" in e for e in result.errors)
+        assert any("disk full while bundling" in e for e in result.errors)
+        assert any("kept it on disk" in e for e in result.errors), "abort must be surfaced"
+
+    def test_capture_failure_on_clean_pushed_worktree_still_reaped(self) -> None:
+        """#1506/#835 — capture failure on a CLEAN+PUSHED worktree still reaps.
+
+        Capture is a no-op for a clean, fully-pushed worktree (nothing to lose),
+        so a failure of that no-op must not block the prune — preserving #835's
+        non-blocking-cleanup intent for the safe case. The worktree is removed
+        and its branch deleted; the capture error is still surfaced.
+        """
+        _run_git("push", "-q", "origin", f"{self.branch}:main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        wt = self._make_worktree()
+        boom = RuntimeError("disk full while bundling")
+
+        with (
+            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.get_overlay") as mock_overlay,
+            patch("teatree.core.cleanup.capture_recovery_artifact", side_effect=boom),
+        ):
+            mock_config.return_value.user.workspace_dir = self.workspace
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            result = cleanup_worktree(wt, force=True)  # must NOT raise
+
+        assert not self.wt_path.exists(), "clean+pushed worktree must still be reaped"
         assert result.clean is False
         assert any(f"recovery capture failed for {self.branch}" in e for e in result.errors)
         assert any("disk full while bundling" in e for e in result.errors)
