@@ -218,7 +218,8 @@ _PROJECT_ITEMS_QUERY = """\
 {{
     user(login: "{owner}") {{
         projectV2(number: {project_number}) {{
-            items(first: 100) {{
+            items(first: 100{after}) {{
+                pageInfo {{ hasNextPage endCursor }}
                 nodes {{
                     fieldValueByName(name: "Status") {{
                         ... on ProjectV2ItemFieldSingleSelectValue {{ name }}
@@ -245,16 +246,33 @@ def fetch_project_items(
     *,
     token: str = "",
 ) -> list[ProjectItem]:
-    """Fetch all items from a GitHub Projects v2 board, preserving board order."""
-    data = _gh_graphql(_PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number), token=token)
-    # ``dig`` null-guards each hop: GraphQL returns ``null`` (not ``{}``) for a
-    # user/project the token cannot see, where a chained ``.get(k, {})`` would
-    # call ``.get`` on ``None`` and crash the board sync.
-    raw_items = dig(data, "data", "user", "projectV2", "items", "nodes")
-    nodes = raw_items if isinstance(raw_items, list) else []
-    return [
-        item for position, node in enumerate(nodes) if (item := _project_item_from_node(node, position)) is not None
-    ]
+    """Fetch all items from a GitHub Projects v2 board, preserving board order.
+
+    The ``items`` connection caps each page at 100 nodes, so a board with more
+    than 100 items must be walked page by page via the ``pageInfo`` cursor —
+    otherwise every item past the first page is silently dropped from the sync.
+    """
+    items: list[ProjectItem] = []
+    position = 0
+    after = ""
+    while True:
+        query = _PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number, after=after)
+        data = _gh_graphql(query, token=token)
+        # ``dig`` null-guards each hop: GraphQL returns ``null`` (not ``{}``) for
+        # a user/project the token cannot see, where a chained ``.get(k, {})``
+        # would call ``.get`` on ``None`` and crash the board sync.
+        raw_items = dig(data, "data", "user", "projectV2", "items", "nodes")
+        nodes = raw_items if isinstance(raw_items, list) else []
+        for node in nodes:
+            if (item := _project_item_from_node(node, position)) is not None:
+                items.append(item)
+            position += 1
+        if dig(data, "data", "user", "projectV2", "items", "pageInfo", "hasNextPage") is not True:
+            return items
+        end_cursor = dig(data, "data", "user", "projectV2", "items", "pageInfo", "endCursor")
+        if not isinstance(end_cursor, str) or not end_cursor:
+            return items
+        after = f', after: "{end_cursor}"'
 
 
 def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
