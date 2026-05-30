@@ -80,7 +80,7 @@ The env var `T3_MODE` overrides the toml setting. Unknown values raise
 A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
-1. `T3_*` env var (wired one-offs declared in `ENV_SETTING_OVERRIDES`; currently `T3_MODE` and `T3_ON_BEHALF_POST_MODE`).
+1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_ON_BEHALF_POST_MODE`, `T3_REVIEW_SKILL`).
 2. Active overlay's override from `[overlays.<name>]`.
 3. Global `[teatree]` value.
 4. `UserSettings` dataclass default.
@@ -112,12 +112,14 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
 | `architectural_review_cadence_hours` | Per-overlay cadence floor for the architectural-review scanner |
 | `architectural_review_after_merge_count` | Per-overlay merge-count trigger for the architectural-review scanner |
+| `review_skill` | #1539: per-ticket deep-review skill (env `T3_REVIEW_SKILL`). Empty (default) ⇒ reviewing-phase gate is a NO-OP; when set, `visit-phase … reviewing` needs a `review_skill_run` artifact. |
 | `scanning_news_disabled` | Escape hatch for the daily `t3:scanning-news` scanner (#1191) — registered as overridable, but the live scanner reads the global `[teatree]` value (the news-scan is anchored on the `teatree` overlay placeholder ticket; per-overlay overrides are accepted in the registry but not yet consumed by `_scanning_news_scanner` in `loop/tick_jobs.py`) |
-| `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as `scanning_news_disabled` above |
-| `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as `scanning_news_disabled` above |
+| `scanning_news_skill` | Override which skill the scanner dispatches (default `/t3:scanning-news`) — same registry/consumer gap as above |
+| `scanning_news_cadence_hours` | Cadence floor for the news-scanning scanner — same registry/consumer gap as above |
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer, mirroring `_plan_gate_enabled`) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. See BLUEPRINT §17 invariant 10. |
+| `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into

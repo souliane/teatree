@@ -129,10 +129,20 @@ def test_get_docker_services_returns_empty_set():
     assert overlay.get_docker_services(_make_worktree()) == set()
 
 
-def test_validate_pr_returns_empty_errors_and_warnings():
+def test_validate_pr_passes_conforming_title_and_what_why_description():
     overlay = _MinimalOverlay()
-    result = overlay.metadata.validate_pr("title", "desc")
+    result = overlay.metadata.validate_pr(
+        "feat(ship): add the gate (#1540)",
+        "## What\nAdds the gate.\n\n## Why\nThe convention is missed.",
+    )
     assert result == {"errors": [], "warnings": []}
+
+
+def test_validate_pr_rejects_non_conforming_title_and_missing_what_why():
+    overlay = _MinimalOverlay()
+    result = overlay.metadata.validate_pr("Add the gate", "no headers here")
+    assert result["warnings"] == []
+    assert len(result["errors"]) == 2
 
 
 def test_get_followup_repos_returns_empty_list():
