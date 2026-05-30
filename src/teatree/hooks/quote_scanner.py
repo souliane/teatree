@@ -60,6 +60,9 @@ class ToolInput(TypedDict, total=False):
     message: str
     body: str
     env: dict[str, str]
+    # Agent/Task dispatch fields scanned by the pre-dispatch gate (#1401).
+    prompt: str
+    description: str
 
 
 HIGH: Final[Severity] = "high"
@@ -351,6 +354,38 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     return _extract_slack_mcp_payload(tool_name, tool_input)
 
 
+# ── Agent/Task dispatch-prompt body extraction (#1401) ──────────────
+
+# The harness names the sub-agent dispatch vehicle ``Agent`` or ``Task``;
+# both carry a ``prompt`` (the dispatched brief) and a short
+# ``description`` (the one-line subject). Both are scanned so a verbatim
+# user quote pasted into EITHER field is caught at the dispatch boundary —
+# before the sub-agent loads it into context and can echo it into a later
+# published output (the #1213 publish gate fires too late for that).
+_DISPATCH_TOOLS: Final[frozenset[str]] = frozenset({"Agent", "Task"})
+_DISPATCH_PROMPT_FIELDS: Final[tuple[str, ...]] = ("description", "prompt")
+
+
+def extract_dispatch_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+    """Return the dispatch-prompt text to scan, or ``None`` for non-dispatch tools.
+
+    The ``None`` return is the gate's pass-through signal — the PreToolUse
+    handler skips its work for any tool that is not an ``Agent``/``Task``
+    dispatch. The ``description`` (subject) and ``prompt`` (brief) fields
+    are joined so a single :func:`scan_text` pass covers a quote pasted
+    into either. A dispatch with no populated body scans the empty string
+    (clean by construction) rather than failing closed.
+    """
+    if tool_name not in _DISPATCH_TOOLS:
+        return None
+    parts: list[str] = []
+    for field_name in _DISPATCH_PROMPT_FIELDS:
+        value = tool_input.get(field_name)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    return "\n".join(parts)
+
+
 # ── Override + ledger ──────────────────────────────────────────────
 
 
@@ -383,6 +418,30 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
         return True
     env = tool_input.get("env") or {}
     return env.get("QUOTE_OK", "").strip() == "1"
+
+
+# In-prompt opt-out token for the dispatch-prompt gate (#1401). Unlike the
+# publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts
+# that have no analogue inside an Agent/Task prompt body), the dispatch gate
+# opt-out is an in-prompt token mirroring the existing
+# ``[skip-plan-gate: <reason>]`` / ``[skip-skill-gate: <reason>]`` convention
+# in ``hook_router``. The reason is MANDATORY — an empty reason does not
+# bypass — so an audit can read WHY a quote-shaped dispatch was sanctioned.
+_DISPATCH_QUOTE_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[quote-ok:\s*(\S[^\]]*?)\s*\]")
+
+
+def dispatch_quote_ok_reason(text: str) -> str | None:
+    """Return the reason from a ``[quote-ok: <reason>]`` token in ``text``, else None.
+
+    Scans only the first 512 characters (mirroring the
+    ``hook_router._agent_prompt_skip_token`` precedent) so a token buried
+    deep in a long dispatch body cannot silently authorise the whole
+    prompt. An empty reason is rejected (returns ``None``).
+    """
+    match = _DISPATCH_QUOTE_OK_RE.search(text[:512])
+    if not match:
+        return None
+    return match.group(1).strip() or None
 
 
 def _ledger_path() -> Path:
@@ -427,6 +486,20 @@ def format_block_message(result: ScanResult) -> str:
         "Paraphrase any user-attributed content; do not quote verbatim. "
         "If the match is a false positive, re-issue the command with --quote-ok "
         "(or set QUOTE_OK=1 in the tool env)."
+    )
+
+
+def format_dispatch_block_message(result: ScanResult) -> str:
+    """Render the PreToolUse deny reason for a HIGH match in a dispatch prompt (#1401)."""
+    names = ", ".join(sorted({f.name for f in result.high}))
+    excerpt = next((f.excerpt for f in result.high if f.excerpt), "")
+    matched = f' (e.g. "{excerpt}")' if excerpt else ""
+    return (
+        "BLOCKED: pre-dispatch quote-scanner gate (#1401). The Agent/Task prompt "
+        f"carries verbatim user-voice/PII content{matched} — matched patterns: {names}. "
+        "Paraphrase it into author-voice description before dispatching (the sub-agent "
+        "would otherwise echo it into a published output, defeating the #1213 publish gate). "
+        "If the match is a false positive, add `[quote-ok: <reason>]` near the start of the prompt."
     )
 
 
