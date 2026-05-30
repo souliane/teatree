@@ -35,11 +35,14 @@ _BUDGET_TOP_LEVEL_BYTES = 80_000
 # Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
 # gate that closes the ultracode fan-out bypass) is the same class of
 # load-bearing safety fact, and the corpus was again at capacity.
+# Reviewed bump (#1500): the `gate_fail_open` master NEVER-LOCKOUT switch
+# (the parent fail-open mechanism the gate-2 self-rescue invariant rides on)
+# is the same class of load-bearing safety fact, corpus again at capacity.
 # Reviewed bump (#1539): the reviewing-phase review-skill evidence gate
 # (`review_skill` / `T3_REVIEW_SKILL`) is the same class of load-bearing
 # safety fact, and the appendix corpus was again at capacity.
-_BUDGET_APPENDICES_BYTES = 103_700
-_BUDGET_TOTAL_BYTES = 183_700
+_BUDGET_APPENDICES_BYTES = 104_300
+_BUDGET_TOTAL_BYTES = 184_300
 
 
 def _repo_root() -> pathlib.Path:
