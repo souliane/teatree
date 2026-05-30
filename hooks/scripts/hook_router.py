@@ -2182,22 +2182,49 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
+# ``pytest`` must match only in a VERB POSITION — never inside a quoted
+# arg, a branch name, a ``-m``/``--title`` message, or a hyphenated
+# package name (``pytest-django``). A bare ``\bpytest\b`` mis-denied the
+# loop owner's ``git commit -m 'fix pytest fixture'`` / ``git branch
+# x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
+# So anchor it to a command head: start-of-string OR a shell separator
+# (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
+# assignments and an optional Python runner prefix (``uv/uvx/poetry/pdm/
+# hatch run`` or ``python[3] -m``), then ``pytest`` NOT followed by a word
+# char or hyphen. The separator branch keeps the shell-grammar bypass
+# guard intact (``git status && pytest`` still denies).
+_PYTEST_VERB_RE = (
+    r"(?:^|[;&|\n(){}])"
+    r"\s*"
+    r"(?:\w+=\S+\s+)*"
+    r"(?:(?:uv|uvx|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
+    r"pytest(?![\w-])"
+)
+
 # HEAVY / long-running Bash shapes the main agent should not run inline.
 # This is a HEURISTIC denylist (anchored, case-sensitive on the verb);
 # the escape hatch is ``run_in_background: true`` (or, for a whole class
-# of work, dispatching a sub-agent). When in doubt the command is
-# ALLOWED — only an explicit match here, foreground, is gated. Patterns
-# cover: Python/test runners, language/asset builds, dev servers,
-# browser E2E, package installs/sync, long sleeps, and full-tree
-# recursive sweeps (the shapes that actually wedge a session).
+# of work, dispatching a sub-agent), plus a per-call ``[fg-ok: <reason>]``
+# marker. When in doubt the command is ALLOWED — only an explicit match
+# here, foreground, is gated. Patterns cover: Python/test runners, the
+# interactive Django shells (``manage.py shell``/``shell_plus``/``dbshell``
+# — the original 1h-hung RED-FLAG incident #1178), language/asset builds,
+# dev servers, browser E2E (``playwright test``, ``nx run …:e2e`` AND bare
+# ``nx e2e <target>``), container image AND compose builds (``docker
+# build`` / ``docker compose build``), package installs/sync, long sleeps,
+# and full-tree recursive sweeps (the shapes that actually wedge a
+# session). ``manage.py migrate`` is gated elsewhere (the
+# ``_BLOCKED_COMMANDS`` t3-CLI redirect); short ``t3 loop tick``/``ci``/
+# ``doctor`` are NOT slow and are deliberately not listed.
 _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
-    r"(?:"
-    r"\bpytest\b|"
+    r"(?:" + _PYTEST_VERB_RE + r"|"
     r"\btox\b|"
     r"\bt3\s+\S+\s+(?:run|e2e|test)\b|"
     r"manage\.py\s+runserver|"
-    r"\bnx\s+(?:serve|run)\b|"
+    r"manage\.py\s+(?:shell|shell_plus|dbshell)\b|"
+    r"\bnx\s+(?:serve|run|e2e)\b|"
     r"docker\s+compose\s+(?:up|build)|"
+    r"\bdocker\s+build\b|"
     r"(?:npx\s+)?playwright\s+test|"
     r"\bnpm\s+(?:run|install|ci)\b|"
     r"\b(?:pipenv|pip)\s+install\b|"
@@ -2211,6 +2238,12 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\bls\s+-[a-zA-Z]*R\b"
     r")",
 )
+
+# ``[fg-ok: <non-empty-reason>]`` anywhere in the command is the per-call
+# opt-out for the rare case the loop owner truly needs heavy output inline,
+# mirroring the ``[skip-plan-gate: <reason>]`` / ``[skip-skill-gate:
+# <reason>]`` tokens. An empty reason does not unblock.
+_FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
 
 def _call_is_from_subagent(data: dict) -> bool:
@@ -2298,8 +2331,8 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
 
     Passes through when the call is a sanctioned orchestration verb,
     comes from a sub-agent, is dispatched with ``run_in_background:
-    true``, or does not match the heavy denylist
-    (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
+    true``, carries a ``[fg-ok: <reason>]`` opt-out marker, or does not
+    match the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`).
     """
     if _is_orchestration_action(data) or _call_is_from_subagent(data):
         return False
@@ -2307,7 +2340,7 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     if tool_input.get("run_in_background") is True:
         return False
     command = tool_input.get("command", "")
-    if not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+    if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
         return False
     return emit_pretooluse_deny(
         "BLOCKED: the orchestrator (main agent) ran a command that looks "
@@ -2316,9 +2349,11 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "The orchestrator is delegate-only for heavy work (BLUEPRINT "
         "§17.4 / §17.8 / §17.6 gate 2). Either pass `run_in_background: "
         "true` to run it without blocking the session, dispatch a "
-        "sub-agent (Task/Agent) to do it, or — if this is a false "
-        "positive — set `orchestrator_bash_gate_enabled = false` under "
-        "`[teatree]` in ~/.teatree.toml to disable the gate."
+        "sub-agent (Task/Agent) to do it, add an explicit "
+        "`[fg-ok: <reason>]` marker if you truly need the output inline, "
+        "or — if this is a false positive — set "
+        "`orchestrator_bash_gate_enabled = false` under `[teatree]` in "
+        "~/.teatree.toml to disable the gate."
     )
 
 
@@ -2331,12 +2366,14 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     When the main agent (not a sub-agent — see
     :func:`_call_is_from_subagent`) runs a foreground Bash command that
     matches the heavy denylist (:data:`_ORCHESTRATOR_HEAVY_BASH_RE`) and
-    is not dispatched with ``run_in_background: true``, the call is
-    blocked with an actionable message. Everything else — quick
-    orientation Bash, ``git`` reads/commits, ``cat``/``ls``/``grep`` —
-    passes. Sub-agents are unaffected: they are the hands that implement
-    and may run any command, heavy or not. The ``Agent`` foreground guard
-    (#1442) rides the same handler.
+    is not dispatched with ``run_in_background: true`` (nor carrying a
+    ``[fg-ok: <reason>]`` opt-out), the call is blocked with an actionable
+    message. Everything else — quick orientation Bash, ``git``
+    reads/commits, ``cat``/``ls``/``grep`` — passes; the ``pytest`` verb
+    is anchored so a ``git commit -m '…pytest…'`` / ``uv add
+    pytest-django`` is NOT a false-deny. Sub-agents are unaffected: they
+    are the hands that implement and may run any command, heavy or not.
+    The ``Agent`` foreground guard (#1442) rides the same handler.
 
     Disabled entirely (pass-through) when
     ``[teatree] orchestrator_bash_gate_enabled = false`` — the one-line
@@ -4714,164 +4751,6 @@ def handle_block_raw_review_post(data: dict) -> bool:
     return emit_pretooluse_deny(_REVIEW_POST_DENY_REASON)
 
 
-# ── PreToolUse: force-slow-bash-to-background (#1178) ────────────────
-#
-# A foreground Bash call that runs for minutes (a full test suite, a
-# Playwright run, a long sleep, a full container build) freezes the
-# single-threaded loop tick / orchestrator for its whole runtime — a
-# RED-FLAG incident (a 1h-hung foreground command stalled the in-flight
-# fleet, 2x recurrence). The harness ``run_in_background: true`` param
-# detaches the command and frees the loop immediately. This gate nudges
-# the known-slow shapes to the background by DENYING the foreground call
-# with the exact one-flag fix.
-#
-# Sub-agents are the unrestricted hands (the established #115 invariant):
-# a foreground command inside a sub-agent ties up only THAT sub-agent's
-# own thread, never the orchestrator's single-threaded loop. So this gate
-# governs the LOOP OWNER (the main agent) and exempts sub-agents via the
-# same ``_call_is_from_subagent`` signal the orchestrator-boundary gate
-# uses — keeping the two gates' main-vs-sub-agent behaviour identical and
-# the sub-agent-hands invariant intact. "Universal" in the issue means no
-# per-overlay / per-agent-type override, not "also governs sub-agents".
-#
-# CONSERVATIVE by construction. The fleet runs many fast commands, so a
-# false-deny that nags a quick command is worse than the problem it
-# fixes. The pattern set is therefore a HIGH-confidence allow-list of
-# shapes that are reliably slow AND carry narrowing carve-outs:
-#
-# * an UNBOUNDED full ``pytest`` run — a bare ``pytest`` / ``uv run
-#   pytest`` with NO narrowing (``-k`` / ``-x`` / ``--lf`` / ``--ff`` /
-#   a specific path or ``::node`` selector). A narrowed run is fast and
-#   passes through.
-# * a browser E2E run — ``playwright test`` / ``npx playwright`` / an
-#   ``nx … e2e`` target.
-# * a long ``sleep`` — ``sleep N`` with N >= ``_SLOW_SLEEP_THRESHOLD``
-#   seconds (a short poll-sleep passes).
-# * a full container build — ``docker build`` / ``docker compose build``.
-#
-# Two ALLOW escapes, mirroring the other gates' opt-out tokens:
-#
-# * ``run_in_background: true`` already set on the tool_input (the fix
-#   itself — never re-deny a command already being backgrounded);
-# * an explicit inline ``[fg-ok: <reason>]`` marker in the command for
-#   the rare case the agent truly needs the output inline (reason
-#   mandatory — an empty reason does not unblock).
-#
-# Fails OPEN on any internal/parse error (and the router's per-handler
-# try/except is the outer net): a gate bug must never wedge the fleet.
-
-_SLOW_SLEEP_THRESHOLD = 60
-
-# ``[fg-ok: <non-empty-reason>]`` anywhere in the command opts out, mirroring
-# the ``[skip-plan-gate: <reason>]`` / ``[skip-skill-gate: <reason>]`` tokens.
-_FG_OK_RE = re.compile(r"\[fg-ok:\s*(\S[^\]]*?)\s*\]")
-
-# Narrowing flags/selectors that make a ``pytest`` run targeted (and fast):
-# a ``-k`` filter, ``-x``/``--exitfirst``, last-failed/failed-first, or a
-# specific path or ``::node`` selector after the verb.
-_PYTEST_NARROWED_RE = re.compile(
-    r"\bpytest\b[^\n]*?(?:"
-    r"\s-k(?:\s|=)|"
-    r"\s-x\b|\s--exitfirst\b|"
-    r"\s--lf\b|\s--last-failed\b|\s--ff\b|\s--failed-first\b|"
-    r"\s[^\s-]\S*\.py\b|"
-    r"::"
-    r")",
-)
-# A full (unbounded) pytest invocation — the verb with no narrowing.
-_PYTEST_RE = re.compile(r"\bpytest\b")
-
-# Each entry: (compiled pattern, short human label naming why it is slow).
-# Kept deliberately small and high-confidence; widening it risks the
-# false-denies that would wedge the fleet (prefer the loop-freeze over
-# nagging fast commands).
-_SLOW_FOREGROUND_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(?:npx\s+)?playwright\s+test\b"), "a Playwright browser E2E run"),
-    (re.compile(r"\bnx\s+(?:run\s+\S+:e2e|e2e)\b"), "an nx e2e target"),
-    (re.compile(r"\bdocker\s+build\b"), "a full docker image build"),
-    (re.compile(r"\bdocker\s+compose\s+build\b"), "a full docker compose build"),
-]
-
-
-def _slow_sleep(command: str) -> bool:
-    """True iff *command* contains a ``sleep N`` with N >= the slow threshold.
-
-    Only an integer or decimal literal counts; a short poll-sleep
-    (``sleep 2``) or a variable-arg ``sleep $T`` is not flagged.
-    """
-    for match in re.finditer(r"\bsleep\s+(\d+(?:\.\d+)?)\b", command):
-        try:
-            if float(match.group(1)) >= _SLOW_SLEEP_THRESHOLD:
-                return True
-        except ValueError:
-            continue
-    return False
-
-
-def _slow_foreground_reason(command: str) -> str | None:
-    """Return a short reason iff *command* is a high-confidence slow shape.
-
-    Returns ``None`` for everything that is not reliably slow — including
-    a narrowed ``pytest`` run, a short sleep, an explicit ``[fg-ok:
-    <reason>]`` opt-out, a command that merely MENTIONS a slow verb as an
-    echo/grep argument, and any unrecognised command — so the gate never
-    false-denies a fast command. Fails OPEN (returns ``None``) on any
-    internal/parse error so a gate bug can never wedge the fleet.
-    """
-    try:
-        # A read-only/echo command that merely prints or greps for a slow
-        # verb (``echo 'run uv run pytest later'``) is fast — reuse the
-        # shared read-only prefix bypass the direct-command gate trusts.
-        # An explicit ``[fg-ok: <reason>]`` marker is the per-call opt-out.
-        if _READONLY_CMD_PREFIX_RE.match(command.lstrip()) or _FG_OK_RE.search(command):
-            return None
-        if _PYTEST_RE.search(command) and not _PYTEST_NARROWED_RE.search(command):
-            return "an unbounded full test suite (no -k/-x/path narrowing)"
-        for pattern, label in _SLOW_FOREGROUND_PATTERNS:
-            if pattern.search(command):
-                return label
-        if _slow_sleep(command):
-            return f"a long sleep (>= {_SLOW_SLEEP_THRESHOLD}s)"
-    except Exception:  # noqa: BLE001 — a gate bug must never wedge the fleet; fail OPEN.
-        return None
-    return None
-
-
-def handle_force_slow_bash_to_background(data: dict) -> bool:
-    """Deny a foreground Bash command that matches a high-confidence slow shape.
-
-    Returns ``True`` (deny emitted) only when ALL of:
-
-    1. The tool is ``Bash`` and the call is NOT from a sub-agent (sub-agents are unrestricted hands, per the #115 gate).
-    2. ``run_in_background`` is not already truthy on the tool_input.
-    3. :func:`_slow_foreground_reason` flags it: a high-confidence slow shape, no ``[fg-ok: <reason>]`` opt-out.
-
-    Any condition failing -> the handler returns ``False`` (pass through).
-    The deny message names why the command would freeze the loop and the
-    exact one-flag fix (``run_in_background: true``), plus the rare-case
-    ``[fg-ok: <reason>]`` escape. Fails OPEN on any internal error.
-    """
-    if data.get("tool_name") != "Bash" or _call_is_from_subagent(data):
-        return False
-    tool_input = data.get("tool_input", {})
-    if tool_input.get("run_in_background") is True:
-        return False
-    command = tool_input.get("command", "")
-    reason = _slow_foreground_reason(command)
-    if reason is None:
-        return False
-    return emit_pretooluse_deny(
-        f"BLOCKED: this Bash command looks like {reason} and would run in the "
-        "FOREGROUND, freezing the single-threaded loop tick / orchestrator for "
-        f"its whole runtime: `{command[:120]}`.\n"
-        "Fix: re-run the SAME command with the tool param `run_in_background: "
-        "true` so it detaches and frees the loop immediately.\n"
-        "If you genuinely need the output inline (rare), add an explicit "
-        "`[fg-ok: <reason>]` marker to the command — e.g. "
-        "`[fg-ok: short-targeted-run]`. (#1178)"
-    )
-
-
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 
 
@@ -5842,7 +5721,6 @@ _HANDLERS: dict[str, list] = {
         handle_block_direct_commands,
         handle_block_out_of_band_merge,
         handle_block_raw_review_post,
-        handle_force_slow_bash_to_background,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
