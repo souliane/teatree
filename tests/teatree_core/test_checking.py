@@ -13,6 +13,7 @@ are omitted, and an all-empty report collapses to one line.
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -123,13 +124,98 @@ class TestMergedGroup(CheckingTestBase):
         report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="gitlab")
         assert report.merged.items[0].url == "https://gitlab.com/acme/widgets/-/merge_requests/9"
 
-    def test_blank_slug_falls_back_to_issue_url(self) -> None:
-        # No slug and no stored pr_url: the builder yields nothing, so the
-        # reference falls back to the ticket's issue URL (still clickable).
-        ticket = self._ticket()
-        self._merge(ticket, pr_id=7, slug="", hours_ago=2)
-        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
+    def test_unresolvable_repo_falls_back_to_issue_url(self) -> None:
+        # No owner/repo-shaped slug, a ticket whose issue_url is not a
+        # recognisable forge repo, and no clone-origin remote: no real repo
+        # resolves, so the reference falls back to the ticket's issue URL
+        # (still clickable) rather than a wrong-host workstream link (#1559).
+        ticket = Ticket.objects.create(
+            overlay=self.OVERLAY,
+            issue_url="https://example.invalid/not-an-issue",
+            state=Ticket.State.IN_REVIEW,
+            short_description="ticket work",
+        )
+        self._merge(ticket, pr_id=7, slug="some-workstream-name", hours_ago=2)
+        with patch("teatree.core.merge_execution._project_repo_slug", return_value=""):
+            report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.merged.items[0].url == ticket.issue_url
+
+    def test_workstream_slug_never_builds_wrong_host_url(self) -> None:
+        # A ticket-bearing CLEAR whose slug is a workstream slug must resolve
+        # the ticket's real repo, never emit ``github.com/<workstream>/...``
+        # (#1559 bug 2).
+        ticket = self._ticket()
+        self._merge(ticket, pr_id=7, slug="statusline-stale-wakeup", hours_ago=2)
+        report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY, code_host="github")
+        item = report.merged.items[0]
+        assert item.url == "https://github.com/acme/widgets/pull/7"
+        assert "statusline-stale-wakeup" not in item.url
+        assert item.label == "acme/widgets#7"
+
+
+class TestMergedGroupNullTicketRepoScope(CheckingTestBase):
+    """A NULL-ticket ceremony merge is scoped to the overlay by its repo (#1559 bug 1).
+
+    The ceremony ``ticket clear`` is issued without ``--ticket-id``, so
+    ``MergeClear.ticket`` is NULL for nearly every CLEAR. A ticket-FK JOIN
+    silently drops those, leaving the merged group almost always empty. The
+    read-side scope must instead match the CLEAR's RESOLVED repo against the
+    overlay's repo set — without over-reporting a different overlay's merges.
+    """
+
+    def _null_ticket_merge(self, *, pr_id: int, slug: str, hours_ago: float) -> MergeAudit:
+        clear = MergeClear.objects.create(
+            ticket=None,
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=_SHA,
+            reviewer_identity=_REVIEWER,
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.LOGIC,
+        )
+        audit = MergeAudit.objects.create(clear=clear, merged_sha=_SHA, required_checks_status="success")
+        MergeAudit.objects.filter(pk=audit.pk).update(merged_at=self.now - timedelta(hours=hours_ago))
+        return audit
+
+    def test_null_ticket_merge_in_overlay_repo_appears(self) -> None:
+        # owner/repo-shaped slug resolves to itself; the repo belongs to the
+        # overlay, so the NULL-ticket merge surfaces.
+        self._null_ticket_merge(pr_id=12, slug="acme/widgets", hours_ago=2)
+        report = gather_checking_report(
+            since=self.since, now=self.now, overlay_name=self.OVERLAY, overlay_repos=["acme/widgets"]
+        )
+        assert [item.label for item in report.merged.items] == ["acme/widgets#12"]
+
+    def test_null_ticket_merge_in_overlay_matched_by_bare_repo_name(self) -> None:
+        # An overlay that declares a bare ``repo`` name (no owner) still scopes
+        # a resolved ``owner/repo`` whose repo segment matches.
+        self._null_ticket_merge(pr_id=13, slug="acme/widgets", hours_ago=2)
+        report = gather_checking_report(
+            since=self.since, now=self.now, overlay_name=self.OVERLAY, overlay_repos=["widgets"]
+        )
+        assert [item.label for item in report.merged.items] == ["acme/widgets#13"]
+
+    def test_null_ticket_merge_in_other_overlay_repo_excluded(self) -> None:
+        # A NULL-ticket merge whose resolved repo is NOT in this overlay's repo
+        # set must NOT appear — no blanket ``ticket IS NULL`` over-reporting.
+        self._null_ticket_merge(pr_id=14, slug="other-org/other-repo", hours_ago=2)
+        report = gather_checking_report(
+            since=self.since, now=self.now, overlay_name=self.OVERLAY, overlay_repos=["acme/widgets"]
+        )
+        assert report.merged.total == 0
+
+    def test_null_ticket_and_ticket_bearing_merges_both_scoped(self) -> None:
+        # The ticket-bearing CLEAR keeps its precise overlay link; the
+        # NULL-ticket CLEAR is scoped by repo. Both land; a foreign one drops.
+        ticket = self._ticket(number=5)
+        self._merge(ticket, pr_id=20, slug="acme/widgets", hours_ago=3)
+        self._null_ticket_merge(pr_id=21, slug="acme/widgets", hours_ago=2)
+        self._null_ticket_merge(pr_id=22, slug="other-org/other-repo", hours_ago=1)
+        report = gather_checking_report(
+            since=self.since, now=self.now, overlay_name=self.OVERLAY, overlay_repos=["acme/widgets"]
+        )
+        labels = {item.label for item in report.merged.items}
+        assert labels == {"acme/widgets#20", "acme/widgets#21"}
 
 
 class TestInFlightGroup(CheckingTestBase):
