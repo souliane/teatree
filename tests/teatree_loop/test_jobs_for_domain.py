@@ -12,12 +12,13 @@ turns the exhaustiveness assertion RED.
 import dataclasses
 from collections import Counter
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
+from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.tick_jobs import PER_OVERLAY_DOMAINS, Domain, _jobs_for_overlay_backend, jobs_for_domain
 
@@ -137,3 +138,68 @@ class JobsForDomainTodoSweepTestCase(TestCase):
         backend = self._backend_with_python_overlay()
         tickets_names = {job.scanner.name for job in jobs_for_domain(Domain.TICKETS, backend)}
         assert "todo_sweep" in tickets_names
+
+
+_SETTINGS_PATCH_TARGET = "teatree.loop.tick_jobs._effective_settings_for_overlay"
+
+
+class IssueImplementerDomainPartitionTestCase(TestCase):
+    """``ISSUE_IMPLEMENTER`` joins the partition without breaking it (#1553).
+
+    The domain is default-OFF: :func:`_issue_implementer_scanner_for`
+    returns ``None`` unless an overlay opts in, so the per-overlay sum stays
+    byte-for-byte equal to the legacy builder by default (the parity
+    invariant). When enabled it owns exactly the one scanner the partition
+    seam emits — the single source both fan-out paths consume.
+    """
+
+    @staticmethod
+    def _backend() -> OverlayBackends:
+        host = MagicMock(spec=CodeHostBackend)
+        return OverlayBackends(
+            name="teatree",
+            hosts=(host,),
+            messaging=MagicMock(spec=MessagingBackend),
+            ready_labels=("ready",),
+            identities=("alice",),
+        )
+
+    def test_member_of_per_overlay_partition(self) -> None:
+        assert Domain.ISSUE_IMPLEMENTER in PER_OVERLAY_DOMAINS
+
+    def test_disabled_slice_is_empty_so_partition_sum_is_unchanged(self) -> None:
+        backend = self._backend()
+        with patch(_SETTINGS_PATCH_TARGET, return_value=UserSettings()):
+            assert jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend) == []
+            partitioned: list[Any] = []
+            for domain in PER_OVERLAY_DOMAINS:
+                partitioned.extend(jobs_for_domain(domain, backend, all_backends=(backend,)))
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert sorted(map(_signature, partitioned), key=repr) == sorted(map(_signature, legacy), key=repr)
+
+    def test_enabled_slice_owns_exactly_the_issue_implementer_scanner(self) -> None:
+        backend = self._backend()
+        with patch(
+            _SETTINGS_PATCH_TARGET,
+            return_value=UserSettings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+        ):
+            slice_jobs = jobs_for_domain(Domain.ISSUE_IMPLEMENTER, backend)
+            legacy = _jobs_for_overlay_backend(backend, all_backends=(backend,))
+        assert [job.scanner.name for job in slice_jobs] == ["issue_implementer"]
+        # Enabled, the legacy aggregator carries exactly the one slice scanner —
+        # both fan-out paths derive from this same partition slice (no divergence).
+        legacy_ii = [j for j in legacy if j.scanner.name == "issue_implementer"]
+        assert len(legacy_ii) == 1
+        assert _signature(legacy_ii[0]) == _signature(slice_jobs[0])
+
+    def test_enabled_partition_still_disjoint(self) -> None:
+        backend = self._backend()
+        with patch(
+            _SETTINGS_PATCH_TARGET,
+            return_value=UserSettings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
+        ):
+            counts: Counter[tuple[Any, ...]] = Counter()
+            for domain in PER_OVERLAY_DOMAINS:
+                for job in jobs_for_domain(domain, backend, all_backends=(backend,)):
+                    counts[_signature(job)] += 1
+        assert not {sig for sig, n in counts.items() if n > 1}
