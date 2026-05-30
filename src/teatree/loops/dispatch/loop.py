@@ -6,21 +6,16 @@ from teatree.loops.base import MiniLoop
 
 
 def _build_jobs(**_: Any) -> list[Any]:  # noqa: ANN401 — orchestrator passes extra context as open kwargs
-    """Build the always-on global scanner jobs.
+    """Build the always-on global scanner triad.
 
-    Delegates to :mod:`teatree.loop.tick_jobs` so the legacy fan-out stays
-    the single source of truth for which scanners run in this mini-loop.
-    The orchestrator passes its per-tick kwargs through; the legacy
-    builder consumes whichever it understands.
+    Delegates to the ``Domain.DISPATCH`` slice of the public
+    :func:`teatree.loop.tick_jobs.jobs_for_domain` seam so the legacy
+    fan-out stays the single source of which scanners run in this
+    mini-loop. The triad carries no per-overlay state.
     """
-    from teatree.loop.scanners import IncomingEventsScanner, OutboundAuditScanner, PendingTasksScanner  # noqa: PLC0415
-    from teatree.loop.tick_jobs import _ScannerJob  # noqa: PLC0415
+    from teatree.loop.tick_jobs import Domain, jobs_for_domain  # noqa: PLC0415
 
-    return [
-        _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
-        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
-        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
-    ]
+    return jobs_for_domain(Domain.DISPATCH)
 
 
 MINI_LOOP = MiniLoop(

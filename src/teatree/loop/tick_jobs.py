@@ -10,7 +10,9 @@ import datetime as _dt
 import logging
 import os
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,6 +78,43 @@ class _ScannerJob:
 
     scanner: Scanner
     overlay: str
+
+
+class Domain(StrEnum):
+    """A partition of the per-tick scanner fan-out (#1482).
+
+    The per-overlay members own disjoint, exhaustive slices of
+    :func:`_jobs_for_overlay_backend`; :data:`PER_OVERLAY_DOMAINS`
+    summed reproduces it exactly. ``DISPATCH`` is the global
+    (non-overlay) triad ``build_default_jobs`` hard-codes — it is the
+    one member excluded from the per-overlay sum.
+    """
+
+    TICKETS = "tickets"
+    SHIP = "ship"
+    REVIEW = "review"
+    FOLLOWUP = "followup"
+    INBOX = "inbox"
+    ARCH_REVIEW = "arch_review"
+    AUDIT = "audit"
+    HOUSEKEEPING = "housekeeping"
+    DISPATCH = "dispatch"
+
+
+#: The :class:`Domain` members whose slices partition the per-overlay
+#: fan-out. ``_jobs_for_overlay_backend(backend) ==
+#: sum(jobs_for_domain(d, backend) for d in PER_OVERLAY_DOMAINS)`` by
+#: construction; the parity guard in ``tests/teatree_loop`` pins it.
+PER_OVERLAY_DOMAINS: tuple[Domain, ...] = (
+    Domain.TICKETS,
+    Domain.SHIP,
+    Domain.REVIEW,
+    Domain.FOLLOWUP,
+    Domain.INBOX,
+    Domain.ARCH_REVIEW,
+    Domain.AUDIT,
+    Domain.HOUSEKEEPING,
+)
 
 
 def _jobs_for_backend_hosts(
@@ -738,25 +777,19 @@ def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
     return global_value
 
 
-def _jobs_for_overlay_backend(
-    backend: OverlayBackends,
-    *,
-    all_backends: tuple[OverlayBackends, ...] = (),
-) -> list[_ScannerJob]:
-    """Build every scanner job that fans out for one overlay backend.
+def _global_dispatch_jobs() -> list[_ScannerJob]:
+    """The always-on global triad ``build_default_jobs`` fans out once per tick."""
+    return [
+        _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
+        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
+        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
+    ]
 
-    Split out of :func:`build_default_jobs` to keep the orchestrator
-    under the cyclomatic-complexity gate; the per-overlay shape is:
-    active-or-external tickets, stale tickets, per-host PR/issue
-    scanners, architectural review, PR sweep, slack broadcasts, and
-    the messaging-dependent slack scanners.
 
-    *all_backends* is the full multi-overlay roster — passed through to
-    per-host scanner construction so each scanner knows the URL claims of
-    its siblings (cross-overlay PR attribution, #1324).
-    """
-    jobs: list[_ScannerJob] = []
+def _tickets_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Local Ticket-DB scanners + per-host disposition/completion + TODO sweep."""
     tag = backend.name
+    jobs: list[_ScannerJob] = []
     if backend.external_db is not None:
         from teatree.loop.scanners.external_tickets import ExternalTicketsScanner  # noqa: PLC0415
 
@@ -774,57 +807,264 @@ def _jobs_for_overlay_backend(
             overlay=tag,
         ),
     )
-    # Multi-host: an overlay with both GitHub and GitLab PATs scans both
-    # forges, so PRs on one platform don't drown out PRs on the other
-    # (#976). The single-host path is preserved by iterating
-    # ``backend.hosts`` (which is empty when no token resolved).
-    jobs.extend(_jobs_for_backend_hosts(backend, tag, all_backends=all_backends))
-    # #1136 / #1152 Periodic architectural-review scanner. CORE
-    # always-on for every registered overlay; the cadence lives in
-    # teatree-core config since architectural review applies uniformly
-    # to all overlays' worktrees, not as a per-overlay opt-in.
-    arch_scanner = _architectural_review_scanner_for(backend)
-    if arch_scanner is not None:
-        jobs.append(_ScannerJob(scanner=arch_scanner, overlay=tag))
-    # #129 TODO-sweep scanner — verifies open Task rows against artifact
-    # terminal state and completes only on durable proof. Per-overlay
-    # because the Task/Ticket rows it walks are overlay-scoped.
+    jobs.extend(_tickets_per_host_jobs(backend, tag))
     todo_sweep_scanner = _todo_sweep_scanner_for(backend)
     if todo_sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=todo_sweep_scanner, overlay=tag))
-    # #1257 PR-sweep scanner — auto-merge-green-PRs sibling wired
-    # per-overlay (not per-host). The overlay's followup-repos list
-    # (full ``owner/repo`` slugs) is the sweep target.
+    return jobs
+
+
+def _tickets_per_host_jobs(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+    """Per-host disposition scanner + the once-per-overlay completion scanner.
+
+    ``identity_groups`` is resolved only when there is a host to scan —
+    the resolution reads the overlay config, so a host-less backend stays
+    out of that path entirely.
+    """
+    if not backend.hosts:
+        return []
+    identity_groups = _identity_groups_for_overlay(backend)
+    jobs: list[_ScannerJob] = []
+    ticket_completion_emitted = False
+    for code_host in backend.hosts:
+        jobs.append(
+            _ScannerJob(
+                scanner=TicketDispositionScanner(
+                    host=code_host,
+                    overlay=backend.overlay,
+                    ready_labels=backend.ready_labels,
+                    overlay_name=tag,
+                    user_identity_aliases=_user_identity_aliases_for_overlay(tag),
+                    identity_alias_groups=identity_groups,
+                ),
+                overlay=tag,
+            ),
+        )
+        if backend.overlay is not None and not ticket_completion_emitted:
+            jobs.append(
+                _ScannerJob(
+                    scanner=TicketCompletionScanner(overlay=backend.overlay, overlay_name=tag),
+                    overlay=tag,
+                ),
+            )
+            ticket_completion_emitted = True
+    return jobs
+
+
+def _ship_jobs_for_overlay(
+    backend: OverlayBackends,
+    *,
+    all_backends: tuple[OverlayBackends, ...],
+) -> list[_ScannerJob]:
+    """Own-author PR scanner + (opt-in) GitLab-approvals poll, per host."""
+    tag = backend.name
+    gitlab_approvals_enabled = _gitlab_approvals_enabled()
+    jobs: list[_ScannerJob] = []
+    for code_host in backend.hosts:
+        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
+        competing_prefixes = _competing_url_prefixes(
+            this_backend=backend,
+            code_host=code_host,
+            all_backends=all_backends,
+        )
+        jobs.append(
+            _ScannerJob(
+                scanner=MyPrsScanner(
+                    host=code_host,
+                    identities=backend.identities,
+                    allowed_url_prefixes=url_prefixes,
+                    competing_url_prefixes=competing_prefixes,
+                ),
+                overlay=tag,
+            ),
+        )
+        if gitlab_approvals_enabled:
+            jobs.append(
+                _ScannerJob(
+                    scanner=GitLabApprovalsScanner(host=code_host, identities=backend.identities),
+                    overlay=tag,
+                ),
+            )
+    return jobs
+
+
+def _review_jobs_for_overlay(
+    backend: OverlayBackends,
+    *,
+    all_backends: tuple[OverlayBackends, ...],
+) -> list[_ScannerJob]:
+    """Reviewer-PR (per host) + broadcast / codex / PR-sweep companions."""
+    tag = backend.name
+    jobs: list[_ScannerJob] = []
+    for code_host in backend.hosts:
+        url_prefixes = _allowed_url_prefixes_for_host(backend, code_host)
+        competing_prefixes = _competing_url_prefixes(
+            this_backend=backend,
+            code_host=code_host,
+            all_backends=all_backends,
+        )
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewerPrsScanner(
+                    host=code_host,
+                    identities=backend.identities,
+                    overlay_name=tag,
+                    allowed_url_prefixes=url_prefixes,
+                    competing_url_prefixes=competing_prefixes,
+                ),
+                overlay=tag,
+            ),
+        )
     sweep_scanner = _pr_sweep_scanner_for(backend, slack_user_id=_user_slack_id_for_overlay(tag))
     if sweep_scanner is not None:
         jobs.append(_ScannerJob(scanner=sweep_scanner, overlay=tag))
-    # Pull-main-clone scanner — after a merge advances ``origin/<default>``,
-    # fast-forward each work-repo main clone under ``$T3_WORKSPACE_DIR`` so a
-    # stale clone never poisons ``git show`` / ``grep`` investigations. Wired
-    # per-overlay because the workspace-repo set is overlay-scoped.
-    pull_clone_scanner = _pull_main_clone_scanner_for(backend)
-    if pull_clone_scanner is not None:
-        jobs.append(_ScannerJob(scanner=pull_clone_scanner, overlay=tag))
-    # #1254 Codex-review scanner — auto-dispatch /codex:review on every
-    # PR push. Gated on the fleet-of-agents doctrine (auto mode +
-    # ``require_human_approval_to_merge = false``); silent on every
-    # other overlay so manual codex invocation stays the default.
     codex_scanner = _codex_review_scanner_for(backend)
     if codex_scanner is not None:
         jobs.append(_ScannerJob(scanner=codex_scanner, overlay=tag))
-    # #1255 Slack broadcast scanner — polls the overlay's review
-    # channel for MR-link broadcasts and dispatches reviewer-role work
-    # to the existing review-intent pipeline.
     broadcasts_scanner = _slack_broadcasts_scanner_for(backend)
     if broadcasts_scanner is not None:
         jobs.append(_ScannerJob(scanner=broadcasts_scanner, overlay=tag))
-    # #1295 cap E: failed-E2E Slack-post scanner; the overlay supplies
-    # watchers via ``OverlayConfig.get_failed_e2e_watchers``.
-    failed_e2e_scanner = _failed_e2e_scanner_for(backend)
-    if failed_e2e_scanner is not None:
-        jobs.append(_ScannerJob(scanner=failed_e2e_scanner, overlay=tag))
+    return jobs
+
+
+def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Assigned-issue intake (per host) + the single review-nag (overlay-scoped)."""
+    tag = backend.name
+    jobs: list[_ScannerJob] = [
+        _ScannerJob(
+            scanner=AssignedIssuesScanner(
+                host=code_host,
+                ready_labels=backend.ready_labels,
+                exclude_labels=backend.exclude_labels,
+                auto_start=backend.auto_start_assigned_issues,
+                max_concurrent=backend.max_concurrent_auto_starts,
+                overlay_name=tag,
+                identities=backend.identities,
+            ),
+            overlay=tag,
+        )
+        for code_host in backend.hosts
+    ]
     if backend.messaging is not None:
-        jobs.extend(_messaging_jobs_for_backend(backend, tag))
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewNagScanner(
+                    messaging=backend.messaging,
+                    user_slack_id=_user_slack_id_for_overlay(tag),
+                    host=backend.host,
+                ),
+                overlay=tag,
+            ),
+        )
+    return jobs
+
+
+def _inbox_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Inbound Slack scanners (mentions/DM/review-intent/red-card), sans review-nag."""
+    if backend.messaging is None:
+        return []
+    return _messaging_jobs_for_backend(backend, backend.name, include_review_nag=False)
+
+
+def _arch_review_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Periodic architectural-review scanner (core platform cadence)."""
+    scanner = _architectural_review_scanner_for(backend)
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+
+
+def _audit_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Failed-E2E Slack-post scanner driven by overlay watchers (#1295 cap E)."""
+    scanner = _failed_e2e_scanner_for(backend)
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+
+
+def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Per-overlay pull-main-clone scanner (workspace-repo fast-forward)."""
+    scanner = _pull_main_clone_scanner_for(backend)
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+
+
+def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
+    """Resolve disposition identity-alias groups with the multi-identity self-group fallback (#1113)."""
+    groups = _identity_alias_groups_for_overlay(backend.name, backend)
+    if not groups and len(backend.identities) > 1:
+        return (tuple(backend.identities),)
+    return groups
+
+
+type _OverlayDomainBuilder = Callable[[OverlayBackends], list[_ScannerJob]]
+type _UrlAwareDomainBuilder = Callable[..., list[_ScannerJob]]
+
+#: PR scanners thread sibling URL claims (#1324), so these two domains
+#: take ``all_backends``; the rest are overlay-local.
+_URL_AWARE_DOMAIN_BUILDERS: dict[Domain, _UrlAwareDomainBuilder] = {
+    Domain.SHIP: _ship_jobs_for_overlay,
+    Domain.REVIEW: _review_jobs_for_overlay,
+}
+
+_PER_OVERLAY_DOMAIN_BUILDERS: dict[Domain, _OverlayDomainBuilder] = {
+    Domain.TICKETS: _tickets_jobs_for_overlay,
+    Domain.FOLLOWUP: _followup_jobs_for_overlay,
+    Domain.INBOX: _inbox_jobs_for_overlay,
+    Domain.ARCH_REVIEW: _arch_review_jobs_for_overlay,
+    Domain.AUDIT: _audit_jobs_for_overlay,
+    Domain.HOUSEKEEPING: _housekeeping_jobs_for_overlay,
+}
+
+
+def jobs_for_domain(
+    domain: Domain,
+    backend: OverlayBackends | None = None,
+    *,
+    all_backends: tuple[OverlayBackends, ...] = (),
+) -> list[_ScannerJob]:
+    """Return the scanner-job slice *domain* owns (#1482).
+
+    The public, typed seam the mini-loops consume in place of reaching
+    into ``tick_jobs`` privates. The per-overlay members
+    (:data:`PER_OVERLAY_DOMAINS`) partition :func:`_jobs_for_overlay_backend`
+    — disjoint and exhaustive — and require *backend*. ``Domain.DISPATCH``
+    is the global triad and ignores *backend* (it carries no per-overlay
+    state), so callers with no overlay context pass none.
+
+    *all_backends* threads sibling URL claims into the PR scanners so a
+    less-specific claim yields to a more specific sibling (#1324).
+    """
+    if domain is Domain.DISPATCH:
+        return _global_dispatch_jobs()
+    if backend is None:
+        msg = f"{domain} is a per-overlay domain and requires a backend"
+        raise ValueError(msg)
+    if domain in _URL_AWARE_DOMAIN_BUILDERS:
+        return _URL_AWARE_DOMAIN_BUILDERS[domain](backend, all_backends=all_backends)
+    return _PER_OVERLAY_DOMAIN_BUILDERS[domain](backend)
+
+
+def _jobs_for_overlay_backend(
+    backend: OverlayBackends,
+    *,
+    all_backends: tuple[OverlayBackends, ...] = (),
+) -> list[_ScannerJob]:
+    """Build every scanner job that fans out for one overlay backend.
+
+    Provably the sum of every per-overlay domain slice — the partition
+    invariant pinned by ``tests/teatree_loop/test_jobs_for_domain.py``.
+    The fan-out order follows ``PER_OVERLAY_DOMAINS``; the live tick
+    treats jobs as an unordered set, so grouping by domain is behaviour-
+    equivalent to the previous interleaved order.
+
+    *all_backends* is the full multi-overlay roster — threaded into the
+    PR scanners for cross-overlay URL attribution (#1324).
+    """
+    jobs: list[_ScannerJob] = []
+    for domain in PER_OVERLAY_DOMAINS:
+        jobs.extend(jobs_for_domain(domain, backend, all_backends=all_backends))
     return jobs
 
 
@@ -896,11 +1136,7 @@ def build_default_jobs(
     own host/messaging credentials). The *host*/*messaging* shape
     is preserved for callers that resolve a single overlay themselves.
     """
-    jobs: list[_ScannerJob] = [
-        _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
-        _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
-        _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
-    ]
+    jobs: list[_ScannerJob] = jobs_for_domain(Domain.DISPATCH)
     # #1191 Periodic scanning-news scanner — teatree-CORE global (not
     # per-overlay). Daily cadence is teatree-platform config; the queued
     # task is anchored on the `teatree` overlay placeholder ticket so
