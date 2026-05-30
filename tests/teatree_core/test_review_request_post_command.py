@@ -335,3 +335,63 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert payload["reason"] == "no_messaging_backend"
         # The approval was consumed before the messaging check — single-use.
         assert OnBehalfAudit.objects.count() == 1
+
+
+class TestReviewRequestPostFinalizesClaim(_DataDirMixin, TestCase):
+    """A successful post must finalize the guard's claim row (#1508).
+
+    ``should_post_review_request`` takes the ``ReviewRequestPost``
+    ``get_or_create`` claim before the post (``slack_thread_ts=""``,
+    ``done_at`` unset). If the command never stamps the thread ts after a
+    successful post, the row keeps the *unposted-orphan* shape
+    ``_claim_or_reclaim`` reclaims once older than ``_CLAIM_RACE_WINDOW``
+    — a later re-attempt posts a duplicate to the review channel (the
+    #1084 incident class). After a successful post the row must carry the
+    posted thread ts so it can never be reclaimed as an orphan.
+    """
+
+    def _post_with_real_claim(self) -> _FakeBackend:
+        """Run the happy path with the guard's *real* ``get_or_create`` claim."""
+        OnBehalfApproval.record(
+            target=_MR_URL,
+            action="review_request_post",
+            approver_id="souliane",
+        )
+        backend = _FakeBackend()
+
+        def _real_claim(*, mr_url: str, target: GuardTarget) -> GuardDecision:
+            ReviewRequestPost.objects.get_or_create(
+                mr_url=mr_url,
+                defaults={"slack_channel_id": target.channel_id, "slack_thread_ts": ""},
+            )
+            return GuardDecision(action="post")
+
+        with (
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", side_effect=_real_claim),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = self._run_or_fail()
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        return backend
+
+    @staticmethod
+    def _run_or_fail() -> tuple[int, dict[str, object]]:
+        return _run("--title", "fix(scope): thing")
+
+    def test_post_stamps_thread_ts_on_claim_row(self) -> None:
+        backend = self._post_with_real_claim()
+        ts = backend.posts and "1.23"
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        # The posted thread ts is recorded — the backend returned ts="1.23".
+        assert post.slack_thread_ts == ts
+
+    def test_post_row_no_longer_matches_orphan_reclaim_predicate(self) -> None:
+        self._post_with_real_claim()
+        post = ReviewRequestPost.objects.get(mr_url=_MR_URL)
+        # ``_claim_or_reclaim`` reclaims when this predicate holds (and the
+        # row is stale). A finalized post must break it so no re-attempt
+        # can reclaim the row and post a duplicate.
+        is_unposted_orphan = post.done_at is None and not post.slack_thread_ts
+        assert not is_unposted_orphan

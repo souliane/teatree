@@ -16,6 +16,7 @@ at the true canonical DB is a hard error.
 import fcntl
 import hashlib
 import os
+import re
 import sqlite3
 import tempfile
 from collections.abc import Iterator
@@ -59,6 +60,35 @@ class CanonicalDBFromWorktreeError(RuntimeError):
 def running_from_worktree(repo_root: Path) -> bool:
     """A git worktree has a ``.git`` *file*; a primary clone has a ``.git`` *dir*."""
     return (repo_root / ".git").is_file()
+
+
+def resolve_main_clone(repo_root: Path) -> Path | None:
+    """Resolve *repo_root* to its primary clone, following a worktree pointer.
+
+    A primary clone (``.git`` is a *dir*) resolves to itself. A git worktree
+    (``.git`` is a *file* holding ``gitdir: <main>/.git/worktrees/<name>``)
+    resolves back to the main clone the pointer names. Returns ``None`` when
+    ``.git`` is neither, or the pointer cannot be parsed back to a ``.git``
+    dir. The single source of truth mirrored by ``cli/setup.py`` and
+    ``cli/_doctor_plugin_repair.py`` (#1507).
+    """
+    git = repo_root / ".git"
+    if git.is_dir():
+        return repo_root
+    if git.is_file():
+        match = re.match(r"^gitdir:\s*(.+)$", git.read_text().strip())
+        if not match:
+            return None
+        # A relative ``gitdir:`` is resolved against the ``.git`` file's own
+        # directory (git's gitfile convention), not the process cwd.
+        pointer = Path(match.group(1))
+        if not pointer.is_absolute():
+            pointer = (repo_root / pointer).resolve()
+        # `.git` points at `<main-clone>/.git/worktrees/<name>`; step up to the clone.
+        main_git = pointer.parent.parent
+        if main_git.name == ".git" and main_git.is_dir():
+            return main_git.parent
+    return None
 
 
 def _code_repo_root() -> Path:
