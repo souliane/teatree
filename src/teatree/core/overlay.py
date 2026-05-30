@@ -540,6 +540,19 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
 
     # ── Loop hooks ───────────────────────────────────────────────────
 
+    def get_checking_sources(self) -> list[str]:
+        """Return extra "needs you" source identifiers for ``t3 <overlay> checking show``.
+
+        The ``/t3:checking`` report's needs-you group is built in core from
+        overlay-agnostic rows (pending ``DeferredQuestion`` + failed
+        ``TaskAttempt`` runs — the durable "blocked" proxy). Core never makes
+        a live forge call. An overlay that wants richer needs-you signals
+        (e.g. ``RedCardSignal`` or ``ScannedFailedE2E``) opts in by returning
+        their identifiers here; the default is empty, so an overlay that does
+        not override it contributes nothing beyond the core sources.
+        """
+        return []
+
     def is_issue_done(self, issue_data: "RawAPIDict") -> bool:
         state = issue_data.get("state")
         return isinstance(state, str) and state in {"closed", "completed"}
