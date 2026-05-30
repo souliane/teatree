@@ -44,6 +44,7 @@ from teatree.loop.tick_freshness import (
     _write_tick_meta,
 )
 from teatree.loop.tick_jobs import (
+    Domain,
     _gitlab_approvals_enabled,
     _jobs_for_backend_hosts,
     _run_job,
@@ -52,6 +53,7 @@ from teatree.loop.tick_jobs import (
     _user_slack_id_for_overlay,
     build_default_jobs,
     build_default_scanners,
+    jobs_for_domain,
 )
 from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches, _reap_stale_task_claims
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -60,6 +62,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DispatchAction",
+    "Domain",
     "ScanSignal",
     "TickReport",
     "TickRequest",
@@ -81,6 +84,7 @@ __all__ = [
     "_write_tick_meta",
     "build_default_jobs",
     "build_default_scanners",
+    "jobs_for_domain",
     "run_tick",
 ]
 

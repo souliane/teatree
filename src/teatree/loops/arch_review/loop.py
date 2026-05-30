@@ -10,15 +10,14 @@ def _build_jobs(
     backends: list[Any] | None = None,
     **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
 ) -> list[Any]:
-    from teatree.loop.tick_jobs import _architectural_review_scanner_for, _ScannerJob  # noqa: PLC0415
+    from teatree.loop.tick_jobs import Domain, jobs_for_domain  # noqa: PLC0415
 
     if not backends:
         return []
+    all_backends = tuple(backends)
     jobs: list[Any] = []
     for backend in backends:
-        scanner = _architectural_review_scanner_for(backend)
-        if scanner is not None:
-            jobs.append(_ScannerJob(scanner=scanner, overlay=backend.name))
+        jobs.extend(jobs_for_domain(Domain.ARCH_REVIEW, backend, all_backends=all_backends))
     return jobs
 
 

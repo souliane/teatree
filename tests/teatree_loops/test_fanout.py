@@ -184,24 +184,22 @@ class RegistryLegacyParityTestCase(TestCase):
         assert len(nags) == 1
 
     def test_my_prs_and_reviewer_prs_carry_url_attribution(self) -> None:
-        """The ship/review loops pass the same non-empty URL-attribution the legacy fan-out does.
+        """The ship/review domain slices pass the same non-empty URL-attribution the legacy fan-out does.
 
         Uses a real ``GitHubCodeHost`` (offline) so ``_web_origin_for_host``
         resolves and a workspace-repo overlay so ``allowed_url_prefixes`` is
         non-empty — otherwise omitting the kwargs is indistinguishable from
         passing the empty default and the guard would be vacuous.
         """
-        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
-        from teatree.loops.review.loop import _reviewer_per_host_jobs  # noqa: PLC0415
-        from teatree.loops.ship.loop import _per_host_jobs  # noqa: PLC0415
+        from teatree.loop.tick_jobs import Domain, _jobs_for_backend_hosts, jobs_for_domain  # noqa: PLC0415
 
         backend = self._url_gated_backend()
         legacy = {
             (j.scanner.name, j.overlay): j.scanner
             for j in _jobs_for_backend_hosts(backend, backend.name, all_backends=(backend,))
         }
-        ship = _per_host_jobs(backend, gitlab_enabled=False, all_backends=(backend,))
-        review = _reviewer_per_host_jobs(backend, all_backends=(backend,))
+        ship = jobs_for_domain(Domain.SHIP, backend, all_backends=(backend,))
+        review = jobs_for_domain(Domain.REVIEW, backend, all_backends=(backend,))
 
         my_prs = next(j.scanner for j in ship if j.scanner.name == "my_prs")
         reviewer = next(j.scanner for j in review if j.scanner.name == "reviewer_prs")
