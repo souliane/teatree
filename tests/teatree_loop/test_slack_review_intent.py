@@ -389,8 +389,34 @@ class TestProductionDrainPath:
         signals = SlackReviewIntentScanner(backend=backend, overlay="teatree").scan()
 
         assert [s.kind for s in signals] == ["slack.review_intent"]
-        # File was atomically renamed and consumed.
+        # File was atomically renamed, consumed, and committed after persist.
         assert not queue.is_file()
+        assert not queue.with_suffix(".draining").is_file()
+
+    def test_reaction_queue_recovers_after_crash_before_persist(self, tmp_path, monkeypatch) -> None:
+        import json  # noqa: PLC0415
+
+        from teatree.backends import slack_receiver  # noqa: PLC0415
+
+        queue = tmp_path / "slack-reactions.jsonl"
+        event = _reaction_event()
+        queue.write_text(json.dumps({"overlay": "teatree", "event": event}) + "\n", encoding="utf-8")
+
+        def fake_default() -> "object":
+            return queue
+
+        monkeypatch.setattr(slack_receiver, "default_reactions_queue_path", fake_default)
+
+        # First drain reads the event but the process "crashes" before commit:
+        # drain_reactions_queue leaves the .draining file in place.
+        drained = slack_receiver.drain_reactions_queue()
+        assert len(drained) == 1
+
+        # Next scan must recover the reaction rather than lose it.
+        backend = FakeMessaging(messages_by_ts={(CHANNEL, TS): _message()})
+        signals = SlackReviewIntentScanner(backend=backend, overlay="teatree").scan()
+        assert [s.kind for s in signals] == ["slack.review_intent"]
+        assert not queue.with_suffix(".draining").is_file()
 
 
 class TestBackendWithoutMentionsApi:

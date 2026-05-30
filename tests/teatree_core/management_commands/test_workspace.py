@@ -1057,6 +1057,10 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                # The fake repo (.git is a bare dir) can't satisfy a real
+                # ``git bundle``; isolate the recovery-capture seam so this test
+                # exercises the clean+pushed reap path, not the capture itself.
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
@@ -1355,6 +1359,10 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay") as mock_overlay,
                 patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
+                # Isolate the recovery-capture seam — the fake repos (.git is a
+                # bare dir) can't satisfy a real ``git bundle``; this test
+                # targets the origin/main hygiene refusal, not capture.
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
@@ -1823,6 +1831,37 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         mock_del.assert_not_called()
 
+    def test_pass1_strips_current_branch_marker_on_gone_branch(self) -> None:
+        # `git branch -v` prefixes the checked-out branch with "* ". A gone
+        # current branch reads "* feature abc123 [gone] ...". Parsing must
+        # recover "feature" (which is protected as the current branch), never
+        # the literal "*" — passing "*" to branch_delete is both wrong and
+        # dangerous (git interprets it as a refspec glob).
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "* feature abc123 [gone] some work"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* feature"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="feature"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+        ):
+            ws_cleanup_mod.prune_branches("/repo")
+
+        # The marker must resolve to "feature", which is the protected current
+        # branch — so nothing is deleted at all. The buggy parser yielded "*",
+        # which is unprotected, so it reached branch_delete (and "*" is a
+        # dangerous refspec glob). assert_not_called covers both failures.
+        mock_del.assert_not_called()
+
 
 class TestDropOrphanedStashes(TestCase):
     def test_drops_stash_for_deleted_branch(self) -> None:
@@ -1881,6 +1920,88 @@ class TestDropOrphanedStashes(TestCase):
             result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
 
         assert result == []
+
+    def test_drops_explicit_message_stash_for_deleted_branch(self) -> None:
+        # `git stash push -m "msg"` produces "On <branch>: <msg>" (capital On,
+        # no lowercase " on " token). The branch is deleted, so this is a
+        # genuine orphan that must be dropped.
+        stash_output = "stash@{0}: On deleted-branch: refactor parser"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+
+        assert len(result) == 1
+        assert "deleted-branch" in result[0]
+        assert ["stash", "drop", "stash@{0}"] in calls
+
+    def test_keeps_stash_for_existing_branch_with_on_in_message(self) -> None:
+        # The stash message contains the word "on"; a naive split on " on "
+        # mis-parses the branch as "the login flow" and would drop a stash that
+        # still belongs to the existing branch.
+        stash_output = "stash@{0}: On kept-branch: working on the login flow"
+        branches_output = "* main\n  kept-branch"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+
+        assert result == []
+        assert not any(a[:2] == ["stash", "drop"] for a in calls)
+
+    def test_keeps_detached_head_stash(self) -> None:
+        # A stash taken on a detached HEAD reads "On (no branch): ..." — there
+        # is no owning branch, so it must be kept rather than reaped.
+        stash_output = "stash@{0}: On (no branch): detached work"
+        branches_output = "* main"
+        calls: list[list[str]] = []
+
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            calls.append(args)
+            if args == ["stash", "list"]:
+                return stash_output
+            if args == ["branch", "--no-color"]:
+                return branches_output
+            return ""
+
+        with patch.object(git_mod, "run", side_effect=fake_run):
+            result = ws_cleanup_mod.drop_orphaned_stashes("/repo")
+
+        assert result == []
+        assert not any(a[:2] == ["stash", "drop"] for a in calls)
+
+
+class TestStashBranch(TestCase):
+    def test_parses_wip_auto_stash(self) -> None:
+        line = "stash@{0}: WIP on feature-x: abc123 init"
+        assert ws_cleanup_mod._stash_branch(line) == "feature-x"
+
+    def test_parses_explicit_message_stash(self) -> None:
+        line = "stash@{2}: On feature-x: working on the parser"
+        assert ws_cleanup_mod._stash_branch(line) == "feature-x"
+
+    def test_unparseable_line_returns_empty(self) -> None:
+        assert ws_cleanup_mod._stash_branch("stash@{0}: Some unusual format") == ""
+
+    def test_detached_head_returns_empty(self) -> None:
+        assert ws_cleanup_mod._stash_branch("stash@{0}: On (no branch): detached work") == ""
 
 
 class TestDropOrphanDatabasesFailure(TestCase):

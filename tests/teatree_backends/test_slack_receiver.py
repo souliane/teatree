@@ -9,6 +9,7 @@ from teatree.backends.slack_receiver import (
     QueuePaths,
     _enqueue,
     _run_single_overlay,
+    commit_drain,
     default_queue_path,
     default_reactions_queue_path,
     drain_event_queue,
@@ -100,6 +101,77 @@ class TestDrainEventQueue:
 
         events = drain_event_queue(queue)
         assert events == []
+
+
+class TestDrainCommitRecovery:
+    """Recover-then-drain keeps the backing file alive until the caller commits.
+
+    The file survives a crash between the in-memory drain and the caller's
+    durable persist, so mentions are not lost (Slack never retries
+    ``app_mention`` delivery).
+    """
+
+    def test_drain_leaves_backing_file_until_committed(self, tmp_path: Path) -> None:
+        queue = tmp_path / "events.jsonl"
+        _enqueue(queue, "ov1", {"type": "app_mention", "text": "hi"})
+
+        events = drain_event_queue(queue)
+
+        assert len(events) == 1
+        # Live queue is renamed away, but the drained data still lives on disk
+        # (in the .draining file) until the caller commits after persisting.
+        assert not queue.is_file()
+        assert queue.with_suffix(".draining").is_file()
+
+    def test_crash_after_drain_before_persist_recovers_events(self, tmp_path: Path) -> None:
+        queue = tmp_path / "events.jsonl"
+        _enqueue(queue, "ov1", {"type": "app_mention", "text": "hi"})
+        _enqueue(queue, "ov2", {"type": "app_mention", "text": "hey"})
+
+        # First drain reads the events into memory. The process crashes here,
+        # before the caller persists them durably — commit_drain is never reached.
+        first = drain_event_queue(queue)
+        assert len(first) == 2
+
+        # Next tick: the events must be recoverable, not lost.
+        recovered = drain_event_queue(queue)
+        assert len(recovered) == 2
+        assert {e["overlay"] for e in recovered} == {"ov1", "ov2"}
+
+    def test_commit_drain_removes_backing_file(self, tmp_path: Path) -> None:
+        queue = tmp_path / "events.jsonl"
+        _enqueue(queue, "ov1", {"type": "app_mention", "text": "hi"})
+
+        events = drain_event_queue(queue)
+        assert len(events) == 1
+
+        commit_drain(queue)
+
+        # Once committed (after durable persist), the data is gone and a
+        # subsequent drain returns nothing.
+        assert not queue.with_suffix(".draining").is_file()
+        assert drain_event_queue(queue) == []
+
+    def test_new_event_during_recovery_is_not_lost(self, tmp_path: Path) -> None:
+        queue = tmp_path / "events.jsonl"
+        _enqueue(queue, "ov1", {"type": "app_mention", "text": "first"})
+
+        # Crash after draining ov1 (no commit) — ov1 sits in the .draining file.
+        drain_event_queue(queue)
+
+        # A new event arrives on the live queue before the next drain.
+        _enqueue(queue, "ov2", {"type": "app_mention", "text": "second"})
+
+        # Recovery drains only the leftover and never touches the live file,
+        # so the concurrent enqueue cannot be dropped.
+        recovered = drain_event_queue(queue)
+        assert {e["overlay"] for e in recovered} == {"ov1"}
+        assert queue.is_file()
+
+        # After committing the recovered batch, the live event drains next.
+        commit_drain(queue)
+        follow_up = drain_event_queue(queue)
+        assert {e["overlay"] for e in follow_up} == {"ov2"}
 
 
 class TestRunSingleOverlay:

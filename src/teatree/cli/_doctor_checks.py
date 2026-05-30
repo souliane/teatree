@@ -23,6 +23,39 @@ def _check_single_db() -> bool:
     return False
 
 
+def _check_entrypoint_is_primary_clone() -> bool:
+    """FAIL when the running ``t3`` entrypoint is anchored to a worktree (#1507).
+
+    The installed long-lived ``t3`` must import ``teatree`` from the primary
+    clone. A stale editable ``.pth`` anchored to a worktree makes the resident
+    code resolve a per-worktree isolated DB (``paths.DATA_DIR_AUTO_ISOLATED``
+    is then ``True``) while the loop and canonical state live in the true
+    canonical DB — work silently vanishes. This is a hard FAIL, not a WARN,
+    naming the offending worktree, both DB paths, and the remediation.
+
+    Reads the live :mod:`teatree.paths` attributes (resolved at that module's
+    import time from the entrypoint's on-disk location), so it reports the
+    state of the process actually running ``t3 doctor``.
+    """
+    import teatree  # noqa: PLC0415
+    from teatree import paths  # noqa: PLC0415
+
+    if not paths.DATA_DIR_AUTO_ISOLATED:
+        return True
+    # ``teatree.__file__`` is ``<repo>/src/teatree/__init__.py``; the repo root
+    # is its third parent (matches ``paths._code_repo_root``).
+    repo_root = Path(teatree.__file__).resolve().parents[2]
+    isolated_db = paths.DATA_DIR / "db.sqlite3"
+    typer.echo(
+        f"FAIL  Entrypoint is anchored to a worktree, not the primary clone: {repo_root}. "
+        f"The installed t3 resolves the isolated DB {isolated_db} instead of the canonical "
+        f"DB {paths.TRUE_CANONICAL_DB} — loop state and merges silently diverge. Re-anchor "
+        f"the editable install at the primary clone: re-run `t3 setup` from the primary "
+        f"clone (or fix the stale `.pth`), then re-run `t3 doctor check`.",
+    )
+    return False
+
+
 def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
     from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415

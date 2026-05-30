@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 import teatree.cli.doctor as teatree_cli_doctor
 import teatree.cli.update as teatree_cli_update
 import teatree.core.overlay_loader as teatree_overlay_loader
+import teatree.paths as teatree_paths
 from teatree.cli import app
 from teatree.cli.doctor import IntrospectionHelpers
 
@@ -25,20 +26,22 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _isolate_clone_currency(monkeypatch):
-    """Pin the pre-investigation clone-currency gate (#948) to "no repos".
+def _isolate_environment_dependent_gates(monkeypatch):
+    """Pin the doctor gates that depend on the runner's real on-disk location.
 
-    The gate calls ``_collect_repos()`` → real ``git fetch origin`` and
-    ``rev-list HEAD..origin/<default>`` against whatever clone the test
-    runner happens to live in.  In a CI checkout that lags behind
-    ``origin/main`` (e.g. a feature branch cut weeks ago) this surfaces
-    a real ``FAIL`` line and makes the doctor smoke tests non-deterministic.
-    The doctor wiring itself is exercised end-to-end in
-    ``tests/teatree_core/test_clone_guard.py``; here we only assert that
-    ``t3 doctor check`` aggregates check results, so an empty repo list
-    is the right boundary.
+    Two gates read the environment the test runner happens to live in and would
+    otherwise make the doctor smoke tests non-deterministic. The clone-currency
+    gate (#948) shells out to real ``git fetch`` / ``rev-list`` against whatever
+    clone the runner lives in (a lagging checkout surfaces a real FAIL), and the
+    entrypoint-is-primary-clone gate (#1507) FAILs when the runner executes from
+    a worktree (``paths.DATA_DIR_AUTO_ISOLATED`` is True) — exactly the case
+    here. Both are exercised end-to-end in their own dedicated modules
+    (``test_clone_guard.py`` and ``test_entrypoint_primary_clone.py``); here we
+    only assert that ``t3 doctor check`` aggregates results, so pinning each to
+    its primary-clone boundary is correct.
     """
     monkeypatch.setattr(teatree_cli_update, "_collect_repos", list)
+    monkeypatch.setattr(teatree_paths, "DATA_DIR_AUTO_ISOLATED", False)
 
 
 class TestDoctorCheckCommand:
@@ -51,6 +54,36 @@ class TestDoctorCheckCommand:
 
     def _write_noop_toml(self, home: Path) -> None:
         _write_teatree_toml(home / ".teatree.toml", "[teatree]\ncontribute = false\n")
+
+    def test_entrypoint_guard_runs_before_editable_autorepair(self, tmp_path, monkeypatch):
+        """The entrypoint guard must fire before editable auto-repair (#1507).
+
+        Under ``contribute=true`` the editable-sanity check can auto-make the
+        cwd worktree editable — the exact stale anchor the guard catches. If it
+        ran first it would create the bad install before the guard fails.
+        """
+        _stage_home(tmp_path, monkeypatch)
+        self._write_noop_toml(tmp_path)
+
+        order: list[str] = []
+
+        def _entry() -> bool:
+            order.append("entrypoint")
+            return True
+
+        def _editable() -> bool:
+            order.append("editable")
+            return True
+
+        with (
+            patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
+            patch.object(teatree_cli_doctor, "_check_entrypoint_is_primary_clone", side_effect=_entry),
+            patch.object(teatree_cli_doctor, "_check_editable_sanity", side_effect=_editable),
+            patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+        ):
+            runner.invoke(app, ["doctor", "check"])
+
+        assert order.index("entrypoint") < order.index("editable")
 
     def test_reports_all_checks_passed(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
