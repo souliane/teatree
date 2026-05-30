@@ -14,8 +14,11 @@ that is NOT in :attr:`OverlayConfig.public_repos`. A bypass flag
 :func:`scan_for_publication`) authorises an intentional publish.
 """
 
+import logging
 import re
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +96,17 @@ def scan_for_publication(  # noqa: PLR0913 — gate entry-point; each kwarg is a
     for name, pattern in pattern_sources:
         try:
             compiled = re.compile(pattern, flags=re.IGNORECASE | re.MULTILINE)
-        except re.error:
+        except re.error as exc:
+            # Fail closed: a rule we cannot evaluate must block the publish, never
+            # silently pass. Surface it as a match so the gate refuses.
+            logger.warning("privacy gate: unusable block pattern %r (%s) — treating as blocking", pattern, exc)
+            matches.append(
+                PrivacyMatch(
+                    pattern_name=f"{name}:invalid",
+                    matched_text=pattern,
+                    position=0,
+                ),
+            )
             continue
         for match in compiled.finditer(text):
             matches.append(  # noqa: PERF401

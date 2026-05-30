@@ -177,3 +177,30 @@ class OrchestratorTestCase(TestCase):
         text, key = sent[0]
         assert "inbox" in text
         assert "loops_tick_errors" in key
+
+    def test_always_policy_two_same_day_ticks_get_distinct_keys(self) -> None:
+        # policy=always must DM every tick; the idempotency key carries the tick
+        # timestamp so the second same-day tick is not deduped away.
+        sent: list[tuple[str, str]] = []
+
+        def _send(text: str, *, idempotency_key: str) -> None:
+            sent.append((text, idempotency_key))
+
+        ticks = iter(
+            [
+                dt.datetime(2026, 5, 28, 12, 0, tzinfo=dt.UTC),
+                dt.datetime(2026, 5, 28, 12, 1, tzinfo=dt.UTC),
+            ],
+        )
+        loop = _loop("inbox", jobs=[])
+        orch = Orchestrator(
+            config=LoopsConfig(summary_dm="always"),
+            registry_fn=lambda: (loop,),
+            clock=lambda: next(ticks),
+            dispatch_fn=list,
+        )
+        orch._notify = _send  # type: ignore[method-assign]
+        orch.tick(TickRequest())
+        orch.tick(TickRequest())
+        assert len(sent) == 2
+        assert sent[0][1] != sent[1][1]

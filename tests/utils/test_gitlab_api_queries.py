@@ -316,12 +316,32 @@ def test_get_mr_approvals_returns_counts(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda endpoint: {
             "approved_by": [{"user": {"username": "reviewer1"}}, {"user": {"username": "reviewer2"}}],
             "approvals_required": 2,
+            "approvals_left": 0,
         },
     )
 
     result = client.get_mr_approvals(42, 1)
 
-    assert result == {"count": 2, "required": 2, "approved_by": ["reviewer1", "reviewer2"]}
+    assert result == {"count": 2, "required": 2, "approved_by": ["reviewer1", "reviewer2"], "approvals_left": 0}
+
+
+def test_get_mr_approvals_passes_through_approvals_left(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On multi-rule repos the upstream approvals_left is canonical and must not be
+    # recomputed from required - count. The client must surface it to callers.
+    client = gitlab_api.GitLabAPI(token="test-token")
+    monkeypatch.setattr(
+        client,
+        "get_json",
+        lambda endpoint: {
+            "approved_by": [{"user": {"username": "reviewer1"}}],
+            "approvals_required": 2,
+            "approvals_left": 3,
+        },
+    )
+
+    result = client.get_mr_approvals(42, 1)
+
+    assert result["approvals_left"] == 3
 
 
 def test_get_mr_approvals_returns_defaults_when_not_a_dict(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -330,7 +350,7 @@ def test_get_mr_approvals_returns_defaults_when_not_a_dict(monkeypatch: pytest.M
 
     result = client.get_mr_approvals(42, 1)
 
-    assert result == {"count": 0, "required": 1, "approved_by": []}
+    assert result == {"count": 0, "required": 1, "approved_by": [], "approvals_left": -1}
 
 
 def test_get_mr_approvals_handles_non_list_approved_by(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -343,7 +363,7 @@ def test_get_mr_approvals_handles_non_list_approved_by(monkeypatch: pytest.Monke
 
     result = client.get_mr_approvals(42, 1)
 
-    assert result == {"count": 0, "required": 1, "approved_by": []}
+    assert result == {"count": 0, "required": 1, "approved_by": [], "approvals_left": -1}
 
 
 def test_get_mr_approvals_skips_non_dict_entry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -363,7 +383,24 @@ def test_get_mr_approvals_skips_non_dict_entry(monkeypatch: pytest.MonkeyPatch) 
 
     result = client.get_mr_approvals(42, 1)
 
-    assert result == {"count": 2, "required": 1, "approved_by": ["reviewer1"]}
+    assert result == {"count": 2, "required": 1, "approved_by": ["reviewer1"], "approvals_left": -1}
+
+
+def test_cancel_pipelines_url_encodes_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A '+' in a ref decodes to a space server-side, so it must be percent-encoded.
+    client = gitlab_api.GitLabAPI(token="test-token")
+    seen: list[str] = []
+
+    def fake_get_json(endpoint: str) -> list[dict[str, object]]:
+        seen.append(endpoint)
+        return []
+
+    monkeypatch.setattr(client, "get_json", fake_get_json)
+
+    client.cancel_pipelines(42, "release+1.2", statuses=("running",))
+
+    assert "ref=release%2B1.2" in seen[0]
+    assert "ref=release+1.2" not in seen[0]
 
 
 def test_get_issue_returns_issue_dict(monkeypatch: pytest.MonkeyPatch) -> None:
