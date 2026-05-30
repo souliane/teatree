@@ -51,14 +51,17 @@ def _registry_jobs_builder(request: "TickRequest", started_at: dt.datetime) -> l
     from teatree.loops.config import LoopsConfig  # noqa: PLC0415
     from teatree.loops.fanout import build_registry_jobs  # noqa: PLC0415
 
-    scanner_context: dict[str, Any] = {
-        "backends": request.backends,
-        "host": request.host,
-        "messaging": request.messaging,
-        "notion_client": request.notion_client,
-        "ready_labels": request.ready_labels,
-    }
-    return build_registry_jobs(scanner_context, config=LoopsConfig.load(), now=started_at)
+    return build_registry_jobs(
+        {
+            "backends": request.backends,
+            "host": request.host,
+            "messaging": request.messaging,
+            "notion_client": request.notion_client,
+            "ready_labels": request.ready_labels,
+        },
+        config=LoopsConfig.load(),
+        now=started_at,
+    )
 
 
 def _report_to_dict(report: TickReport) -> ReportDict:
