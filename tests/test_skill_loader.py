@@ -84,12 +84,14 @@ class TestBuildTriggerIndex:
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
         index = build_trigger_index([SKILLS_DIR])
-        # After #1189 phase 2 only the 6 retained skills carry triggers with
-        # keywords/urls. ``debug`` (priority 50) is the lowest of those.
+        # Only a handful of retained skills carry keyword/url triggers; the
+        # lowest priority among them is 50 (``debug`` and ``checking`` share
+        # it). The index is sorted by priority, then alphabetically within a
+        # priority, so the first entry is a priority-50 skill.
         triggerable = [e for e in index if e.get("keywords") or e.get("urls")]
         assert len(triggerable) > 0
-        assert triggerable[0]["skill"] == "debug"
         assert triggerable[0]["priority"] == 50
+        assert "debug" in {e["skill"] for e in triggerable}
 
     def test_sorted_by_priority(self):
         if not SKILLS_DIR.is_dir():
