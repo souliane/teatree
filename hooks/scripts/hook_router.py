@@ -5364,6 +5364,97 @@ def _run_bare_reference_stop(data: dict) -> bool | None:
     return True
 
 
+# ── Closure-verb re-verify advisory (#1448) ─────────────────────────────────
+#
+# The orchestrator has claimed a closure ("merged #N", "closed !N", "confirmed
+# superseded") WITHOUT verifying the id's live state in the same turn (2x
+# recurrence). A turn-level check catches it. But a turn-inspecting hook that
+# over-fires is dangerous — a sibling skill-loading gate over-fired and
+# deadlocked the loop (#1567). So this is WARN-ONLY: it emits a top-level
+# ``systemMessage`` advisory and NEVER denies, exactly like the bare-reference
+# and consideration Stop advisories. Zero deadlock risk; a missed nudge is
+# cheaper than a false block on a legitimate or already-verified closure.
+#
+# It fires only when a HIGH-confidence closure claim re-cites an id AND no
+# same-turn state-check tool_use touched that id. The detection lives in the
+# pure ``closure_reverify_scanner`` module (tuned for precision); this handler
+# is the thin transcript-reading wrapper, fail-safe-to-silent on any error.
+
+
+def _current_turn_tool_commands(transcript_path: str) -> list[str]:
+    """Flattened text of every tool_use input in the most recent turn.
+
+    Walks the transcript newest→oldest to the most recent ``user`` boundary
+    and collects, for each ``tool_use`` block after it, the strings that can
+    carry an id + state-read verb: ``Bash`` ``command`` and ``Agent`` / ``Task``
+    ``prompt`` + ``description``. These feed the same-turn-verification check
+    so a ``gh pr view <id>`` in the turn clears the warning for that id.
+    """
+    entries = _read_transcript_entries(transcript_path)
+    if not entries:
+        return []
+    commands: list[str] = []
+    for entry in reversed(entries):
+        role = _entry_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_content(entry):
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            tool_input = block.get("input")
+            if not isinstance(tool_input, dict):
+                continue
+            for field in ("command", "prompt", "description"):
+                value = tool_input.get(field)
+                if isinstance(value, str) and value:
+                    commands.append(value)
+    return commands
+
+
+def handle_closure_reverify_stop(data: dict) -> bool | None:
+    """WARN when the final turn claims a closure with no same-turn state check.
+
+    Soft sibling of the structured-question and bare-reference Stop gates.
+    Emits a top-level ``systemMessage`` advisory and returns ``True`` to break
+    the chain (preserving the single-stdout JSON shape) ONLY when a
+    high-confidence closure claim re-cites an id that no same-turn state-check
+    tool_use touched. Never denies — over-firing here would risk the #1567
+    deadlock, so WARN-only is the deliberate posture.
+
+    Fail-safe-to-silent: any malformed input or missing transcript returns
+    ``None`` so the Stop chain is never crashed.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_closure_reverify_stop(data)
+    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_closure_reverify_stop(data: dict) -> bool | None:
+    from teatree.hooks import closure_reverify_scanner  # noqa: PLC0415
+
+    turn = _last_assistant_turn(data.get("transcript_path", ""))
+    if turn is None:
+        return None
+    tool_commands = _current_turn_tool_commands(data.get("transcript_path", ""))
+    unverified = closure_reverify_scanner.find_unverified_closures(turn[0], tool_commands)
+    if not unverified:
+        return None
+    json.dump({"systemMessage": closure_reverify_scanner.format_warn_message(unverified)}, sys.stdout)
+    return True
+
+
 def handle_consideration_gate(data: dict) -> bool | None:
     """Emit a CONSIDERATION GATE reminder when promotable edits land (#1129).
 
@@ -5751,6 +5842,7 @@ _HANDLERS: dict[str, list] = {
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
+        handle_closure_reverify_stop,
         handle_bare_reference_stop,
         handle_consideration_gate,
         handle_loop_self_pump,
