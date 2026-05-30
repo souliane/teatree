@@ -294,6 +294,43 @@ class TestFetchProjectItems:
         assert len(items) == 1
         assert items[0].status == ""
 
+    def test_follows_pagination_across_pages(self) -> None:
+        def _page(number: int, *, has_next: bool, cursor: str) -> dict[str, object]:
+            return {
+                "data": {
+                    "user": {
+                        "projectV2": {
+                            "items": {
+                                "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+                                "nodes": [
+                                    {
+                                        "fieldValueByName": {"name": "Todo"},
+                                        "content": {
+                                            "number": number,
+                                            "title": f"Issue {number}",
+                                            "url": f"https://github.com/org/repo/issues/{number}",
+                                            "updatedAt": "2026-04-01T00:00:00Z",
+                                            "labels": {"nodes": []},
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    }
+                }
+            }
+
+        pages = [
+            _page(1, has_next=True, cursor="CURSOR_PAGE_1"),
+            _page(2, has_next=False, cursor="CURSOR_PAGE_2"),
+        ]
+        with patch.object(github_mod, "_gh_graphql", side_effect=pages) as mock_graphql:
+            items = fetch_project_items("testuser", 1)
+        assert mock_graphql.call_count == 2
+        assert [item.issue_number for item in items] == [1, 2]
+        assert [item.position for item in items] == [0, 1]
+        assert "CURSOR_PAGE_1" in mock_graphql.call_args_list[1].args[0]
+
 
 class TestGitHubCodeHost:
     def test_create_pr(self) -> None:
