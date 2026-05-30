@@ -24,7 +24,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.hooks.privacy_diff_comment_density import scan_diff as _scan_diff_density
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
+
+_DIFF_DETECTORS = (_scan_diff_comments, _scan_diff_density)
 
 # Dedicated "findings present" exit code. NOT 1 (generic exception) and NOT
 # 2 (typer usage error) so the leak gate can distinguish a real finding from
@@ -105,6 +108,28 @@ def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, 
     return findings
 
 
+def _run_diff_detectors(text: str) -> list[dict[str, str | int]]:
+    """Run each whole-text diff detector fail-open.
+
+    The diff detectors need the unified-diff structure (file headers + ``+``
+    markers), so they run over the whole text rather than per line. A
+    detector that raises is cannot-evaluate — it is skipped (a warning is
+    emitted), NEVER a deny that wedges the push closed. This mirrors the
+    gate-overdeny rule the per-line scan and the pre-push gate already
+    follow: only genuine findings block, a crash never does.
+    """
+    findings: list[dict[str, str | int]] = []
+    for detector in _DIFF_DETECTORS:
+        try:
+            hits = detector(text)
+        except Exception as exc:  # noqa: BLE001 — fail-open: a crashing detector is cannot-evaluate, never a deny.
+            name = getattr(detector, "__name__", repr(detector))
+            console.print(f"[yellow]privacy scan: detector {name} failed ({exc}) — skipped[/]")
+            continue
+        findings.extend({"line": lineno, "category": category, "match": match} for lineno, category, match in hits)
+    return findings
+
+
 def _plain_summary(findings: list[dict[str, str | int]]) -> str:
     """Deterministic plain-text findings summary for non-TTY callers.
 
@@ -141,15 +166,7 @@ def main(
             {"line": lineno, "category": category, "match": match} for category, match in _scan_line(line, banned_re)
         )
 
-    # Diff-aware pass: self-referential bookkeeping (MR/ticket/workstream
-    # tags and process-narration asides) left in code comments on added
-    # lines. It needs the unified-diff structure (file headers + ``+``
-    # markers) and the file's comment syntax, so it runs over the whole
-    # text rather than per line. Docs/markdown are exempt — they
-    # legitimately cite trackers.
-    all_findings.extend(
-        {"line": lineno, "category": category, "match": match} for lineno, category, match in _scan_diff_comments(text)
-    )
+    all_findings.extend(_run_diff_detectors(text))
     all_findings.sort(key=lambda f: int(f["line"]))
 
     if json_output:
