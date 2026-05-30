@@ -144,7 +144,7 @@ def check_command() -> None:
     """
     import json  # noqa: PLC0415
 
-    from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
+    from teatree.backends.slack_receiver import commit_drain, drain_event_queue  # noqa: PLC0415
 
     events = drain_event_queue()
     messages: list[dict[str, str]] = []
@@ -162,8 +162,14 @@ def check_command() -> None:
             ts = event.get("ts", "")
             messages.append({"overlay": overlay, "user": user, "text": text, "ts": ts, "channel": channel})
     if not messages:
+        # Nothing actionable to emit, but the drained file must still be
+        # discarded so empty/bot-only events don't replay on every drain.
+        commit_drain()
         raise typer.Exit(code=1)
     _ack_messages(messages)
+    # Discard the backing file only after acking — a crash before this point
+    # leaves it for the next drain to recover (Slack never retries mentions).
+    commit_drain()
     for msg in messages:
         typer.echo(json.dumps(msg))
 
