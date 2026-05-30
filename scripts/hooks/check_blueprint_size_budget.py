@@ -29,7 +29,7 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 80_000
+_BUDGET_TOP_LEVEL_BYTES = 80_200
 # Reviewed bump (#1474): the §17.6.4 gate-2 self-rescue invariant is a
 # load-bearing safety fact, and the appendix corpus was already at capacity.
 # Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
@@ -44,8 +44,14 @@ _BUDGET_TOP_LEVEL_BYTES = 80_000
 # Reviewed bump (#1540): the per-overlay `mr_title_regex` knob documents the
 # deterministic MR title/What-Why gate at `pr create` — a load-bearing config
 # fact, and the corpus was again at capacity after the #1539 bump.
+# Reviewed bump (#1573): the `retro review-findings` publish-leak gate
+# (untrusted-comment bare-ref neutralization + banned-term withholding before
+# the `gh api` stdin filing path the PreToolUse gate cannot inspect) is the
+# same class of load-bearing safety fact, plus the mandatory tach
+# dependency-graph edge for the new `core → hooks` reuse; corpus was at
+# capacity after the #1540 bump.
 _BUDGET_APPENDICES_BYTES = 104_400
-_BUDGET_TOTAL_BYTES = 184_400
+_BUDGET_TOTAL_BYTES = 184_600
 
 
 def _repo_root() -> pathlib.Path:

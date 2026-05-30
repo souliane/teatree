@@ -174,6 +174,75 @@ class RetroReviewFindingsTest(TestCase):
             body = host.create_issue.call_args.kwargs["body"]
             assert banned_terms_scanner.scan_text(body, config_path=cfg) is None
 
+    def test_untrusted_finding_bare_refs_neutralized_in_filed_payload(self) -> None:
+        """A finding body with bare refs files a payload that is bare-ref clean.
+
+        Asserts on the ACTUAL body passed to ``create_issue`` (the published
+        payload), not the scaffold — the untrusted comment is the leak vector.
+        """
+        comments = [
+            {
+                "body": "Same recurrence as #1234 / !99 / ts 1716900000.123456 — see https://github.com/x/y/issues/3",
+                "path": "c.py",
+                "line": 9,
+                "user": {"login": "rev"},
+            }
+        ]
+        fp = _fingerprint(str(comments[0]["body"]), path="c.py", line=9)
+        store_dir = Path(self._tmp())
+        verdicts = store_dir / "verdicts.json"
+        verdicts.write_text(json.dumps({fp: {"class": "C", "enforcement": "Add a gate."}}), encoding="utf-8")
+        host = MagicMock()
+        host.list_pr_comments.return_value = comments
+        host.search_open_issues.return_value = []
+        host.create_issue.return_value = {"html_url": "https://github.com/souliane/teatree/issues/2001"}
+        with (
+            patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(loader_mod, "get_code_host_for_url", return_value=host),
+        ):
+            self._run(_PR_URL, classification=str(verdicts), store_dir=store_dir)
+
+        host.create_issue.assert_called_once()
+        sent = host.create_issue.call_args.kwargs
+        assert bare_reference_scanner.find_bare_references(sent["body"]) == []
+        assert bare_reference_scanner.find_bare_references(sent["title"]) == []
+
+    def test_untrusted_finding_with_banned_term_is_withheld(self) -> None:
+        """A finding whose body carries a banned term is withheld — never filed."""
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        comments = [
+            {
+                "body": "This breaks the acmecorp tenant onboarding flow",
+                "path": "c.py",
+                "line": 9,
+                "user": {"login": "rev"},
+            }
+        ]
+        fp = _fingerprint(str(comments[0]["body"]), path="c.py", line=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            cfg = tmp_path / ".teatree.toml"
+            cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+            verdicts = tmp_path / "verdicts.json"
+            verdicts.write_text(json.dumps({fp: {"class": "C", "enforcement": "Add a gate."}}), encoding="utf-8")
+            host = MagicMock()
+            host.list_pr_comments.return_value = comments
+            host.search_open_issues.return_value = []
+            with (
+                patch.dict(os.environ, {"T3_BANNED_TERMS_CONFIG": str(cfg)}),
+                patch.object(rf_mod, "get_data_dir", return_value=tmp_path / "store"),
+                patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(loader_mod, "get_code_host_for_url", return_value=host),
+            ):
+                result = self._run(_PR_URL, classification=str(verdicts), store_dir=tmp_path / "store")
+
+        host.create_issue.assert_not_called()
+        filed = cast("list[dict[str, object]]", result["filed"])
+        assert filed[0]["withheld"] is True
+        assert "acmecorp" in str(filed[0]["withheld_reason"])
+
     @staticmethod
     def _tmp() -> str:
         import tempfile  # noqa: PLC0415

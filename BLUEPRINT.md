@@ -204,7 +204,7 @@ Internal utilities (`utils/`) are Python modules, not a CLI tier.
 
 **Runtime commands** (`core/management/commands/`): `lifecycle`, `tasks`, `followup`, `workspace`, `worktree`, `db`, `env`, `run`, `pr`, `ticket`, `tool`, `e2e`, `overlay`, `standup`, `checking`, `availability`, `retro`, `loop_tick`, `generate_*_docs`. Each is a django-typer command group with subcommands. `db query` and `db shell` enforce read-only at two layers (leading-keyword filter + transaction `READ ONLY` / `query_only=ON`).
 
-**Retro enforcement tooling** (`t3 <overlay> retro review-findings <pr-url>`, [#1573](https://github.com/souliane/teatree/issues/1573)): the deterministic scaffold behind invariant 6 / §17.6. Fetches a PR's review comments via `CodeHostBackend`, fingerprints each (normalized body + file + line), records the **supplied** A/B/C verdict (never auto-guessed) to a per-PR JSON store, and files one deduped enforcement issue per class-C finding via the new `CodeHostBackend.create_issue`/`search_open_issues` (hidden fingerprint marker → no refile on re-run).
+**Retro enforcement tooling** (`t3 <overlay> retro review-findings`, [#1573](https://github.com/souliane/teatree/issues/1573)): the scaffold behind invariant 6 / §17.6. Fingerprints a PR's review comments, records the **supplied** A/B/C verdict (never auto-guessed), and files one deduped enforcement issue per class-C finding (`create_issue`/`search_open_issues`, fingerprint marker → never refiles). The untrusted comment text is the leak vector, so its bare refs are neutralized and the rendered body banned-term scanned before filing (a hit withholds the issue) — the `gh api` stdin path bypasses the PreToolUse publish gate, so this is the only guard.
 
 **Checking report** (`t3 <overlay> checking show`, #1529): a terse, read-only "what did I miss" catch-up for when the user checks in mid-loop. Reads a per-overlay `checking_checkpoint_<overlay>.json` marker (atomic `tmp.replace` write, tolerant read — same shape as the availability override), gathers the window `[last_checked, now)` from `MergeAudit`/`TicketTransition`/`TaskAttempt`/`DeferredQuestion` rows (three groups: Merged / In-flight / Needs you, every reference a clickable link, capped at 5), then advances the marker AFTER gathering so a second run never collapses its own window. A resolved window start at/after `now` (a future `--since` or a clock-skewed marker) falls back to the 24h lookback so the window is never empty, and the advance is monotonic (never writes a marker earlier than the stored one) so a clock regression can neither collapse a real window nor mark unreported events as seen. `--since` and `--no-advance` inspect without advancing. The needs-you group is overlay-extensible via `OverlayBase.get_checking_sources()` (default `[]`); core makes no live forge calls.
 
@@ -449,6 +449,7 @@ graph TD
     teatree.core --> teatree.trigger_parser
     teatree.core --> teatree.agents
     teatree.core --> teatree.backends
+    teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
     teatree.agents --> teatree.types

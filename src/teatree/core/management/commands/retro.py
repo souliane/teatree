@@ -192,11 +192,16 @@ class Command(TyperCommand):
             store=store,
             context=context,
         )
+        withheld = [f for f in summary.filed if f.withheld]
         self.stdout.write(
             f"  A={summary.counts['A']} B={summary.counts['B']} C={summary.counts['C']}"
-            f" — filed {len(summary.filed)} enforcement issue(s)"
+            f" — filed {len(summary.filed) - len(withheld)} enforcement issue(s),"
+            f" withheld {len(withheld)}"
         )
         for filed in summary.filed:
-            state = "already filed" if filed.already_filed else "filed"
-            self.stdout.write(f"    {state}: {filed.url}")
+            if filed.withheld:
+                self.stdout.write(f"    withheld ({filed.withheld_reason}): {filed.fingerprint}")
+            else:
+                state = "already filed" if filed.already_filed else "filed"
+                self.stdout.write(f"    {state}: {filed.url}")
         return summary.as_dict()

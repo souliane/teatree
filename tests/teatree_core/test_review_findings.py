@@ -7,6 +7,8 @@ forge host is a stand-in object recording the calls it received.
 
 from pathlib import Path
 
+import pytest
+
 from teatree.core.review_findings import (
     ClassifiedFinding,
     FilingContext,
@@ -17,10 +19,13 @@ from teatree.core.review_findings import (
     build_issue_title,
     file_class_c_issue,
     find_existing_issue,
+    neutralize_bare_references,
     parse_findings,
     parse_pr_url,
     process_review_findings,
 )
+from teatree.hooks import banned_terms_scanner
+from teatree.hooks.bare_reference_scanner import find_bare_references
 
 _CONTEXT = FilingContext(repo="o/r", pr_url="https://github.com/o/r/pull/1")
 
@@ -217,3 +222,66 @@ class TestProcessReviewFindings:
         )
         assert second.created == []
         assert summary.filed[0].already_filed
+
+
+@pytest.fixture
+def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A ``~/.teatree.toml``-shaped config banning a sample tenant name."""
+    cfg = tmp_path / ".teatree.toml"
+    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+    return cfg
+
+
+class TestNeutralizeBareReferences:
+    def test_defangs_issue_mr_ts_and_url(self) -> None:
+        text = "See #1234 and !99, ts 1716900000.123456, https://github.com/o/r/issues/5"
+        out = neutralize_bare_references(text)
+        assert find_bare_references(out) == []
+        assert "`issue 1234`" in out
+        assert "`MR 99`" in out
+        assert "<https://github.com/o/r/issues/5>" in out
+
+    def test_leaves_plain_prose_untouched(self) -> None:
+        text = "Prefer composition over this mixin pattern."
+        assert neutralize_bare_references(text) == text
+
+
+class TestLeakClosure:
+    """The untrusted finding body must never leak bare refs or banned terms."""
+
+    def test_filed_body_has_no_bare_references(self) -> None:
+        finding = _finding(body="Same as #1234 / !99 / ts 1716900000.123456 — see the thread")
+        host = _FakeHost()
+        filed = file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
+
+        assert not filed.withheld
+        assert len(host.created) == 1
+        # Assert on the ACTUAL payload sent to create_issue, not the scaffold.
+        sent_body = host.created[0]["body"]
+        sent_title = host.created[0]["title"]
+        assert find_bare_references(str(sent_body)) == []
+        assert find_bare_references(str(sent_title)) == []
+
+    @pytest.mark.usefixtures("banned_config")
+    def test_withholds_finding_with_banned_term(self) -> None:
+        finding = _finding(body="This breaks the acmecorp tenant flow")
+        host = _FakeHost()
+        filed = file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
+
+        # Withheld — nothing leaks, no issue filed.
+        assert filed.withheld
+        assert "acmecorp" in filed.withheld_reason
+        assert filed.url == ""
+        assert host.created == []
+
+    @pytest.mark.usefixtures("banned_config")
+    def test_clean_finding_files_and_payload_is_banned_term_clean(self) -> None:
+        finding = _finding(body="Prefer composition over this mixin pattern")
+        host = _FakeHost()
+        filed = file_class_c_issue(host, finding=finding, enforcement="Add a gate.", context=_CONTEXT)
+
+        assert not filed.withheld
+        assert len(host.created) == 1
+        # The actual filed body trips no banned-terms gate.
+        assert banned_terms_scanner.scan_text(str(host.created[0]["body"])) is None

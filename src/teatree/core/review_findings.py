@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
+from teatree.hooks import banned_terms_scanner
+from teatree.hooks.bare_reference_scanner import _BARE_ISSUE_RE, _BARE_SLACK_TS_RE, _BARE_URL_RE, find_bare_references
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict
 
@@ -118,11 +120,19 @@ class ClassifiedFinding:
 
 @dataclass(frozen=True, slots=True)
 class FiledIssue:
-    """An enforcement issue filed (or found already-filed) for a class-C finding."""
+    """Outcome of handling one class-C finding.
+
+    ``url`` is the filed (or already-filed) issue link. ``withheld`` is set
+    when the rendered body would leak a banned term (a customer/tenant name)
+    even after reference-neutralization — the issue is NOT filed, so nothing
+    leaks, and ``withheld_reason`` records why for the summary.
+    """
 
     fingerprint: str
     url: str
     already_filed: bool
+    withheld: bool = False
+    withheld_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +148,14 @@ class ReviewFindingsSummary:
             "pr_url": self.pr_url,
             "counts": self.counts,
             "filed": [
-                {"fingerprint": f.fingerprint, "url": f.url, "already_filed": f.already_filed} for f in self.filed
+                {
+                    "fingerprint": f.fingerprint,
+                    "url": f.url,
+                    "already_filed": f.already_filed,
+                    "withheld": f.withheld,
+                    "withheld_reason": f.withheld_reason,
+                }
+                for f in self.filed
             ],
         }
 
@@ -249,17 +266,48 @@ class FindingsStore:
         return {fp for fp, count in counts.items() if count >= min_occurrences}
 
 
+def neutralize_bare_references(text: str) -> str:
+    """Defang bare forge/Slack references so a published body has none.
+
+    The review-comment body is untrusted: a bare ``#1234`` / ``!99`` / Slack
+    ``ts`` / forge URL interpolated verbatim into the filed issue would leak
+    as an unclickable bare reference (and the PreToolUse bare-reference gate
+    cannot see a body sent over ``gh api`` stdin). Each bare token is rewritten
+    to a literal, non-auto-linking form — ``#N`` and ``!N`` become inline-code
+    spans naming the kind (``issue N`` / ``MR N``) with the sigil dropped, a
+    Slack ts becomes a code span with its dot replaced so the matcher no longer
+    keys on it, and a forge/Notion/Slack URL becomes an angle autolink
+    (clickable and excised by the scanner). The result passes
+    :func:`find_bare_references` clean. URLs are wrapped first so a ``#`` in a
+    URL fragment is protected inside the autolink before the ref pass runs.
+    """
+    text = _BARE_URL_RE.sub(lambda m: f"<{m.group(0)}>", text)
+    text = _BARE_SLACK_TS_RE.sub(lambda m: f"`slack-ts {m.group(1).replace('.', '_')}`", text)
+
+    def _ref(match: "re.Match[str]") -> str:
+        token = match.group(1)
+        kind = "issue" if token[0] == "#" else "MR"
+        return f"`{kind} {token[1:]}`"
+
+    return _BARE_ISSUE_RE.sub(_ref, text)
+
+
 def build_issue_body(*, finding: ReviewFinding, enforcement: str, pr_url: str) -> str:
     """Render a scoped enforcement-issue body for one class-C finding.
 
     Clickable-link safe (the PR reference is a markdown link, never a bare
     ``#N``) and carries the hidden fingerprint marker the dedup search reads
     back. *enforcement* is the agent-supplied description of the smallest
-    gate/test/hook that would prevent recurrence; *finding.body* is the review
-    comment that surfaced the gap. The reviewer login is recorded as the
-    abstract role ``reviewer`` so no individual is named.
+    gate/test/hook that would prevent recurrence; *finding.body* is the
+    untrusted review comment that surfaced the gap, so its bare references are
+    neutralized (:func:`neutralize_bare_references`) before interpolation. The
+    reviewer login is recorded as the abstract role ``reviewer`` so no
+    individual is named. Banned-term scanning of the rendered body is the
+    filer's responsibility (:func:`file_class_c_issue`), which withholds rather
+    than leak.
     """
     file_anchor = f"`{finding.path}`" if finding.path else "(no file anchor)"
+    safe_body = neutralize_bare_references(finding.body)
     return (
         "## Enforcement gap\n\n"
         f"A review finding recurred with no gate enforcing it. The smallest "
@@ -269,15 +317,20 @@ def build_issue_body(*, finding: ReviewFinding, enforcement: str, pr_url: str) -
         f"- PR: [review thread]({pr_url})\n"
         f"- File: {file_anchor}\n\n"
         "> "
-        f"{finding.body}\n\n"
+        f"{safe_body}\n\n"
         f"<!-- {_FINGERPRINT_MARKER} {finding.fingerprint} -->\n"
     )
 
 
 def build_issue_title(finding: ReviewFinding) -> str:
-    """A short, scoped issue title from the finding's first line."""
+    """A short, scoped issue title from the finding's first line.
+
+    The snippet comes from the untrusted comment, so its bare references are
+    neutralized (:func:`neutralize_bare_references`) the same as the body; the
+    filer also banned-term-scans the title before filing.
+    """
     first_line = _WHITESPACE_RE.sub(" ", finding.body).strip().split(". ")[0]
-    snippet = first_line[:60].rstrip()
+    snippet = neutralize_bare_references(first_line[:60].rstrip())
     return f"Enforcement gate for recurring review finding: {snippet}"
 
 
@@ -286,7 +339,9 @@ def find_existing_issue(host: "CodeHostBackend", *, repo: str, fingerprint: str)
 
     Searches the repo's open issues for the fingerprint marker so a re-run of
     the command never refiles a class-C finding that already has a tracking
-    issue (#1573 dedup).
+    issue (#1573 dedup). Best-effort against forge search indexing: an issue
+    filed seconds ago may not yet be in the search index, so a back-to-back
+    re-run could refile once — acceptable, and self-corrects on the next run.
     """
     matches = host.search_open_issues(repo=repo, query=_FINGERPRINT_MARKER + fingerprint)
     for raw in matches:
@@ -325,18 +380,44 @@ def file_class_c_issue(
 
     Dedup-first: if an open issue already carries this fingerprint marker, no
     new issue is filed and the existing URL is returned with
-    ``already_filed=True``. Otherwise a scoped issue is filed via the same
-    backend the agent files issues through.
+    ``already_filed=True``. Otherwise the title + body are rendered (with the
+    untrusted finding text's bare references neutralized) and the rendered text
+    is banned-term scanned: if it would leak a banned term (a customer/tenant
+    name) the issue is **withheld** — never filed — so nothing leaks over the
+    ``gh api`` stdin path the PreToolUse gate cannot inspect. Otherwise a scoped
+    issue is filed via the same backend the agent files issues through.
     """
     existing = find_existing_issue(host, repo=context.repo, fingerprint=finding.fingerprint)
     if existing:
         return FiledIssue(fingerprint=finding.fingerprint, url=existing, already_filed=True)
-    raw = host.create_issue(
-        repo=context.repo,
-        title=build_issue_title(finding),
-        body=build_issue_body(finding=finding, enforcement=enforcement, pr_url=context.pr_url),
-        labels=[context.label],
-    )
+
+    title = build_issue_title(finding)
+    body = build_issue_body(finding=finding, enforcement=enforcement, pr_url=context.pr_url)
+    rendered = f"{title}\n{body}"
+
+    banned = banned_terms_scanner.scan_text(rendered)
+    if banned is not None:
+        return FiledIssue(
+            fingerprint=finding.fingerprint,
+            url="",
+            already_filed=False,
+            withheld=True,
+            withheld_reason=f"contains banned term '{banned}'",
+        )
+
+    # Defense in depth: neutralization should leave no bare ref, but never file
+    # a body that would still trip the bare-reference gate.
+    leaked = find_bare_references(rendered)
+    if leaked:
+        return FiledIssue(
+            fingerprint=finding.fingerprint,
+            url="",
+            already_filed=False,
+            withheld=True,
+            withheld_reason=f"contains bare reference(s): {', '.join(leaked)}",
+        )
+
+    raw = host.create_issue(repo=context.repo, title=title, body=body, labels=[context.label])
     return FiledIssue(fingerprint=finding.fingerprint, url=_issue_url(raw), already_filed=False)
 
 
