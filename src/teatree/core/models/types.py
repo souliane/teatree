@@ -71,6 +71,17 @@ class TicketExtra(TypedDict, total=False):
     branch_currency_post_merge_sha: str
     ship_branch_currency_blocker: "BranchCurrencyBlocker"
     last_approval_sha: str
+    # #88 DoD gate escape hatch: an explicit operator override recording WHY
+    # a UI-visible ticket may ship without a local-stack E2E artifact (an
+    # exempt or genuinely non-UI ticket the heuristic mis-flags). When present
+    # with a non-empty ``reason`` the gate passes and logs it.
+    dod_e2e_override: "DodE2EOverride"
+    # #1426 durable audit marker: a sync writer advanced the ticket to a
+    # TERMINAL state (MERGED/DELIVERED) reflecting a real external merge/deploy
+    # while the DoD local-E2E gate was unmet. The terminal state is kept (it
+    # mirrors reality) but the violation is recorded here rather than silently
+    # bypassed, so the gap is auditable.
+    dod_e2e_violation: "DodE2EViolation"
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):
@@ -79,6 +90,34 @@ class BranchCurrencyBlocker(TypedDict, total=False):
     branch: str
     target: str
     behind: int
+
+
+class DodE2EOverride(TypedDict, total=False):
+    """Operator escape hatch for the DoD local-E2E gate (#88).
+
+    Records the human-supplied justification for shipping a UI-visible
+    ticket without a local-stack E2E artifact, plus who recorded it and
+    when, so the bypass is auditable rather than silent.
+    """
+
+    reason: str
+    by: str
+    at: str
+
+
+class DodE2EViolation(TypedDict, total=False):
+    """Durable audit marker for a terminal-state DoD violation (#1426).
+
+    Recorded when automated sync advances a UI-visible ticket to a TERMINAL
+    state (MERGED/DELIVERED) reflecting a real external merge/deploy while no
+    green local-stack E2E artifact (or override) existed. The terminal state
+    is kept because it mirrors reality; this marker makes the unmet DoD
+    auditable instead of a silent bypass.
+    """
+
+    state: str
+    at: str
+    detail: str
 
 
 class E2ERepoEntrySerialized(TypedDict, total=False):
@@ -91,6 +130,12 @@ class E2ELastRunSerialized(TypedDict, total=False):
     result: str
     timestamp: str
     per_repo_shas: dict[str, str]
+    # The environment the run executed against: ``"local"`` (teatree-managed
+    # local stack) or ``"dev"`` (deployed dev environment). The DoD gate (#88)
+    # requires a *local* green run before a UI-visible ticket may ship — a
+    # dev-after-merge run does not satisfy it. Absent on rows recorded before
+    # #88; the gate treats a missing env conservatively as not-local.
+    env: str
 
 
 class E2ERecipeSerialized(TypedDict, total=False):
