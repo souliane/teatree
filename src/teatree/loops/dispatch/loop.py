@@ -1,11 +1,14 @@
 """Dispatch mini-loop definition — always-on global scanners."""
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
 
+if TYPE_CHECKING:
+    from teatree.loop.tick_jobs import _ScannerJob
 
-def _build_jobs(**_: Any) -> list[Any]:  # noqa: ANN401 — orchestrator passes extra context as open kwargs
+
+def _build_jobs(**_: object) -> "list[_ScannerJob]":
     """Build the always-on global scanner triad.
 
     Delegates to the ``Domain.DISPATCH`` slice of the public

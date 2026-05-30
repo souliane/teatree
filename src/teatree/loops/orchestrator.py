@@ -26,14 +26,22 @@ import datetime as dt
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING
 
-from teatree.loops.base import MiniLoop
+from teatree.loops.base import BuildJobsContext, MiniLoop
 from teatree.loops.cadence_ledger import MiniLoopMarker
 from teatree.loops.config import LoopsConfig
 from teatree.loops.gating import elapsed_and_enabled
 from teatree.loops.registry import iter_loops
 from teatree.loops.summary import OrchestratorReport, build_summary_dm
+
+if TYPE_CHECKING:
+    from teatree.backends.protocols import CodeHostBackend, MessagingBackend
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.dispatch import DispatchAction
+    from teatree.loop.scanners.base import ScanSignal
+    from teatree.loop.scanners.notion_view import NotionLike
+    from teatree.loop.tick_jobs import _ScannerJob
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +50,19 @@ logger = logging.getLogger(__name__)
 class TickRequest:
     """Per-tick context propagated to every mini-loop's ``build_jobs``.
 
-    Mirrors :class:`teatree.loop.tick.TickRequest` so the mini-loop
-    ``build_jobs`` callable can pick the kwargs it needs. Kept as
-    ``Any``-typed to avoid pulling backend types into this surface.
+    Mirrors :class:`teatree.loop.tick.TickRequest` — same backend
+    Protocols on every field so the orchestrator surface carries the
+    same compile-time contract as the live tick path.
     """
 
-    backends: list[Any] | None = None
-    host: Any | None = None
-    messaging: Any | None = None
-    notion_client: Any | None = None
+    backends: list["OverlayBackends"] | None = None
+    host: "CodeHostBackend | None" = None
+    messaging: "MessagingBackend | None" = None
+    notion_client: "NotionLike | None" = None
     ready_labels: tuple[str, ...] = ()
 
 
-def _default_dispatch(jobs: list[Any]) -> list[Any]:
+def _default_dispatch(jobs: "list[_ScannerJob]") -> "list[DispatchAction]":
     """Default dispatch — runs the legacy job pipeline.
 
     Imports lazily so the orchestrator stays importable from contexts
@@ -67,7 +75,7 @@ def _default_dispatch(jobs: list[Any]) -> list[Any]:
     from teatree.loop.dispatch import dispatch  # noqa: PLC0415
     from teatree.loop.tick_jobs import _run_job  # noqa: PLC0415
 
-    signals: list[Any] = []
+    signals: list[ScanSignal] = []
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
         for _label, sigs, _err in pool.map(_run_job, jobs):
             signals.extend(sigs)
@@ -93,7 +101,7 @@ class Orchestrator:
     config: LoopsConfig
     registry_fn: Callable[[], tuple[MiniLoop, ...]] = field(default=iter_loops)
     clock: Callable[[], dt.datetime] = field(default=_utc_clock)
-    dispatch_fn: Callable[[list[Any]], list[Any]] = field(default=_default_dispatch)
+    dispatch_fn: "Callable[[list[_ScannerJob]], list[DispatchAction]]" = field(default=_default_dispatch)
 
     def tick(self, request: TickRequest) -> "TickOutcome":
         """Run one orchestrator tick — gate, dispatch, summarise."""
@@ -161,7 +169,7 @@ class Orchestrator:
         notify_with_fallback(text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
 
 
-def _kwargs_for_request(request: TickRequest) -> dict[str, Any]:
+def _kwargs_for_request(request: TickRequest) -> BuildJobsContext:
     return {
         "backends": request.backends,
         "host": request.host,

@@ -1,15 +1,19 @@
 """Housekeeping mini-loop — editable self-update + work-repo main clone."""
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.tick_jobs import _ScannerJob
 
 
 def _build_jobs(
     *,
-    backends: list[Any] | None = None,
-    **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
-) -> list[Any]:
+    backends: "list[OverlayBackends] | None" = None,
+    **_: object,
+) -> "list[_ScannerJob]":
     """Wire the global self-update job + each overlay's pull-main-clone slice.
 
     Self-update is a global (``overlay=""``) job — it fast-forwards the
@@ -19,7 +23,7 @@ def _build_jobs(
     """
     from teatree.loop.tick_jobs import Domain, _ScannerJob, _self_update_scanner, jobs_for_domain  # noqa: PLC0415
 
-    jobs: list[Any] = []
+    jobs: list[_ScannerJob] = []
     self_update = _self_update_scanner()
     if self_update is not None:
         jobs.append(_ScannerJob(scanner=self_update, overlay=""))

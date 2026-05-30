@@ -15,16 +15,18 @@ never by importing the registry down into :mod:`teatree.loop`.
 """
 
 import datetime as dt
-from typing import Any
 
 from teatree.loop.tick_jobs import _ScannerJob
+from teatree.loops.base import BuildJobsContext
 from teatree.loops.cadence_ledger import MiniLoopMarker
 from teatree.loops.config import LoopsConfig
 from teatree.loops.gating import elapsed_and_enabled
 from teatree.loops.registry import iter_loops
 
 
-def build_registry_jobs(scanner_context: dict[str, Any], *, config: LoopsConfig, now: dt.datetime) -> list[_ScannerJob]:
+def build_registry_jobs(
+    scanner_context: BuildJobsContext, *, config: LoopsConfig, now: dt.datetime
+) -> list[_ScannerJob]:
     jobs: list[_ScannerJob] = []
     for loop in iter_loops():
         if not elapsed_and_enabled(config, loop, now).should_fire:
