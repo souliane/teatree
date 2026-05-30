@@ -1,0 +1,102 @@
+"""Tests for the raw-review-post deny gate in hook_router (#1164).
+
+Sub-agents have repeatedly posted MR/PR review comments by shelling out to a
+raw forge REST POST (``glab api .../merge_requests/<n>/discussions -X POST``,
+``.../notes``, or the GitHub ``.../pulls/<n>/comments``), bypassing the
+sanctioned ``t3 <overlay> review post-comment`` / ``post-draft-note`` path
+(draft-default + dedup + on-behalf approval). This gate HARD-DENIES those
+writes at the Bash boundary while letting plain GET reads through.
+
+The gate is conservative: it denies ONLY clear review-write POSTs and never a
+bare read or a non-review endpoint, so a no-false-deny guard accompanies every
+deny case.
+"""
+
+import json
+
+import pytest
+
+from hooks.scripts.hook_router import handle_block_raw_review_post
+
+
+def _bash_event(command: str, tool_name: str = "Bash") -> dict:
+    return {
+        "session_id": "sess-review-post",
+        "tool_name": tool_name,
+        "tool_input": {"command": command},
+    }
+
+
+def _parse_deny(capsys: pytest.CaptureFixture[str]) -> dict | None:
+    output = capsys.readouterr().out.strip()
+    return json.loads(output) if output else None
+
+
+class TestDeniesRawReviewWrites:
+    """Raw forge REST writes to a review-comment endpoint are denied."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "glab api projects/42/merge_requests/7/discussions -X POST -f body='looks good'",
+            "glab api projects/42/merge_requests/7/discussions --method POST -f body=x",
+            "glab api projects/42/merge_requests/7/notes -X POST -f body='nit'",
+            "glab api projects/42/issues/9/notes --method POST --field body=hi",
+            "gh api repos/o/r/pulls/12/comments -f body='please fix'",
+            "gh api repos/o/r/issues/12/comments --method POST -f body=x",
+            "gh api repos/o/r/pulls/12/comments -X POST --raw-field body=@note.txt",
+        ],
+    )
+    def test_raw_review_write_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_raw_review_post(_bash_event(command)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    def test_deny_message_names_the_sanctioned_cli(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "glab api projects/42/merge_requests/7/discussions -X POST -f body='hi'"
+        handle_block_raw_review_post(_bash_event(command))
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        reason = deny["permissionDecisionReason"]
+        assert "review post-comment" in reason
+        assert "post-draft-note" in reason
+        assert "draft" in reason
+        assert "dedup" in reason
+        assert "on-behalf approval" in reason
+
+
+class TestAllowsReadsAndUnrelated:
+    """Bare reads and non-review commands pass through with no false-deny."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GET read of a review endpoint — no write flags.
+            "glab api projects/42/merge_requests/7/discussions",
+            "glab api projects/42/merge_requests/7/notes --paginate",
+            "gh api repos/o/r/pulls/12/comments",
+            # Non-review forge reads/writes.
+            "glab api projects/42/merge_requests/7",
+            "glab api projects/42/merge_requests/7/approvals -X POST",
+            "gh api repos/o/r/pulls/12 -f title='x'",
+            "gh api repos/o/r/labels -f name=bug",
+            # Unrelated commands.
+            "git status",
+            "ls -la",
+            "echo 'glab api discussions -X POST is just a string here'",
+            "t3 teatree review post-comment 7 --file a.py --line 3 --body x",
+        ],
+    )
+    def test_command_is_allowed(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_raw_review_post(_bash_event(command)) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_ignores_non_bash_tools(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = "glab api projects/42/merge_requests/7/discussions -X POST -f body=x"
+        assert handle_block_raw_review_post(_bash_event(command, tool_name="Read")) is not True
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_empty_command_passes_through(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_block_raw_review_post(_bash_event("")) is not True
+        assert capsys.readouterr().out.strip() == ""

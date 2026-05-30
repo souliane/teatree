@@ -1775,6 +1775,102 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     return False
 
 
+# ── PreToolUse: pre-dispatch quote-scanner gate (#1401) ─────────────
+
+
+def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
+    """Refuse an ``Agent``/``Task`` dispatch whose prompt carries verbatim user-voice/PII.
+
+    Companion to the #1213 publish-boundary gate
+    (:func:`handle_quote_scanner_pretool`). The publish gate fires too late
+    to stop a leak that travels through dispatch: the orchestrator pastes a
+    verbatim user quote into a sub-agent brief as "context", the sub-agent
+    loads it into model context, and faithfully echoes it into a later
+    published MR/issue/note — by which point the verbatim is already in
+    play. This gate closes that boundary: it scans the dispatch prompt
+    BEFORE the sub-agent is spawned.
+
+    REUSES the existing ``quote_scanner.scan_text`` detector (no second
+    matcher). Only a HIGH-confidence match denies — MEDIUM attribution
+    shapes pass silently, because the fleet dispatches constantly and a
+    false-deny on an ordinary brief is costlier here than a warn. The
+    opt-out is an in-prompt ``[quote-ok: <reason>]`` token (reason
+    mandatory), mirroring the ``[skip-plan-gate: <reason>]`` convention —
+    the publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env have no
+    analogue inside a prompt body.
+
+    Fail-open on any internal error (a crashing gate is worse than no
+    scan): the ``sys.path`` bootstrap + exception swallow mirror the #1314
+    posture of the publish gate. Every decision lands in the shared
+    quote-scanner ledger so cold review can audit what the gate saw.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_dispatch_quote_scanner(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_dispatch_quote_scanner(data: dict) -> bool:
+    """Dispatch quote-scanner inner body — assumes ``teatree`` is importable.
+
+    Split out of :func:`handle_dispatch_prompt_quote_scanner` so the outer
+    wrapper owns the ``sys.path`` bootstrap + fail-open handler without
+    inflating its return count (mirrors the #1213 split).
+    """
+    from typing import cast  # noqa: PLC0415
+
+    from teatree.hooks import quote_scanner  # noqa: PLC0415
+
+    tool_name = data.get("tool_name", "")
+    raw_input = data.get("tool_input", {}) or {}
+    if not isinstance(raw_input, dict):
+        return False
+    tool_input = cast("quote_scanner.ToolInput", raw_input)
+
+    payload = quote_scanner.extract_dispatch_payload(tool_name, tool_input)
+    if payload is None:
+        return False
+
+    result = quote_scanner.scan_text(payload)
+
+    if quote_scanner.dispatch_quote_ok_reason(payload):
+        quote_scanner.log_decision(
+            tool_name=f"{tool_name}:dispatch",
+            decision="allow-override",
+            result=result,
+            override=True,
+        )
+        return False
+
+    if result.has_high:
+        quote_scanner.log_decision(
+            tool_name=f"{tool_name}:dispatch",
+            decision="deny",
+            result=result,
+            override=False,
+        )
+        return emit_pretooluse_deny(quote_scanner.format_dispatch_block_message(result))
+
+    # MEDIUM-only or clean: allow silently (no stderr warning on dispatch —
+    # the fleet dispatches constantly; only HIGH is actionable here).
+    quote_scanner.log_decision(
+        tool_name=f"{tool_name}:dispatch",
+        decision="allow",
+        result=result,
+        override=False,
+    )
+    return False
+
+
 # ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
 
 
@@ -4521,6 +4617,76 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
+# ── PreToolUse: block-raw-review-post (#1164) ────────────────────────
+#
+# Sub-agents have repeatedly posted MR/PR review comments by shelling out
+# to a raw forge REST POST — ``glab api projects/.../merge_requests/<n>/
+# discussions -X POST`` (or ``.../notes``, or the GitHub ``.../pulls/<n>/
+# comments``) — bypassing the sanctioned ``t3 <overlay> review post-comment``
+# / ``post-draft-note`` path that enforces draft-default (#1207), dedup, and
+# on-behalf approval (#960). RED-CARD, 5x recurrence. This gate closes the
+# bypass at the Bash boundary: a WRITE to a review discussion/notes/comments
+# endpoint is denied; plain GET reads pass through.
+#
+# Conservative by construction: it matches ONLY the review-comment endpoints
+# (discussions / notes / comments) AND only when a write is present (an HTTP
+# method override of POST/PUT/PATCH, or a request-body flag the forge CLIs
+# use to carry a payload — ``-f``/``--field``/``-F``/``--raw-field``/
+# ``--input``/``-d``/``--data``). A bare read (``glab api .../discussions``)
+# and any non-review endpoint pass through untouched. Fails OPEN on an
+# internal parse error — a gate bug must never wedge the fleet.
+
+_REVIEW_POST_ENDPOINT_RE = re.compile(
+    r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
+)
+_REVIEW_POST_METHOD_WRITE_RE = re.compile(
+    r"(?:-X|--method)[\s=]+['\"]?(?:POST|PUT|PATCH)\b",
+    re.IGNORECASE,
+)
+_REVIEW_POST_BODY_FLAG_RE = re.compile(
+    r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
+)
+_REVIEW_POST_DENY_REASON = (
+    "BLOCKED: raw `glab api`/`gh api` POST to a review discussion/notes/comments "
+    "endpoint bypasses the sanctioned review-post CLI. Use "
+    "`t3 <overlay> review post-comment` (draft by default, #1207) or "
+    "`t3 <overlay> review post-draft-note` — the CLI enforces draft-default, "
+    "dedup, and on-behalf approval, which a direct REST write skips entirely. "
+    "Read-only `glab api`/`gh api` GETs are unaffected."
+)
+
+
+def _is_raw_review_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
+
+    True only when the command targets a ``.../discussions``, ``.../notes``,
+    or ``.../comments`` endpoint AND carries a write signal (a POST/PUT/PATCH
+    method override or a request-body flag). A plain GET read returns False.
+    """
+    if "glab api" not in command and "gh api" not in command:
+        return False
+    if not _REVIEW_POST_ENDPOINT_RE.search(command):
+        return False
+    return bool(_REVIEW_POST_METHOD_WRITE_RE.search(command) or _REVIEW_POST_BODY_FLAG_RE.search(command))
+
+
+def handle_block_raw_review_post(data: dict) -> bool:
+    """Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
+
+    Forces the sanctioned ``t3 <overlay> review post-comment`` /
+    ``post-draft-note`` path (draft-default + dedup + on-behalf approval),
+    which a direct REST POST skips. Conservative: only clear review-write
+    POSTs are denied — bare reads and non-review endpoints pass through.
+    Returns True when a deny was emitted (caller stops the handler chain).
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _is_raw_review_write(command):
+        return False
+    return emit_pretooluse_deny(_REVIEW_POST_DENY_REASON)
+
+
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 
 
@@ -5395,10 +5561,12 @@ _HANDLERS: dict[str, list] = {
         handle_protect_default_branch,
         handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
+        handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_block_out_of_band_merge,
+        handle_block_raw_review_post,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
