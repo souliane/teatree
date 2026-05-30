@@ -70,13 +70,33 @@ def _enqueue(path: Path, overlay: str, event: dict) -> None:
 
 
 def drain_event_queue(path: Path | None = None) -> list[dict]:
+    """Read queued events into memory using recover-then-drain ordering.
+
+    A previous drain that crashed before its caller durably persisted leaves
+    its ``.draining`` file on disk; this drain recovers those events first,
+    then folds in any newly enqueued live events. The ``.draining`` file is
+    left in place — the caller unlinks it via :func:`commit_drain` only after
+    the durable persist succeeds. A crash in the window between this return
+    and the persist therefore loses nothing: the next drain recovers it.
+    Slack never retries ``app_mention`` delivery, so this ordering is the
+    only thing preventing permanent mention loss.
+    """
     path = path or default_queue_path()
-    if not path.is_file():
-        return []
     tmp = path.with_suffix(".draining")
-    try:
-        path.rename(tmp)
-    except OSError:
+    if not tmp.exists():
+        # No leftover from a crashed drain: claim the live queue atomically.
+        # If there is no live file either, there is nothing to drain.
+        if not path.is_file():
+            return []
+        try:
+            path.rename(tmp)
+        except OSError:
+            return []
+    # A leftover ``.draining`` is drained as-is; the live file (if any) is
+    # left untouched and claimed on the next drain after ``commit_drain``.
+    # Recovery therefore stays a pure atomic rename — no live-file copy that
+    # could drop a concurrent ``_enqueue``.
+    if not tmp.is_file():
         return []
     events = []
     for line in tmp.read_text(encoding="utf-8").strip().splitlines():
@@ -84,8 +104,18 @@ def drain_event_queue(path: Path | None = None) -> list[dict]:
             events.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    tmp.unlink(missing_ok=True)
     return events
+
+
+def commit_drain(path: Path | None = None) -> None:
+    """Discard the drained backing file after the caller durably persisted.
+
+    Call this only once the events returned by :func:`drain_event_queue` are
+    safely persisted; until then the ``.draining`` file must stay so a crash
+    is recoverable.
+    """
+    path = path or default_queue_path()
+    path.with_suffix(".draining").unlink(missing_ok=True)
 
 
 def drain_reactions_queue(path: Path | None = None) -> list[dict]:
@@ -97,6 +127,14 @@ def drain_reactions_queue(path: Path | None = None) -> list[dict]:
     (atomic rename) stays scoped per file.
     """
     return drain_event_queue(path or default_reactions_queue_path())
+
+
+def commit_reactions_drain(path: Path | None = None) -> None:
+    """Discard the drained reactions backing file after a durable persist.
+
+    Reactions counterpart of :func:`commit_drain` (#1047).
+    """
+    commit_drain(path or default_reactions_queue_path())
 
 
 def _run_single_overlay(
