@@ -80,6 +80,12 @@ class TeatreeOverlay(OverlayBase):
         return ["teatree"]
 
     @override
+    def get_checking_sources(self) -> list[str]:
+        # The teatree overlay relies on the core needs-you sources (pending
+        # questions + failed agent runs); it adds none of its own.
+        return []
+
+    @override
     def get_workspace_repos(self) -> list[str]:
         if self.config.workspace_repos:
             return list(self.config.workspace_repos)
