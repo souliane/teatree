@@ -1167,6 +1167,24 @@ Usage: t3 tool validate-mr [OPTIONS]
  bad title/description is rejected BEFORE the push — no env-var opt-in
  (#119).
 
+ Overlay resolution is deterministic and never crashes on ambiguity
+ (#1526). Order:
+
+ 1.  Single overlay, or an explicit ``T3_OVERLAY_NAME`` — use it exactly
+     as before (``get_overlay()``).
+ 2.  Multiple overlays — resolve by the repo the command runs in
+     (``get_overlay_for_repo``): the overlay whose configured repos own
+     the cwd's ``origin`` remote.
+ 3.  Still ambiguous — validate against EACH overlay and PASS if ANY
+     accepts. A metadata check is advisory; it must never hard-deny just
+     because we cannot tell which overlay owns the MR. Only deny when ALL
+     registered overlays reject.
+ 4.  No overlay resolvable at all — skip (exit 0) with a stderr note.
+     Under no path does this command exit via an unhandled
+     ``ImproperlyConfigured`` traceback, which the pre-push hook would
+     mis-read as a "metadata invalid" verdict and use to block every MR
+     create/update (the lockout this fix closes).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --title              TEXT  MR/PR title                                       │
 │ --description        TEXT  MR/PR description                                 │

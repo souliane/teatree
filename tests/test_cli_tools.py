@@ -13,9 +13,12 @@ import teatree.cli as teatree_cli
 from scripts.privacy_scan import PRIVACY_FINDINGS_EXIT_CODE
 from teatree.cli import app
 from teatree.cli.tools import ToolRunner
+from teatree.core.overlay import OverlayBase, OverlayMetadata
 from teatree.repo_mode import RepoMode
 
 runner = CliRunner()
+
+_GIT = shutil.which("git") or "git"
 
 
 class TestToolRunner:
@@ -396,6 +399,122 @@ class TestValidateMrCommand:
         assert proc.returncode == 0, f"validate-mr crashed:\n{proc.stdout}\n{proc.stderr}"
         assert "ImproperlyConfigured" not in proc.stderr
         assert "AppRegistryNotReady" not in proc.stderr
+
+
+class _OverlayMeta(OverlayMetadata):
+    def __init__(self, errors: list[str]) -> None:
+        self._errors = errors
+
+    def validate_pr(self, title: str, description: str):
+        del title, description
+        return {"errors": list(self._errors), "warnings": []}
+
+
+class _AcceptingOverlay(OverlayBase):
+    """Overlay whose ``validate_pr`` always passes, owning fixed repo slugs."""
+
+    def __init__(self, repos: list[str]) -> None:
+        self._repos = repos
+        self.metadata = _OverlayMeta([])
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class _RejectingOverlay(OverlayBase):
+    """Overlay whose ``validate_pr`` always rejects with fixed errors."""
+
+    def __init__(self, repos: list[str], errors: list[str]) -> None:
+        self._repos = repos
+        self.metadata = _OverlayMeta(errors)
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestValidateMrMultipleOverlays:
+    """`t3 tool validate-mr` must not crash when >1 overlay is registered (#1526).
+
+    Before the fix ``validate_mr`` called ``get_overlay()`` with no name; with
+    two overlays installed and no ``T3_OVERLAY_NAME`` that raised
+    ``ImproperlyConfigured``. The pre-push hook treated the traceback (exit 1)
+    as a "metadata invalid" verdict and hard-blocked every MR create/update —
+    a lockout. The command now resolves the overlay by repo, and when still
+    ambiguous validates leniently (PASS if ANY overlay accepts) so an advisory
+    metadata check never hard-denies on ambiguity.
+
+    Real overlay instances are registered via ``_discover_overlays`` (the live
+    registry both ``get_overlay`` and ``get_all_overlays`` route through);
+    nothing about overlay resolution is mocked.
+    """
+
+    def _register(self, monkeypatch, overlays: dict):
+        # The test suite pins T3_OVERLAY_NAME=t3-teatree for determinism; drop
+        # it so the ambiguity path (multiple overlays, no explicit name) runs.
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        return patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays)
+
+    def test_valid_metadata_exits_zero_with_two_overlays(self, monkeypatch):
+        # RED before the fix: crashes ImproperlyConfigured (exit != 0).
+        overlays = {
+            "alpha": _AcceptingOverlay(["acme/alpha"]),
+            "bravo": _AcceptingOverlay(["acme/bravo"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(
+                app,
+                ["tool", "validate-mr", "--title", "fix: x", "--description", "fix: x\n\nbody"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "ImproperlyConfigured" not in result.output
+
+    def test_resolvable_by_repo_uses_that_overlays_verdict(self, monkeypatch, tmp_path):
+        # cwd repo belongs to exactly one overlay -> use ITS verdict, including
+        # the deny path (no regression in rejection when resolution is sharp).
+        repo = tmp_path / "alpha"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)
+        subprocess.run([_GIT, "remote", "add", "origin", "git@github.com:acme/alpha.git"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        overlays = {
+            "alpha": _RejectingOverlay(["acme/alpha"], ["Title is invalid."]),
+            "bravo": _AcceptingOverlay(["acme/bravo"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(app, ["tool", "validate-mr", "--title", "bad", "--description", "bad"])
+        assert result.exit_code == 1
+        assert "Title is invalid." in result.output
+
+    def test_lenient_pass_when_any_overlay_accepts(self, monkeypatch):
+        # Unresolvable by repo + multiple overlays: PASS if ANY accepts.
+        overlays = {
+            "alpha": _RejectingOverlay(["acme/alpha"], ["nope"]),
+            "bravo": _AcceptingOverlay(["acme/bravo"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(app, ["tool", "validate-mr", "--title", "fix: x", "--description", "fix: x"])
+        assert result.exit_code == 0, result.output
+
+    def test_deny_when_all_overlays_reject(self, monkeypatch):
+        overlays = {
+            "alpha": _RejectingOverlay(["acme/alpha"], ["alpha rejects"]),
+            "bravo": _RejectingOverlay(["acme/bravo"], ["bravo rejects"]),
+        }
+        with self._register(monkeypatch, overlays):
+            result = runner.invoke(app, ["tool", "validate-mr", "--title", "bad", "--description", "bad"])
+        assert result.exit_code == 1
+        assert "alpha rejects" in result.output or "bravo rejects" in result.output
+
+    def test_no_overlays_skips_fail_open(self, monkeypatch):
+        with self._register(monkeypatch, {}):
+            result = runner.invoke(app, ["tool", "validate-mr", "--title", "anything", "--description", "x"])
+        assert result.exit_code == 0
 
 
 class TestToMarkdownCommand:

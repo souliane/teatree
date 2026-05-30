@@ -4,11 +4,15 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_all_overlays, get_overlay, get_overlay_for_repo
 from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
 
@@ -67,6 +71,13 @@ def privacy_scan(
     ToolRunner.run_script("privacy_scan", path)
 
 
+def _deny_with_errors(errors: list[str]) -> None:
+    """Print each validation error to stderr and exit 1 (deny)."""
+    for err in errors:
+        typer.echo(err, err=True)
+    raise typer.Exit(code=1)
+
+
 @tool_app.command("validate-mr")
 def validate_mr(
     title: str = typer.Option("", "--title", help="MR/PR title"),
@@ -79,14 +90,55 @@ def validate_mr(
     the metadata is invalid. The pre-push hook invokes this by default so a
     bad title/description is rejected BEFORE the push — no env-var opt-in
     (#119).
+
+    Overlay resolution is deterministic and never crashes on ambiguity
+    (#1526). Order:
+
+    1.  Single overlay, or an explicit ``T3_OVERLAY_NAME`` — use it exactly
+        as before (``get_overlay()``).
+    2.  Multiple overlays — resolve by the repo the command runs in
+        (``get_overlay_for_repo``): the overlay whose configured repos own
+        the cwd's ``origin`` remote.
+    3.  Still ambiguous — validate against EACH overlay and PASS if ANY
+        accepts. A metadata check is advisory; it must never hard-deny just
+        because we cannot tell which overlay owns the MR. Only deny when ALL
+        registered overlays reject.
+    4.  No overlay resolvable at all — skip (exit 0) with a stderr note.
+        Under no path does this command exit via an unhandled
+        ``ImproperlyConfigured`` traceback, which the pre-push hook would
+        mis-read as a "metadata invalid" verdict and use to block every MR
+        create/update (the lockout this fix closes).
     """
     _ensure_django()
-    result = get_overlay().metadata.validate_pr(title, description)
-    errors = result.get("errors", [])
-    if errors:
-        for err in errors:
-            typer.echo(err, err=True)
-        raise typer.Exit(code=1)
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+    try:
+        overlay = get_overlay()
+    except ImproperlyConfigured:
+        overlay = get_overlay_for_repo(".")
+
+    if overlay is not None:
+        errors = _validation_errors(overlay, title, description)
+        if errors:
+            _deny_with_errors(errors)
+        return
+
+    overlays = get_all_overlays()
+    if not overlays:
+        typer.echo("validate-mr: no overlay resolvable for this repo; skipping metadata check.", err=True)
+        return
+
+    per_overlay_errors = [_validation_errors(ov, title, description) for ov in overlays.values()]
+    if any(not errs for errs in per_overlay_errors):
+        return
+    # Every overlay rejected — surface the first overlay's errors.
+    _deny_with_errors(per_overlay_errors[0])
+
+
+def _validation_errors(overlay: "OverlayBase", title: str, description: str) -> list[str]:
+    """Return the overlay's ``validate_pr`` errors for ``title``/``description``."""
+    result = overlay.metadata.validate_pr(title, description)
+    return list(result.get("errors", []))
 
 
 @tool_app.command("repo-mode")
