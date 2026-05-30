@@ -570,9 +570,11 @@ from teatree.cli import review_commands as _review_commands  # noqa: E402 — re
 from teatree.cli.review_authorize import register as _register_authorize  # noqa: E402 — late, after typer app
 from teatree.cli.review_commands import _require_token  # noqa: E402, F401 — re-exported for monkeypatch targets
 from teatree.cli.review_live_approval import register as _register_live_approval  # noqa: E402 — late, after typer app
+from teatree.cli.teatree_gate import register_fail_open_gate_commands as _register_fail_open  # noqa: E402
 
 _register_on_behalf(review_app)
 _register_drafts(review_app)
 _register_live_approval(review_app)
 _register_authorize(review_app)
+_register_fail_open(review_app)
 _ = _review_commands  # quiet "unused import" — module load is the side-effect

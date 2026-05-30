@@ -470,6 +470,7 @@ Usage: t3 review [OPTIONS] COMMAND [ARGS]...
 │                      ``<mr-url>``.                                           │
 │ authorize            Record a one-step authorization that lets               │
 │                      ``post-comment --live`` publish.                        │
+│ gate                 Review-gate master switches.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -939,6 +940,76 @@ Usage: t3 review authorize [OPTIONS] SCOPE
 │                            17.8).                                            │
 │                            [required]                                        │
 │    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 review gate`
+
+```
+Usage: t3 review gate [OPTIONS] COMMAND [ARGS]...
+
+ Review-gate master switches.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ fail-open  Master fail-open switch for the over-deny gates.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 review gate fail-open`
+
+```
+Usage: t3 review gate fail-open [OPTIONS] COMMAND [ARGS]...
+
+ Master fail-open switch for the over-deny gates.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the master fail-open switch is on.                     │
+│ enable   Turn the master fail-open switch ON (self-rescue from an over-deny  │
+│          lockout).                                                           │
+│ disable  Turn the master fail-open switch OFF (restore normal gate           │
+│          enforcement).                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open status`
+
+```
+Usage: t3 review gate fail-open status [OPTIONS]
+
+ Show whether the master fail-open switch is on.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open enable`
+
+```
+Usage: t3 review gate fail-open enable [OPTIONS]
+
+ Turn the master fail-open switch ON (self-rescue from an over-deny lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 review gate fail-open disable`
+
+```
+Usage: t3 review gate fail-open disable [OPTIONS]
+
+ Turn the master fail-open switch OFF (restore normal gate enforcement).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
