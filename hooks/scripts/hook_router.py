@@ -2829,6 +2829,31 @@ def _render_open_prs_section(repo: Path) -> list[str]:
     return lines
 
 
+def _render_no_commit_section(session_id: str) -> list[str]:
+    """Surface sub-agents that terminated without committing (#1205).
+
+    Reads the ``<session>.no-commit`` signals recorded by
+    :func:`handle_subagent_stop_no_commit` so the post-compaction recovery
+    snapshot tells the orchestrator NOT to assume the lost work landed.
+    """
+    no_commit = _read_lines(_state_file(session_id, "no-commit"))
+    if not no_commit:
+        return []
+    lines = [
+        "",
+        "## Sub-agents that terminated WITHOUT committing (#1205)",
+        (
+            "These sub-agents ended on a work branch with 0 commits — their "
+            "edits are lost on worktree teardown. Do NOT assume the work "
+            "landed; re-dispatch each and require a commit before finishing."
+        ),
+    ]
+    for line in no_commit:
+        branch, _, worktree = line.partition("\t")
+        lines.append(f"- branch `{branch}` at `{worktree}` — nothing committed")
+    return lines
+
+
 def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
     """Build a recovery snapshot for *session_id* from DURABLE state only.
 
@@ -2903,6 +2928,8 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
         for line in dispatched:
             agent_id, _, role = line.partition("\t")
             lines.append(f"- agentId `{agent_id}` — {role or '(no description)'}")
+
+    lines += _render_no_commit_section(session_id)
 
     todos = _read_lines(_state_file(session_id, "todos"))
     if todos:
@@ -5473,6 +5500,96 @@ def handle_clear_classifier_deny_marker(data: dict) -> None:
 
 # ── Router ──────────────────────────────────────────────────────────
 
+# ── SubagentStop: record a sub-agent that terminated without committing ──
+#
+# Issue #1205: an ``isolation: worktree`` sub-agent that only edits files and
+# never commits loses ALL its work when the worktree is auto-cleaned on
+# teardown, yet the orchestrator believes work landed — a phantom-completion
+# source (3x recurrence). This SubagentStop handler runs once per sub-agent
+# termination and, when the sub-agent's worktree shows a WORK branch with ZERO
+# commits ahead of its base, records a ``terminated_without_commit`` signal so
+# the orchestrator can SEE the empty termination instead of assuming success.
+#
+# It is a DETECTION/surfacing hook, not a deny — SubagentStop cannot
+# un-terminate the agent. The signal is recorded through the SAME durable seam
+# the dispatched-sub-agent roster uses: a per-session ``<session>.no-commit``
+# state file (mirrors ``<session>.agents``), which the PreCompact recovery
+# snapshot already reads back and renders so it survives compaction. A
+# structured stderr line (this module's logging channel) carries the same fact
+# for the live transcript.
+#
+# Crash-proof and conservative (the #810 Stop-hook contract): a detached/
+# read-only review worktree (detached HEAD or a base branch) and a sub-agent
+# that DID commit are NOT flagged, and ANY inability to introspect git fails
+# OPEN (never flag) — a detection bug must never manufacture a false alarm.
+#
+# Limitation: the SubagentStop payload's ``cwd`` is the only reliable handle on
+# the sub-agent's worktree (the harness does not carry a dedicated worktree-path
+# field, and ``transcript_path`` points at the parent session — see the #115
+# note above). For a worktree-isolated sub-agent the harness ``cwd`` IS the
+# worktree, so it is the right signal; when ``cwd`` is absent the handler is a
+# clean no-op rather than guessing.
+
+
+def _record_no_commit_signal(session_id: str, finding: object) -> None:
+    r"""Persist + log one ``terminated_without_commit`` signal.
+
+    Durable channel: append a deduped ``<branch>\t<worktree>`` line to the
+    per-session ``<session>.no-commit`` state file (same shape/seam as the
+    ``<session>.agents`` roster, which the PreCompact snapshot reads back).
+    Live channel: a structured stderr line. Best-effort — a record failure
+    must never propagate out of the Stop hook.
+    """
+    branch = getattr(finding, "branch", "") or "(unknown)"
+    worktree = getattr(finding, "worktree", "") or "(unknown)"
+    print(  # noqa: T201 — hook stderr is the module's logging channel
+        f"[hook_router] terminated_without_commit — sub-agent left work branch "
+        f"{branch!r} at {worktree!r} with 0 commits; work would be lost on worktree teardown.",
+        file=sys.stderr,
+    )
+    if not session_id:
+        return
+    with contextlib.suppress(OSError):
+        _ensure_state_dir()
+        no_commit_file = _state_file(session_id, "no-commit")
+        line = f"{branch}\t{worktree}"
+        if line not in _read_lines(no_commit_file):
+            _append_line(no_commit_file, line)
+
+
+def handle_subagent_stop_no_commit(data: dict) -> None:
+    """SubagentStop: record a work-branch worktree that produced 0 commits (#1205).
+
+    Resolves the sub-agent's worktree from the harness ``cwd``, runs the
+    conservative :func:`teatree.hooks.no_commit_detector.detect`, and records a
+    ``terminated_without_commit`` signal only on the confirmed-flag verdict.
+    No-op for a read-only/detached worktree, a committed branch, an
+    undeterminable git state, or a missing ``cwd``.
+
+    Crash-proof (#810 Stop contract): a broad boundary guard contains any
+    unexpected error (an unimportable ``teatree``, git introspection failure)
+    to a single stderr line — the sub-agent terminates normally and the
+    detection is simply skipped (fail open).
+    """
+    try:
+        worktree = data.get("cwd", "")
+        if not worktree:
+            return
+        src_dir = Path(__file__).resolve().parents[2] / "src"
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+        from teatree.hooks import no_commit_detector  # noqa: PLC0415
+
+        finding = no_commit_detector.detect(worktree)
+        if finding.is_flagged:
+            _record_no_commit_signal(data.get("session_id", ""), finding)
+    except Exception as exc:  # noqa: BLE001 — SubagentStop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] no-commit detection skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+
+
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [
         handle_clear_classifier_deny_marker,
@@ -5530,6 +5647,7 @@ _HANDLERS: dict[str, list] = {
         handle_consideration_gate,
         handle_loop_self_pump,
     ],
+    "SubagentStop": [handle_subagent_stop_no_commit],
 }
 
 
