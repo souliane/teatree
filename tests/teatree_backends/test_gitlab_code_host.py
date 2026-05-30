@@ -708,3 +708,41 @@ def test_assign_reviewer_swallows_exception_and_returns_false() -> None:
     host = GitLabCodeHost(client=client)
 
     assert host.assign_reviewer(pr_url="https://gitlab.com/org/repo/-/merge_requests/9", username="alice") is False
+
+
+def test_get_mr_approvals_uses_canonical_approvals_left_not_fallback() -> None:
+    # On a multi-rule repo the upstream approvals_left is authoritative.
+    # required - count (here 1 - 1 = 0) would wrongly say "no approvals left".
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_approvals.return_value = {
+        "count": 1,
+        "required": 1,
+        "approved_by": ["reviewer1"],
+        "approvals_left": 2,
+    }
+    client.get_mr_discussions.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    state = host.get_mr_approvals(repo="org/repo", pr_iid=12)
+
+    assert state["approvals_left"] == 2
+
+
+def test_get_mr_approvals_falls_back_when_left_absent() -> None:
+    # When the payload omits approvals_left (sentinel -1), the code-host
+    # recomputes required - count.
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_mr_approvals.return_value = {
+        "count": 1,
+        "required": 3,
+        "approved_by": ["reviewer1"],
+        "approvals_left": -1,
+    }
+    client.get_mr_discussions.return_value = []
+    host = GitLabCodeHost(client=client)
+
+    state = host.get_mr_approvals(repo="org/repo", pr_iid=12)
+
+    assert state["approvals_left"] == 2

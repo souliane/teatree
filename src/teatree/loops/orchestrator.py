@@ -142,7 +142,12 @@ class Orchestrator:
     def _maybe_send_summary(self, report: OrchestratorReport, started_at: dt.datetime) -> None:
         """Build and send the summary DM honouring the configured policy."""
         utc_day = started_at.date().isoformat()
-        dm = build_summary_dm(report, policy=self.config.summary_dm, utc_day=utc_day)
+        dm = build_summary_dm(
+            report,
+            policy=self.config.summary_dm,
+            utc_day=utc_day,
+            tick_id=started_at.isoformat(),
+        )
         if dm is None:
             return
         try:
