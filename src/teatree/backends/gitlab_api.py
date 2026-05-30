@@ -399,14 +399,16 @@ class GitLabAPI(GitLabHTTPClient):
                     username = str(user_dict.get("username", ""))
                     if username:  # pragma: no branch
                         names.append(username)
+            left = data.get("approvals_left")
             result_val = {
                 "count": count,
                 "required": int(data.get("approvals_required", 1)),  # type: ignore[arg-type]
                 "approved_by": names,
+                "approvals_left": left if isinstance(left, int) and not isinstance(left, bool) else -1,
             }
             self._set_cached(cache_key, result_val)
             return result_val
-        fallback = {"count": 0, "required": 1, "approved_by": []}
+        fallback = {"count": 0, "required": 1, "approved_by": [], "approvals_left": -1}
         self._set_cached(cache_key, fallback)
         return fallback
 
@@ -452,7 +454,8 @@ class GitLabAPI(GitLabHTTPClient):
     ) -> list[int]:
         cancelled: list[int] = []
         for status in statuses:
-            data = self.get_json(f"projects/{project_id}/pipelines?ref={ref}&status={status}&per_page=10")
+            params = urlencode({"ref": ref, "status": status, "per_page": 10})
+            data = self.get_json(f"projects/{project_id}/pipelines?{params}")
             if not isinstance(data, list):
                 continue
             for pipeline in data:

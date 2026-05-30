@@ -46,11 +46,17 @@ def build_summary_dm(
     *,
     policy: str,
     utc_day: str,
+    tick_id: str = "",
 ) -> SummaryDM | None:
     """Build a ``SummaryDM`` (or ``None``) honouring *policy*.
 
     *utc_day* is the YYYY-MM-DD string the caller computes once per
     tick — passing it in keeps :func:`build_summary_dm` pure.
+
+    *tick_id* is a per-tick identifier (the caller's tick timestamp).
+    Under ``policy="always"`` it is folded into the idempotency key so
+    every tick can send. The ``errors`` path keeps a day-granular key on
+    purpose: a broken scanner spams once per day, not once per tick.
     """
     if policy not in _VALID_POLICIES:
         policy = "errors"
@@ -67,9 +73,10 @@ def build_summary_dm(
             text=_format_error_dm(report),
             idempotency_key=f"loops_tick_errors:{utc_day}",
         )
+    suffix = f":{tick_id}" if (policy == "always" and tick_id) else ""
     return SummaryDM(
         text=_format_signals_dm(report),
-        idempotency_key=f"loops_tick_summary:{utc_day}",
+        idempotency_key=f"loops_tick_summary:{utc_day}{suffix}",
     )
 
 
