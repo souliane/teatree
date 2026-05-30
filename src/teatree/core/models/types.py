@@ -82,6 +82,24 @@ class TicketExtra(TypedDict, total=False):
     # mirrors reality) but the violation is recorded here rather than silently
     # bypassed, so the gap is auditable.
     dod_e2e_violation: "DodE2EViolation"
+    # #1539 evidence the configured ``review_skill`` ran on this ticket. The
+    # reviewing-phase gate reads this to refuse a ``reviewing`` attestation
+    # that no review-skill execution backs.
+    review_skill_run: "ReviewSkillRun"
+
+
+class ReviewSkillRun(TypedDict, total=False):
+    """Durable evidence that the configured review skill ran (#1539).
+
+    Recorded by ``Ticket.record_review_skill_run`` when the deep-review
+    skill named by ``review_skill`` executes. The reviewing-phase gate
+    (``teatree.core.review_skill_gate``) consumes it: a ``reviewing``
+    attestation is refused unless this records a run of the *currently
+    configured* skill.
+    """
+
+    skill: str
+    at: str
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):
