@@ -211,6 +211,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_skill": str,
     "architectural_review_cadence_hours": int,
     "architectural_review_after_merge_count": int,
+    "review_skill": str,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
@@ -249,6 +250,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
+    "T3_REVIEW_SKILL": ("review_skill", str),
 }
 
 
@@ -385,6 +387,15 @@ class UserSettings:
     architectural_review_skill: str = "ac-reviewing-codebase"
     architectural_review_cadence_hours: int = 168
     architectural_review_after_merge_count: int = 25
+    # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
+    # reviewing-phase evidence gate (``teatree.core.review_skill_gate``) is
+    # a NO-OP, so projects that do not configure a review skill keep
+    # recording the ``reviewing`` attestation unchanged. When set (e.g.
+    # ``ac-reviewing-codebase``), ``lifecycle visit-phase <id> reviewing``
+    # refuses to record the phase without durable evidence the skill ran.
+    # Distinct from ``architectural_review_skill`` (the periodic cadence
+    # scanner) — this one gates a single ticket's reviewing attestation.
+    review_skill: str = ""
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
@@ -585,6 +596,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
         architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
         architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
+        review_skill=str(teatree.get("review_skill", "")),
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
