@@ -5,6 +5,7 @@ stays under the module-health LOC cap. Functions are kept private (``_``
 prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -175,6 +176,30 @@ def prune_branches(repo: str) -> list[str]:
     return cleaned
 
 
+# A ``git stash list`` line is ``stash@{N}: <subject>`` where git writes the
+# subject as ``WIP on <branch>: ...`` (auto-stash) or ``On <branch>: ...``
+# (``git stash push -m``). The branch is the text between the anchored
+# ``[WIP ]on `` prefix and the first ``:`` that follows it. A naive split on
+# ``" on "`` both missed the capital-``On`` (explicit-message) form entirely and
+# mis-parsed any stash whose message contained the word "on", dropping stashes
+# that still belonged to an existing branch.
+_STASH_BRANCH_RE = re.compile(r"^stash@\{\d+\}:\s+(?:WIP on|On)\s+(?P<branch>[^:]+):")
+
+
+def _stash_branch(line: str) -> str:
+    """Return the branch a ``git stash list`` line belongs to, or ``""`` if unparsable.
+
+    A stash taken on a detached HEAD reads ``On (no branch): ...`` — there is no
+    owning branch to compare against, so it is reported as unparsable and the
+    stash is kept rather than reaped.
+    """
+    match = _STASH_BRANCH_RE.match(line)
+    if not match:
+        return ""
+    branch = match.group("branch").strip()
+    return "" if branch == "(no branch)" else branch
+
+
 def drop_orphaned_stashes(repo: str) -> list[str]:
     """Drop stashes whose branch no longer exists."""
     stash_list = git.run(repo=repo, args=["stash", "list"])
@@ -190,12 +215,11 @@ def drop_orphaned_stashes(repo: str) -> list[str]:
     entries = stash_list.splitlines()
     for i in range(len(entries) - 1, -1, -1):
         line = entries[i]
-        if " on " not in line:
+        branch = _stash_branch(line)
+        if not branch or branch in existing:
             continue
-        branch_part = line.split(" on ", 1)[1].split(":")[0].strip()
-        if branch_part not in existing:
-            git.run(repo=repo, args=["stash", "drop", f"stash@{{{i}}}"])
-            cleaned.append(f"Dropped orphaned stash: {line.split(':')[0]} (was on {branch_part})")
+        git.run(repo=repo, args=["stash", "drop", f"stash@{{{i}}}"])
+        cleaned.append(f"Dropped orphaned stash: {line.split(':')[0]} (was on {branch})")
 
     return cleaned
 
