@@ -161,6 +161,21 @@ class MergeClear(models.Model):
         if normalized_verify not in valid_verify:
             msg = f"Unknown gh_verify_result {request.gh_verify_result!r}; valid: {sorted(valid_verify)}"
             raise ClearIssuanceError(msg)
+        # The recorded reviewer verdict must itself be merge-safe at the
+        # reviewed tree. A CLEAR carrying a non-green verdict (the reviewer
+        # recorded a HOLD — pending/failed checks at ``reviewed_sha``) must
+        # never become an actionable authorization: issuing it would let the
+        # merge-time gate's *live* re-check stamp green over the reviewer's
+        # recorded HOLD if CI later flipped green on its own (§17.4.2 / §17.8
+        # clause 3 — maker≠checker; the checker's recorded verdict is authoritative).
+        if normalized_verify != cls.VerifyResult.GREEN:
+            msg = (
+                f"gh_verify_result {normalized_verify!r} is not green — a CLEAR records the "
+                f"reviewer's merge-safe verdict at the reviewed tree; a HOLD (pending/failed) "
+                f"verdict can never authorize a merge (§17.4.2 / §17.8 clause 3). Re-review at "
+                f"the current SHA once checks are green, then issue a fresh CLEAR"
+            )
+            raise ClearIssuanceError(msg)
 
         reviewer = request.reviewer_identity.strip()
         if not reviewer:
