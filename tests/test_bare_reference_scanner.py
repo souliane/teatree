@@ -258,6 +258,16 @@ class TestConventionalTitleSuffixExemption:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
+    def test_git_commit_subject_double_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'feat: x (#1530) (#1535)'"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_subject_triple_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'feat: y (#10) (#20) (#30)'"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
     def test_bare_ref_in_pr_body_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_bare_reference_pretool(_bash('gh pr create --title "feat(x): desc (#123)" --body "see #99"'))
         assert blocked is True
@@ -277,6 +287,13 @@ class TestConventionalTitleSuffixExemption:
         assert blocked is True
         assert "#123" in _out(capsys)["permissionDecisionReason"]
 
+    def test_mid_subject_ref_with_trailing_suffix_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'feat: see #99 (#45)'"))
+        assert blocked is True
+        reason = _out(capsys)["permissionDecisionReason"]
+        assert "#99" in reason
+        assert "#45" not in reason
+
     def test_git_commit_body_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
         cmd = "git commit -m 'fix(y): z (#45)' -m 'follow-up to #99'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
@@ -292,6 +309,13 @@ class TestConventionalTitleSuffixExemption:
         assert payload is not None
         assert "#123" not in payload
         assert "#99" in payload
+
+    def test_strip_targets_title_line_not_body_substring_copy(self) -> None:
+        command = 'gh pr create --body "ref: feat(x): desc (#123) and more" --title "feat(x): desc (#123)"'
+        payload = extract_publish_payload("Bash", {"command": command})
+        assert payload is not None
+        assert "ref: feat(x): desc (#123) and more" in payload
+        assert "feat(x): desc\n" in payload or payload.endswith("feat(x): desc")
 
 
 class TestStopSoftWarn:

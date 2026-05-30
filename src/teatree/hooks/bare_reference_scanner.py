@@ -68,13 +68,14 @@ _BARE_URL_RE: Final[re.Pattern[str]] = re.compile(
 _SLACK_MCP_WRITE_FIELDS: Final[tuple[str, ...]] = ("text", "message", "document_content", "content")
 
 
-# The conventional trailing ``(#NNNN)`` / ``(!NNNN)`` parenthetical at the
-# END of a PR/MR title or git-commit subject (#1544). GitHub/GitLab auto-
-# link the ref there and the suffix is the universal conventional-commit +
-# MR-title convention, so it is exempt — but ONLY in that trailing
-# position. ``$`` anchors the match to the fragment end; trailing
-# whitespace is tolerated.
-_TRAILING_CONVENTIONAL_REF_RE: Final[re.Pattern[str]] = re.compile(r"\s*\([#!]\d+\)\s*$")
+# The conventional trailing ``(#NNNN)`` / ``(!NNNN)`` parenthetical(s) at
+# the END of a PR/MR title or git-commit subject (#1544). GitHub/GitLab
+# auto-link the ref there and the suffix is the universal conventional-
+# commit + MR-title convention, so it is exempt — but ONLY in that trailing
+# position. Squash-merge appends its own ``(#NNNN)`` to an already-suffixed
+# subject, so the match is greedy over consecutive trailing groups. ``$``
+# anchors to the fragment end; trailing whitespace is tolerated.
+_TRAILING_CONVENTIONAL_REF_RE: Final[re.Pattern[str]] = re.compile(r"(\s*\([#!]\d+\)\s*)+$")
 
 
 def _strip_linked_spans(text: str) -> str:
@@ -125,15 +126,20 @@ def _exempt_trailing_title_suffix(payload: str, title_fragments: list[str]) -> s
     """Drop the conventional trailing ``(#NNNN)`` suffix of each title fragment.
 
     Only the trailing parenthetical of a PR/MR title or git-commit subject
-    is exempt (#1544). The fragment is replaced by its suffix-stripped form
-    in the flattened payload, so a body reference or a mid-title reference —
-    which is not the trailing parenthetical of any title — survives the scan.
+    is exempt (#1544). Each title fragment is its own line in the flattened
+    payload, so the suffix is stripped from the matching whole line — never
+    from a body line that merely embeds the title text as a substring. A
+    body reference or a mid-title reference survives the scan.
     """
-    for fragment in title_fragments:
-        stripped = _TRAILING_CONVENTIONAL_REF_RE.sub("", fragment)
-        if stripped != fragment:
-            payload = payload.replace(fragment, stripped, 1)
-    return payload
+    pending = [f for f in title_fragments if _TRAILING_CONVENTIONAL_REF_RE.search(f)]
+    if not pending:
+        return payload
+    lines = payload.split("\n")
+    for index, line in enumerate(lines):
+        if line in pending:
+            lines[index] = _TRAILING_CONVENTIONAL_REF_RE.sub("", line)
+            pending.remove(line)
+    return "\n".join(lines)
 
 
 def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
