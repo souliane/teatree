@@ -1848,8 +1848,11 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
         ):
             ws_cleanup_mod.prune_branches("/repo")
 
-        for call in mock_del.call_args_list:
-            assert call.args[1] != "*", "branch marker '*' leaked into branch_delete"
+        # The marker must resolve to "feature", which is the protected current
+        # branch — so nothing is deleted at all. The buggy parser yielded "*",
+        # which is unprotected, so it reached branch_delete (and "*" is a
+        # dangerous refspec glob). assert_not_called covers both failures.
+        mock_del.assert_not_called()
 
 
 class TestDropOrphanedStashes(TestCase):
