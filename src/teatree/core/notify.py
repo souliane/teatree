@@ -142,6 +142,11 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
             )
     except IntegrityError:
         logger.debug("notify_user race on key=%s — already audited", idempotency_key)
+    except DatabaseError as exc:
+        # The DM has already landed; a locked/failed audit write must
+        # never escape and break the caller's FSM transition (the
+        # never-raise contract). Mirror ``_record_outbound_claim``.
+        logger.warning("notify_user audit write failed for key=%s: %s", idempotency_key, exc)
 
     _maybe_stamp_answered(
         idempotency_key=idempotency_key,
@@ -377,6 +382,8 @@ def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: s
             )
     except IntegrityError:
         logger.debug("notify_user noop race on key=%s", idempotency_key)
+    except DatabaseError as exc:
+        logger.warning("notify_user noop audit write failed for key=%s: %s", idempotency_key, exc)
 
 
 def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: str) -> None:
@@ -391,6 +398,8 @@ def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: 
             )
     except IntegrityError:
         logger.debug("notify_user failed-row race on key=%s", idempotency_key)
+    except DatabaseError as exc:
+        logger.warning("notify_user failed-row audit write failed for key=%s: %s", idempotency_key, exc)
 
 
 __all__ = ["NotifyKind", "notify_user"]

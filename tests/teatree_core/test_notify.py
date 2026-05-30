@@ -2,10 +2,13 @@
 
 from unittest.mock import MagicMock, patch
 
+from django.db import OperationalError
 from django.test import TestCase
 
 from teatree.core.models import BotPing
 from teatree.notify import NotifyKind, notify_user
+
+_DB_LOCKED = OperationalError("database is locked")
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -278,6 +281,73 @@ class TestNotifyUser(TestCase):
         assert sent is False
         backend.open_dm.assert_not_called()
         assert not BotPing.objects.filter(idempotency_key="disabled").exists()
+
+
+class TestNotifyUserNeverRaises(TestCase):
+    """The never-raise contract holds for any DatabaseError, not just IntegrityError.
+
+    ``notify_user`` runs inside FSM transitions and the public docstring
+    promises it never raises into the CLI turn. The SENT-audit write
+    previously caught only ``IntegrityError``, so an ``OperationalError``
+    (e.g. SQLite "database is locked") raised by the ``BotPing`` create —
+    after the DM had already landed — escaped and broke the caller's
+    transition. The most-defensive sibling (``_record_outbound_claim``)
+    already swallows the full ``DatabaseError`` breadth; the audit writes
+    must match it.
+    """
+
+    def test_operational_error_on_sent_audit_is_swallowed(self) -> None:
+        backend = _backend()
+        create = BotPing.objects.create
+        with patch.object(BotPing.objects, "create", autospec=True) as mock_create:
+
+            def _raise_on_sent(*args: object, **kwargs: object) -> BotPing:
+                if kwargs.get("status") == BotPing.Status.SENT:
+                    raise _DB_LOCKED
+                return create(*args, **kwargs)
+
+            mock_create.side_effect = _raise_on_sent
+
+            sent = notify_user(
+                "lock contention on the audit write",
+                kind=NotifyKind.INFO,
+                idempotency_key="db-locked-sent",
+                backend=backend,
+                user_id="U_ME",
+            )
+
+        # DM landed; the failed audit write must not propagate or flip the result.
+        assert sent is True
+        backend.post_message.assert_called_once()
+
+    def test_operational_error_on_noop_audit_is_swallowed(self) -> None:
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=None),
+            patch.object(BotPing.objects, "create", side_effect=_DB_LOCKED),
+        ):
+            sent = notify_user(
+                "no backend, locked audit",
+                kind=NotifyKind.QUESTION,
+                idempotency_key="db-locked-noop",
+                backend=None,
+                user_id="U_ME",
+            )
+
+        assert sent is False
+
+    def test_operational_error_on_failed_audit_is_swallowed(self) -> None:
+        backend = _backend()
+        backend.post_message.side_effect = RuntimeError("slack timeout")
+        with patch.object(BotPing.objects, "create", side_effect=_DB_LOCKED):
+            sent = notify_user(
+                "delivery failed, locked audit",
+                kind=NotifyKind.INFO,
+                idempotency_key="db-locked-failed",
+                backend=backend,
+                user_id="U_ME",
+            )
+
+        assert sent is False
 
 
 class TestNotifyUserLinkify(TestCase):
