@@ -185,6 +185,45 @@ class TestCheckCommand:
         assert result.exit_code == 0
         posted.assert_not_called()
 
+    def test_commits_backing_file_after_ack(self, tmp_path: Path, monkeypatch) -> None:
+        """The drained file is discarded only after acking the messages."""
+        import json  # noqa: PLC0415
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        queue = tmp_path / "teatree" / "slack-events.jsonl"
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(
+            json.dumps({"overlay": "ov", "event": {"type": "message", "user": "U1", "text": "hi", "ts": "1.0"}}) + "\n",
+            encoding="utf-8",
+        )
+
+        with (
+            patch("teatree.cli.slack_listen._resolve_reaction_token", return_value="xoxp-test"),
+            patch("teatree.cli.slack_listen.post_reaction", return_value=True),
+        ):
+            result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 0
+        assert not queue.is_file()
+        assert not queue.with_suffix(".draining").is_file()
+
+    def test_empty_queue_commits_so_bot_events_do_not_replay(self, tmp_path: Path, monkeypatch) -> None:
+        """Bot-only events still discard the backing file (no infinite replay)."""
+        import json  # noqa: PLC0415
+
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        queue = tmp_path / "teatree" / "slack-events.jsonl"
+        queue.parent.mkdir(parents=True, exist_ok=True)
+        queue.write_text(
+            json.dumps({"overlay": "ov", "event": {"type": "message", "bot_id": "B1", "text": "bot"}}) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(slack_app, ["check"])
+
+        assert result.exit_code == 1
+        assert not queue.with_suffix(".draining").is_file()
+
 
 class TestListenCommand:
     def test_exits_when_no_overlays(self, tmp_path: Path) -> None:
