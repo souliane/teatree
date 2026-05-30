@@ -23,6 +23,7 @@ import subprocess  # noqa: S404
 import sys
 import tempfile
 import time
+import traceback
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -5447,9 +5448,19 @@ def main() -> None:
 
     deny_emitted = False
     for handler in handlers:
-        # Handlers that return True emitted a deny — stop the chain to avoid
-        # writing multiple JSON objects to stdout (which would be invalid JSON).
-        if handler(data) is True:
+        # A handler's own crash is cannot-evaluate, NOT a content deny: skip the
+        # broken gate and continue the chain so a handler whose internal
+        # fail-open is incomplete can neither (a) surface its crash as a deny
+        # that hard-blocks the tool, nor (b) disable every downstream gate. The
+        # diagnostic goes to stderr (never stdout) so it cannot be read as a
+        # deny payload. Only an explicit ``True`` return is a deny — it stops the
+        # chain to avoid writing multiple JSON objects to stdout (invalid JSON).
+        try:
+            verdict = handler(data)
+        except Exception:  # noqa: BLE001 — crash-proof router: a broken gate fails open, never denies.
+            traceback.print_exc(file=sys.stderr)
+            continue
+        if verdict is True:
             deny_emitted = True
             break
 

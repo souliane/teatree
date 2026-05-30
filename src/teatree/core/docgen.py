@@ -20,6 +20,7 @@ _OVERLAY_HOOK_ORDER = (
     "get_services_config",
     "get_base_images",
     "get_docker_services",
+    "get_checking_sources",
 )
 
 _METADATA_HOOK_ORDER = (
@@ -45,6 +46,7 @@ _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_services_config": "Return additional service metadata for worktree-lifecycle orchestration.",
     "get_base_images": "Declare Docker base images teatree builds once and shares across worktrees.",
     "get_docker_services": "Declare service names that MUST run in Docker — enforced at `worktree provision`.",
+    "get_checking_sources": "Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report.",
 }
 
 _METADATA_HOOK_DESCRIPTIONS = {
@@ -69,6 +71,7 @@ _OVERLAY_COMMANDS = (
     "tasks work-next-user-input",
     "followup refresh",
     "followup remind",
+    "checking show",
 )
 
 _SKILL_METADATA_FIELDS: tuple["SkillFieldRecord", ...] = (

@@ -2404,6 +2404,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ tasks         Async task queue.                                              │
 │ followup      Follow-up snapshots.                                           │
 │ standup       Auto-generated daily update (read-only).                       │
+│ checking      Terse 'what did I miss' report since the last check            │
+│               (read-only).                                                   │
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
@@ -3965,6 +3967,40 @@ Usage: t3 teatree standup stale [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --days        INTEGER  Inactivity threshold in days. [default: 3]            │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree checking`
+
+```
+Usage: t3 teatree checking [OPTIONS] COMMAND [ARGS]...
+
+ Terse 'what did I miss' report since the last check (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Print grouped merged/in-flight/needs-you changes since the last check  │
+│       (read-only).                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree checking show`
+
+```
+Usage: t3 teatree checking show [OPTIONS]
+
+ Print a terse, grouped, clickable report of changes since the last check.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --since             TEXT  ISO timestamp override for the window start (does  │
+│                           NOT advance the marker).                           │
+│ --json                    Emit the structured report as JSON instead of the  │
+│                           terse view.                                        │
+│ --no-advance              Read the window without advancing the last-checked │
+│                           marker.                                            │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

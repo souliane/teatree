@@ -758,6 +758,23 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
+    # The recorded reviewer verdict must be merge-safe. ``MergeClear.issue()``
+    # rejects a non-green verdict at issue time, but a row written directly via
+    # ``.objects.create()`` (fixture / migration / non-factory ORM path) could
+    # smuggle a HOLD (pending/failed) verdict past it. Re-check here so the
+    # live-CI re-check below can never stamp green over the reviewer's recorded
+    # HOLD when CI self-flips green — the green-over-HOLD class (§17.8 clause 3:
+    # the checker's recorded verdict is authoritative, mirroring the
+    # ``is_non_reviewer_role`` issue/merge double-guard above).
+    if clear.gh_verify_result != clear.VerifyResult.GREEN:
+        msg = (
+            f"MergeClear for {slug}#{pr_id} records gh_verify_result "
+            f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the "
+            f"reviewed tree; a non-green verdict can never authorize a merge regardless of the "
+            f"live CI rollup (§17.4.2 / §17.8 clause 3)"
+        )
+        raise MergePreconditionError(msg)
+
     # Independent cold-review CLEAR: the reviewer identity must be distinct
     # from the executing loop (§17.8 clause 3 — the loop cannot rubber-stamp
     # its own CLEAR).

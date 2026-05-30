@@ -54,6 +54,7 @@ dev = [
   "browser-cookie3>=0.20",
   "cyclonedx-bom>=6",
   "django-types>=0.23",
+  "factory-boy>=3.3",
   "inline-snapshot>=0.13",
   "patchy>=2.7",
   "prek>=0.2.12",
