@@ -2,7 +2,7 @@
 
 See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This file adds only what is specific to `hooks/`.
 
-- **One router, many events.** `scripts/hook_router.py` dispatches on `--event`. Registered events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `TaskCreated`, `Stop`, `PreCompact`, `SessionEnd`, `InstructionsLoaded`. Wiring lives in `hooks.json`.
+- **One router, many events.** `scripts/hook_router.py` dispatches on `--event`. Registered events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `TaskCreated`, `Stop`, `SubagentStop`, `PreCompact`, `SessionEnd`, `InstructionsLoaded`. Wiring lives in `hooks.json`. `SubagentStop` carries `session_id` / `cwd` / `transcript_path` and fires once per sub-agent termination — `handle_subagent_stop_no_commit` (#1205) records a `terminated_without_commit` signal when the sub-agent's worktree (the harness `cwd`) is a work branch with 0 commits, so the orchestrator does not assume lost work landed.
 - **Adding a gate** = a new handler branch in `hook_router.py` for an existing event (usually `PreToolUse` or `Stop`). To **deny** a `PreToolUse` tool call, call the shared helper and return its `True`:
 
   ```python
