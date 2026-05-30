@@ -1604,6 +1604,21 @@ class TestPruneBranches(TestCase):
         with _gh_no_pr, patch.object(git_mod, "run", return_value=" file.py | 1 +"):
             assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
 
+    def test_falls_back_to_diff_when_host_cli_is_blocked(self) -> None:
+        # A blocked/missing gh/glab raises OSError (PermissionError in a sandbox,
+        # FileNotFoundError when absent) — clean-all must not crash, it falls
+        # back to the diff check rather than propagating the error.
+        with (
+            patch("teatree.utils.run.subprocess.run", side_effect=PermissionError("blocked")),
+            patch.object(git_mod, "run", return_value=""),
+        ):
+            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
+        with (
+            patch("teatree.utils.run.subprocess.run", side_effect=FileNotFoundError("gh")),
+            patch.object(git_mod, "run", return_value=" file.py | 1 +"),
+        ):
+            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
+
     def test_worktree_map_parses_porcelain(self) -> None:
         porcelain = (
             "worktree /home/user/main\n"
@@ -2345,3 +2360,170 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             assert "SKIPPED 'feature'" in result
             assert "could not verify" in result
             assert tip  # tip captured for clarity; branch must survive
+
+
+class TestPruneGoneRemoteWorktree(TestCase):
+    """#1558 — clean-all must reap worktrees of squash-merged (gone-remote) branches.
+
+    A project PR is squash-merged with branch deletion, so the merged branch's
+    tip is never an ancestor of ``origin/main`` (squash creates a new SHA) and
+    the remote ``origin/<branch>`` ref is gone. Uses a real on-disk git repo so
+    the gone-remote classification is exercised against actual git behaviour.
+
+    The squash-merge tree-match probe (``_pr_merge_commit_sha`` →
+    ``_branch_tree_matches_squash``) needs a host CLI that is absent under test,
+    so the squash commit SHA is injected (the existing data-loss-guard tests do
+    the same) — hermetic regardless of commit timestamps (#915).
+    """
+
+    def _squash_merge_and_delete_remote(self, work: Path, branch: str) -> tuple[str, str]:
+        """Squash-merge ``branch`` into main, push main, delete the remote ref.
+
+        Returns ``(worktree_path, squash_sha)``. Leaves the local ``branch`` ref
+        present (the worktree holds it) but ``fetch --prune`` removes
+        ``refs/remotes/origin/<branch>`` — the gone-remote terminal state of a
+        squash-merged + branch-deleted PR. ``squash_sha`` (the commit on main,
+        whose tree equals the branch tip) is fed to ``_pr_merge_commit_sha`` so
+        the tree-match classification is deterministic.
+        """
+        _git(work, "checkout", "-q", "-b", branch)
+        (work / f"{branch}.py").write_text("work\n", encoding="utf-8")
+        _git(work, "add", f"{branch}.py")
+        _git(work, "commit", "-q", "-m", f"feat: {branch} (#1558)")
+        _git(work, "push", "-q", "origin", branch)
+        _git(work, "checkout", "-q", "main")
+        _git(work, "merge", "-q", "--squash", branch)
+        _git(work, "commit", "-q", "-m", f"feat: {branch} (#1558)")
+        squash_sha = _git(work, "rev-parse", "main")
+        _git(work, "push", "-q", "origin", "main")
+        # Delete the source branch on the remote, then prune the local ref.
+        _git(work, "push", "-q", "origin", "--delete", branch)
+        _git(work, "fetch", "-q", "--prune", "origin")
+        wt_path = work.parent / f"wt-{branch}"
+        _git(work, "worktree", "add", "-q", str(wt_path), branch)
+        return str(wt_path), squash_sha
+
+    def test_gone_remote_clean_worktree_is_pruned_branch_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert not Path(wt_path).is_dir(), f"gone-remote worktree should be removed, got: {cleaned!r}"
+            assert any("feature" in c and "gone-remote" in c.lower() for c in cleaned), cleaned
+            # The branch ref must survive — only the working tree is reaped.
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split(), (
+                f"branch ref must be kept (recoverable), got: {cleaned!r}"
+            )
+
+    def test_gone_remote_dirty_worktree_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+            # Uncommitted change in the worktree → must be kept.
+            (Path(wt_path) / "dirty.py").write_text("local edit\n", encoding="utf-8")
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert Path(wt_path).is_dir(), f"dirty worktree must be kept, got: {cleaned!r}"
+            assert any("feature" in c and "uncommitted" in c.lower() for c in cleaned), cleaned
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_gone_remote_worktree_with_only_regenerable_file_is_pruned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+            # A regenerable env cache is not real work — the worktree is clean.
+            (Path(wt_path) / ".t3-env.cache").write_text("POSTGRES_USER=x\n", encoding="utf-8")
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert not Path(wt_path).is_dir(), (
+                f"worktree with only regenerable files should be pruned, got: {cleaned!r}"
+            )
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_branch_still_on_origin_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            # Pushed branch, NOT merged, remote ref intact → open work, keep it.
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "f.py").write_text("work\n", encoding="utf-8")
+            _git(work, "add", "f.py")
+            _git(work, "commit", "-q", "-m", "feat: open work (#1558)")
+            _git(work, "push", "-q", "origin", "feature")
+            _git(work, "checkout", "-q", "main")
+            _git(work, "fetch", "-q", "--prune", "origin")
+            wt_path = tmp / "wt-feature"
+            _git(work, "worktree", "add", "-q", str(wt_path), "feature")
+
+            cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert wt_path.is_dir(), f"branch still on origin must be kept, got: {cleaned!r}"
+            assert not any("gone-remote" in c.lower() for c in cleaned), cleaned
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_gone_remote_genuinely_ahead_worktree_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+            # A commit added in the worktree after merge that is NOT captured by
+            # the squash (its tree diverges from the squash SHA) — active WIP, so
+            # the worktree must be kept even though the branch ref is recoverable.
+            (Path(wt_path) / "extra.py").write_text("more work\n", encoding="utf-8")
+            _git(Path(wt_path), "add", "extra.py")
+            _git(Path(wt_path), "commit", "-q", "-m", "feat: extra unmerged work")
+
+            with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert Path(wt_path).is_dir(), f"genuinely-ahead worktree must be kept, got: {cleaned!r}"
+            assert any("feature" in c and "ahead of origin/main" in c for c in cleaned), cleaned
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+    def test_origin_ref_exists_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            assert ws_cleanup_mod._origin_ref_exists(str(work), "main") is True
+            assert ws_cleanup_mod._origin_ref_exists(str(work), "never-existed") is False
+
+    def test_worktree_clean_helper_ignores_regenerable_and_missing_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path = tmp / "wt-clean"
+            _git(work, "worktree", "add", "-q", str(wt_path), "-b", "side")
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is True
+            (wt_path / ".t3-env.cache").write_text("X=1\n", encoding="utf-8")
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is True
+            (wt_path / "real.py").write_text("real\n", encoding="utf-8")
+            assert ws_cleanup_mod._worktree_clean(str(wt_path)) is False
+            assert ws_cleanup_mod._worktree_clean(str(tmp / "does-not-exist")) is False
+
+    def test_prune_gone_worktree_reports_when_removal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+
+            with (
+                patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha),
+                patch.object(git_mod, "worktree_remove", return_value=False),
+            ):
+                result = ws_cleanup_mod._prune_gone_worktree(str(work), "feature", wt_path)
+
+            assert "SKIPPED 'feature'" in result
+            assert "git worktree remove failed" in result
+            # Removal failed → the working tree and branch ref both survive.
+            assert Path(wt_path).is_dir()
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
