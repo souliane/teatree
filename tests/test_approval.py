@@ -58,11 +58,11 @@ class TestRequireInteractiveApproval:
         stdin = _FakeStream(tty=True, content="y\n")
         stdout = _FakeStream(tty=True)
         require_interactive_approval(
-            "Pull fresh DEV dump for development-volksbank into ticket DB?",
+            "Pull fresh DEV dump for development-acme into ticket DB?",
             stdin=stdin,
             stdout=stdout,
         )
-        assert "development-volksbank" in stdout.getvalue()
+        assert "development-acme" in stdout.getvalue()
 
     def test_agent_cannot_self_approve_even_with_yes_in_buffer(self) -> None:
         # The decisive guard: a non-TTY stdin carrying "y" must NOT pass —
