@@ -119,6 +119,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `max_concurrent_local_stacks` | #1397: cap on concurrent locally-running stacks per overlay (0 = unbounded). A heavy overlay caps to `1` while a cheap dogfood overlay stays unbounded; enforced by `t3 <overlay> worktree start` / `workspace start` |
 | `orchestrator_bash_gate_enabled` | #115: kill-switch (default `true`) for the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary`). When on, the MAIN agent is blocked from running a LONG / HEAVY foreground `Bash` command (test suite, build, dev server, long sleep, full-tree sweep); `run_in_background: true` is the escape hatch, sub-agents unrestricted. Set `false` under `[teatree]` (read directly by the hook layer, mirroring `_plan_gate_enabled`) or per-overlay to disable it — e.g. as the failsafe after `t3 update` reinstalls the gate. |
 | `gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. See BLUEPRINT §17 invariant 10. |
+| `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into

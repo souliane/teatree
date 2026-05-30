@@ -352,3 +352,35 @@ max_concurrent_local_stacks = 1
         )
 
         assert get_effective_settings().max_concurrent_local_stacks == 1
+
+    def test_overlay_can_override_mr_title_regex(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1540: per-overlay MR title pattern wins over the global.
+
+        An overlay whose title grammar differs declares its own
+        ``mr_title_regex`` without flipping the global default. The
+        ``pr create`` gate reads it via ``get_effective_settings()`` so the
+        per-overlay value applies when ``T3_OVERLAY_NAME`` is set.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
+
+        _write_toml(
+            config_file,
+            r"""
+[teatree]
+mr_title_regex = "^(feat|fix): .+"
+
+[overlays.scoped]
+class = "x.y:Z"
+mr_title_regex = "^JIRA-\\d+: .+"
+""",
+        )
+
+        assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
