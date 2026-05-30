@@ -185,7 +185,13 @@ When a test asserts something about prose (a BLUEPRINT/skill/docs invariant — 
 
 ### Delegating Code to Sub-Agents
 
-When launching parallel agents to write code (especially tests), include these requirements in every prompt:
+When launching parallel agents to write code (especially tests), the dispatch prompt MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+
+```text
+NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
+```
+
+Then include these requirements in every prompt:
 
 - **Run `uv run ruff check <files>` and fix all violations** before declaring done
 - **Run `uv run ruff format <files>`** to ensure formatting matches the project
