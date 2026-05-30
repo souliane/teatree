@@ -55,6 +55,16 @@ class TestPolicyErrors:
         assert b is not None
         assert a.idempotency_key != b.idempotency_key
 
+    def test_errors_key_stays_daily_even_with_distinct_tick_id(self) -> None:
+        # A broken scanner must still spam once per day, not once per tick — the
+        # tick-unique component only applies to the always-mode signals path.
+        report = OrchestratorReport(errors={"inbox": "boom"})
+        a = build_summary_dm(report, policy="errors", utc_day="2026-05-28", tick_id="2026-05-28T10:00:00+00:00")
+        b = build_summary_dm(report, policy="errors", utc_day="2026-05-28", tick_id="2026-05-28T10:01:00+00:00")
+        assert a is not None
+        assert b is not None
+        assert a.idempotency_key == b.idempotency_key
+
 
 class TestPolicyAlways:
     def test_quiet_tick_still_emits(self) -> None:
@@ -70,6 +80,16 @@ class TestPolicyAlways:
         assert "5 signals" in dm.text
         assert "3 actions" in dm.text
         assert "inbox" in dm.text
+
+    def test_two_ticks_same_day_get_distinct_keys(self) -> None:
+        # policy=always means "DM every tick". A day-granular key would dedup the
+        # second tick away. Each tick must carry a distinct idempotency key.
+        report = OrchestratorReport(signals_count=0, errors={})
+        first = build_summary_dm(report, policy="always", utc_day="2026-05-28", tick_id="2026-05-28T10:00:00+00:00")
+        second = build_summary_dm(report, policy="always", utc_day="2026-05-28", tick_id="2026-05-28T10:01:00+00:00")
+        assert first is not None
+        assert second is not None
+        assert first.idempotency_key != second.idempotency_key
 
 
 class TestUnknownPolicyFallsBackToErrors:

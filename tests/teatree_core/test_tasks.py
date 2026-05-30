@@ -1,4 +1,6 @@
-from unittest.mock import patch
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
@@ -308,6 +310,88 @@ class TestExecuteShip(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SHIPPED
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "push rejected"}
+
+
+class TestExecuteShipOrphanPrWindow(TestCase):
+    """A forge PR opened by ``create_pr`` must never be stranded by a rollback.
+
+    The live PR is an external side effect that no transaction rollback can
+    undo. If the PR-url marker is committed only when the FSM-advance
+    transaction commits, a failure after ``create_pr`` (e.g. the
+    ``request_review`` guard raising) rolls back the marker but leaves the
+    forge PR live — the ticket is stuck SHIPPED with an orphan PR, and a
+    retry re-calls ``create_pr`` and hits a 409.
+    """
+
+    def _shipped_ticket_with_worktree(self) -> Ticket:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/77")
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path="/tmp/repo",
+            branch="feat-x",
+            extra={"worktree_path": "/tmp/repo"},
+        )
+        ticket.state = Ticket.State.SHIPPED
+        ticket.save(update_fields=["state"])
+        return ticket
+
+    @contextmanager
+    def _ship_collaborators(self, host: object) -> Iterator[None]:
+        with ExitStack() as stack:
+            stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY))
+            stack.enter_context(patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host))
+            stack.enter_context(patch("teatree.core.runners.ship.git.push"))
+            stack.enter_context(patch("teatree.core.runners.ship.git.branch_merged", return_value=False))
+            stack.enter_context(patch("teatree.core.runners.ship.branch_behind_target", return_value=None))
+            stack.enter_context(
+                patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body"))
+            )
+            yield
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_pr_url_recorded_when_fsm_advance_raises_after_create_pr(self) -> None:
+        ticket = self._shipped_ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1", "iid": 1}
+        host.current_user.return_value = "souliane"
+
+        with (
+            self._ship_collaborators(host),
+            patch.object(Ticket, "request_review", side_effect=RuntimeError("post-create_pr failure")),
+            pytest.raises(RuntimeError, match="post-create_pr failure"),
+        ):
+            execute_ship.call(ticket.pk)
+
+        ticket.refresh_from_db()
+        # The forge PR is live; its URL MUST survive the FSM-advance rollback.
+        assert ticket.extra.get("pr_urls") == ["https://example.com/mr/1"]
+        assert host.create_pr.call_count == 1
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_retry_after_fsm_advance_failure_adopts_existing_pr(self) -> None:
+        ticket = self._shipped_ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/1", "iid": 1}
+        host.current_user.return_value = "souliane"
+
+        with (
+            self._ship_collaborators(host),
+            patch.object(Ticket, "request_review", side_effect=RuntimeError("post-create_pr failure")),
+            pytest.raises(RuntimeError, match="post-create_pr failure"),
+        ):
+            execute_ship.call(ticket.pk)
+
+        # Retry: create_pr must NOT be called again (the recorded URL is adopted),
+        # so the forge never returns a 409 "PR already exists".
+        with self._ship_collaborators(host):
+            execute_ship.call(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert host.create_pr.call_count == 1
+        assert ticket.state == Ticket.State.IN_REVIEW
 
 
 class TestExecuteHeadlessTask(TestCase):

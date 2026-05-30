@@ -183,19 +183,27 @@ def record_run(
     *,
     result: str,
     per_repo_shas: dict[str, str],
+    env: str = "local",
 ) -> None:
-    """Record run provenance on the durable recipe (#794).
+    """Record run provenance on the durable recipe (#794, #88).
 
-    ``{result, timestamp, per_repo_shas}`` is written to ``last_run`` so a
-    run is auditable after the workspace is cleaned. On a **green** run the
+    ``{result, timestamp, per_repo_shas, env}`` is written to ``last_run`` so
+    a run is auditable after the workspace is cleaned. On a **green** run the
     SHA-set is promoted to ``last_green`` (the new baseline); a failed run
     records provenance but never moves the baseline.
+
+    ``env`` is the environment the run executed against — ``"local"``
+    (teatree-managed local stack, the default since ``e2e run`` resolves an
+    on-disk workspace) or ``"dev"`` (a deployed dev run). The DoD gate (#88)
+    reads it: only a *local* green run satisfies the pre-ship requirement,
+    so a dev-after-merge run records provenance without unblocking the gate.
     """
     recipe = load_recipe(ticket)
     recipe.last_run = E2ELastRunSerialized(
         result=result,
         timestamp=timezone.now().isoformat(),
         per_repo_shas=dict(per_repo_shas),
+        env=env,
     )
     if result == "green":
         by_repo = {r.repo: r for r in recipe.repos}

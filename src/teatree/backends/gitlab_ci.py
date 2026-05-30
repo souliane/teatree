@@ -2,6 +2,7 @@
 
 import re
 from typing import cast
+from urllib.parse import urlencode
 
 from teatree.backends.gitlab_api import GitLabAPI
 
@@ -113,7 +114,8 @@ class GitLabCIService:
         }
 
     def _latest_pipeline(self, project_id: int, ref: str) -> dict[str, object] | None:
-        data = self._client.get_json(f"projects/{project_id}/pipelines?ref={ref}&per_page=1")
+        params = urlencode({"ref": ref, "per_page": 1})
+        data = self._client.get_json(f"projects/{project_id}/pipelines?{params}")
         if isinstance(data, list) and data:
             return data[0]
         return None

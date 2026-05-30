@@ -30,6 +30,7 @@ class SyncConfig(OverlayConfig):
         slack_token: str = "",
         review_channel: tuple[str, str] = ("", ""),
         known_variants: list[str] | None = None,
+        frontend_repos: list[str] | None = None,
     ) -> None:
         self._gitlab_token = gitlab_token
         self._gitlab_username = gitlab_username
@@ -39,6 +40,10 @@ class SyncConfig(OverlayConfig):
         self._slack_token = slack_token
         self._review_channel = review_channel
         self.known_variants = known_variants or []
+        # Mirror the real OverlayConfig, which always exposes frontend_repos.
+        # The #1426 DoD gate fails CLOSED on a config that omits it; this test
+        # double must therefore declare it (empty = no UI-visible tickets).
+        self.frontend_repos = frontend_repos or []
 
     def get_gitlab_token(self) -> str:
         return self._gitlab_token
