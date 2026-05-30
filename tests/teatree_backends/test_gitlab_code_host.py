@@ -88,6 +88,53 @@ def test_create_pr_returns_error_when_project_not_resolved() -> None:
     client.post_json.assert_not_called()
 
 
+def test_create_issue_posts_to_project_with_labels() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"iid": 3, "web_url": "https://gitlab.com/org/repo/-/issues/3"}
+    host = GitLabCodeHost(client=client)
+
+    result = host.create_issue(repo="org/repo", title="t", body="b", labels=["enforcement-gap"])
+
+    assert result == {"iid": 3, "web_url": "https://gitlab.com/org/repo/-/issues/3"}
+    client.post_json.assert_called_once_with(
+        "projects/42/issues",
+        {"title": "t", "description": "b", "labels": "enforcement-gap"},
+    )
+
+
+def test_create_issue_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.create_issue(repo="org/unknown", title="t", body="b") == {
+        "error": "Could not resolve project: org/unknown"
+    }
+    client.post_json.assert_not_called()
+
+
+def test_search_open_issues_searches_project() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = [{"iid": 3}]
+    host = GitLabCodeHost(client=client)
+
+    result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
+
+    assert result == [{"iid": 3}]
+    endpoint = client.get_json.call_args[0][0]
+    assert endpoint.startswith("projects/42/issues?state=opened&search=")
+
+
+def test_search_open_issues_returns_empty_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.search_open_issues(repo="org/unknown", query="x") == []
+
+
 def test_list_my_prs_delegates_to_client_list_all_open_mrs() -> None:
     """list_my_prs returns the forge-wide list of MRs authored by user."""
     client = MagicMock(spec=GitLabAPI)

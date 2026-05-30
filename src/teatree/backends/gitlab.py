@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 from typing import TypedDict, cast
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
@@ -157,6 +157,40 @@ class GitLabCodeHost:
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         return self._client.list_open_issues_for_assignee(assignee)
+
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict:
+        """Open a GitLab issue on *repo* and return the created payload.
+
+        The returned dict carries ``web_url`` (the clickable issue link) and
+        ``iid``. Returns ``{"error": ...}`` when the project cannot resolve.
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return {"error": f"Could not resolve project: {repo}"}
+        payload: RawAPIDict = {"title": title, "description": body}
+        if labels:
+            payload["labels"] = ",".join(labels)
+        return self._client.post_json(f"projects/{project.project_id}/issues", payload) or {}
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
+        """Return open issues on *repo* whose title/description match *query*.
+
+        Returns an empty list when the project cannot resolve — the caller
+        treats "no matches" and "unresolvable" identically.
+        """
+        project = self._resolve_project(repo)
+        if project is None:
+            return []
+        endpoint = f"projects/{project.project_id}/issues?state=opened&search={quote_plus(query)}&per_page=100"
+        data = self._client.get_json(endpoint)
+        return data if isinstance(data, list) else []
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
