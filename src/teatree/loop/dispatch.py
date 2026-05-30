@@ -54,6 +54,13 @@ _AGENT_BY_KIND: dict[str, str] = {
     # issue URL back onto the row via ``RedCardSignal.link_issue``.
     "red_card.signal": "t3:orchestrator",
     "pending_task": "t3:orchestrator",
+    # #1554: a newly-claimed auto-implement issue routes to the orchestrator
+    # as a MAKER-side kickoff — it starts the normal maker pipeline for the
+    # claimed issue. It issues no MergeClear and gains no new merge authority
+    # (the §17.4 maker≠checker boundary is untouched). Mirrored into the
+    # statusline below so the user sees the claimed issue without waiting on
+    # the agent.
+    "issue_implementer.claimed": "t3:orchestrator",
 }
 
 _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
@@ -65,6 +72,9 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "slack.review_intent": "action_needed",
     "red_card.signal": "action_needed",
     "assigned_issue.ready": "action_needed",
+    # #1554: a claimed auto-implement issue is in-flight maker work the user
+    # should see surfaced while the orchestrator picks it up.
+    "issue_implementer.claimed": "action_needed",
     "ticket.active": "anchors",
     "ticket.disposition_candidate": "action_needed",
     "ticket.stale": "action_needed",
@@ -187,6 +197,10 @@ _DUAL_DISPATCH: frozenset[str] = frozenset(
         # #1130: the orchestrator runs AND we mirror the RED CARD into the
         # statusline so the user sees the pending corrective-action workflow.
         "red_card.signal",
+        # #1554: the orchestrator runs (maker-side kickoff) AND we mirror the
+        # claimed issue into the statusline so the user sees the in-flight
+        # auto-implement work.
+        "issue_implementer.claimed",
         # #1295 cap D: the t3:debug agent runs AND we mirror the failed
         # PR into the statusline so the user sees the red MR even when
         # the ledger idempotency gate suppresses the agent dispatch on
