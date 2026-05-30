@@ -101,7 +101,7 @@ class TestTickPiggybackSlackAnswer:
         with (
             patch.dict("os.environ", _no_session_env(), clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.loop.tick.build_default_jobs", return_value=[]),
+            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
             call_command("loop_tick", stdout=out)
@@ -120,7 +120,7 @@ class TestTickPiggybackSlackAnswer:
         with (
             patch.dict("os.environ", _no_session_env(), clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.loop.tick.build_default_jobs", return_value=[]),
+            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
             call_command("loop_tick", stdout=out)
@@ -142,7 +142,7 @@ class TestTickPiggybackSlackAnswer:
                 clear=True,
             ),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.loop.tick.build_default_jobs", return_value=[]),
+            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
             call_command("loop_tick", stdout=io.StringIO())
@@ -181,7 +181,7 @@ class TestTickPiggybackSelfImprove:
         with (
             patch.dict("os.environ", {**_no_session_env(), "XDG_DATA_HOME": str(tmp_path)}, clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.loop.tick.build_default_jobs", return_value=[]),
+            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
             patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=0.0),
         ):
             call_command("loop_tick", "--statusline-file", str(tick_statusline), stdout=out)
