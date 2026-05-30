@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _build_skill_loader_input, _strip_ambient_context
+from hooks.scripts.hook_router import _AMBIENT_STRIP_MAX_CHARS, _build_skill_loader_input, _strip_ambient_context
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -135,6 +135,46 @@ class TestStripAmbientContext:
             router.STATE_DIR = router_state
         assert "blog" not in built["prompt"].lower()
         assert "implement the fix" in built["prompt"]
+
+
+class TestInputLengthCap:
+    """The strip input is capped so the DOTALL regexes stay off the slow path.
+
+    The block regex is O(n²) against many unterminated ``<system-reminder>``
+    open tags (a pasted log/transcript, or a malicious agent). Since the
+    strip runs on every ``UserPromptSubmit``, the input is capped to
+    :data:`_AMBIENT_STRIP_MAX_CHARS` BEFORE matching. The deterministic
+    assertion is that text beyond the cap is never seen by the matcher.
+    """
+
+    def test_text_beyond_cap_is_not_processed(self) -> None:
+        # A sentinel keyword placed strictly beyond the cap must never reach
+        # the output — proving the function processes only the capped slice
+        # (deterministic, not timing-dependent).
+        sentinel = "ZZSENTINELZZ"
+        filler = "x" * (_AMBIENT_STRIP_MAX_CHARS + 100)
+        stripped = _strip_ambient_context(f"real task {filler}{sentinel}")
+        assert sentinel not in stripped
+
+    def test_text_within_cap_survives(self) -> None:
+        # A keyword just inside the cap is still processed normally.
+        sentinel = "ZZSENTINELZZ"
+        prefix = "y" * (_AMBIENT_STRIP_MAX_CHARS - len(sentinel) - 10)
+        stripped = _strip_ambient_context(f"{prefix}{sentinel}")
+        assert sentinel in stripped
+
+    def test_unterminated_open_tag_flood_stays_fast(self) -> None:
+        # Defense-in-depth (NOT the primary assertion): ~200 KB of
+        # unclosed open tags — the O(n²) trigger — must complete well under
+        # 2s once the cap is applied. CI timing is noisy, so this is a
+        # generous guard layered on top of the deterministic cap test.
+        import time  # noqa: PLC0415
+
+        flood = "<system-reminder> blog " * 9000
+        assert len(flood) > 200_000
+        start = time.monotonic()
+        _strip_ambient_context(flood)
+        assert time.monotonic() - start < 2.0
 
 
 class TestAmbientKeywordDoesNotEnterSuggestions:

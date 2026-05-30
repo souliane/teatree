@@ -409,6 +409,17 @@ _AMBIENT_CONTEXT_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# The block regex is O(n²) against many UNTERMINATED open tags (a user
+# pasting a large log/transcript that quotes literal ``<system-reminder>``
+# open tags, or a malicious agent). ``_strip_ambient_context`` runs on
+# EVERY ``UserPromptSubmit`` and is net-new hot-path cost, so the input is
+# capped before the regexes run — bounding the worst case well under the
+# 5s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
+# Genuine task intent sits early in the prompt (the harness appends ambient
+# blocks), so a 64 KiB cap never truncates intent — mirrors the 512-char
+# token windows used elsewhere in this file.
+_AMBIENT_STRIP_MAX_CHARS: int = 65536
+
 
 def _strip_ambient_context(prompt: str) -> str:
     """Remove harness-injected ambient-context blocks from *prompt*.
@@ -419,7 +430,11 @@ def _strip_ambient_context(prompt: str) -> str:
     injection) is dropped from its tag to end-of-string so leaked ambient
     text can never reach the keyword matcher. The intent text is what the
     high-confidence hard-block demand set is built from (#1567).
+
+    The input is capped to :data:`_AMBIENT_STRIP_MAX_CHARS` before
+    matching to keep this hot-path hook fast (see the constant's note).
     """
+    prompt = prompt[:_AMBIENT_STRIP_MAX_CHARS]
     stripped = _AMBIENT_CONTEXT_RE.sub(" ", prompt)
     stripped = re.sub(
         r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>.*",
