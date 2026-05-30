@@ -1,0 +1,187 @@
+"""Tests for the PreToolUse pre-dispatch quote-scanner gate (#1401).
+
+Companion to the #1213 publish-boundary gate. This one scans the
+``Agent``/``Task`` dispatch prompt BEFORE a sub-agent is spawned, so a
+verbatim user-voice/PII fragment pasted into a brief as "context" never
+reaches the sub-agent's model context (where it would later be echoed
+into a published MR/issue/note, defeating the publish gate).
+
+Integration-style: the real handler, the real detector
+(``quote_scanner.scan_text``, reused — no second matcher), and the real
+JSONL ledger pinned to ``tmp_path`` via ``T3_DATA_DIR``.
+
+Synthetic fixtures only — no customer names, no real user quotes. The
+user-voice shapes are neutral inventions that trip the existing HIGH
+patterns.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from hooks.scripts.hook_router import handle_dispatch_prompt_quote_scanner
+from teatree.hooks.quote_scanner import dispatch_quote_ok_reason, extract_dispatch_payload
+
+
+@pytest.fixture(autouse=True)
+def _isolated_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin the ledger + blocklist root to ``tmp_path`` so tests don't touch real state."""
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+def _agent(prompt: str, *, description: str = "implement feature", tool_name: str = "Agent") -> dict:
+    return {
+        "session_id": "sess-1",
+        "tool_name": tool_name,
+        "tool_input": {
+            "description": description,
+            "prompt": prompt,
+            "subagent_type": "t3:coder",
+        },
+    }
+
+
+def _ledger_lines(tmp_path: Path) -> list[dict[str, object]]:
+    ledger = tmp_path / "quote-scanner.jsonl"
+    if not ledger.exists():
+        return []
+    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+
+
+# A HIGH user-voice shape — a heading announcing a verbatim user block.
+# Neutral synthetic content; trips the existing ``heading-user-mandate``
+# pattern without quoting any real person.
+_HIGH_VOICE_PROMPT = "## User mandate\n\nImplement the export endpoint and wire it to the dashboard."
+
+
+class TestExtractDispatchPayload:
+    """Payload extraction joins the dispatch subject + brief; passes through others."""
+
+    def test_agent_joins_description_and_prompt(self) -> None:
+        payload = extract_dispatch_payload("Agent", {"description": "subj", "prompt": "body"})
+        assert payload == "subj\nbody"
+
+    def test_task_tool_is_a_dispatch_surface(self) -> None:
+        payload = extract_dispatch_payload("Task", {"prompt": "body only"})
+        assert payload == "body only"
+
+    def test_empty_dispatch_scans_empty_string_not_none(self) -> None:
+        # A dispatch with no populated body is clean by construction — it
+        # returns "" (scanned, finds nothing) rather than None (skipped).
+        assert extract_dispatch_payload("Agent", {}) == ""
+
+    @pytest.mark.parametrize("tool_name", ["Bash", "Edit", "Write", "Read", "Grep", "Skill"])
+    def test_non_dispatch_tools_return_none(self, tool_name: str) -> None:
+        assert extract_dispatch_payload(tool_name, {"prompt": "anything"}) is None
+
+
+class TestDispatchQuoteOkReason:
+    """The in-prompt ``[quote-ok: <reason>]`` opt-out token."""
+
+    def test_token_with_reason_returns_reason(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: paraphrase-impossible]\n\nbody") == "paraphrase-impossible"
+
+    def test_token_inline_first_line(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: legal-exact-wording] do the thing") == "legal-exact-wording"
+
+    def test_empty_reason_is_rejected(self) -> None:
+        assert dispatch_quote_ok_reason("[quote-ok: ]\n\nbody") is None
+
+    def test_no_token_returns_none(self) -> None:
+        assert dispatch_quote_ok_reason("an ordinary prompt with no token") is None
+
+    def test_token_buried_past_head_window_is_ignored(self) -> None:
+        prompt = ("x" * 600) + "[quote-ok: too-late]"
+        assert dispatch_quote_ok_reason(prompt) is None
+
+
+class TestHandlerDeny:
+    """A HIGH user-voice/PII match in a dispatch prompt is denied with an actionable reason."""
+
+    def test_high_voice_in_prompt_is_denied(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(_HIGH_VOICE_PROMPT))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        reason = decision["permissionDecisionReason"]
+        # The reason must name the gate, what matched, and the unblock path.
+        assert "pre-dispatch quote-scanner" in reason
+        assert "quote-ok" in reason
+        assert "paraphrase" in reason.lower()
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "deny"
+
+    def test_high_voice_in_description_field_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The subject field is scanned too — a quote pasted there is caught.
+        data = _agent("ordinary brief body", description="## User mandate")
+        blocked = handle_dispatch_prompt_quote_scanner(data)
+        assert blocked is True
+        capsys.readouterr()
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
+
+    def test_task_tool_treated_same_as_agent(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(_HIGH_VOICE_PROMPT, tool_name="Task"))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+
+
+class TestHandlerAllow:
+    """The opt-out token and clean/MEDIUM prompts pass without false-deny."""
+
+    def test_quote_ok_token_bypasses_high_match(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        prompt = f"[quote-ok: exact-wording-required-for-repro]\n\n{_HIGH_VOICE_PROMPT}"
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "allow-override"
+        assert ledger[-1]["override"] is True
+
+    def test_ordinary_prompt_is_allowed_no_false_deny(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The common case: a normal author-voice brief with no user-voice
+        # or PII shape. The fleet dispatches constantly — this MUST NOT deny.
+        prompt = (
+            "Implement issue #1401: add a PreToolUse branch that scans Agent/Task "
+            "dispatch prompts. Reuse scan_text. Add tests. Run the gates and push."
+        )
+        blocked = handle_dispatch_prompt_quote_scanner(_agent(prompt))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+        ledger = _ledger_lines(tmp_path)
+        assert ledger
+        assert ledger[-1]["decision"] == "allow"
+
+    def test_medium_attribution_does_not_deny_on_dispatch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # MEDIUM attribution shapes pass silently on dispatch (conservative:
+        # only HIGH denies). No deny JSON, no stderr noise.
+        blocked = handle_dispatch_prompt_quote_scanner(_agent("Per user direction, ship the export Friday."))
+        assert blocked is False
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
+
+
+class TestToolScope:
+    """Only Agent/Task tools trigger the gate; everything else passes untouched."""
+
+    @pytest.mark.parametrize("tool_name", ["Bash", "Edit", "Write", "Read", "Grep", "AskUserQuestion", "Skill"])
+    def test_non_dispatch_tools_pass_through(self, tmp_path: Path, tool_name: str) -> None:
+        # Even with a HIGH-shaped payload, a non-dispatch tool is a no-op
+        # here (the publish gate, not this one, governs Bash/Slack).
+        data = {"session_id": "s", "tool_name": tool_name, "tool_input": {"prompt": _HIGH_VOICE_PROMPT}}
+        assert handle_dispatch_prompt_quote_scanner(data) is False
+        # A no-op never reaches the scan path, so the ledger stays empty.
+        assert _ledger_lines(tmp_path) == []
+
+    def test_non_dict_tool_input_is_a_noop(self, tmp_path: Path) -> None:
+        data = {"session_id": "s", "tool_name": "Agent", "tool_input": "not-a-dict"}
+        assert handle_dispatch_prompt_quote_scanner(data) is False
