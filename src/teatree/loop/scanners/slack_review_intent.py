@@ -85,10 +85,18 @@ class SlackReviewIntentScanner:
         target_user = getattr(self.backend, "user_id", "")
         signals: list[ScanSignal] = []
 
-        for event in self._drain_reactions():
+        reactions, drained_file = self._drain_reactions()
+        for event in reactions:
             signal = self._handle_reaction(event, target_user)
             if signal is not None:
                 signals.append(signal)
+        if drained_file:
+            # Discard the backing file only after the reactions above are
+            # handled (rows persisted) — a crash before this point leaves it
+            # for the next drain to recover (#1047).
+            from teatree.backends.slack_receiver import commit_reactions_drain  # noqa: PLC0415
+
+            commit_reactions_drain()
 
         for event in self._drain_mentions():
             signal = self._handle_mention(event, target_user)
@@ -97,25 +105,29 @@ class SlackReviewIntentScanner:
 
         return signals
 
-    def _drain_reactions(self) -> list[RawAPIDict]:
-        """Drain reaction events.
+    def _drain_reactions(self) -> tuple[list[RawAPIDict], bool]:
+        """Drain reaction events; flag whether the file-backed queue had any.
 
         Production path: pop from ``slack-reactions.jsonl`` via
         :func:`drain_reactions_queue`. Test path: pop from the backend's
         in-memory ``fetch_reactions`` (used by ``FakeMessaging`` so unit
-        tests stay file-system free).
+        tests stay file-system free). The returned flag is true when the
+        JSONL queue yielded events, so :meth:`scan` knows to commit the
+        backing file only after the rows are persisted.
         """
         from teatree.backends.slack_receiver import drain_reactions_queue  # noqa: PLC0415
 
         events: list[RawAPIDict] = []
+        drained_file = False
         for queued in drain_reactions_queue():
+            drained_file = True
             event = queued.get("event", {})
             if isinstance(event, dict):
                 events.append(event)
         fetch_reactions = getattr(self.backend, "fetch_reactions", None)
         if callable(fetch_reactions):
             events.extend(fetch_reactions())
-        return events
+        return events, drained_file
 
     def _drain_mentions(self) -> list[RawAPIDict]:
         """Drain mention events without consuming the JSONL queue.

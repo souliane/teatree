@@ -85,20 +85,7 @@ class SlackMentionsScanner:
         mentions = self.backend.fetch_mentions(since=cursors.get("mentions", ""))
         dms = self.backend.fetch_dms(since=cursors.get("dms", ""))
 
-        from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
-
-        for queued in drain_event_queue():
-            event = queued.get("event", {})
-            event_type = event.get("type", "")
-            if event_type == "app_mention":
-                mentions.append(event)
-            elif event_type == "message":
-                channel_type = event.get("channel_type", "")
-                if channel_type == "im":
-                    dms.append(event)
-            # ``reaction_added`` events land in ``slack-reactions.jsonl``
-            # (drained by ``SlackReviewIntentScanner``, #1047) — handled by
-            # the receiver-side routing in ``_run_single_overlay``.
+        drained_any = self._drain_queue_into(mentions, dms)
 
         signals: list[ScanSignal] = []
         for event in mentions:
@@ -128,7 +115,37 @@ class SlackMentionsScanner:
                 cursors["dms"] = max(cursors.get("dms", ""), ts)
         if signals:
             _write_cursors(self.cursor_path, cursors)
+        if drained_any:
+            # Discard the backing file only after the durable persist
+            # (cursor advance + review-intent rows) above. A crash before
+            # this point leaves the ``.draining`` file for the next drain to
+            # recover, so no mention is lost (Slack never retries them).
+            from teatree.backends.slack_receiver import commit_drain  # noqa: PLC0415
+
+            commit_drain()
         return signals
+
+    @staticmethod
+    def _drain_queue_into(mentions: list[RawAPIDict], dms: list[RawAPIDict]) -> bool:
+        """Fold queued Socket Mode events into the fetched mention/DM lists.
+
+        Returns whether the JSONL queue yielded anything, so :meth:`scan`
+        commits the backing file only after persisting. ``reaction_added``
+        events land in ``slack-reactions.jsonl`` (drained by
+        ``SlackReviewIntentScanner``, #1047) and never reach here.
+        """
+        from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
+
+        drained_any = False
+        for queued in drain_event_queue():
+            drained_any = True
+            event = queued.get("event", {})
+            event_type = event.get("type", "")
+            if event_type == "app_mention":
+                mentions.append(event)
+            elif event_type == "message" and event.get("channel_type", "") == "im":
+                dms.append(event)
+        return drained_any
 
     def _record_review_intent(self, event: RawAPIDict) -> None:
         """Persist a ``ReviewAssignment`` row and post ``:eyes:`` for MR-bearing mentions.
