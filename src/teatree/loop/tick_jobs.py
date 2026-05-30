@@ -23,6 +23,7 @@ from teatree.core.clone_paths import find_clone_path
 if TYPE_CHECKING:
     from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.models import ImplementedIssueMarker
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     ArchitecturalReviewScanner,
@@ -35,6 +36,7 @@ from teatree.loop.scanners import (
     GitLabApprovalsScanner,
     GlabGhMrStateClassifier,
     IncomingEventsScanner,
+    IssueImplementerScanner,
     MyPrsScanner,
     NotionViewScanner,
     NullMergeNotifier,
@@ -98,6 +100,7 @@ class Domain(StrEnum):
     ARCH_REVIEW = "arch_review"
     AUDIT = "audit"
     HOUSEKEEPING = "housekeeping"
+    ISSUE_IMPLEMENTER = "issue_implementer"
     DISPATCH = "dispatch"
 
 
@@ -114,6 +117,7 @@ PER_OVERLAY_DOMAINS: tuple[Domain, ...] = (
     Domain.ARCH_REVIEW,
     Domain.AUDIT,
     Domain.HOUSEKEEPING,
+    Domain.ISSUE_IMPLEMENTER,
 )
 
 
@@ -468,6 +472,45 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
         skill=settings.architectural_review_skill,
         cadence_hours=settings.architectural_review_cadence_hours,
         after_merge_count=settings.architectural_review_after_merge_count,
+    )
+
+
+def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementerScanner | None:
+    """Build a per-overlay issue-implementer scanner behind the triple gate (#1553).
+
+    Returns a scanner ONLY when the always-on issue-implementer loop is
+    opted in for this overlay AND the in-flight budget has room. Two of the
+    triple gate's three checks live here; the third lives in the scanner.
+
+    The master gate is ``issue_implementer_enabled`` (default False) — the
+    loop is a hard no-op until an overlay flips it on. The concurrency gate
+    is ``ImplementedIssueMarker.in_flight_count(overlay) <
+    issue_implementer_max_concurrent`` — a full budget emits no scanner, so
+    no further issue is picked up this tick.
+
+    The third gate — per-issue claim idempotency — lives inside the scanner
+    itself (:meth:`ImplementedIssueMarker.claim` returns ``None`` for an
+    already-claimed issue, which the scanner skips).
+
+    Returns ``None`` (no job emitted) whenever either gate is shut, so with
+    the default-OFF config neither ``build_registry_jobs`` nor
+    ``build_default_jobs`` emits anything for this domain — the registry
+    fan-out stays byte-for-byte unchanged until an overlay opts in. Dispatch
+    routing of the emitted signals lands in C4 (#1554).
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.issue_implementer_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
+        return None
+    if ImplementedIssueMarker.objects.in_flight_count(backend.name) >= settings.issue_implementer_max_concurrent:
+        return None
+    return IssueImplementerScanner(
+        host=code_host,
+        label=settings.issue_implementer_label,
+        overlay_name=backend.name,
+        identities=backend.identities,
     )
 
 
@@ -990,6 +1033,20 @@ def _housekeeping_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob
     return [_ScannerJob(scanner=scanner, overlay=backend.name)]
 
 
+def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Per-overlay issue-implementer scanner behind the default-OFF triple gate (#1553).
+
+    Empty by default — :func:`_issue_implementer_scanner_for` returns
+    ``None`` unless the overlay opts in and has in-flight budget — so this
+    domain slice contributes nothing to either fan-out path until an overlay
+    enables the loop, keeping the registry/legacy parity green.
+    """
+    scanner = _issue_implementer_scanner_for(backend)
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+
+
 def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
     """Resolve disposition identity-alias groups with the multi-identity self-group fallback (#1113)."""
     groups = _identity_alias_groups_for_overlay(backend.name, backend)
@@ -1015,6 +1072,7 @@ _PER_OVERLAY_DOMAIN_BUILDERS: dict[Domain, _OverlayDomainBuilder] = {
     Domain.ARCH_REVIEW: _arch_review_jobs_for_overlay,
     Domain.AUDIT: _audit_jobs_for_overlay,
     Domain.HOUSEKEEPING: _housekeeping_jobs_for_overlay,
+    Domain.ISSUE_IMPLEMENTER: _issue_implementer_jobs_for_overlay,
 }
 
 
