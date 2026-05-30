@@ -7,21 +7,24 @@ the live tick and the orchestrator never drift. The ``loop_tick``
 command injects it into ``run_tick`` via the ``jobs_builder`` seam.
 """
 
+import dataclasses
 import datetime as dt
 import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 from django.test import TestCase
 
-from teatree.backends.protocols import CodeHostBackend
+from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.management.commands.loop_tick import _registry_jobs_builder
 from teatree.core.models import MiniLoopMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickRequest, run_tick
+from teatree.loop.tick_jobs import build_default_jobs
 from teatree.loops.config import LoopOverride, LoopsConfig
 from teatree.loops.fanout import build_registry_jobs
 from teatree.loops.orchestrator import Orchestrator
@@ -51,9 +54,9 @@ def _backends() -> list[OverlayBackends]:
     ]
 
 
-def _context() -> dict[str, object]:
+def _context(backends: list[OverlayBackends] | None = None) -> dict[str, object]:
     return {
-        "backends": _backends(),
+        "backends": backends if backends is not None else _backends(),
         "host": None,
         "messaging": None,
         "notion_client": None,
@@ -63,6 +66,34 @@ def _context() -> dict[str, object]:
 
 def _job_set(jobs: list[object]) -> set[tuple[str, str]]:
     return {(job.scanner.name, job.overlay) for job in jobs}
+
+
+def _arg_value(value: object) -> object:
+    if isinstance(value, MagicMock):
+        return id(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(_arg_value(item) for item in value)
+    if isinstance(value, (str, int, float, bool, bytes, type(None))):
+        return value
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value).__name__,
+            tuple((f.name, _arg_value(getattr(value, f.name))) for f in dataclasses.fields(value)),
+        )
+    # Helper instances (repliers, api clients, classifiers) without value
+    # equality compare by type — two equivalent constructions are equal.
+    return type(value).__name__
+
+
+def _scanner_signature(job: Any) -> tuple[Any, ...]:
+    scanner = job.scanner
+    fields = sorted(f.name for f in dataclasses.fields(scanner)) if dataclasses.is_dataclass(scanner) else []
+    args = tuple((name, _arg_value(getattr(scanner, name))) for name in fields)
+    return (type(scanner).__name__, getattr(scanner, "name", ""), job.overlay, args)
+
+
+def _signature_multiset(jobs: list[object]) -> list[tuple[Any, ...]]:
+    return sorted((_scanner_signature(j) for j in jobs), key=repr)
 
 
 class BuildRegistryJobsTestCase(TestCase):
@@ -112,12 +143,88 @@ class BuildRegistryJobsTestCase(TestCase):
         ).tick(OrchestratorTickRequest(backends=backends))
 
         MiniLoopMarker.objects.all().delete()
-        live = build_registry_jobs(
-            {"backends": backends, "host": None, "messaging": None, "notion_client": None, "ready_labels": ()},
-            config=LoopsConfig(),
-            now=NOW,
-        )
+        live = build_registry_jobs(_context(backends), config=LoopsConfig(), now=NOW)
         assert _job_set(live) == _job_set(captured)
+
+
+class RegistryLegacyParityTestCase(TestCase):
+    """The registry fan-out is behaviour-equal to the legacy ``build_default_jobs``.
+
+    On a fresh cadence ledger every loop is eligible, so the registry sum
+    must reproduce the exact scanner set — identity *and* args — the
+    legacy monolithic fan-out produced. This guard is what makes
+    scanner-set drift (double-emit, missing args, dropped scanner) a
+    failing test rather than a silent regression.
+    """
+
+    @staticmethod
+    def _production_backend() -> OverlayBackends:
+        host = MagicMock(spec=CodeHostBackend)
+        messaging = MagicMock(spec=MessagingBackend)
+        return OverlayBackends(
+            name="teatree",
+            hosts=(host,),
+            messaging=messaging,
+            ready_labels=("ready",),
+        )
+
+    def test_registry_matches_legacy_scanner_signatures(self) -> None:
+        backends = [self._production_backend()]
+        legacy = build_default_jobs(backends=backends)
+        MiniLoopMarker.objects.all().delete()
+        registry = build_registry_jobs(_context(backends), config=LoopsConfig(), now=NOW)
+        assert _signature_multiset(registry) == _signature_multiset(legacy)
+
+    def test_review_nag_emitted_exactly_once(self) -> None:
+        backends = [self._production_backend()]
+        registry = build_registry_jobs(_context(backends), config=LoopsConfig(), now=NOW)
+        nags = [j for j in registry if j.scanner.name == "review_nag"]
+        legacy_nags = [j for j in build_default_jobs(backends=backends) if j.scanner.name == "review_nag"]
+        assert len(legacy_nags) == 1
+        assert len(nags) == 1
+
+    def test_my_prs_and_reviewer_prs_carry_url_attribution(self) -> None:
+        """The ship/review loops pass the same non-empty URL-attribution the legacy fan-out does.
+
+        Uses a real ``GitHubCodeHost`` (offline) so ``_web_origin_for_host``
+        resolves and a workspace-repo overlay so ``allowed_url_prefixes`` is
+        non-empty — otherwise omitting the kwargs is indistinguishable from
+        passing the empty default and the guard would be vacuous.
+        """
+        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
+        from teatree.loops.review.loop import _reviewer_per_host_jobs  # noqa: PLC0415
+        from teatree.loops.ship.loop import _per_host_jobs  # noqa: PLC0415
+
+        backend = self._url_gated_backend()
+        legacy = {
+            (j.scanner.name, j.overlay): j.scanner
+            for j in _jobs_for_backend_hosts(backend, backend.name, all_backends=(backend,))
+        }
+        ship = _per_host_jobs(backend, gitlab_enabled=False, all_backends=(backend,))
+        review = _reviewer_per_host_jobs(backend, all_backends=(backend,))
+
+        my_prs = next(j.scanner for j in ship if j.scanner.name == "my_prs")
+        reviewer = next(j.scanner for j in review if j.scanner.name == "reviewer_prs")
+
+        assert my_prs.allowed_url_prefixes == ("https://github.com/owner/repo/",)
+        assert my_prs.allowed_url_prefixes == legacy["my_prs", backend.name].allowed_url_prefixes
+        assert my_prs.competing_url_prefixes == legacy["my_prs", backend.name].competing_url_prefixes
+        assert reviewer.allowed_url_prefixes == legacy["reviewer_prs", backend.name].allowed_url_prefixes
+        assert reviewer.competing_url_prefixes == legacy["reviewer_prs", backend.name].competing_url_prefixes
+
+    @staticmethod
+    def _url_gated_backend() -> OverlayBackends:
+        from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
+
+        overlay = MagicMock()
+        overlay.get_workspace_repos.return_value = ["owner/repo"]
+        return OverlayBackends(
+            name="teatree",
+            hosts=(GitHubCodeHost(token=""),),
+            messaging=None,
+            ready_labels=(),
+            overlay=overlay,
+        )
 
 
 class RunTickRegistrySeamTestCase(TestCase):

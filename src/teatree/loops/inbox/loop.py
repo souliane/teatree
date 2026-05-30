@@ -23,6 +23,10 @@ def _build_jobs(
     :func:`teatree.loop.tick_jobs._messaging_jobs_for_backend`; the
     notion view scanner lives in :func:`teatree.loop.tick_jobs.build_default_jobs`'s
     notion branch. We reuse both rather than duplicate the wiring.
+
+    ``review_nag`` is excluded here (``include_review_nag=False``) — the
+    followup mini-loop is its single owner, so the registry fan-out emits
+    one nag per tick, matching the legacy fan-out.
     """
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
     from teatree.loop.tick_jobs import _messaging_jobs_for_backend, _ScannerJob  # noqa: PLC0415
@@ -31,7 +35,7 @@ def _build_jobs(
     if backends:
         for backend in backends:
             if backend.messaging is not None:
-                jobs.extend(_messaging_jobs_for_backend(backend, backend.name))
+                jobs.extend(_messaging_jobs_for_backend(backend, backend.name, include_review_nag=False))
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
     # Single-overlay messaging path used by tests and ad-hoc CLI.
