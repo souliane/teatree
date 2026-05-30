@@ -9,7 +9,7 @@ merge-time gate refuses it independently of the issue-time gate.
 import factory
 from factory.django import DjangoModelFactory
 
-from teatree.core.models import MergeClear, Ticket
+from teatree.core.models import ImplementedIssueMarker, MergeClear, Ticket
 
 _FORTY_HEX = "c" * 40
 
@@ -39,3 +39,17 @@ class MergeClearFactory(DjangoModelFactory[MergeClear]):
         failed = factory.Trait(gh_verify_result=MergeClear.VerifyResult.FAILED)
         substrate = factory.Trait(blast_class=MergeClear.BlastClass.SUBSTRATE)
         docs = factory.Trait(blast_class=MergeClear.BlastClass.DOCS)
+
+
+class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):
+    class Meta:
+        model = ImplementedIssueMarker
+
+    issue_url = factory.Sequence(lambda n: f"https://github.com/souliane/teatree/issues/{n}")
+    overlay = "t3-teatree"
+    state = ImplementedIssueMarker.State.DISPATCHED
+    head_sha = _FORTY_HEX
+
+    class Params:
+        ticket_created = factory.Trait(state=ImplementedIssueMarker.State.TICKET_CREATED)
+        abandoned = factory.Trait(state=ImplementedIssueMarker.State.ABANDONED)
