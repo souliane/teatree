@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import teatree.backends.github as github_mod
+import teatree.backends.github_projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import (
     GitHubCodeHost,
@@ -15,11 +16,11 @@ from teatree.backends.github import (
     _gh_api_get_paginated,
     _gh_api_patch,
     _gh_api_post,
-    _gh_graphql,
     _run_gh,
     fetch_project_items,
     issue_repo_short,
 )
+from teatree.backends.github_projects import _gh_graphql
 from teatree.backends.protocols import PullRequestSpec
 
 
@@ -195,7 +196,7 @@ class TestFetchProjectItems:
                 }
             }
         }
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert len(items) == 1
         assert items[0] == ProjectItem(
@@ -209,7 +210,7 @@ class TestFetchProjectItems:
         )
 
     def test_returns_empty_for_missing_project(self) -> None:
-        with patch.object(github_mod, "_gh_graphql", return_value={"data": {"user": {}}}):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value={"data": {"user": {}}}):
             items = fetch_project_items("testuser", 1)
         assert items == []
 
@@ -224,7 +225,7 @@ class TestFetchProjectItems:
         ],
     )
     def test_returns_empty_when_graphql_hop_is_null(self, graphql_response: dict[str, object]) -> None:
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert items == []
 
@@ -250,14 +251,14 @@ class TestFetchProjectItems:
                 }
             }
         }
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert len(items) == 1
         assert items[0].labels == []
 
     def test_skips_non_dict_nodes(self) -> None:
         graphql_response = {"data": {"user": {"projectV2": {"items": {"nodes": [None, "invalid"]}}}}}
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert items == []
 
@@ -278,7 +279,7 @@ class TestFetchProjectItems:
                 }
             }
         }
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert items == []
 
@@ -304,7 +305,7 @@ class TestFetchProjectItems:
                 }
             }
         }
-        with patch.object(github_mod, "_gh_graphql", return_value=graphql_response):
+        with patch.object(github_projects_mod, "_gh_graphql", return_value=graphql_response):
             items = fetch_project_items("testuser", 1)
         assert len(items) == 1
         assert items[0].status == ""
@@ -339,7 +340,7 @@ class TestFetchProjectItems:
             _page(1, has_next=True, cursor="CURSOR_PAGE_1"),
             _page(2, has_next=False, cursor="CURSOR_PAGE_2"),
         ]
-        with patch.object(github_mod, "_gh_graphql", side_effect=pages) as mock_graphql:
+        with patch.object(github_projects_mod, "_gh_graphql", side_effect=pages) as mock_graphql:
             items = fetch_project_items("testuser", 1)
         assert mock_graphql.call_count == 2
         assert [item.issue_number for item in items] == [1, 2]
@@ -538,6 +539,37 @@ class TestGitHubCodeHost:
         with patch.object(github_mod, "_gh_api_get", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_assigned_issues(assignee="alice") == []
+
+    def test_create_issue_posts_payload_with_labels(self) -> None:
+        created = {"html_url": "https://github.com/org/repo/issues/9", "number": 9}
+        with patch.object(github_mod, "_gh_api_post", return_value=created) as mock_post:
+            host = GitHubCodeHost(token="tok")
+            result = host.create_issue(repo="org/repo", title="t", body="b", labels=["enforcement-gap"])
+        assert result == created
+        mock_post.assert_called_once_with(
+            "repos/org/repo/issues",
+            {"title": "t", "body": "b", "labels": ["enforcement-gap"]},
+            token="tok",
+        )
+
+    def test_create_issue_returns_empty_for_non_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_post", return_value="oops"):
+            host = GitHubCodeHost()
+            assert host.create_issue(repo="org/repo", title="t", body="b") == {}
+
+    def test_search_open_issues_filters_to_repo_and_returns_items(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"items": [{"number": 9}]}) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
+        assert result == [{"number": 9}]
+        endpoint = mock_get.call_args[0][0]
+        assert "repo%3Aorg%2Frepo" in endpoint
+        assert "is%3Aopen" in endpoint
+
+    def test_search_open_issues_returns_empty_when_response_not_dict(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+            host = GitHubCodeHost()
+            assert host.search_open_issues(repo="org/repo", query="x") == []
 
     def test_post_pr_comment(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:

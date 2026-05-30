@@ -219,4 +219,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("send", "DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct notify)."),
         ],
     ),
+    "retro": DjangoGroup(
+        "Retrospective enforcement tooling (#1573).",
+        [
+            (
+                "review-findings",
+                "Classify a PR's review findings A/B/C and auto-file a deduped enforcement issue per class-C.",
+            ),
+        ],
+        core_dispatch=True,
+    ),
 }

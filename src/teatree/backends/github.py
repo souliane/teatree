@@ -1,18 +1,24 @@
-"""GitHub backend — code host and project board sync via ``gh`` CLI."""
+"""GitHub backend — code host via the ``gh`` CLI.
+
+The Projects v2 board reads (``ProjectItem``, ``fetch_project_items``) live
+in :mod:`teatree.backends.github_projects` and are re-exported here so the
+historical ``from teatree.backends.github import …`` import sites are unchanged.
+"""
 
 import json
 import os
 import re
-from dataclasses import dataclass
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends.github_claims import record_github_note_claim as _record_github_note_claim
+from teatree.backends.github_projects import ProjectItem, fetch_project_items
 from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
-from teatree.backends.types import dig
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
+
+__all__ = ["GitHubCodeHost", "ProjectItem", "fetch_project_items", "issue_repo_short"]
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
@@ -58,19 +64,6 @@ class _GitHubPullRequestSummary(TypedDict, total=False):
     requested_reviewers: list[_GitHubUser]
     state: str
     merged: bool
-
-
-@dataclass(frozen=True, slots=True)
-class ProjectItem:
-    """A single item from a GitHub Projects v2 board."""
-
-    issue_number: int
-    title: str
-    url: str
-    status: str
-    position: int
-    labels: list[str]
-    updated_at: str = ""
 
 
 def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
@@ -219,101 +212,6 @@ def _gh_api_patch(endpoint: str, payload: dict[str, object], *, token: str = "")
     return json.loads(result.stdout)
 
 
-def _gh_graphql(query: str, *, token: str = "") -> dict[str, object]:
-    """Execute a GraphQL query via ``gh api graphql``."""
-    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
-    if token:
-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
-    result = run_checked(cmd)
-    return json.loads(result.stdout)
-
-
-_PROJECT_ITEMS_QUERY = """\
-{{
-    user(login: "{owner}") {{
-        projectV2(number: {project_number}) {{
-            items(first: 100{after}) {{
-                pageInfo {{ hasNextPage endCursor }}
-                nodes {{
-                    fieldValueByName(name: "Status") {{
-                        ... on ProjectV2ItemFieldSingleSelectValue {{ name }}
-                    }}
-                    content {{
-                        ... on Issue {{
-                            number
-                            title
-                            url
-                            updatedAt
-                            labels(first: 10) {{ nodes {{ name }} }}
-                        }}
-                    }}
-                }}
-            }}
-        }}
-    }}
-}}"""
-
-
-def fetch_project_items(
-    owner: str,
-    project_number: int,
-    *,
-    token: str = "",
-) -> list[ProjectItem]:
-    """Fetch all items from a GitHub Projects v2 board, preserving board order.
-
-    The ``items`` connection caps each page at 100 nodes, so a board with more
-    than 100 items must be walked page by page via the ``pageInfo`` cursor —
-    otherwise every item past the first page is silently dropped from the sync.
-    """
-    items: list[ProjectItem] = []
-    position = 0
-    after = ""
-    while True:
-        query = _PROJECT_ITEMS_QUERY.format(owner=owner, project_number=project_number, after=after)
-        data = _gh_graphql(query, token=token)
-        # ``dig`` null-guards each hop: GraphQL returns ``null`` (not ``{}``) for
-        # a user/project the token cannot see, where a chained ``.get(k, {})``
-        # would call ``.get`` on ``None`` and crash the board sync.
-        raw_items = dig(data, "data", "user", "projectV2", "items", "nodes")
-        nodes = raw_items if isinstance(raw_items, list) else []
-        for node in nodes:
-            if (item := _project_item_from_node(node, position)) is not None:
-                items.append(item)
-            position += 1
-        if dig(data, "data", "user", "projectV2", "items", "pageInfo", "hasNextPage") is not True:
-            return items
-        end_cursor = dig(data, "data", "user", "projectV2", "items", "pageInfo", "endCursor")
-        if not isinstance(end_cursor, str) or not end_cursor:
-            return items
-        after = f', after: "{end_cursor}"'
-
-
-def _project_item_from_node(node: object, position: int) -> ProjectItem | None:
-    """Build a :class:`ProjectItem` from one board node, or ``None`` to skip.
-
-    Every field read goes through :func:`dig`, which null-guards each hop and
-    returns ``object`` — so a draft item (no ``content``) or a node the token
-    cannot fully see degrades to a skip rather than crashing the board sync.
-    """
-    number = dig(node, "content", "number")
-    if not isinstance(number, int):
-        return None  # draft item or non-issue content
-    status_name = dig(node, "fieldValueByName", "name")
-    raw_labels = dig(node, "content", "labels", "nodes")
-    label_nodes = raw_labels if isinstance(raw_labels, list) else []
-    labels = [str(name) for ln in label_nodes if isinstance(name := dig(ln, "name"), str)]
-    return ProjectItem(
-        issue_number=number,
-        title=str(dig(node, "content", "title") or ""),
-        url=str(dig(node, "content", "url") or ""),
-        status=str(status_name or ""),
-        position=position,
-        labels=labels,
-        updated_at=str(dig(node, "content", "updatedAt") or ""),
-    )
-
-
 class GitHubCodeHost:
     """CodeHost implementation backed by the ``gh`` CLI."""
 
@@ -442,6 +340,39 @@ class GitHubCodeHost:
         if not isinstance(items, list):
             return []
         return cast("list[RawAPIDict]", items)
+
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict:
+        """Open a GitHub issue on ``owner/repo`` and return the created payload.
+
+        ``repo`` is the ``owner/repo`` slug. The returned dict carries the
+        forge's ``html_url`` (the clickable issue link) and ``number``.
+        """
+        payload: RawAPIDict = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        data = _gh_api_post(f"repos/{repo}/issues", payload, token=self._token)
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
+        """Return open issues on ``owner/repo`` matching the free-text *query*.
+
+        Uses GitHub's issue search so a dedup caller can find an
+        already-filed enforcement issue by a fingerprint marker embedded in
+        its body, without paging the whole issue list.
+        """
+        terms = quote_plus(f"repo:{repo} is:issue is:open {query}")
+        data = _gh_api_get(f"search/issues?q={terms}&per_page=100", token=self._token)
+        if not isinstance(data, dict):
+            return []
+        items = cast("RawAPIDict", data).get("items")
+        return cast("list[RawAPIDict]", items) if isinstance(items, list) else []
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
