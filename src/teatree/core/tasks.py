@@ -182,6 +182,15 @@ def execute_ship(ticket_id: int) -> TransitionResult:
     for the same transition — a lost update or a redelivered job must be safe.
 
     On success, advances ``SHIPPED → IN_REVIEW`` via ``request_review()``.
+
+    ``ShipExecutor.run()`` runs OUTSIDE the FSM-advance transaction (#1522):
+    it calls ``host.create_pr()``, whose live forge PR is an external side
+    effect no rollback can undo. Run as a top-level operation, the executor's
+    own ``merge_extra`` records the PR url in its own committed transaction
+    the instant ``create_pr`` returns, so a later rollback of the FSM advance
+    cannot strand the PR. A redelivered job then finds the recorded url and
+    adopts it (``ShipExecutor._recorded_url_for_branch``) instead of
+    re-calling ``create_pr`` and hitting a 409.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -193,11 +202,20 @@ def execute_ship(ticket_id: int) -> TransitionResult:
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = ShipExecutor(ticket).run()
-        if not result.ok:
-            logger.warning("Ship failed for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+    result = ShipExecutor(ticket).run()
+    if not result.ok:
+        logger.warning("Ship failed for ticket %s: %s", ticket_id, result.detail)
+        return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
+    with transaction.atomic():
+        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+        if ticket.state != Ticket.State.SHIPPED:
+            logger.info(
+                "execute_ship FSM advance skipped for ticket %s: state=%s (PR already recorded, not SHIPPED)",
+                ticket_id,
+                ticket.state,
+            )
+            return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
         ticket.request_review()
         ticket.save()
 
