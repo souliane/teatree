@@ -13,6 +13,10 @@
       "summary": "24/7 dual question-mode \u2014 switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away)"
     },
     {
+      "name": "checking",
+      "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable, read-only"
+    },
+    {
       "name": "code",
       "summary": "Writing code with TDD methodology"
     },

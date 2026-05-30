@@ -7,7 +7,8 @@
     "tasks work-next-sdk",
     "tasks work-next-user-input",
     "followup refresh",
-    "followup remind"
+    "followup remind",
+    "checking show"
   ],
   "hooks": [
     {
@@ -75,6 +76,12 @@
       "name": "get_docker_services",
       "required": false,
       "signature": "(worktree: 'Worktree') -> set[str]"
+    },
+    {
+      "description": "Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report.",
+      "name": "get_checking_sources",
+      "required": false,
+      "signature": "() -> list[str]"
     },
     {
       "description": "Return PR validation problems for this overlay.",

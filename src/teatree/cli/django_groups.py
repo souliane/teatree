@@ -149,6 +149,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("stale", "List tickets with no activity past the staleness threshold (read-only)."),
         ],
     ),
+    "checking": DjangoGroup(
+        "Terse 'what did I miss' report since the last check (read-only).",
+        [
+            ("show", "Print grouped merged/in-flight/needs-you changes since the last check (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
     "lifecycle": DjangoGroup(
         "Session lifecycle and phase tracking.",
         [

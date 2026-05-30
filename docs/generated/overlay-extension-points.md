@@ -17,6 +17,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 | `get_services_config` | No | `(worktree: 'Worktree') -> dict[str, teatree.types.ServiceSpec]` | Return additional service metadata for worktree-lifecycle orchestration. |
 | `get_base_images` | No | `(worktree: 'Worktree') -> list[teatree.types.BaseImageConfig]` | Declare Docker base images teatree builds once and shares across worktrees. |
 | `get_docker_services` | No | `(worktree: 'Worktree') -> set[str]` | Declare service names that MUST run in Docker — enforced at `worktree provision`. |
+| `get_checking_sources` | No | `() -> list[str]` | Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report. |
 | `metadata.validate_pr` | No | `(title: str, description: str) -> teatree.types.ValidationResult` | Return PR validation problems for this overlay. |
 | `metadata.build_pr_title` | No | `(*, branch: str, subject: str, body: str, issue_url: str) -> str` | Produce the PR title from structured ticket data (default: the commit subject). |
 | `metadata.get_skill_metadata` | No | `() -> teatree.types.SkillMetadata` | Return the active overlay skill path and remote match patterns. |
@@ -41,6 +42,7 @@ Base class: `teatree.core.overlay.OverlayBase`
 - `tasks work-next-user-input`
 - `followup refresh`
 - `followup remind`
+- `checking show`
 
 ## Skill Metadata
 
