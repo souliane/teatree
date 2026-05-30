@@ -20,7 +20,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_bare_reference_pretool, handle_bare_reference_stop
-from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, extract_title_fragments
 from teatree.hooks.bare_reference_scanner import extract_publish_payload, find_bare_references, scan_text
 
 
@@ -203,6 +203,95 @@ class TestPreToolUseHardGate:
         blocked = handle_bare_reference_pretool(_bash('gh pr create --title t --body "merged 5 PRs, 100GB freed"'))
         assert blocked is False
         assert capsys.readouterr().out == ""
+
+
+class TestExtractTitleFragments:
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ('gh pr create --title "feat: x" --body "b"', ["feat: x"]),
+            ("gh issue create --title=feat:x", ["feat:x"]),
+            ("gh pr create -t feat:x", ["feat:x"]),
+            ("gh pr create -tfeat:x", ["feat:x"]),
+            ('glab mr create --title "fix: y"', ["fix: y"]),
+            ("git commit --message 'sub' ", ["sub"]),
+            ("git commit --message=sub", ["sub"]),
+            ("git commit -msub", ["sub"]),
+            ("git commit -m 'subject\nbody line'", ["subject"]),
+        ],
+    )
+    def test_title_or_subject_fragment_extracted(self, command: str, expected: list[str]) -> None:
+        assert extract_title_fragments(command) == expected
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'gh pr create --body "no title here"',
+            "git commit --amend --no-edit",
+            "ls -la",
+        ],
+    )
+    def test_no_title_fragment(self, command: str) -> None:
+        assert extract_title_fragments(command) == []
+
+
+class TestConventionalTitleSuffixExemption:
+    """The trailing ``(#NNNN)``/``(!NNNN)`` of a PR/MR title or commit subject is exempt.
+
+    The forge auto-links the ref there and the suffix is the universal
+    convention, so it is allowed. The exemption is narrow: bodies, slack,
+    and mid-title refs stay flagged.
+    """
+
+    def test_gh_pr_title_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "feat(x): desc (#123)" --body "ok"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_glab_mr_title_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash('glab mr create --title "fix(y): z (!45)" --description "ok"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_subject_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'fix(y): z (#45)'"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_bare_ref_in_pr_body_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "feat(x): desc (#123)" --body "see #99"'))
+        assert blocked is True
+        assert "#99" in _out(capsys)["permissionDecisionReason"]
+
+    def test_bare_ref_in_slack_send_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(
+            {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": "merged !45 and #123"}}
+        )
+        assert blocked is True
+        reason = _out(capsys)["permissionDecisionReason"]
+        assert "!45" in reason
+        assert "#123" in reason
+
+    def test_mid_title_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "fixes #123 in the parser" --body "ok"'))
+        assert blocked is True
+        assert "#123" in _out(capsys)["permissionDecisionReason"]
+
+    def test_git_commit_body_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'fix(y): z (#45)' -m 'follow-up to #99'"
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is True
+        reason = _out(capsys)["permissionDecisionReason"]
+        assert "#99" in reason
+        assert "#45" not in reason
+
+    def test_extract_strips_only_trailing_title_suffix(self) -> None:
+        payload = extract_publish_payload(
+            "Bash", {"command": 'gh pr create --title "feat(x): desc (#123)" --body "body #99"'}
+        )
+        assert payload is not None
+        assert "#123" not in payload
+        assert "#99" in payload
 
 
 class TestStopSoftWarn:
