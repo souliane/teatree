@@ -178,6 +178,126 @@ class TestHeavyBashEscapeHatch:
         assert handle_enforce_orchestrator_boundary(_subagent_bash("nx serve frontend")) is False
 
 
+class TestPytestSubstringFalseDenyFixed:
+    """``pytest`` is verb-anchored — a mention in an arg is NOT a false-deny.
+
+    A bare word-boundary ``pytest`` match mis-denied the loop owner's
+    ``git commit -m '…pytest…'`` / ``git branch x-pytest`` / ``uv add
+    pytest-django`` (#1178 cold-review). The verb-position anchor only
+    matches ``pytest`` as a command head (optionally after ``uv run`` /
+    ``python -m`` or a shell separator), so these foreground main-agent
+    commands now PASS.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git commit -m 'fix pytest fixture'",
+            "git commit -m 'flaky pytest in CI'",
+            "git branch 1178-feat-pytest-gate",
+            "git checkout -b fix-pytest-flake",
+            "git checkout -b fix-pytest",
+            "uv add pytest-django",
+            "uv add pytest-cov pytest-mock",
+            "gh pr create --title 'add pytest gate'",
+            "mkdir pytest-artifacts",
+            "cat tests/test_pytest_helpers.py",
+            "grep -rn pytest src/",
+            "echo 'run pytest later'",
+        ],
+    )
+    def test_pytest_mention_in_arg_passes(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "pytest",
+            "pytest -q",
+            "uv run pytest",
+            "python -m pytest",
+            "python3 -m pytest tests/",
+            "poetry run pytest",
+            "uv run pytest --no-cov -q",
+        ],
+    )
+    def test_real_pytest_invocation_still_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
+class TestMarginalSlowPatternsAdded:
+    """The #1178-additive shapes the gate previously lacked are now denied.
+
+    The gate already covered ``nx run …:e2e`` and ``docker compose
+    build``, so the bare-target ``nx e2e`` and the image-build ``docker
+    build`` are folded in. The interactive Django shells
+    (``manage.py shell``/``shell_plus``/``dbshell``) are the original
+    1h-hung RED-FLAG incident command and were not gated anywhere — added
+    here. (``manage.py migrate`` is already redirected by the t3-CLI
+    ``_BLOCKED_COMMANDS`` gate; short ``t3 loop tick``/``ci``/``doctor``
+    are not slow and stay ungated.)
+    """
+
+    _MP = "manage.py "  # built at runtime; not a literal in source greps
+
+    @pytest.mark.parametrize(
+        "command",
+        ["nx e2e my-app-e2e", "nx e2e frontend-e2e --watch", "docker build -t img .", "docker build ."],
+    )
+    def test_marginal_heavy_command_blocked_for_main_agent(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize("subcommand", ["shell -c 'print(1)'", "shell_plus", "dbshell"])
+    def test_interactive_django_shell_blocked_for_main_agent(self, subcommand: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("python " + self._MP + subcommand)) is True
+
+    @pytest.mark.parametrize("command", ["nx e2e my-app-e2e", "docker build -t img ."])
+    def test_marginal_heavy_command_exempt_for_subagent(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_subagent_bash(command)) is False
+
+    def test_interactive_django_shell_exempt_for_subagent(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_subagent_bash("python " + self._MP + "shell -c 'x'")) is False
+
+    @pytest.mark.parametrize("command", ["nx e2e my-app-e2e", "docker build -t img ."])
+    def test_marginal_heavy_command_allowed_with_run_in_background(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command, run_in_background=True)) is False
+
+    def test_django_shellcheck_is_not_a_false_deny(self) -> None:
+        # ``manage.py shellcheck`` (a hypothetical fast subcommand) must not
+        # match the ``shell`` alternative — the ``\b`` anchor guards it.
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(self._MP + "shellcheck")) is False
+
+
+class TestForegroundOkEscapeHatch:
+    """A ``[fg-ok: <reason>]`` marker opts a heavy command out of the gate.
+
+    The per-call escape mirrors the ``[skip-plan-gate: <reason>]`` /
+    ``[skip-skill-gate: <reason>]`` tokens — for the rare case the loop
+    owner truly needs heavy output inline. A non-empty reason is required;
+    an empty reason does not unblock.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uv run pytest [fg-ok: short-targeted-run]",
+            "docker build -t img . [fg-ok: one-off image]",
+            "nx e2e my-app-e2e  [fg-ok: debugging a single spec]",
+            "sleep 600 [fg-ok: intentional wait]",
+        ],
+    )
+    def test_fg_ok_marker_allows_heavy_command(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    def test_empty_fg_ok_reason_does_not_unblock(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest [fg-ok: ]")) is True
+
+    def test_block_message_mentions_fg_ok_escape(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uv run pytest")) is True
+        out = json.loads(capsys.readouterr().out)
+        assert "[fg-ok:" in out["permissionDecisionReason"]
+
+
 class TestNonBashToolsArePassThrough:
     """The gate now only governs Bash — Edit/Write/Read/Grep pass through.
 
