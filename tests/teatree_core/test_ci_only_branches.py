@@ -9,6 +9,7 @@ designed to prevent, but only if the targeted branches are reachable from
 the test suite at all.
 """
 
+import subprocess
 from operator import itemgetter
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -138,6 +139,93 @@ class TestProbeHostCliEmptyResults:
             return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
         ):
             assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
+
+
+class TestProbeHostCliTimeout:
+    """``probe_host_cli`` bounds the host CLI and fails safe on expiry — #1580.
+
+    A hung ``gh``/``glab`` must not block ``clean-all`` or the loop tick. The
+    ``timeout`` is forwarded to ``run_allowed_to_fail`` (and thus
+    ``subprocess.run``); when it expires the ``TimeoutExpired`` is swallowed and
+    ``""`` (fail-safe "skip") is returned, so a timeout never yields a positive
+    merged signal.
+    """
+
+    def test_returns_empty_string_when_subprocess_times_out(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(
+            cleanup,
+            "run_allowed_to_fail",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr"], timeout=30.0),
+        ):
+            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+
+    def test_returns_empty_string_when_real_subprocess_run_times_out(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        # Patch the actual subprocess.run reached through run_allowed_to_fail so
+        # the fail-safe is exercised against the real probe + wrapper, not a
+        # shallow stub of the wrapper itself.
+        with patch(
+            "teatree.utils.run.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["gh", "pr"], timeout=5.0),
+        ):
+            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=5.0) == ""
+
+    def test_forwards_timeout_to_run_allowed_to_fail(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(
+            cleanup,
+            "run_allowed_to_fail",
+            return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
+        ) as run_mock:
+            cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=12.5)
+
+        assert run_mock.call_args.kwargs["timeout"] == pytest.approx(12.5)
+
+    def test_defaults_timeout_to_thirty_seconds(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(
+            cleanup,
+            "run_allowed_to_fail",
+            return_value=CompletedProcess(args=[], returncode=0, stdout="[]", stderr=""),
+        ) as run_mock:
+            cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"))
+
+        assert run_mock.call_args.kwargs["timeout"] == pytest.approx(30.0)
+
+
+class TestProbeHostCliFailSafePaths:
+    """The non-timeout failure/success paths still resolve correctly — #1580 regression guard."""
+
+    def test_returns_empty_string_when_binary_is_missing(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(cleanup, "run_allowed_to_fail", side_effect=OSError("no gh")):
+            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+
+    def test_returns_empty_string_on_malformed_json(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(
+            cleanup,
+            "run_allowed_to_fail",
+            return_value=CompletedProcess(args=[], returncode=0, stdout="not json", stderr=""),
+        ):
+            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
+
+    def test_extracts_value_on_happy_path(self) -> None:
+        from teatree.core import cleanup  # noqa: PLC0415
+
+        with patch.object(
+            cleanup,
+            "run_allowed_to_fail",
+            return_value=CompletedProcess(args=[], returncode=0, stdout='[{"oid": "abc123"}]', stderr=""),
+        ):
+            assert cleanup.probe_host_cli(["gh", "pr"], "/tmp", lambda data: data[0]["oid"]) == "abc123"
 
 
 class TestResolveCandidatePathsMacosSymlinks:

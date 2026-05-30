@@ -25,7 +25,7 @@ from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recove
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
+from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
@@ -185,15 +185,21 @@ def _pr_merge_commit_sha(repo: str, branch: str) -> str:
     )
 
 
-def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> str:
+def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str], *, timeout: float = 30.0) -> str:
     """Invoke a host CLI that may be missing, parse its JSON, extract the SHA.
 
     Swallows ``OSError`` (missing binary, permission denied in sandboxes) and
     JSON/key errors — both are legitimate "no merged PR found" outcomes.
+
+    ``timeout`` bounds the host CLI invocation (seconds): a hung ``gh``/``glab``
+    must not block ``clean-all`` or the loop tick. On expiry the
+    ``subprocess.TimeoutExpired`` is swallowed and ``""`` is returned — the same
+    fail-safe "not found / skip" value as every other failure path, so a timeout
+    can never produce a positive merged signal and never wrongly reaps work.
     """
     try:
-        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None)
-    except OSError:
+        result = run_allowed_to_fail(cmd, cwd=repo, expected_codes=None, timeout=timeout)
+    except (OSError, TimeoutExpired):
         return ""
     if result.returncode != 0 or result.stdout.strip() in {"", "[]"}:
         return ""
