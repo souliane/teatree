@@ -22,6 +22,13 @@ deliberately conservative to stay clear of the lockout direction: only
 numbers (``5 PRs``, ``100GB``, ``line 42``, ``v1.2.3``) and hex shas are
 never flagged.
 
+The one exemption is the conventional trailing ``(#NNNN)`` / ``(!NNNN)``
+parenthetical at the END of a PR/MR title or a git-commit subject (#1544):
+the forge auto-links the ref there, it is the universal conventional-commit
+and MR-title convention, and it is required by the MR-title-convention gate.
+The exemption is narrow — a bare ref anywhere else (description bodies,
+slack-send, t3-notify, mid-title text) stays flagged.
+
 Fail-closed on an unparsable body via the shared
 ``FAIL_CLOSED_SENTINEL`` (same contract as the quote-scanner).
 """
@@ -30,6 +37,7 @@ import re
 from typing import Final, TypedDict
 
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
+from teatree.hooks._command_parser import extract_title_fragments as _extract_title_fragments
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 
@@ -58,6 +66,16 @@ _BARE_URL_RE: Final[re.Pattern[str]] = re.compile(
 
 
 _SLACK_MCP_WRITE_FIELDS: Final[tuple[str, ...]] = ("text", "message", "document_content", "content")
+
+
+# The conventional trailing ``(#NNNN)`` / ``(!NNNN)`` parenthetical(s) at
+# the END of a PR/MR title or git-commit subject (#1544). GitHub/GitLab
+# auto-link the ref there and the suffix is the universal conventional-
+# commit + MR-title convention, so it is exempt — but ONLY in that trailing
+# position. Squash-merge appends its own ``(#NNNN)`` to an already-suffixed
+# subject, so the match is greedy over consecutive trailing groups. ``$``
+# anchors to the fragment end; trailing whitespace is tolerated.
+_TRAILING_CONVENTIONAL_REF_RE: Final[re.Pattern[str]] = re.compile(r"(\s*\([#!]\d+\)\s*)+$")
 
 
 def _strip_linked_spans(text: str) -> str:
@@ -104,12 +122,33 @@ def _extract_slack_mcp_payload(tool_name: str, tool_input: ToolInput) -> str | N
     return ""
 
 
+def _exempt_trailing_title_suffix(payload: str, title_fragments: list[str]) -> str:
+    """Drop the conventional trailing ``(#NNNN)`` suffix of each title fragment.
+
+    Only the trailing parenthetical of a PR/MR title or git-commit subject
+    is exempt (#1544). Each title fragment is its own line in the flattened
+    payload, so the suffix is stripped from the matching whole line — never
+    from a body line that merely embeds the title text as a substring. A
+    body reference or a mid-title reference survives the scan.
+    """
+    pending = [f for f in title_fragments if _TRAILING_CONVENTIONAL_REF_RE.search(f)]
+    if not pending:
+        return payload
+    lines = payload.split("\n")
+    for index, line in enumerate(lines):
+        if line in pending:
+            lines[index] = _TRAILING_CONVENTIONAL_REF_RE.sub("", line)
+            pending.remove(line)
+    return "\n".join(lines)
+
+
 def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if not _is_publish_command(command):
             return None
-        return _extract_bash_payload(command)
+        payload = _extract_bash_payload(command)
+        return _exempt_trailing_title_suffix(payload, _extract_title_fragments(command))
     return _extract_slack_mcp_payload(tool_name, tool_input)
 
 
