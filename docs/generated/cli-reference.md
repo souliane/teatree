@@ -2413,6 +2413,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
 │ notify        Bot→user Slack DM from the shell (#1030).                      │
+│ retro         Retrospective enforcement tooling (#1573).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3763,6 +3764,12 @@ Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
  task is a no-op with exit 0. Rejects a task in any non-``claimed`` state
  (``pending``, ``failed``) with a clear error.
 
+ Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
+ outcome (merged / posted / shipped / deployed) it must also carry a
+ resolvable artifact pointer (URL / SHA / ``!123`` / ``#123`` / note id /
+ path), so a phantom "done" claim cannot be recorded without proof. A
+ note with no outcome claim — or no note — is untouched.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  Task ID (see `task_id` in `tasks list`).          │
 │                            [required]                                        │
@@ -4758,5 +4765,47 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
 │                                   (per-overlay bot routing).                 │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree retro`
+
+```
+Usage: t3 teatree retro [OPTIONS] COMMAND [ARGS]...
+
+ Retrospective enforcement tooling (#1573).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ review-findings  Classify a PR's review findings A/B/C and auto-file a       │
+│                  deduped enforcement issue per class-C.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree retro review-findings`
+
+```
+Usage: t3 teatree retro review-findings [OPTIONS] PR_URL
+
+ Classify a PR's review findings A/B/C and file class-C enforcement issues.
+
+ With no ``--classification``, lists every finding + its fingerprint so
+ the agent can supply verdicts. With ``--classification``, records the
+ verdicts and files one deduped enforcement issue per class-C finding.
+ Returns the structured result as JSON (the human-readable summary is
+ written to stdout); ``call_command`` callers parse the JSON.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_url      TEXT  [required]                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --classification        TEXT  Path to a JSON file mapping fingerprint ->     │
+│                               {class, enforcement}.                          │
+│ --repo                  TEXT  Override the repo slug parsed from the PR URL. │
+│ --label                 TEXT  Label applied to filed enforcement issues.     │
+│                               [default: enforcement-gap]                     │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

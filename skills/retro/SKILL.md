@@ -240,6 +240,16 @@ For an enforcement-gap finding, retro routes it differently from a first occurre
 - Update — do not duplicate — the existing entry so it *points at the enforcement* and is explicitly marked a known-weak stopgap until the gate lands.
 - Record the escalation in the persistence summary: which gate/issue was filed or dispatched, and which existing entry now references it. A recurrence closed only by re-persisting prose is an incomplete retro.
 
+#### Tooling: `t3 <overlay> retro review-findings <pr-url>`
+
+When the recurrence source is a PR's review comments, the deterministic scaffold does the bookkeeping so a class-C finding reliably becomes a tracked gate (the meta-gap this routing addresses):
+
+1. Run `t3 <overlay> retro review-findings <pr-url>` with no `--classification`. It fetches the review comments through the forge client, computes a stable per-finding fingerprint, and lists each finding (marking any fingerprint already recorded on other PRs as `(recurring)` — the strongest class-C signal).
+2. Classify each fingerprint A / B / C yourself after reading the diff and the existing gate set — the command never guesses the verdict, because "is this already enforced?" and "is this recurring?" need judgement the scaffold can't reliably automate. Write the verdicts to a JSON file mapping `fingerprint -> {"class": "C", "enforcement": "<smallest gate/test/hook>"}`.
+3. Re-run with `--classification verdicts.json`. The command records every verdict to a durable per-PR store and files one scoped, banned-terms-safe, clickable-link enforcement issue per class-C finding — deduped by fingerprint, so re-running never refiles. A/B findings file nothing.
+
+The emitted summary (per-class counts + filed-issue links) is the escalation record for the persistence summary above.
+
 This is the durability-in-tooling-not-vigilance principle applied to retro itself: an already-failed behavioral rule failing again is a signal to escalate the *level* of the fix, not to repeat the *same* level.
 
 ### 3. Fix Skills

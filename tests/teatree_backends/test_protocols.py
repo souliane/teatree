@@ -100,6 +100,21 @@ class _FakeCodeHost:
         _ = assignee
         return []
 
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> dict[str, object]:
+        _ = (repo, title, body, labels)
+        return {}
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, object]]:
+        _ = (repo, query)
+        return []
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         _ = (repo, pr_iid)
         return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)

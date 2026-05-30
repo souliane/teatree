@@ -154,6 +154,17 @@ class CodeHostBackend(Protocol):
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
+    def create_issue(
+        self,
+        *,
+        repo: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> RawAPIDict: ...  # pragma: no branch
+
+    def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
 
