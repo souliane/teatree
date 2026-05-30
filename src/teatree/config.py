@@ -172,6 +172,17 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
     return [str(s) for s in raw]
 
 
+def _parse_env_bool(raw: str) -> bool:
+    """Coerce a ``T3_*`` env-var string to a bool for ``ENV_SETTING_OVERRIDES``.
+
+    Conservative truthy set (``1``/``true``/``yes``/``on``, case-insensitive);
+    everything else — including ``false``/``0``/``no`` — resolves to ``False``.
+    A kill-switch env var is meant to *disable*, so any value that is not an
+    explicit enable reads as off.
+    """
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -244,6 +255,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "review_nag_enabled": bool,
     "orchestrator_bash_gate_enabled": bool,
     "mr_title_regex": str,
+    "issue_implementer_enabled": bool,
+    "issue_implementer_label": str,
+    "issue_implementer_max_concurrent": int,
+    "issue_implementer_cadence_hours": int,
 }
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -252,6 +267,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_REVIEW_SKILL": ("review_skill", str),
+    "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
 }
 
 
@@ -542,6 +558,25 @@ class UserSettings:
     # ``[overlays.<name>].mr_title_regex = "…"`` so an overlay with a different
     # title grammar declares its own pattern without flipping the global.
     mr_title_regex: str = DEFAULT_MR_TITLE_REGEX
+    # #1548 Opt-in, default-OFF gate for the always-on issue-implementer
+    # loop. The loop is a hard NO-OP unless ``issue_implementer_enabled``
+    # is flipped on, mirroring the ``review_skill = ""`` opt-in (#1541) and
+    # the ``scanning_news_*`` cadence pattern. This PR adds only the config
+    # surface — the scanner and dispatch land in later PRs.
+    issue_implementer_enabled: bool = False
+    # Label marking an issue as auto-implement. Empty means no issue is
+    # ever dispatched even when the loop is enabled (defence-in-depth: both
+    # the master gate AND a non-empty label are required before any work
+    # is picked up).
+    issue_implementer_label: str = ""
+    # Cap on simultaneously in-flight auto-implement tickets.
+    issue_implementer_max_concurrent: int = 1
+    # Internal dispatch-rate floor (hours) between auto-implement pickups.
+    issue_implementer_cadence_hours: int = 1
+    # Env kill-switch ``T3_ISSUE_IMPLEMENTER_ENABLED`` (operational fast-
+    # disable) wins over both the per-overlay override and the global
+    # setting; resolution is env → per-overlay ``[overlays.<name>]`` →
+    # global ``[teatree]`` → this dataclass default.
 
 
 @dataclass
@@ -640,6 +675,10 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
         orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
         mr_title_regex=str(teatree.get("mr_title_regex", DEFAULT_MR_TITLE_REGEX)),
+        issue_implementer_enabled=bool(teatree.get("issue_implementer_enabled", False)),
+        issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
+        issue_implementer_max_concurrent=int(teatree.get("issue_implementer_max_concurrent", 1)),
+        issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
