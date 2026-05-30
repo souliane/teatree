@@ -14,6 +14,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands.pr import _check_shipping_gate
 from teatree.core.models import Session, Ticket, Worktree
@@ -341,10 +342,18 @@ class TestPrCreateNeverRaisesEvenOnNoSessionOrSkipValidation(TestCase):
         # failure.
         ticket = _ticket(state=Ticket.State.STARTED)
         self._worktree(ticket)
-        result = cast(
-            "dict[str, object]",
-            call_command("pr", "create", str(ticket.pk), "--skip-validation"),
-        )
+        # --skip-validation still runs the deterministic MR format check
+        # (#1540); supply a conforming commit so this test exercises the
+        # FSM-reconcile invariant, not the format gate.
+        with patch.object(
+            _pr_preview.git,
+            "last_commit_message",
+            return_value=("feat(ship): reconcile then ship", "## What\nx\n\n## Why\ny"),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "create", str(ticket.pk), "--skip-validation"),
+            )
         assert result.get("allowed") is not False, result
         assert "error" not in result
         ticket.refresh_from_db()
