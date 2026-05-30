@@ -17,28 +17,25 @@ def _build_jobs(
     messaging: Any | None = None,  # noqa: ANN401 — MessagingBackend, kept loose
     **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
 ) -> list[Any]:
-    """Delegate to the existing :mod:`teatree.loop.tick_jobs` per-backend wiring.
+    """Consume the per-overlay ``Domain.INBOX`` slice plus the global notion job.
 
-    Per-overlay slack/red-card scanners live in
-    :func:`teatree.loop.tick_jobs._messaging_jobs_for_backend`; the
-    notion view scanner lives in :func:`teatree.loop.tick_jobs.build_default_jobs`'s
-    notion branch. We reuse both rather than duplicate the wiring.
-
-    ``review_nag`` is excluded here (``include_review_nag=False``) — the
-    followup mini-loop is its single owner, so the registry fan-out emits
-    one nag per tick, matching the legacy fan-out.
+    ``Domain.INBOX`` owns the per-overlay inbound Slack scanners
+    (mentions / DM / review-intent / red-card) and excludes ``review_nag``
+    — the followup mini-loop is its single owner, so the registry fan-out
+    emits one nag per tick, matching the legacy fan-out. The notion view
+    scanner and the single-overlay messaging path are global / ad-hoc and
+    are not part of the per-overlay fan-out, so they stay wired here.
     """
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
-    from teatree.loop.tick_jobs import _messaging_jobs_for_backend, _ScannerJob  # noqa: PLC0415
+    from teatree.loop.tick_jobs import Domain, _ScannerJob, jobs_for_domain  # noqa: PLC0415
 
     jobs: list[Any] = []
     if backends:
+        all_backends = tuple(backends)
         for backend in backends:
-            if backend.messaging is not None:
-                jobs.extend(_messaging_jobs_for_backend(backend, backend.name, include_review_nag=False))
+            jobs.extend(jobs_for_domain(Domain.INBOX, backend, all_backends=all_backends))
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
-    # Single-overlay messaging path used by tests and ad-hoc CLI.
     if not backends and messaging is not None:
         jobs.extend(_single_overlay_messaging_jobs(messaging))
     return jobs
