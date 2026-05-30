@@ -331,6 +331,143 @@ class TestCleanupWorktree(TestCase):
         mock_git.worktree_remove.assert_called_once()
         mock_git.branch_delete.assert_called_once()
 
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_reaps_genuinely_ahead_branch_when_forge_says_pr_merged(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """#1578 — a long-diverged branch whose PR the forge reports MERGED is reaped.
+
+        The subject-match classifier reports ``genuinely_ahead`` and the squash
+        tree no longer matches the branch tip (the branch diverged long ago), so
+        the prior guards refuse. The canonical forge PR-state check overrides:
+        a merged PR is the ground truth that the work shipped.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 feat: shipped via squash long ago"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: shipped via squash long ago", is_merge=False)]
+        )
+        mock_git.check.return_value = False  # tree differs — branch tip diverged from squash
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value="squash123"),
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True),
+        ):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
+
+    @_patch_classify
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_refuses_genuinely_ahead_branch_when_no_merged_pr(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+        mock_classify: MagicMock,
+    ) -> None:
+        """#1578 load-bearing safety test — real pending work (no merged PR) is still refused.
+
+        The forge canonically reports no merged PR for the branch, so the
+        conservative refuse-and-report stands: genuinely-ahead work is never
+        auto-discarded.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = ["abc123 feat: genuine unpushed work"]
+        mock_classify.return_value = BranchClassification(
+            genuinely_ahead=[BranchCommit(sha="abc123", subject="feat: genuine unpushed work", is_merge=False)]
+        )
+        mock_git.check.return_value = False  # tree differs — not captured by any squash
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup._pr_merge_commit_sha", return_value=""),
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            pytest.raises(RuntimeError, match="unsynced commit"),
+        ):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_not_called()
+        mock_git.branch_delete.assert_not_called()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_reaps_unpushed_branch_when_forge_says_pr_merged(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """#1578 — a branch flagged 'commits on NO remote' is reaped when its PR is MERGED.
+
+        Squash-merge creates a new SHA on main, so the branch's own SHAs are
+        absent from every remote ref — the #706 data-loss guard fires. But the
+        forge canonically reports the branch's PR merged, so the content shipped
+        and the worktree is safe to reap.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.unsynced_commits.return_value = []
+        mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: squashed onto main"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_called_once()
+        mock_git.branch_delete.assert_called_once()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_refuses_unpushed_branch_when_forge_lookup_uncertain(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """#1578 fail-safe — an unpushed branch with no/uncertain merged PR is still refused.
+
+        The forge lookup returning ``False`` (no merged PR found, CLI missing,
+        or any probe failure) leaves the #706 data-loss guard in force: ambiguity
+        never reaps.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_git.status_porcelain.return_value = ""
+        mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: never pushed, no PR"]
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        with (
+            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            pytest.raises(RuntimeError, match=r"on NO remote \(data loss\)"),
+        ):
+            cleanup_worktree(wt)
+
+        mock_git.worktree_remove.assert_not_called()
+        mock_git.branch_delete.assert_not_called()
+
     @_patch_overlay
     @_patch_git
     @_patch_config
