@@ -1,23 +1,28 @@
 """Ship mini-loop — own-author PR + GitLab approvals."""
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.backends.protocols import CodeHostBackend
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.tick_jobs import _ScannerJob
 
 
 def _build_jobs(
     *,
-    backends: list[Any] | None = None,
-    host: Any | None = None,  # noqa: ANN401 — CodeHostBackend, kept loose
-    **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
-) -> list[Any]:
+    backends: "list[OverlayBackends] | None" = None,
+    host: "CodeHostBackend | None" = None,
+    **_: object,
+) -> "list[_ScannerJob]":
     """Build per-host MyPrsScanner + optional GitLab approvals scanner."""
     from teatree.loop.scanners import MyPrsScanner  # noqa: PLC0415
     from teatree.loop.tick_jobs import Domain, _ScannerJob, jobs_for_domain  # noqa: PLC0415
 
     if backends:
         all_backends = tuple(backends)
-        jobs: list[Any] = []
+        jobs: list[_ScannerJob] = []
         for backend in backends:
             jobs.extend(jobs_for_domain(Domain.SHIP, backend, all_backends=all_backends))
         return jobs

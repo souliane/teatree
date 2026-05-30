@@ -1,21 +1,25 @@
 """Tickets mini-loop — local Ticket DB scanners + per-host disposition/completion."""
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.tick_jobs import _ScannerJob
 
 
 def _build_jobs(
     *,
-    backends: list[Any] | None = None,
-    **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
-) -> list[Any]:
+    backends: "list[OverlayBackends] | None" = None,
+    **_: object,
+) -> "list[_ScannerJob]":
     from teatree.loop.tick_jobs import Domain, jobs_for_domain  # noqa: PLC0415
 
     if not backends:
         return []
     all_backends = tuple(backends)
-    jobs: list[Any] = []
+    jobs: list[_ScannerJob] = []
     for backend in backends:
         jobs.extend(jobs_for_domain(Domain.TICKETS, backend, all_backends=all_backends))
     return jobs

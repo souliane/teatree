@@ -5,18 +5,24 @@ mentions/DMs, RED CARD signals, Notion view items. Default cadence is
 short because user-facing inbox lag is felt within seconds.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
+
+if TYPE_CHECKING:
+    from teatree.backends.protocols import MessagingBackend
+    from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.scanners.notion_view import NotionLike
+    from teatree.loop.tick_jobs import _ScannerJob
 
 
 def _build_jobs(
     *,
-    backends: list[Any] | None = None,
-    notion_client: Any | None = None,  # noqa: ANN401 — NotionLike, kept loose
-    messaging: Any | None = None,  # noqa: ANN401 — MessagingBackend, kept loose
-    **_: Any,  # noqa: ANN401 — orchestrator passes extra context as open kwargs
-) -> list[Any]:
+    backends: "list[OverlayBackends] | None" = None,
+    notion_client: "NotionLike | None" = None,
+    messaging: "MessagingBackend | None" = None,
+    **_: object,
+) -> "list[_ScannerJob]":
     """Consume the per-overlay ``Domain.INBOX`` slice plus the global notion job.
 
     ``Domain.INBOX`` owns the per-overlay inbound Slack scanners
@@ -29,7 +35,7 @@ def _build_jobs(
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
     from teatree.loop.tick_jobs import Domain, _ScannerJob, jobs_for_domain  # noqa: PLC0415
 
-    jobs: list[Any] = []
+    jobs: list[_ScannerJob] = []
     if backends:
         all_backends = tuple(backends)
         for backend in backends:
@@ -41,7 +47,7 @@ def _build_jobs(
     return jobs
 
 
-def _single_overlay_messaging_jobs(messaging: Any) -> list[Any]:  # noqa: ANN401
+def _single_overlay_messaging_jobs(messaging: "MessagingBackend") -> "list[_ScannerJob]":
     from teatree.loop.scanners import (  # noqa: PLC0415
         RedCardScanner,
         SlackDmInboundScanner,
