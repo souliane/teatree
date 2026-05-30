@@ -1823,6 +1823,34 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
 
         mock_del.assert_not_called()
 
+    def test_pass1_strips_current_branch_marker_on_gone_branch(self) -> None:
+        # `git branch -v` prefixes the checked-out branch with "* ". A gone
+        # current branch reads "* feature abc123 [gone] ...". Parsing must
+        # recover "feature" (which is protected as the current branch), never
+        # the literal "*" — passing "*" to branch_delete is both wrong and
+        # dangerous (git interprets it as a refspec glob).
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return "* feature abc123 [gone] some work"
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* feature"
+            return ""
+
+        with (
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="feature"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+        ):
+            ws_cleanup_mod.prune_branches("/repo")
+
+        for call in mock_del.call_args_list:
+            assert call.args[1] != "*", "branch marker '*' leaked into branch_delete"
+
 
 class TestDropOrphanedStashes(TestCase):
     def test_drops_stash_for_deleted_branch(self) -> None:

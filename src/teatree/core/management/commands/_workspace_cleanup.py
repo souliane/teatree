@@ -143,7 +143,7 @@ def prune_branches(repo: str) -> list[str]:
     for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
         if "[gone]" not in line:
             continue
-        name = line.strip().removeprefix("+ ").split()[0]
+        name = line.strip().removeprefix("* ").removeprefix("+ ").split()[0]
         if name in protected or name in wt_branches:
             continue
         git.branch_delete(repo, name)
