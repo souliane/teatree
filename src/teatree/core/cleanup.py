@@ -205,6 +205,45 @@ def probe_host_cli(cmd: list[str], repo: str, extract: Callable[[Any], str]) -> 
     return sha or ""
 
 
+def _branch_pr_is_merged(repo: str, branch: str) -> bool:
+    """Whether the forge canonically reports ``branch``'s PR/MR as merged (#1578).
+
+    The subject-match classifier and :func:`_branch_tree_matches_squash` both
+    break down for branches that diverged long before they were squash-merged:
+    the squash creates a new SHA on the default branch (so no subject matches and
+    the branch's own SHAs are absent from every remote) and the branch tip tree
+    no longer equals the squash commit tree (main moved on). Such a worktree is
+    fully merged yet looks ``genuinely_ahead`` / "commits on NO remote", so the
+    guards refuse it forever.
+
+    This asks the forge directly — the canonical truth, not a heuristic. A merged
+    PR/MR whose source branch matches ``branch`` means the work shipped, however
+    far the local branch has since diverged. GitHub marks a squash-merged PR
+    ``state=merged``; GitLab marks the MR ``merged`` — both are covered by the
+    same ``--state merged`` / ``--merged`` queries the squash-commit probe uses,
+    so this reuses :func:`probe_host_cli` (which swallows a missing ``gh``/``glab``
+    binary and any parse error as "not found").
+
+    **Fail-safe to skip.** Returns ``True`` only on a positive merged signal;
+    every uncertain outcome (no merged PR, CLI absent, probe/JSON failure) returns
+    ``False`` so the caller keeps the conservative refuse-and-report — ambiguity
+    never reaps real work.
+    """
+    found = probe_host_cli(
+        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
+        repo,
+        lambda data: str(data[0]["number"]),
+    )
+    if found:
+        return True
+    found = probe_host_cli(
+        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--output", "json", "-P", "1"],
+        repo,
+        lambda data: str(data[0]["iid"]),
+    )
+    return bool(found)
+
+
 def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
     """Return ``True`` when the PR's merge commit has the same tree as the branch tip.
 
@@ -223,11 +262,14 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     """Raise ``RuntimeError`` when the branch carries commits not on ``origin/main``.
 
     Merge commits and squash-merged commits are ignored — only ``genuinely_ahead``
-    work blocks cleanup. As a fallback, the PR's merge commit tree is compared
-    against the branch tip: an empty diff means the cumulative branch content
-    is already captured in the squash (typical for post-merge retro commits),
-    so cleanup proceeds. The error message lists up to ``_SUBJECT_PREVIEW_LIMIT``
-    commit subjects so the caller can decide whether to push or abandon.
+    work blocks cleanup. Two fallbacks run before refusing, both confirming the
+    work already shipped: first the PR's merge commit tree is compared against the
+    branch tip (an empty diff means the cumulative content is captured in the
+    squash, typical for post-merge retro commits); then, for branches that
+    diverged so far the squash tree no longer matches, the forge is asked
+    canonically whether the branch's PR is merged (#1578). The error message
+    lists up to ``_SUBJECT_PREVIEW_LIMIT`` commit subjects so the caller can
+    decide whether to push or abandon.
     """
     unsynced = git.unsynced_commits(repo_main, worktree.branch)
     if not unsynced:
@@ -236,6 +278,8 @@ def _raise_if_genuinely_ahead(repo_main: str, worktree: Worktree) -> None:
     if not classification.genuinely_ahead:
         return
     if _branch_tree_matches_squash(repo_main, worktree.branch):
+        return
+    if _branch_pr_is_merged(repo_main, worktree.branch):
         return
     preview = classification.genuinely_ahead[:_SUBJECT_PREVIEW_LIMIT]
     subjects = ", ".join(c.subject for c in preview)
@@ -269,6 +313,14 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
     corrupt repo, any ``git log`` failure) it raises ``CommandFailedError``;
     we translate that into a refusal rather than proceeding, because an
     inconclusive probe means we cannot prove the commits are pushed.
+
+    **Canonical merged override (#1578).** A squash-merge creates a new SHA on
+    the default branch and deletes the source ref, so the branch's own commits
+    are absent from every remote even though the work shipped. Before refusing,
+    the forge is asked whether the branch's PR is merged; a positive answer is
+    the ground truth that the content is safe on the default branch, so teardown
+    proceeds. The check fails safe to skip — only a positive merged signal
+    overrides; any uncertainty keeps the refusal.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(repo_main, worktree.branch)
@@ -280,6 +332,8 @@ def _raise_if_unpushed(repo_main: str, worktree: Worktree) -> None:
         )
         raise RuntimeError(msg) from exc
     if not unpushed:
+        return
+    if _branch_pr_is_merged(repo_main, worktree.branch):
         return
     preview = unpushed[:_SUBJECT_PREVIEW_LIMIT]
     shas = ", ".join(preview)
