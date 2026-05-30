@@ -28,6 +28,7 @@ from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, requi
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.review_message_cache import persist_review_message
 from teatree.core.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
+from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.types import RawAPIDict
 
 _ACTION = "review_request_post"
@@ -104,6 +105,18 @@ class Command(TyperCommand):
         resp = messaging.post_message(channel=target.channel_id, text=text, thread_ts="")
         ts = str(resp.get("ts", ""))
         permalink = messaging.get_permalink(channel=target.channel_id, ts=ts)
+
+        # Finalize the guard's claim (#1508). ``should_post_review_request``
+        # took the ``ReviewRequestPost`` get_or_create claim with an empty
+        # ``slack_thread_ts``; without stamping the posted ts here the row
+        # keeps the unposted-orphan shape ``_claim_or_reclaim`` reclaims after
+        # ``_CLAIM_RACE_WINDOW`` — a later re-attempt would post a duplicate
+        # to the review channel (the #1084 incident class).
+        record_review_request_post(
+            mr_url=canonical,
+            slack_channel_id=target.channel_id,
+            slack_thread_ts=ts,
+        )
 
         from django.utils import timezone  # noqa: PLC0415
 
