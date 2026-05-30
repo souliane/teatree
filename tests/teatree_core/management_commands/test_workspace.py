@@ -1057,6 +1057,10 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "load_config", return_value=mock_config),
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay") as mock_overlay,
+                # The fake repo (.git is a bare dir) can't satisfy a real
+                # ``git bundle``; isolate the recovery-capture seam so this test
+                # exercises the clean+pushed reap path, not the capture itself.
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""
@@ -1355,6 +1359,10 @@ class TestWorkspaceCleanAll(TestCase):
                 patch.object(cleanup_mod, "git") as mock_git,
                 patch.object(cleanup_mod, "get_overlay") as mock_overlay,
                 patch.object(cleanup_mod, "classify_branch_commits", side_effect=_classify),
+                # Isolate the recovery-capture seam — the fake repos (.git is a
+                # bare dir) can't satisfy a real ``git bundle``; this test
+                # targets the origin/main hygiene refusal, not capture.
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
             ):
                 mock_overlay.return_value.get_cleanup_steps.return_value = []
                 mock_git.status_porcelain.return_value = ""

@@ -93,8 +93,9 @@ def capture_recovery_artifact(repo_main: Path, wt_path: str, worktree: Worktree)
     except Exception:
         # A half-written artifact is worse than none and a stray empty temp dir
         # is litter — drop our own partial dir, then re-raise so the caller logs
-        # and surfaces the failure (it still proceeds with the prune; #835
-        # rejects blocking cleanup on capture trouble).
+        # and surfaces the failure. The caller (#1506) re-checks whether the
+        # worktree actually had work to lose and aborts the prune for it if so;
+        # only a proven clean+pushed worktree is still reaped on capture failure.
         shutil.rmtree(recovery_dir, ignore_errors=True)
         raise
 
