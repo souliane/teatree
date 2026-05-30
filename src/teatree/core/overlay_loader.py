@@ -45,6 +45,47 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     raise ImproperlyConfigured(msg)
 
 
+def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":
+    """Return the overlay whose workspace repos own the git repo at ``repo``.
+
+    Resolves the ``origin`` remote slug (``owner/name``) of the repo at
+    ``repo`` and matches it against each registered overlay's
+    ``get_workspace_repos()`` — the same repo-ownership relation
+    :func:`infer_overlay_for_url` uses for a URL. This lets a caller in an
+    ambiguous multi-overlay environment pick the overlay that actually owns
+    the current repository instead of crashing on ambiguity.
+
+    Returns ``None`` when the slug is empty (no ``origin``) or matches zero
+    or more than one overlay, so the caller can fall back deterministically
+    rather than guess wrong. An overlay whose ``get_workspace_repos()``
+    raises is skipped so one broken overlay can't poison resolution.
+    """
+    from teatree.utils.git import remote_slug  # noqa: PLC0415
+
+    slug = remote_slug(repo=repo)
+    if not slug:
+        return None
+
+    matches: list[OverlayBase] = []
+    for name, overlay in get_all_overlays().items():
+        getter = getattr(overlay, "get_workspace_repos", None)
+        if not callable(getter):
+            continue
+        try:
+            repo_slugs = getter()
+        except Exception:
+            logger.warning("Overlay %r get_workspace_repos() failed during repo resolution", name, exc_info=True)
+            continue
+        for repo_slug in repo_slugs or []:
+            if isinstance(repo_slug, str) and repo_slug and repo_slug in slug:
+                matches.append(overlay)
+                break
+
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def get_all_overlays() -> "dict[str, OverlayBase]":
     return dict(_discover_overlays())
 

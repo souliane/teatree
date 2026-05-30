@@ -1,12 +1,17 @@
 """Tests for teatree.core.overlay_loader — TOML-based overlay discovery."""
 
+import shutil
+import subprocess
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import _discover_toml_overlays, infer_overlay_for_url
+from teatree.core.overlay_loader import _discover_toml_overlays, get_overlay_for_repo, infer_overlay_for_url
+
+_GIT = shutil.which("git") or "git"
 
 
 def _make_config(overlays: dict) -> TeaTreeConfig:
@@ -137,6 +142,107 @@ class TestInferOverlayForUrl:
         ):
             assert infer_overlay_for_url("https://gitlab.com/acme/widgets/-/issues/7") == "ok"
         assert "failed during inference" in caplog.text
+
+
+def _init_repo_with_origin(path: Path, origin_url: str) -> None:
+    """Create a real git repo at ``path`` with ``origin`` set to ``origin_url``."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_GIT, "init", "-q"], cwd=path, check=True)
+    subprocess.run([_GIT, "remote", "add", "origin", origin_url], cwd=path, check=True)
+
+
+class _RepoOverlay(OverlayBase):
+    """Concrete overlay exposing a fixed workspace-repo slug list."""
+
+    def __init__(self, repos: list[str]) -> None:
+        self._repos = repos
+
+    def get_repos(self) -> list[str]:
+        return self._repos
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+class TestGetOverlayForRepo:
+    """``get_overlay_for_repo`` maps the cwd git repo to its owning overlay (#1526).
+
+    Resolves the overlay deterministically by the ``origin`` remote slug of
+    the repo at the given path, matched against each registered overlay's
+    ``get_workspace_repos()``. Returns ``None`` when the slug matches zero or
+    more than one overlay so the caller can fall back without crashing.
+    """
+
+    def test_matches_repo_to_its_owning_overlay(self, tmp_path):
+        repo = tmp_path / "widgets"
+        _init_repo_with_origin(repo, "git@github.com:acme/widgets.git")
+        overlays = {
+            "a": _RepoOverlay(["acme/widgets"]),
+            "b": _RepoOverlay(["other/repo"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            resolved = get_overlay_for_repo(str(repo))
+        assert resolved is overlays["a"]
+
+    def test_no_match_returns_none(self, tmp_path):
+        repo = tmp_path / "ghost"
+        _init_repo_with_origin(repo, "git@github.com:acme/ghost.git")
+        overlays = {
+            "a": _RepoOverlay(["acme/widgets"]),
+            "b": _RepoOverlay(["other/repo"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert get_overlay_for_repo(str(repo)) is None
+
+    def test_ambiguous_match_returns_none(self, tmp_path):
+        repo = tmp_path / "shared"
+        _init_repo_with_origin(repo, "git@github.com:acme/shared.git")
+        overlays = {
+            "a": _RepoOverlay(["acme/shared"]),
+            "b": _RepoOverlay(["acme/shared"]),
+        }
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert get_overlay_for_repo(str(repo)) is None
+
+    def test_repo_without_origin_returns_none(self, tmp_path):
+        repo = tmp_path / "no-origin"
+        repo.mkdir()
+        subprocess.run([_GIT, "init", "-q"], cwd=repo, check=True)
+        overlays = {"a": _RepoOverlay(["acme/widgets"])}
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert get_overlay_for_repo(str(repo)) is None
+
+    def test_non_overlay_entry_is_skipped(self, tmp_path):
+        repo = tmp_path / "widgets"
+        _init_repo_with_origin(repo, "git@github.com:acme/widgets.git")
+
+        class _Bare:
+            config = None
+
+        overlays = {"bare": _Bare(), "a": _RepoOverlay(["acme/widgets"])}
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert get_overlay_for_repo(str(repo)) is overlays["a"]
+
+    def test_raising_overlay_does_not_block_others(self, tmp_path, caplog):
+        repo = tmp_path / "widgets"
+        _init_repo_with_origin(repo, "git@github.com:acme/widgets.git")
+
+        class _Broken(OverlayBase):
+            def get_repos(self) -> list[str]:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            def get_workspace_repos(self) -> list[str]:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+            def get_provision_steps(self, worktree):
+                return []
+
+        overlays = {"broken": _Broken(), "a": _RepoOverlay(["acme/widgets"])}
+        with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+            assert get_overlay_for_repo(str(repo)) is overlays["a"]
+        assert "failed during repo resolution" in caplog.text
 
 
 # ── Test helpers ─────────────────────────────────────────────────────
