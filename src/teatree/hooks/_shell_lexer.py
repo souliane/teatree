@@ -38,10 +38,20 @@ class TokenKind(Enum):
 
 @dataclass(frozen=True)
 class Token:
-    """One decoded shell token."""
+    """One decoded shell token.
+
+    ``value`` is the shell-decoded text (quotes removed, escapes applied);
+    ``raw`` is the verbatim source span the token was lexed from (quotes
+    and escapes intact). ``raw`` lets a consumer apply shell rules that
+    depend on quoting — e.g. recognising a leading ``NAME=val`` env
+    assignment only when the name and ``=`` are UNQUOTED (``'A'=1`` is a
+    command literal, not an assignment). ``raw`` defaults to ``""`` so
+    existing in-process constructions stay valid.
+    """
 
     value: str
     kind: TokenKind
+    raw: str = ""
 
 
 # Metacharacters that act as command separators in bash. Two-char
@@ -166,16 +176,24 @@ class _LexerState:
     current: list[str]
     in_token: bool
     i: int
+    token_start: int = 0
+
+    def begin_token(self) -> None:
+        """Record the raw-source start index when a fresh token opens."""
+        if not self.in_token:
+            self.token_start = self.i
+        self.in_token = True
 
     def flush(self) -> None:
         if self.in_token:
-            self.tokens.append(Token("".join(self.current), TokenKind.WORD))
+            raw = self.command[self.token_start : self.i]
+            self.tokens.append(Token("".join(self.current), TokenKind.WORD, raw=raw))
             self.current.clear()
             self.in_token = False
 
     def append_op(self, op: str, consumed: int) -> None:
         self.flush()
-        self.tokens.append(Token(op, TokenKind.OP))
+        self.tokens.append(Token(op, TokenKind.OP, raw=op))
         self.i += consumed
 
 
@@ -189,11 +207,17 @@ def _consume_line_continuation(state: _LexerState) -> None:
 
 
 def _consume_newline_operator(state: _LexerState) -> None:
-    r"""Emit a single ``\n`` operator for a bare newline / ``\r\n``."""
+    r"""Emit a single ``\n`` operator for a bare newline / ``\r\n``.
+
+    ``raw`` carries the verbatim newline span (``"\n"`` or ``"\r\n"``) so the
+    invariant "every token kind has a populated ``raw``" holds; the decoded
+    ``value`` is normalised to ``"\n"`` regardless of the source line ending.
+    """
     state.flush()
     ch = state.command[state.i]
     consume = 2 if ch == "\r" and state.i + 1 < len(state.command) and state.command[state.i + 1] == "\n" else 1
-    state.tokens.append(Token("\n", TokenKind.OP))
+    raw = state.command[state.i : state.i + consume]
+    state.tokens.append(Token("\n", TokenKind.OP, raw=raw))
     state.i += consume
 
 
@@ -210,7 +234,7 @@ def _match_operator(state: _LexerState) -> str | None:
 
 def _consume_ansi_c(state: _LexerState) -> None:
     r"""Consume a ``$'...'`` sequence at the current cursor."""
-    state.in_token = True
+    state.begin_token()
     n = len(state.command)
     j = state.i + 2
     body_chars: list[str] = []
@@ -229,7 +253,7 @@ def _consume_ansi_c(state: _LexerState) -> None:
 
 def _consume_single_quote(state: _LexerState) -> None:
     """Consume a ``'...'`` sequence — contents are verbatim."""
-    state.in_token = True
+    state.begin_token()
     n = len(state.command)
     j = state.i + 1
     while j < n and state.command[j] != "'":
@@ -240,7 +264,7 @@ def _consume_single_quote(state: _LexerState) -> None:
 
 def _consume_double_quote(state: _LexerState) -> None:
     r"""Consume a ``"..."`` sequence — backslash escapes selected chars."""
-    state.in_token = True
+    state.begin_token()
     n = len(state.command)
     j = state.i + 1
     while j < n and state.command[j] != '"':
@@ -260,7 +284,7 @@ def _consume_double_quote(state: _LexerState) -> None:
 
 def _consume_unquoted_backslash(state: _LexerState) -> None:
     r"""Consume ``\X`` outside any quote — next char is literal."""
-    state.in_token = True
+    state.begin_token()
     state.current.append(state.command[state.i + 1])
     state.i += 2
 
@@ -372,7 +396,7 @@ def tokenize(command: str) -> list[Token]:
     while state.i < n:
         if _try_consume_structured(state):
             continue
-        state.in_token = True
+        state.begin_token()
         state.current.append(command[state.i])
         state.i += 1
     state.flush()
