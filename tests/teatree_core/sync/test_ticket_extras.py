@@ -53,6 +53,45 @@ class TestUpdateTicket(TestCase):
         assert mr["review_permalink"] == "https://slack.com/archives/C123/p456"
         assert mr["e2e_test_plan_url"] == "https://gitlab.com/org/repo/-/merge_requests/50#note_789"
 
+    def test_does_not_clobber_a_concurrent_writers_extra_key(self) -> None:
+        """A concurrent writer's top-level extra key survives a sync from a stale ticket.
+
+        update_ticket only mutates the top-level ``prs`` key, so it must
+        pass ``set_keys={"prs": ...}`` to ``merge_extra`` -- not the whole
+        stale ``extra`` snapshot. Passing the whole snapshot makes
+        ``merge_extra``'s locked re-read overwrite every sibling key
+        (reviewed_sha, last_approval_sha, pr_urls, visual_qa) with the
+        stale value, defeating the lock (the #800 lost-update class).
+
+        Modelled as the canonical lost-update race: a stale in-memory
+        ticket read first, then the reviewer path commits ``reviewed_sha``
+        via the same locked primitive (bare autocommit, the prod shape),
+        then the sync runs from the stale handle.
+        """
+        mr_url = "https://gitlab.com/org/repo/-/merge_requests/50"
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/210",
+            repos=["repo"],
+            extra={"reviewed_sha": "old_sha", "prs": {mr_url: {"url": mr_url, "repo": "repo", "title": "old"}}},
+        )
+
+        # Stale handle read BEFORE the concurrent writer commits.
+        stale = Ticket.objects.get(pk=ticket.pk)
+
+        # Concurrent reviewer-path writer stamps a fresh reviewed_sha.
+        ticket.merge_extra(set_keys={"reviewed_sha": "new_sha"})
+
+        # The sync runs from the stale in-memory ticket.
+        new_mr_entry: PREntryDict = {"url": mr_url, "repo": "repo", "title": "new title"}
+        update_ticket(stale, new_mr_entry, mr_url, "repo")
+
+        stale.refresh_from_db()
+        # The concurrent writer's key must survive (the lock did its job).
+        assert stale.extra["reviewed_sha"] == "new_sha"
+        # The sync's own mutation still landed.
+        assert stale.extra["prs"][mr_url]["title"] == "new title"
+
 
 class TestMergeTicketExtras(TestCase):
     def test_combines_mrs_and_repos(self) -> None:
