@@ -4644,6 +4644,76 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
+# ── PreToolUse: block-raw-review-post (#1164) ────────────────────────
+#
+# Sub-agents have repeatedly posted MR/PR review comments by shelling out
+# to a raw forge REST POST — ``glab api projects/.../merge_requests/<n>/
+# discussions -X POST`` (or ``.../notes``, or the GitHub ``.../pulls/<n>/
+# comments``) — bypassing the sanctioned ``t3 <overlay> review post-comment``
+# / ``post-draft-note`` path that enforces draft-default (#1207), dedup, and
+# on-behalf approval (#960). RED-CARD, 5x recurrence. This gate closes the
+# bypass at the Bash boundary: a WRITE to a review discussion/notes/comments
+# endpoint is denied; plain GET reads pass through.
+#
+# Conservative by construction: it matches ONLY the review-comment endpoints
+# (discussions / notes / comments) AND only when a write is present (an HTTP
+# method override of POST/PUT/PATCH, or a request-body flag the forge CLIs
+# use to carry a payload — ``-f``/``--field``/``-F``/``--raw-field``/
+# ``--input``/``-d``/``--data``). A bare read (``glab api .../discussions``)
+# and any non-review endpoint pass through untouched. Fails OPEN on an
+# internal parse error — a gate bug must never wedge the fleet.
+
+_REVIEW_POST_ENDPOINT_RE = re.compile(
+    r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
+)
+_REVIEW_POST_METHOD_WRITE_RE = re.compile(
+    r"(?:-X|--method)[\s=]+['\"]?(?:POST|PUT|PATCH)\b",
+    re.IGNORECASE,
+)
+_REVIEW_POST_BODY_FLAG_RE = re.compile(
+    r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
+)
+_REVIEW_POST_DENY_REASON = (
+    "BLOCKED: raw `glab api`/`gh api` POST to a review discussion/notes/comments "
+    "endpoint bypasses the sanctioned review-post CLI. Use "
+    "`t3 <overlay> review post-comment` (draft by default, #1207) or "
+    "`t3 <overlay> review post-draft-note` — the CLI enforces draft-default, "
+    "dedup, and on-behalf approval, which a direct REST write skips entirely. "
+    "Read-only `glab api`/`gh api` GETs are unaffected."
+)
+
+
+def _is_raw_review_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
+
+    True only when the command targets a ``.../discussions``, ``.../notes``,
+    or ``.../comments`` endpoint AND carries a write signal (a POST/PUT/PATCH
+    method override or a request-body flag). A plain GET read returns False.
+    """
+    if "glab api" not in command and "gh api" not in command:
+        return False
+    if not _REVIEW_POST_ENDPOINT_RE.search(command):
+        return False
+    return bool(_REVIEW_POST_METHOD_WRITE_RE.search(command) or _REVIEW_POST_BODY_FLAG_RE.search(command))
+
+
+def handle_block_raw_review_post(data: dict) -> bool:
+    """Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
+
+    Forces the sanctioned ``t3 <overlay> review post-comment`` /
+    ``post-draft-note`` path (draft-default + dedup + on-behalf approval),
+    which a direct REST POST skips. Conservative: only clear review-write
+    POSTs are denied — bare reads and non-review endpoints pass through.
+    Returns True when a deny was emitted (caller stops the handler chain).
+    """
+    if data.get("tool_name") != "Bash":
+        return False
+    command = data.get("tool_input", {}).get("command", "")
+    if not command or not _is_raw_review_write(command):
+        return False
+    return emit_pretooluse_deny(_REVIEW_POST_DENY_REASON)
+
+
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
 
 
@@ -5613,6 +5683,7 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_skill_loading,
         handle_block_direct_commands,
         handle_block_out_of_band_merge,
+        handle_block_raw_review_post,
         handle_validate_mr_metadata,
         handle_block_ai_signature,
         handle_block_uncovered_diff,
