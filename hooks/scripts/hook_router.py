@@ -393,6 +393,42 @@ def _append_line(path: Path, line: str) -> None:
 
 # ── UserPromptSubmit ────────────────────────────────────────────────
 
+# Harness-injected ambient context — NOT task intent. The Claude Code
+# harness appends ``<system-reminder>…</system-reminder>`` blocks (the
+# CLAUDE.md body, the MEMORY.md index, the available-skills listing) to
+# the prompt that reaches ``UserPromptSubmit``. Keyword-matching those
+# blocks is the #1567 over-fire: a MEMORY.md index line naming
+# ``feedback_blog_*`` keyword-matched ``\bblog\b`` → suggested
+# ``ac-writing-blog-posts`` → the PreToolUse gate hard-blocked every
+# Bash/Edit/Write during an unrelated autonomous loop. The hard-block
+# demand set must derive from genuine task-intent text only, so these
+# wrappers are stripped before the prompt is matched.
+_AMBIENT_CONTEXT_RE = re.compile(
+    r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>"
+    r".*?</\1>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_ambient_context(prompt: str) -> str:
+    """Remove harness-injected ambient-context blocks from *prompt*.
+
+    Returns the prompt with every ``<system-reminder>`` / harness
+    ``<command-*>`` wrapper (and its body) removed, leaving only the
+    genuine task-intent text. An unterminated opening wrapper (truncated
+    injection) is dropped from its tag to end-of-string so leaked ambient
+    text can never reach the keyword matcher. The intent text is what the
+    high-confidence hard-block demand set is built from (#1567).
+    """
+    stripped = _AMBIENT_CONTEXT_RE.sub(" ", prompt)
+    stripped = re.sub(
+        r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>.*",
+        " ",
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return stripped.strip()
+
 
 def _build_skill_loader_input(prompt: str, session_id: str) -> dict:
     teatree_home = os.environ.get("HOME", "")
@@ -403,7 +439,7 @@ def _build_skill_loader_input(prompt: str, session_id: str) -> dict:
 
     search_dirs = [str(source_root), f"{teatree_home}/.agents/skills", f"{teatree_home}/.claude/skills"]
     return {
-        "prompt": prompt,
+        "prompt": _strip_ambient_context(prompt),
         "cwd": str(Path.cwd()),
         "active_repos": active,
         "loaded_skills": loaded,
@@ -689,11 +725,52 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
 
 
+# Per-call escape mirroring the ``[skip-skill-gate: <reason>]`` token of
+# the sibling TaskCreated gate and the ``[fg-ok: <reason>]`` precedent of
+# the orchestrator-boundary gate: ``[skill-load-ok: <non-empty-reason>]``
+# in the CURRENT tool call's command/args unblocks this single Bash/Edit/
+# Write, an empty reason rejects. A false skill-trigger can therefore
+# never wedge the loop — but a genuine intent match still hard-blocks
+# every call that does NOT carry the escape (the #1488 loophole stays
+# closed).
+_SKILL_LOAD_OK_RE = re.compile(r"\[skill-load-ok:\s*(\S[^\]]*?)\s*\]")
+
+
+def _skill_load_ok_token(data: dict) -> str | None:
+    """Return the reason from a ``[skill-load-ok: <reason>]`` token, else None.
+
+    Scans the current tool call's command/args — for ``Bash`` the
+    ``command`` string, for ``Edit``/``Write`` the written text
+    (``new_string`` / ``content``) and the ``file_path`` — within the
+    first 512 characters of each field (matching
+    :func:`_task_text_skip_token`) so a buried token in a long body does
+    not silently authorise the call. An empty reason returns None.
+    """
+    tool_input = data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return None
+    for field in ("command", "new_string", "content", "file_path"):
+        value = tool_input.get(field, "")
+        if not isinstance(value, str) or not value:
+            continue
+        match = _SKILL_LOAD_OK_RE.search(value[:512])
+        if not match:
+            continue
+        reason = match.group(1).strip()
+        if reason:
+            return reason
+    return None
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
     """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
 
     Fails open on a stale/unresolvable required skill (see the module
-    comment above): such a name is warned about, never blocked on.
+    comment above): such a name is warned about, never blocked on. A
+    per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
+    args is an explicit escape (#1567) so a false trigger can never wedge
+    the loop; a genuine intent match still hard-blocks every call lacking
+    that token.
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -722,10 +799,15 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     if not enforceable:
         return False
 
+    if reason := _skill_load_ok_token(data):
+        sys.stderr.write(f"NOTE: skill-loading gate skipped via [skill-load-ok: {reason}].\n")
+        return False
+
     skill_list = " ".join(f"/{s}" for s in enforceable)
     reason = (
         f"SKILL LOADING ENFORCEMENT: You MUST load these skills first: {skill_list}. "
-        "Call the Skill tool for each one BEFORE calling Bash/Edit/Write."
+        "Call the Skill tool for each one BEFORE calling Bash/Edit/Write. "
+        "If this is a false trigger, add `[skill-load-ok: <reason>]` to the command/args to proceed."
     )
     return _fail_open_or_deny(data, reason)
 
