@@ -227,19 +227,22 @@ def update_ticket(
                 pr_entry[key] = prev[key]
 
     prs[pr_url] = pr_entry
-    extra["prs"] = prs
 
     repos = ticket.repos if isinstance(ticket.repos, list) else []
     if repo_short not in repos:
         repos = [*repos, repo_short]
 
-    # #800 N3: canonical locked RMW; extra + repos (+ optional state)
-    # stay one atomic write via also_set (no split).
+    # #800 N3: canonical locked RMW; narrow set_keys to the only top-level
+    # key this fn mutates (prs) so merge_extra's locked re-read does not
+    # clobber a concurrent writer's sibling key from the stale snapshot
+    # (#1505). repos (+ optional state) ride along via also_set in the
+    # same atomic write (no split).
     also_set: TicketSiblingFields = {"repos": repos}
     if inferred_state and _STATE_ORDER.index(inferred_state) > _STATE_ORDER.index(ticket.state):
         also_set["state"] = inferred_state
 
-    ticket.merge_extra(set_keys=cast("TicketExtra", dict(extra)), also_set=also_set)
+    set_keys = cast("TicketExtra", {"prs": prs})
+    ticket.merge_extra(set_keys=set_keys, also_set=also_set)
 
 
 def infer_state_from_prs(prs_data: dict[str, PREntryDict]) -> str:
