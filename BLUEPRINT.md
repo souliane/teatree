@@ -484,6 +484,7 @@ graph TD
     teatree.core.management --> teatree.config
     teatree.core.management --> teatree.docker
     teatree.core.management --> teatree.loop
+    teatree.core.management --> teatree.loops
     teatree.core.management --> teatree.messaging
     teatree.core.management --> teatree.paths
     teatree.core.management --> teatree.types

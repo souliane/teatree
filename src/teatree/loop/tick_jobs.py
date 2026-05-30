@@ -834,7 +834,12 @@ def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
     return failed_e2e_scanner_for(backend)
 
 
-def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_ScannerJob]:
+def _messaging_jobs_for_backend(
+    backend: OverlayBackends,
+    tag: str,
+    *,
+    include_review_nag: bool = True,
+) -> list[_ScannerJob]:
     """Per-overlay Slack scanners that need a resolved messaging backend.
 
     ``SlackMentionsScanner`` owns the JSONL drain and fans reaction
@@ -843,11 +848,16 @@ def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_Sca
     Caller must check ``backend.messaging is not None`` before invoking;
     a defensive early-return keeps the type narrow without a bare
     ``assert``.
+
+    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop)
+    drop ``ReviewNagScanner`` so the nag is emitted by exactly one owner —
+    the followup mini-loop, whose 10-minute cadence matches the legacy
+    single emission. The legacy monolithic fan-out keeps the default.
     """
     messaging = backend.messaging
     if messaging is None:
         return []
-    return [
+    jobs = [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
         _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
         _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
@@ -856,15 +866,19 @@ def _messaging_jobs_for_backend(backend: OverlayBackends, tag: str) -> list[_Sca
         # drain reactions; this one only cares about ``:red_circle:`` /
         # ``:no_entry_sign:`` plus the literal phrase in DMs.
         _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
-        _ScannerJob(
-            scanner=ReviewNagScanner(
-                messaging=messaging,
-                user_slack_id=_user_slack_id_for_overlay(tag),
-                host=backend.host,
-            ),
-            overlay=tag,
-        ),
     ]
+    if include_review_nag:
+        jobs.append(
+            _ScannerJob(
+                scanner=ReviewNagScanner(
+                    messaging=messaging,
+                    user_slack_id=_user_slack_id_for_overlay(tag),
+                    host=backend.host,
+                ),
+                overlay=tag,
+            ),
+        )
+    return jobs
 
 
 def build_default_jobs(
