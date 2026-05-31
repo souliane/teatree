@@ -18,7 +18,15 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.checking import CheckGroup, CheckingReport, CheckItem, build_pr_url, gather_checking_report
+from teatree.core.checking import (
+    AllOverlaysReport,
+    CheckGroup,
+    CheckingReport,
+    CheckItem,
+    build_pr_url,
+    gather_all_overlays_report,
+    gather_checking_report,
+)
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.session import Session
@@ -402,3 +410,108 @@ class TestPureRenderers:
             needs_you=CheckGroup(title="Needs you"),
         )
         assert report.to_terse().startswith("Nothing since ")
+
+
+class TestAllOverlaysAggregation(CheckingTestBase):
+    """``gather_all_overlays_report`` merges rows from multiple overlays (#1529)."""
+
+    OVERLAY_B = "beta"
+
+    def _ticket_b(self, *, number: int = 99, state: str = Ticket.State.IN_REVIEW) -> Ticket:
+        return Ticket.objects.create(
+            overlay=self.OVERLAY_B,
+            issue_url=f"https://github.com/beta/core/issues/{number}",
+            state=state,
+            short_description=f"ticket {number} beta work",
+        )
+
+    def _merge_b(self, ticket: Ticket, *, pr_id: int, hours_ago: float) -> MergeAudit:
+        clear = MergeClear.issue(
+            ClearRequest(
+                pr_id=pr_id,
+                slug="beta/core",
+                reviewed_sha=_SHA,
+                reviewer_identity=_REVIEWER,
+                ticket=ticket,
+            ),
+        )
+        audit = MergeAudit.objects.create(clear=clear, merged_sha=_SHA, required_checks_status="success")
+        MergeAudit.objects.filter(pk=audit.pk).update(merged_at=self.now - timedelta(hours=hours_ago))
+        return audit
+
+    def test_all_overlays_aggregation(self) -> None:
+        ticket_a = self._ticket(number=1)
+        self._merge(ticket_a, pr_id=10, slug="acme/widgets", hours_ago=2)
+        ticket_b = self._ticket_b(number=2)
+        self._merge_b(ticket_b, pr_id=20, hours_ago=2)
+
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", ["acme/widgets"]),
+            self.OVERLAY_B: ("github", ["beta/core"]),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+
+        labels = {item.label for item in report.merged.items}
+        assert "acme/widgets#10" in labels
+        assert "beta/core#20" in labels
+
+    def test_inline_overlay_tag_in_merged_items(self) -> None:
+        ticket_a = self._ticket(number=1)
+        self._merge(ticket_a, pr_id=10, slug="acme/widgets", hours_ago=2)
+        ticket_b = self._ticket_b(number=2)
+        self._merge_b(ticket_b, pr_id=20, hours_ago=2)
+
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", ["acme/widgets"]),
+            self.OVERLAY_B: ("github", ["beta/core"]),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+        terse = report.to_terse()
+
+        assert f"[{self.OVERLAY}]" in terse
+        assert f"[{self.OVERLAY_B}]" in terse
+
+    def test_empty_across_all_overlays(self) -> None:
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", []),
+            self.OVERLAY_B: ("github", []),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+        terse = report.to_terse()
+
+        assert terse.startswith("Nothing since ")
+        assert "\n" not in terse
+
+    def test_deferred_questions_not_duplicated_in_multi_overlay(self) -> None:
+        DeferredQuestion.record("Should I proceed?")
+
+        overlay_windows = {
+            self.OVERLAY: (self.since, self.now),
+            self.OVERLAY_B: (self.since, self.now),
+        }
+        overlay_configs = {
+            self.OVERLAY: ("github", []),
+            self.OVERLAY_B: ("github", []),
+        }
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+
+        question_items = [item for item in report.needs_you.items if item.label.startswith("Q")]
+        assert len(question_items) == 1
+
+    def test_all_overlays_report_is_dataclass(self) -> None:
+        overlay_windows = {self.OVERLAY: (self.since, self.now)}
+        overlay_configs = {self.OVERLAY: ("github", [])}
+        report = gather_all_overlays_report(overlay_windows=overlay_windows, overlay_configs=overlay_configs)
+        assert isinstance(report, AllOverlaysReport)
