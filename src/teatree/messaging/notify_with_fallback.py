@@ -25,7 +25,7 @@ import enum
 import logging
 from dataclasses import dataclass
 
-from django.db import IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.backend_factory import messaging_from_overlay
@@ -316,6 +316,8 @@ def _upsert_botping(  # noqa: PLR0913 — one typed write site for the BotPing a
             )
     except IntegrityError:
         logger.debug("notify_with_fallback: BotPing upsert race on key=%s", idempotency_key)
+    except DatabaseError:
+        logger.warning("notify_with_fallback: BotPing upsert db error on key=%s", idempotency_key)
 
 
 def _stamp_transport(idempotency_key: str, transport: NotifyTransport) -> None:
@@ -325,6 +327,8 @@ def _stamp_transport(idempotency_key: str, transport: NotifyTransport) -> None:
             BotPing.objects.filter(idempotency_key=idempotency_key).update(transport=transport.value)
     except IntegrityError:
         logger.debug("notify_with_fallback: transport stamp race on key=%s", idempotency_key)
+    except DatabaseError:
+        logger.warning("notify_with_fallback: transport stamp db error on key=%s", idempotency_key)
 
 
 __all__ = ["NotifyResult", "NotifyTransport", "notify_with_fallback"]

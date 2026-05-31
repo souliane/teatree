@@ -188,15 +188,23 @@ class ReviewNagScanner:
             f":information_source: *long-stale MR* — no reviewer for {post.mr_url} "
             "after 5 days of fibonacci nags. Manual escalation recommended."
         )
+        dm_delivered = False
         try:
             dm_channel = messaging.open_dm(self.user_slack_id)
             messaging.post_message(channel=dm_channel, text=text, thread_ts="")
+            dm_delivered = True
         except Exception as exc:  # noqa: BLE001 — DM transport must never crash a tick.
             logger.warning(
                 "review_nag: stale-DM failed for %s to %s: %s",
                 post.mr_url,
                 self.user_slack_id,
                 exc,
+            )
+        if not dm_delivered:
+            return ScanSignal(
+                kind="review_nag.stale_no_dm",
+                summary=f"Stale-DM failed for {post.mr_url} — nag train left open for retry",
+                payload={"mr_url": post.mr_url, "post_id": post.pk},
             )
         post.done_at = right_now
         post.save(update_fields=["done_at"])
