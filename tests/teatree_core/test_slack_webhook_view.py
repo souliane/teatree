@@ -109,6 +109,26 @@ class TestSlackWebhookView(TestCase):
         assert response.status_code == 401
         assert IncomingEvent.objects.count() == 0
 
+    def test_missing_event_id_fallback_key_is_content_hash(self) -> None:
+        payload = {"type": "event_callback", "event": {"type": "message", "text": "hello"}}
+        body = json.dumps(payload).encode()
+
+        response = _post(self.client, body)
+
+        assert response.status_code == 200
+        event = IncomingEvent.objects.get()
+        expected_hash = hashlib.sha256(body).hexdigest()[:16]
+        assert event.idempotency_key == f"slack:{expected_hash}"
+
+    def test_missing_event_id_retries_collapse_to_one_row(self) -> None:
+        payload = {"type": "event_callback", "event": {"type": "message", "text": "hello"}}
+        body = json.dumps(payload).encode()
+
+        _post(self.client, body)
+        _post(self.client, body)
+
+        assert IncomingEvent.objects.count() == 1
+
 
 @override_settings(TEATREE_SLACK_SIGNING_SECRET="")
 class TestSlackWebhookViewWithoutSecret(TestCase):

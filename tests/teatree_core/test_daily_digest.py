@@ -3,6 +3,7 @@
 import datetime as dt
 from unittest.mock import MagicMock
 
+import pytest
 from django.test import TestCase, override_settings
 
 from teatree.core.daily_digest import DailyDigest
@@ -108,6 +109,28 @@ class TestDailyDigest(TestCase):
         assert thread.closed_at is not None
         # 1 work message + exactly 1 recap reply
         assert backend.post_reply.call_count == 2
+
+    def test_open_dm_failure_does_not_persist_thread_row(self) -> None:
+        backend = _backend()
+        backend.open_dm.return_value = ""  # open_dm failure
+        clock = _at(2026, 5, 15)
+        digest = DailyDigest(backend=backend, user_id="U_ME", now=lambda: clock)
+
+        with pytest.raises(RuntimeError):
+            digest.post("hello", idempotency_key="k1")
+
+        assert DailyDigestThread.objects.count() == 0
+
+    def test_post_message_failure_does_not_persist_thread_row(self) -> None:
+        backend = _backend()
+        backend.post_message.return_value = {"ok": False}
+        clock = _at(2026, 5, 15)
+        digest = DailyDigest(backend=backend, user_id="U_ME", now=lambda: clock)
+
+        with pytest.raises(RuntimeError):
+            digest.post("hello", idempotency_key="k1")
+
+        assert DailyDigestThread.objects.count() == 0
 
     def test_post_after_close_still_threads_but_does_not_reopen(self) -> None:
         backend = _backend()
