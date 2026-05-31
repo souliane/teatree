@@ -847,3 +847,71 @@ class TestEnsureEditableIfContributing:
     def test_suppresses_exceptions(self) -> None:
         with patch.object(config_mod, "load_config", side_effect=RuntimeError("boom")):
             _ensure_editable_if_contributing()  # should not raise
+
+
+class TestRegisterOverlayCommandsCanonicalDedup:
+    """A TOML overlay and its ``t3-``-prefixed entry point share one route key.
+
+    Both ``acme`` (TOML, with a path) and ``t3-acme`` (entry point) canonicalise
+    to the ``acme`` route key. Left distinct they each register an ``acme`` Typer
+    sub-app — the collision. Exactly one must be registered, and the existing
+    allowlist behaviour (registering ``beta`` from ``t3-beta``) is preserved.
+    """
+
+    def _registered_names(self, mock_add) -> list[str]:
+        return [call.kwargs.get("name") or call.args[1] for call in mock_add.call_args_list]
+
+    def test_toml_and_entry_point_register_exactly_one_subapp(self) -> None:
+        from teatree.cli import register_overlay_commands  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        toml_overlay = OverlayEntry(name="acme", overlay_class="", project_path=Path("/tmp/acme"))
+        entry_point = OverlayEntry(name="t3-acme", overlay_class="acme_pkg.overlay:AcmeOverlay")
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[toml_overlay, entry_point]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.cli.OverlayAppBuilder") as mock_builder,
+            patch("teatree.cli.app.add_typer") as mock_add,
+        ):
+            register_overlay_commands()
+
+        assert self._registered_names(mock_add) == ["acme"]
+        assert mock_builder.call_count == 1
+
+    def test_collapse_inherits_project_path_from_toml_sibling(self) -> None:
+        from teatree.cli import register_overlay_commands  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        toml_overlay = OverlayEntry(name="acme", overlay_class="", project_path=Path("/tmp/acme"))
+        entry_point = OverlayEntry(name="t3-acme", overlay_class="acme_pkg.overlay:AcmeOverlay")
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[toml_overlay, entry_point]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.cli.OverlayAppBuilder") as mock_builder,
+            patch("teatree.cli.app.add_typer"),
+        ):
+            register_overlay_commands()
+
+        entry_name, project_path, _settings = mock_builder.call_args.args
+        assert entry_name == "t3-acme"
+        assert project_path == Path("/tmp/acme")
+
+    def test_allowlist_still_registers_entry_point_subapp(self) -> None:
+        from teatree.cli import register_overlay_commands  # noqa: PLC0415
+        from teatree.config import OverlayEntry  # noqa: PLC0415
+
+        beta = OverlayEntry(name="t3-beta", overlay_class="beta_pkg.overlay:BetaOverlay")
+        other = OverlayEntry(name="t3-other-fake", overlay_class="")
+
+        with (
+            patch("teatree.config.discover_overlays", return_value=[beta, other]),
+            patch("teatree.config.discover_active_overlay", return_value=None),
+            patch("teatree.cli.OverlayAppBuilder") as mock_builder,
+            patch("teatree.cli.app.add_typer") as mock_add,
+        ):
+            register_overlay_commands(allowlist={"t3-beta"})
+
+        assert self._registered_names(mock_add) == ["beta"]
+        assert mock_builder.call_count == 1

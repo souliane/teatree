@@ -12,8 +12,12 @@ shared across modules.
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from teatree.config import OverlayEntry
 
 import teatree.cli.agent as _agent
 import teatree.cli.info as _info
@@ -135,6 +139,34 @@ app.add_typer(dogfood_app, name="dogfood")
 # ── Django-dependent overlay command groups ───────────────────────────
 
 
+def _collapse_to_canonical(entries: "list[OverlayEntry]") -> "list[OverlayEntry]":
+    """Collapse entries sharing a canonical route key into one per key.
+
+    A TOML overlay ``acme`` (with a path) and a ``t3-acme`` entry point both
+    map to the ``acme`` route key; left distinct they would each register an
+    ``acme`` Typer sub-app. The ``t3-``-prefixed entry-point form wins (it is
+    the canonical installed overlay), inheriting a ``project_path`` from its
+    bare TOML sibling when it lacks one.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
+    from teatree.config import OverlayEntry  # noqa: PLC0415
+
+    by_key: dict[str, OverlayEntry] = {}
+    for entry in entries:
+        key = OverlayEntry.canonical_overlay_name(entry.name)
+        existing = by_key.get(key)
+        if existing is None:
+            by_key[key] = entry
+            continue
+        prefixed = entry if entry.name.startswith("t3-") else existing
+        other = existing if prefixed is entry else entry
+        if prefixed.project_path is None and other.project_path is not None:
+            prefixed = replace(prefixed, project_path=other.project_path)
+        by_key[key] = prefixed
+    return list(by_key.values())
+
+
 def register_overlay_commands(allowlist: set[str] | None = None) -> None:
     """Register all installed overlays as subcommand groups.
 
@@ -142,15 +174,19 @@ def register_overlay_commands(allowlist: set[str] | None = None) -> None:
     Pass *allowlist* of entry names (e.g. ``{"t3-teatree"}``) to register a subset —
     used by the CLI reference generator to keep generated docs deterministic.
     """
-    from teatree.config import discover_active_overlay, discover_overlays  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_active_overlay, discover_overlays  # noqa: PLC0415
 
     active = discover_active_overlay()
     installed = discover_overlays()
 
-    for entry in installed:
+    registered: set[str] = set()
+    for entry in _collapse_to_canonical(installed):
         if allowlist is not None and entry.name not in allowlist:
             continue
-        short_name = entry.name.removeprefix("t3-")
+        short_name = OverlayEntry.canonical_overlay_name(entry.name)
+        if short_name in registered:
+            continue
+        registered.add(short_name)
         project_path = entry.project_path or (active.project_path if active and active.name == entry.name else None)
         # Entry-point overlays use teatree base settings; TOML overlays with their own
         # project dir may have a settings module stored in overlay_class as fallback.
