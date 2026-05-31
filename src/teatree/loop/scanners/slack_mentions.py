@@ -113,13 +113,17 @@ class SlackMentionsScanner:
             )
             if ts:
                 cursors["dms"] = max(cursors.get("dms", ""), ts)
-        if signals:
+        if signals or drained_any:
+            # Persist the cursor advance before discarding the backing file.
+            # Decoupled from ``signals``: drained events that match no
+            # signal-producing type still advance the cursor so those events
+            # are not re-fetched on the next tick.
             _write_cursors(self.cursor_path, cursors)
         if drained_any:
-            # Discard the backing file only after the durable persist
-            # (cursor advance + review-intent rows) above. A crash before
-            # this point leaves the ``.draining`` file for the next drain to
-            # recover, so no mention is lost (Slack never retries them).
+            # Discard the backing file only after the durable cursor persist
+            # above. A crash before this point leaves the ``.draining`` file
+            # for the next drain to recover, so no mention is lost (Slack
+            # never retries them).
             from teatree.backends.slack_receiver import commit_drain  # noqa: PLC0415
 
             commit_drain()

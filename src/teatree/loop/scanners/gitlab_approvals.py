@@ -333,12 +333,12 @@ def _already_emitted_at(url: str, head_sha: str) -> bool:
 
 
 def _record_emission(url: str, head_sha: str) -> None:
-    """Persist the head SHA of the latest emission on a ``Ticket`` row.
+    """Persist the head SHA of the latest emission on an existing ``Ticket`` row.
 
-    Uses ``get_or_create`` to upsert a tracking-only row when the URL has
-    no existing ticket — the existing reviewer-prs cache pattern. Best
-    effort: a DB error is logged but never blocks scanner output (the
-    cost of failing to dedup is one extra signal, not a wrong merge).
+    Only updates a row that already exists — never creates a phantom
+    blank-overlay Ticket for a URL that has no real ticket. Best effort:
+    a DB error or a missing ticket are both non-fatal (the cost of failing
+    to dedup is one extra signal, not a wrong merge).
     """
     if not url:
         return
@@ -346,10 +346,9 @@ def _record_emission(url: str, head_sha: str) -> None:
     if ticket_model is None:
         return
     try:
-        ticket, _ = ticket_model.objects.get_or_create(
-            issue_url=url,
-            defaults={"overlay": "", "role": "author"},
-        )
+        ticket = ticket_model.objects.filter(issue_url=url).first()
+        if ticket is None:
+            return
         ticket.merge_extra(set_keys={"last_approval_sha": head_sha})
     except Exception:
         logger.exception("GitLabApprovalsScanner: could not persist last_approval_sha for %s", url)
