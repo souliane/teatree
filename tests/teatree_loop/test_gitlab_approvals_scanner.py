@@ -11,12 +11,14 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.protocols import ApprovalState, ReviewState
 from teatree.core.merge_guard import MergeGuard
 from teatree.core.models import Ticket
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
 from teatree.types import RawAPIDict
 
@@ -413,6 +415,80 @@ class TestGitLabApprovalsScanner(TestCase):
         signals = scanner.scan()
 
         assert len(signals) == 1
+
+
+class TestPerPrIsolation(TestCase):
+    """Regression tests for per-PR exception isolation (#1592)."""
+
+    def test_sibling_pr_still_emits_when_first_raises_value_error(self) -> None:
+        """overlay.can_auto_merge raising for the first PR must not suppress the second.
+
+        Before the fix, the ValueError propagated out of scan(), returning zero
+        signals. After the fix, the first PR failure is logged and skipped; the
+        second PR emits its signal normally.
+        """
+        host = FakeCodeHost(
+            my_prs=[
+                _gitlab_mr(iid=201, sha="bad-mr", project="acme/backend"),
+                _gitlab_mr(iid=202, sha="good-mr", project="acme/backend"),
+            ],
+            approvals={
+                ("acme/backend", 201): ApprovalState(
+                    approvals_left=0,
+                    approved_by=["bob"],
+                    unresolved_resolvable=0,
+                ),
+                ("acme/backend", 202): ApprovalState(
+                    approvals_left=0,
+                    approved_by=["bob"],
+                    unresolved_resolvable=0,
+                ),
+            },
+        )
+
+        call_count = 0
+
+        class _RaisingFirstOverlay:
+            """Raises ValueError for the first MR, allows the second."""
+
+            def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    msg = "description does not match canonical format"
+                    raise ValueError(msg)
+                return MergeGuard(allowed=True, reason="", escalate=False)
+
+        scanner = GitLabApprovalsScanner(host=host)
+        with patch.object(overlay_loader_mod, "get_overlay", return_value=_RaisingFirstOverlay()):
+            signals = scanner.scan()
+
+        assert len(signals) == 1
+        assert signals[0].kind == "incoming_event.merge_needed"
+        assert "merge_requests/202" in signals[0].payload["thread_ref"]
+
+    def test_scanner_error_from_scan_one_propagates(self) -> None:
+        """A ScannerError (auth/network) raised by _scan_one must escape scan().
+
+        ScannerError is the structured escalation path — the dispatcher must
+        see it to DM the user. The per-PR isolation must re-raise it.
+        """
+
+        class _ScannerErrorHost(FakeCodeHost):
+            def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+                raise ScannerError(
+                    scanner="gitlab_approvals",
+                    error_class=ScannerErrorClass.AUTH,
+                    detail="401 Unauthorized",
+                )
+
+        host = _ScannerErrorHost(
+            my_prs=[_gitlab_mr(iid=203, sha="auth-fail")],
+        )
+        scanner = GitLabApprovalsScanner(host=host)
+
+        with pytest.raises(ScannerError):
+            scanner.scan()
 
 
 class TestHelperFunctions(TestCase):
