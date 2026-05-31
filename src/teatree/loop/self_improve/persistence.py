@@ -12,6 +12,7 @@ import datetime as dt
 import logging
 
 from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -40,46 +41,37 @@ def record_firing(
 ) -> SelfImproveFiring:
     """Insert or update the durable firing row for ``report``.
 
-    Uses an atomic ``update_or_create`` so the unique constraint never
-    races between two concurrent ticks.  ``action_count`` increments on
-    every observation regardless of whether the rung changed — the
-    monotonic counter is the post-hoc telemetry signal.
+    New row: ``get_or_create`` with ``action_count=1``.  Existing row: a
+    single ``filter().update(action_count=F(...)+1)`` so the increment is
+    evaluated by the DB and concurrent ticks cannot lose-update the counter.
+    ``action_count`` increments on every observation — the monotonic counter
+    is the post-hoc telemetry signal.
     """
     moment = now or timezone.now()
-    defaults = {
-        "state_hash": report.state_hash,
-        "severity": report.severity,
-        "last_fired_at": moment,
-        "last_action": action,
-        "payload": report.payload,
-    }
     with transaction.atomic():
         firing, created = SelfImproveFiring.objects.get_or_create(
             detector=report.detector,
             dedup_key=report.dedup_key,
             defaults={
-                **defaults,
+                "state_hash": report.state_hash,
+                "severity": report.severity,
                 "first_fired_at": moment,
+                "last_fired_at": moment,
+                "last_action": action,
+                "payload": report.payload,
                 "action_count": 1,
             },
         )
         if not created:
-            firing.state_hash = report.state_hash
-            firing.severity = report.severity
-            firing.last_fired_at = moment
-            firing.last_action = action
-            firing.payload = report.payload
-            firing.action_count += 1
-            firing.save(
-                update_fields=[
-                    "state_hash",
-                    "severity",
-                    "last_fired_at",
-                    "last_action",
-                    "payload",
-                    "action_count",
-                ],
+            SelfImproveFiring.objects.filter(pk=firing.pk).update(
+                state_hash=report.state_hash,
+                severity=report.severity,
+                last_fired_at=moment,
+                last_action=action,
+                payload=report.payload,
+                action_count=F("action_count") + 1,
             )
+            firing.refresh_from_db()
     return firing
 
 

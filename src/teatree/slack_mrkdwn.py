@@ -295,7 +295,7 @@ def _split_glued_prose(text: str) -> str:
 
 
 def _rewrite_md_link(match: re.Match[str]) -> str:
-    label = match.group(1).replace("|", "❘")
+    label = match.group(1).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("|", "❘")
     url = match.group(2)
     return f"<{url}|{label}>"
 
