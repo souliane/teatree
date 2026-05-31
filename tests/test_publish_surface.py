@@ -616,3 +616,105 @@ class TestCarveOutApplies:
             )
             is False
         )
+
+    # SAFETY TEST (the GH_REPO env leak): gh resolves its target from the
+    # GH_REPO env var when no --repo flag is given. A public GH_REPO + a
+    # flagless ``gh pr create`` from a PRIVATE CWD must NOT carve out -- gh
+    # posts to the PUBLIC GH_REPO, so the banned term would leak. The hook
+    # MUST honour GH_REPO BEFORE the CWD fallback, mirroring gh.
+    def test_gh_env_repo_public_with_private_cwd_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> the public GH_REPO slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "souliane/teatree")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_gh_env_repo_private_with_unknown_cwd_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GH_REPO points at a known-private repo, no --repo flag -> the env
+        # target wins over the CWD fallback -> downgrade.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unknown_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unknown-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "acmecorp-engineering/acmecorp-product")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                unknown_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_gh_env_repo_unset_falls_back_to_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # GH_REPO unset -> behaviour is exactly the CWD fallback: a private
+        # CWD with no --repo flag downgrades, as before this fix.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_explicit_repo_flag_wins_over_gh_env_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An explicit ``--repo`` always wins over GH_REPO (gh ignores the env
+        # var when the flag is present). ``--repo souliane/teatree`` (public)
+        # + GH_REPO private -> the flag's public target wins -> stays blocked.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "acmecorp-engineering/acmecorp-product")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo souliane/teatree --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_glab_ignores_gh_env_repo_and_falls_back_to_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # glab does NOT honour GH_REPO. A flagless ``glab mr create`` with a
+        # public GH_REPO exported must IGNORE GH_REPO and use the CWD origin.
+        # Private CWD -> downgrade (GH_REPO public is irrelevant to glab).
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "souliane/teatree")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "glab mr create --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is True
+        )

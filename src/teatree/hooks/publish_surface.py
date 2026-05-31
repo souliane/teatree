@@ -395,9 +395,17 @@ def posting_command_targets_private_repo(
 ) -> bool:
     """Return True iff the gh/glab posting command's target repo is known-private.
 
-    Resolves the target repo slug by:
-    1. Parsing ``--repo``/``-R`` from the command (explicit target takes priority).
-    2. Falling back to the CWD origin slug when no flag is present.
+    Resolves the target repo slug, mirroring how ``gh``/``glab`` themselves
+    resolve their target, in priority order:
+
+    - ``--repo``/``-R`` from the command (explicit flag always wins).
+    - For ``gh`` ONLY: the ``GH_REPO`` env var, when no flag is present.
+        ``gh`` reads ``GH_REPO`` as its default target, so a flagless
+        ``gh pr create`` with ``GH_REPO`` exported posts there -- NOT to the
+        CWD repo. The hook shares the process environment ``gh`` inherits, so
+        ``os.environ`` reflects the same value. ``glab`` has no equivalent
+        env var, so this step is skipped for it.
+    - The CWD origin slug, as the final fallback.
 
     An explicit ``--repo owner/name`` slug has no host prefix; it is matched
     against the allowlist as-is, then passed to the visibility probe directly
@@ -408,9 +416,12 @@ def posting_command_targets_private_repo(
     """
     words = first_segment_words(command)
     explicit_repo = _extract_repo_flag(words)
+    is_gh = bool(words) and words[0] == "gh"
 
     if explicit_repo:
         slug = explicit_repo
+    elif is_gh and os.environ.get("GH_REPO", ""):
+        slug = os.environ["GH_REPO"]
     elif cwd is not None:
         slug = _slug_for_cwd(cwd)
     else:
