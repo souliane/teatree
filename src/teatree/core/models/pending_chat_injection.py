@@ -278,8 +278,8 @@ class PendingChatInjection(models.Model):
         return bool(updated)
 
     @classmethod
-    def agent_answered_question(cls, slack_ts: str, *, overlay: str = "") -> int:
-        """Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+    def agent_answered_question(cls, slack_ts: str) -> int:
+        """Stamp ``answered_at = now`` on rows matching ``slack_ts``.
 
         Returns the number of rows actually transitioned from
         ``answered_at IS NULL`` to ``answered_at = now``. Idempotent: a
@@ -287,21 +287,21 @@ class PendingChatInjection(models.Model):
         ``0``. The empty ``slack_ts`` is rejected — there is no row that
         the empty string could legitimately identify.
 
-        The ``(overlay, slack_ts)`` pair is the natural idempotency key
-        (the same one ``UniqueConstraint`` enforces on ingest), so the
-        agent reply doesn't need the row's primary key — just the Slack
-        ts of the question it is answering, which is already in the
-        ``additionalContext`` payload the agent saw.
+        Gate/satisfier symmetry: the stamp is keyed on ``slack_ts`` alone,
+        exactly mirroring the unscoped ``unanswered_questions_since`` gate.
+        ``slack_ts`` is the unique idempotency key — a Slack message has
+        exactly one ``ts`` per channel and the user has a single DM — so a
+        single stamp keyed on it clears precisely the row the gate sees and
+        cannot cross-stamp another. This is what makes a concurrent multi-
+        overlay deployment work: a session under one overlay answers a
+        question recorded under a *different* overlay (the recording overlay
+        and the answering session's ``T3_OVERLAY_NAME`` routinely differ).
+        Scoping the stamp by overlay added no correctness — only the broken
+        narrowing that stranded the row unanswered and nagged forever.
         """
         if not slack_ts:
             return 0
-        return int(
-            cls.objects.filter(
-                overlay=overlay,
-                slack_ts=slack_ts,
-                answered_at__isnull=True,
-            ).update(answered_at=timezone.now())
-        )
+        return int(cls.objects.filter(slack_ts=slack_ts, answered_at__isnull=True).update(answered_at=timezone.now()))
 
     @classmethod
     def unanswered_questions_since(cls, window: timedelta) -> list["PendingChatInjection"]:
