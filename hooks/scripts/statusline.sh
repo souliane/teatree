@@ -10,11 +10,17 @@
 #     this hook builds carries NO loop/tick info (#130): loop state has
 #     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
-#     5-hour and 7-day rate-limit usage, and skills loaded this session —
-#     the latter populated by hook_router.py into
-#     ${state_dir}/<session_id>.skills. Each loaded skill is expanded to its
-#     resolved `requires:` dependency closure so the segment reflects the
-#     full active set, not just explicitly tool-invoked names.
+#     5-hour and 7-day rate-limit usage, skills loaded this session, and a
+#     per-session loop-owner badge — the latter populated by hook_router.py
+#     into ${state_dir}/<session_id>.skills and from loop-registry.json
+#     respectively. The loop-owner badge shows "you ✓" (green) when this
+#     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
+#     different session owns it, or "unclaimed" (dim) when the registry has
+#     no live owner. Unlike the shared loop line, this badge is resolved
+#     per-session so every terminal reflects its own ownership context.
+#     Each loaded skill is expanded to its resolved `requires:` dependency
+#     closure so the segment reflects the full active set, not just
+#     explicitly tool-invoked names.
 
 set -u
 
@@ -104,12 +110,38 @@ g_usage=""
 g_updates=""
 g_resource=""
 
+# Per-session loop-owner badge — resolved from loop-registry.json so each
+# terminal shows its own ownership context, not the shared loop-owner chunk
+# that live_loops_anchor() intentionally omits. Gated on jq + session_id;
+# fails open (no badge) on any read error or missing registry.
+_loop_owner_badge=""
+if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
+    _reg="${T3_LOOP_REGISTRY_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree}/loop-registry.json"
+    if [ -r "$_reg" ]; then
+        _owner_raw=$(jq -r '."t3-loop-tick-owner" | "\(.session_id // "")\t\(.pid // "")"' "$_reg" 2>/dev/null || true)
+        IFS=$'\t' read -r _owner_sid _owner_pid <<< "${_owner_raw:-	}"
+        _owner_sid="${_owner_sid:-}"
+        _owner_pid="${_owner_pid:-}"
+        if [ "$_owner_sid" = "$session_id" ]; then
+            _loop_owner_badge="${_LBL}loop-owner:${_RST} ${_GRN}you ✓${_RST}"
+        elif [ -n "$_owner_sid" ]; then
+            _loop_owner_badge="${_LBL}loop-owner:${_RST} ${_YLW}${_owner_sid:0:8}·pid${_owner_pid}${_RST}"
+        else
+            _loop_owner_badge="${_LBL}loop-owner: unclaimed${_RST}"
+        fi
+    fi
+fi
+
 if [ -n "$model" ]; then
     g_context="${_LBL}model=${_RST}${_GRN}${model}${_RST}"
 fi
 if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
     [ -n "$g_context" ] && g_context="${g_context}${isep}"
     g_context="${g_context}${_LBL}ctx=${_RST}$(color_pct "$ctx_pct")"
+fi
+if [ -n "$_loop_owner_badge" ]; then
+    [ -n "$g_context" ] && g_context="${g_context}${isep}"
+    g_context="${g_context}${_loop_owner_badge}"
 fi
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "empty" ]; then
     g_usage="${_LBL}5h=${_RST}$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"

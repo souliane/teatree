@@ -1088,16 +1088,15 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             sl = Path(d) / "sl.txt"
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
-            # A live LoopLease row surfaces in the consolidated loop line
-            # — ``loop running · <name> <Nm> · …`` — at the top of the
-            # statusline, listing each live loop by its short name. The
-            # pre-refit one-line-per-loop dump (``loop:owner``,
-            # ``loop:tick``, …) and the later useless ``N loops live`` count
-            # were both removed at the user's explicit request.
+            # loop-owner is excluded from the shared consolidated loop line;
+            # its badge is rendered per-session in statusline.sh instead
+            # (you ✓ / owner·pid / unclaimed). With only the owner lease live
+            # and no actual work loop, the loop line is intentionally absent
+            # from the shared zones file.
             body = sl.read_text(encoding="utf-8")
-            assert "loop running · " in body, body
             assert "loops live" not in body, body
-            assert "owner" in body.splitlines()[0], body
+            assert "loop running · " not in body, body
+            assert "owner" not in body, body
 
     def test_normal_path_flags_foreign_owner_in_red_zone(self) -> None:
         import tempfile  # noqa: PLC0415
