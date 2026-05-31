@@ -246,7 +246,15 @@ class TestGitLabApprovalsScanner(TestCase):
         assert ticket.extra["last_approval_sha"] == "ccc333"
 
     def test_new_sha_re_emits(self) -> None:
-        """A push (new head SHA) resets the idempotency window — re-emit."""
+        """A push (new head SHA) resets the idempotency window — re-emit.
+
+        A real ``Ticket`` row must exist so ``_record_emission`` can store
+        the first SHA and ``_already_emitted_at`` can gate the second scan
+        correctly.  Without a pre-existing row both scans always emit
+        (no-ticket → early-return → no SHA stored), making the test vacuous.
+        """
+        url = "https://gitlab.com/acme/backend/-/merge_requests/47"
+        Ticket.objects.create(issue_url=url, overlay="acme-backend")
         host = FakeCodeHost(
             my_prs=[_gitlab_mr(iid=47, sha="sha-1")],
             approvals={
@@ -266,6 +274,8 @@ class TestGitLabApprovalsScanner(TestCase):
         assert len(first) == 1
         assert len(second) == 1
         assert second[0].kind == "incoming_event.merge_needed"
+        ticket = Ticket.objects.get(issue_url=url)
+        assert ticket.extra["last_approval_sha"] == "sha-2"
 
     def test_github_backend_silently_skipped(self) -> None:
         """``get_mr_approvals`` raising NotImplementedError → scanner skips the PR."""
