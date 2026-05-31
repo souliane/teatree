@@ -188,6 +188,26 @@ repos:
         entry: uv run python scripts/hooks/generate_cli_reference.py
         pass_filenames: false
         files: ^src/teatree/cli/
+      - id: generate-antipattern-catalog
+        name: Generate anti-pattern catalog doc
+        language: system
+        entry: uv run python scripts/hooks/generate_antipattern_catalog.py
+        pass_filenames: false
+        files: ^src/teatree/quality/antipatterns\.yaml$
+      - id: antipattern-catalog-sync
+        name: Anti-pattern catalog doc in sync with antipatterns.yaml
+        language: system
+        entry: uv run python scripts/hooks/check_antipattern_catalog_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
+      - id: check-antipatterns
+        name: Greppable anti-patterns in the staged diff (manual, non-gating)
+        language: system
+        entry: uv run python scripts/hooks/check_antipatterns.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
 
   # Phase 7b - Quality gate guard
   - repo: local

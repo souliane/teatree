@@ -395,6 +395,8 @@ The reason this architecture exists, observed repeatedly: durability comes from 
 
 The flywheel diagram, components (C1 Retro / C2 Code-health loop / C3 Availability), §17.4 Orchestrator-decides / loop-executes topology (role boundaries, per-diff `MergeClear` record, loop validation before merge, post-merge audit), §17.5 TODO-consolidation quick-wins triage, §17.6 Enforcement gate (anti-relaxation, sound tach module boundaries, gate placement, shipped gates — incl. the §17.6.4 plan-gate, [#1133](https://github.com/souliane/teatree/issues/1133), opt-in per overlay via `OverlayConfig.plan_gate`, and the §17.6.4 doc-update gate, [#1461](https://github.com/souliane/teatree/issues/1461), pre-push prek hook + CI mirror that blocks a new top-level `t3` command / `SKILL.md` / `Ticket.State` / `LoopLease` / `MiniLoopMarker` without a paired README or BLUEPRINT diff, and the §17.6.4 no-commit sub-agent recorder, [#1205](https://github.com/souliane/teatree/issues/1205), a `SubagentStop` detection hook that records a `terminated_without_commit` signal when an isolation-worktree sub-agent ends on a work branch with 0 commits, and the two complementary enforcement evals — gate-liveness [#168](https://github.com/souliane/teatree/issues/168) proving gates fire on synthetic payloads, transcript-replay [#169](https://github.com/souliane/teatree/issues/169) proving invariants held in real runs, local-only and privacy-safe), §17.7 Enforcement-over-prose as a standing audit, and §17.8 Orchestrator-as-keystone contract — all live in [docs/blueprint/factory-architecture.md](docs/blueprint/factory-architecture.md). Section headings (`### 17.2`–`### 17.8`, including `### 17.4.2`, `### 17.6.3`) are preserved there for consumer cross-references.
 
+**Anti-pattern catalog ([#166](https://github.com/souliane/teatree/issues/166)).** `src/teatree/quality/antipatterns.yaml` is the single source of truth for the recurring architectural anti-patterns; `teatree.quality.catalog` loads it and `scripts/hooks/generate_antipattern_catalog.py` renders [docs/generated/antipattern-catalog.md](docs/generated/antipattern-catalog.md). Each entry's `detection` tier (`greppable` vs `judgement`) feeds the three review tiers off the one catalog: design-time (`architecture-design`), per-PR deterministic (`check_antipatterns.py`, manual stage — gate promotion deferred), and periodic holistic (`ac-reviewing-codebase`). `tests/quality/test_catalog.py` is the reachability ledger — every named `linter` resolves to a real hook/tool and every `eval_invariant` to a real transcript invariant.
+
 ---
 
 ## Architectural Appendices
@@ -539,6 +541,7 @@ graph TD
     teatree.skill_map
     teatree.memory_audit
     teatree.trigger_parser
+    teatree.quality
 ```
 
 <!-- tach-dependency-graph:end -->
