@@ -102,6 +102,10 @@ When a logical identity has both a bare and a qualified form (namespace:name, sc
 
 _Example: skill name lookups in the registry. The registered key is `namespace:skill-name`. A lookup arriving as bare `skill-name` should be qualified to `namespace:skill-name` at the boundary, not matched by stripping the namespace off the registered key._
 
+## Anti-pattern catalog
+
+The eight checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the eight prose checks summarize.
+
 ## ARCHITECTURE.md template
 
 The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE touching `src/`. The PR template references it; an empty or missing file is a review gap.
