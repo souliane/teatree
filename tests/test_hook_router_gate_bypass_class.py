@@ -528,6 +528,24 @@ class TestF6ReadonlyPrefixChainBypass:
         reason = _deny_match("grep 'manage.py runserver' README.md")
         assert reason is None, "pure readonly grep mention must be allowed"
 
+    # ── F6 over-block: blocked tool-names inside quoted args false-block ──
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'git commit -m "fix: handle pip install edge case"',
+            'git log --oneline | grep "pip install"',
+            'cat setup.py | grep "manage.py migrate"',
+            'echo "checking docker compose up" && ls',
+            'git diff origin/main...HEAD | grep -E "def |pip install"',
+        ],
+    )
+    def test_f6_quoted_tool_name_in_arg_must_allow(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        """Blocked tool names that appear only inside quoted args must not be denied."""
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is not True, f"quoted-arg tool name must not be denied: {command!r}"
+        assert capsys.readouterr().out.strip() == ""
+
 
 # ── F7: ls -lRa missed by orchestrator boundary ──────────────────────────
 

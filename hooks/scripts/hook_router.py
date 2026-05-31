@@ -4792,6 +4792,10 @@ _REMOTE_DUMP_DENY_REASON = (
 
 
 _SHELL_CHAIN_RE = re.compile(r"[;|`]|\$\(|&&|\|\|")
+# Strip only double-quoted literals: single-quoted args are left intact so that
+# patterns that need to detect content inside single-quoted git -c arguments
+# (e.g. the F3 core.hooksPath bypass) continue to match.
+_DOUBLE_QUOTED_LITERAL_RE = re.compile(r'"[^"]*"')
 
 
 def _has_shell_chain(command: str) -> bool:
@@ -4817,8 +4821,15 @@ def _deny_match(command: str) -> str | None:
     # must inspect the full command rather than short-circuiting on the prefix.
     if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
         return None
+    # Strip double-quoted literals before scanning _BLOCKED_COMMANDS so that a
+    # blocked tool name mentioned inside a double-quoted argument (e.g. a git
+    # commit -m message or a grep pattern) does not false-block the command.
+    # Single-quoted strings are left intact so patterns that look inside them
+    # (e.g. F3 core.hooksPath detection) still fire. Real blocked invocations
+    # are unquoted and still match the stripped scan target.
+    scan_target = _DOUBLE_QUOTED_LITERAL_RE.sub(" ", command)
     for pattern, reason in _BLOCKED_COMMANDS:
-        if pattern.search(command):
+        if pattern.search(scan_target):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
     return None
 
