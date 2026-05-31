@@ -140,17 +140,19 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
     loop reviewing Task, so there is no open/completed Task to key on) is
     the reviewer ticket's ``last_review_state``/``reviewed_sha`` pair —
     written by ``Ticket.mark_reviewed_externally`` / ``mark_review_no_action``
-    and the ``ReviewerPrsScanner`` cache. A terminal state at the current
-    head ⇒ the review already happened; re-enqueueing would duplicate it
-    every tick. Two terminal states suppress: ``APPROVED`` (a genuine
-    approving review — the existing #959 behaviour) and
-    ``REVIEWED_NO_ACTION`` (the reviewer concluded there was nothing to
-    post/approve on a bot MR — before #1077 there was no terminal state
-    for this, so the reviewing task re-dispatched every Stop-hook pump
-    forever). ``REVIEWED_NO_ACTION`` is intentionally *not* APPROVED so a
-    future genuine review is never hidden; suppression is keyed on the
+    / ``mark_review_changes_requested`` and the ``ReviewerPrsScanner`` cache.
+    A terminal state at the current head ⇒ the review already happened;
+    re-enqueueing would duplicate it every tick. Three terminal states
+    suppress: ``APPROVED`` (a genuine approving review — the existing #959
+    behaviour), ``REVIEWED_NO_ACTION`` (the reviewer concluded there was
+    nothing to post/approve on a bot MR — before #1077 there was no terminal
+    state for this, so the reviewing task re-dispatched every Stop-hook pump
+    forever) and ``CHANGES_REQUESTED`` (the reviewer requested changes — same
+    #1077-class loop for the changes-requested outcome, #1606). Neither
+    ``REVIEWED_NO_ACTION`` nor ``CHANGES_REQUESTED`` is APPROVED, so a future
+    genuine approving review is never hidden; suppression is keyed on the
     head SHA, and a SHA move drops ``last_review_state`` (the #959 reset
-    in ``_handle_reviewer``) so a new revision is still reviewed.
+    in ``_handle_reviewer``) so the revised PR is reviewed again.
 
     A blank ``head_sha`` is treated as "cannot confirm parity" so review
     is NOT suppressed (fail-open — never silently skip a real review).
@@ -160,7 +162,11 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
     from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
     extra = ticket.extra or {}
-    terminal = {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value}
+    terminal = {
+        ReviewState.APPROVED.value,
+        ReviewState.REVIEWED_NO_ACTION.value,
+        ReviewState.CHANGES_REQUESTED.value,
+    }
     return extra.get("last_review_state") in terminal and extra.get("reviewed_sha") == head_sha
 
 

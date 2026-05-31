@@ -207,11 +207,26 @@ class Task(models.Model):
             Ticket.State.TESTED,
             Ticket.State.REVIEWED,
         }
+        # #1606: an honest non-approval disposition (CHANGES_REQUESTED /
+        # REVIEWED_NO_ACTION) already recorded on ``extra`` must never be
+        # overwritten with APPROVED by a stray task completion. The state
+        # guard below already covers the normal path (those transitions move
+        # the ticket to DELIVERED, out of the source set), but recording the
+        # invariant explicitly keeps it true even if a future path leaves the
+        # ticket in a source state with the disposition stamped.
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        non_approval_dispositions = {
+            ReviewState.CHANGES_REQUESTED.value,
+            ReviewState.REVIEWED_NO_ACTION.value,
+        }
+        already_dispositioned = (ticket.extra or {}).get("last_review_state") in non_approval_dispositions
         with transaction.atomic():
             if (
                 phase == "reviewing"
                 and ticket.role == Ticket.Role.REVIEWER
                 and ticket.state in mark_reviewed_externally_source_states
+                and not already_dispositioned
             ):
                 ticket.mark_reviewed_externally()
                 ticket.save()

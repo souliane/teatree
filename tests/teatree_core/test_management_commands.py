@@ -484,6 +484,26 @@ class TestTicketCommand(TestCase):
         ticket.refresh_from_db()
         assert ticket.extra["last_review_state"] == "reviewed_no_action"
 
+    def test_transition_mark_review_changes_requested_delivers_reviewer_ticket(self) -> None:
+        """#1606: the changes-requested disposition is reachable via the CLI transition."""
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab/x/-/merge_requests/1606c",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha1"},
+        )
+        schedule_external_review(ticket)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "mark_review_changes_requested"),
+        )
+        assert result["state"] == Ticket.State.DELIVERED
+        ticket.refresh_from_db()
+        assert ticket.extra["last_review_state"] == ReviewState.CHANGES_REQUESTED.value
+
     def test_list_returns_all_tickets(self) -> None:
         Ticket.objects.create(overlay="test")
         Ticket.objects.create(overlay="other")
