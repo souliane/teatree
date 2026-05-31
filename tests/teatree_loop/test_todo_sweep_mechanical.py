@@ -9,6 +9,7 @@ Real Task/Ticket/Session rows; only the code host + overlay resolution are
 mocked (the network + entry-point externals).
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
@@ -125,6 +126,44 @@ class RecheckBeforeCompleteTests(_TodoCompletionHarness):
             todo_completion({"task_id": task.pk, "issue_url": ""})
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
+
+
+class MultiOverlayResolutionTests(TestCase):
+    """Real ``get_overlay()`` ambiguity path — two overlays registered (#1605).
+
+    The handler must resolve the owning overlay from ``task.ticket.overlay``
+    instead of calling bare ``get_overlay()``. With two overlays registered and
+    no ``T3_OVERLAY_NAME``, a bare ``get_overlay()`` raises
+    ``ImproperlyConfigured("Multiple overlays found ...")`` — swallowed by the
+    fail-CLOSED guard, which then logs "artifact no longer terminal" and the
+    task never completes. Nothing about overlay resolution is mocked here; only
+    the code host (a network external) is.
+    """
+
+    OVERLAY = "t3-acme"
+    URL = "https://example.com/issues/200"
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create(overlay=self.OVERLAY, issue_url=self.URL)
+        session = Session.objects.create(overlay=self.OVERLAY, ticket=ticket, agent_id="a")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_resolves_owning_overlay_and_completes_with_two_overlays(self) -> None:
+        task = self._task()
+        host = _Host(issues_by_url={self.URL: {"state": "closed"}})
+        overlays = {self.OVERLAY: _Overlay(), "t3-other": _Overlay()}
+        env_without_pin = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
+        with (
+            patch.dict(os.environ, env_without_pin, clear=True),
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays),
+            patch("teatree.backends.loader.get_code_host_for_url", return_value=host),
+        ):
+            todo_completion({"task_id": task.pk, "issue_url": self.URL})
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED, (
+            "with two overlays registered, the handler must resolve the owning overlay "
+            "from ticket.overlay and complete the terminal task — not skip on ambiguity"
+        )
 
 
 class IdempotencyAndResilienceTests(_TodoCompletionHarness):
