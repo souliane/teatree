@@ -8,4 +8,5 @@ See the root [`CLAUDE.md`](../CLAUDE.md) for the code-quality bar. This is the s
   - `triggers:` — phrases that auto-load the skill via the `UserPromptSubmit` hook.
 - **Never slim a skill.** Don't move SKILL.md prose into `references/` to save tokens — agents don't reliably load reference files on demand. Add a `references/` file only for genuinely optional deep-dive material; keep load-bearing rules inline. (`/t3:rules` § "Never Slim Skills".)
 - **`subagent_safe: true`** only for pure methodology that needs no shell functions, MCP, or cross-skill state.
+- **Reference skills by their qualified canonical name** (`t3:<skill>`): names resolve against their owning namespace and a qualifier is never stripped to force a match, so a bare name that collides across namespaces (`t3:review` vs `other:review`) stays distinct (see `architecture-design/SKILL.md` § "Identity and key normalization").
 - Skill-system spec: BLUEPRINT.md § 11.
