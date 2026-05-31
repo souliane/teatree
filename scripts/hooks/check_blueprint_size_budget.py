@@ -59,11 +59,17 @@ _BUDGET_TOP_LEVEL_BYTES = 80_800
 # span (not fire-instant) availability semantics + the 1 h cadence cap — a
 # load-bearing safety fact (the prior fire-instant wording silently broke
 # away-mode for the shipped example), and the appendix corpus was at capacity.
-_BUDGET_APPENDICES_BYTES = 104_528
+# Reviewed bump (#1636): the `skill_loading_gate_enabled` per-overlay config-key
+# row documenting the §17.6.4 skill-loading kill-switch is a load-bearing config
+# fact; on top of the #1629 base the merged appendix corpus is 104,864 B, so the
+# budget is raised to the next ~1 KB step (~536 B headroom) to admit the row.
+_BUDGET_APPENDICES_BYTES = 105_400
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
-_BUDGET_TOTAL_BYTES = 185_328
+# Reviewed bump (#1636): tracks the appendix bump for the
+# `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
+_BUDGET_TOTAL_BYTES = 185_800
 
 
 def _repo_root() -> pathlib.Path:
