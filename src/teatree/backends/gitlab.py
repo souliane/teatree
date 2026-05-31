@@ -216,8 +216,9 @@ class GitLabCodeHost:
         project = self._resolve_project(repo)
         if project is None:
             return []
-        data = self._client.get_json(f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100")
-        return data if isinstance(data, list) else []
+        return self._client.get_json_paginated(
+            f"projects/{project.project_id}/merge_requests/{pr_iid}/notes?per_page=100"
+        )
 
     def upload_file(self, *, repo: str, filepath: str) -> dict[str, object]:
         project = self._resolve_project(repo)
