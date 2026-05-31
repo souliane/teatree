@@ -161,9 +161,9 @@ class Command(TyperCommand):
 
 def _resolve_active_overlay() -> str:
     """Return the active overlay short name, or empty string when none is registered."""
-    from teatree.config import discover_active_overlay  # noqa: PLC0415
+    from teatree.config import OverlayEntry, discover_active_overlay  # noqa: PLC0415
 
     active = discover_active_overlay()
     if active is None:
         return ""
-    return active.name.removeprefix("t3-")
+    return OverlayEntry.canonical_overlay_name(active.name)
