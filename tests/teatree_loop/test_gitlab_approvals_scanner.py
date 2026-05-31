@@ -216,8 +216,14 @@ class TestGitLabApprovalsScanner(TestCase):
         assert signal.payload["target_ref"] == "main"
 
     def test_idempotent_emission_same_sha(self) -> None:
-        """A second tick at the same head SHA emits nothing — recorded in ``Ticket.extra``."""
+        """A second tick at the same head SHA emits nothing — recorded in ``Ticket.extra``.
+
+        ``_record_emission`` only updates *existing* Ticket rows; a real ticket
+        must exist for idempotency to function.  The scanner never creates
+        phantom blank-overlay rows (F4 fix).
+        """
         url = "https://gitlab.com/acme/backend/-/merge_requests/46"
+        Ticket.objects.create(issue_url=url, overlay="acme-backend")
         host = FakeCodeHost(
             my_prs=[_gitlab_mr(iid=46, sha="ccc333")],
             approvals={
