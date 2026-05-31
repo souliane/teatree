@@ -330,3 +330,36 @@ class TestMustDenyMerge:
         )
         assert deny is not None
         assert "ticket merge" in deny["permissionDecisionReason"]
+
+
+class TestCircuitBreakerNeverOpensSafetyGate:
+    """The repeated-denial circuit breaker must NEVER auto-relax a SAFETY gate.
+
+    The breaker fails OPEN a looped UX gate to break a token-burning retry loop,
+    but a safety gate (any reason NOT on the UX allow-list — merge/substrate,
+    banned-terms, privacy, out-of-band-merge, orchestrator-boundary) must keep
+    denying past the threshold. Auto-relaxing a safety gate after N retries would
+    be a bypass: the loop would eventually punch the call through. This guards
+    that the breaker still DENIES the K-th and (K+1)-th identical safety denial.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _breaker_context(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path / "state")
+        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(router, "_CURRENT_EVENT", "PreToolUse")
+        monkeypatch.setattr(router, "_CURRENT_DATA", {"session_id": "corpus-breaker", "tool_name": "Bash"})
+
+    def test_safety_gate_deny_never_relaxes_at_or_past_threshold(self) -> None:
+        reason = (
+            "BLOCKED: the orchestrator (main agent) ran a command that looks like heavy work. Delegate to a sub-agent."
+        )
+        decisions = [router._apply_deny_circuit_breaker(reason) for _ in range(5)]
+        assert all(d.allow is False for d in decisions), (
+            "BYPASS regression — the circuit breaker auto-relaxed a SAFETY gate; "
+            "a safety gate must never fail open no matter how many times it is retried."
+        )
+        # From the threshold onward the deny reason carries the loop escalation;
+        # it is still a deny, never an allow.
+        assert "CIRCUIT BREAKER" in decisions[-1].reason
+        assert "LOOPING" in decisions[-1].reason
