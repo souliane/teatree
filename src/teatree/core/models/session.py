@@ -161,16 +161,26 @@ class Session(models.Model):
             raise QualityGateError(msg)
 
     def mark_repo_modified(self, repo: str) -> None:
-        repos = cast("list[str]", self.repos_modified or [])
-        if repo not in repos:
-            self.repos_modified = [*repos, repo]
-            self.save(update_fields=["repos_modified"])
+        self._append_repo("repos_modified", repo)
 
     def mark_repo_tested(self, repo: str) -> None:
-        repos = cast("list[str]", self.repos_tested or [])
-        if repo not in repos:
-            self.repos_tested = [*repos, repo]
-            self.save(update_fields=["repos_tested"])
+        self._append_repo("repos_tested", repo)
+
+    def _append_repo(self, field: str, repo: str) -> None:
+        """Append ``repo`` to a JSON list column atomically.
+
+        Mirrors the locked-RMW shape of :meth:`visit_phase`: re-read the row
+        under ``select_for_update`` so a concurrent append on the same Session
+        row is serialised by the DB lock rather than lost.
+        """
+        with transaction.atomic():
+            locked = type(self).objects.select_for_update().get(pk=self.pk)
+            repos = cast("list[str]", getattr(locked, field) or [])
+            if repo in repos:
+                return
+            updated = [*repos, repo]
+            type(self).objects.filter(pk=self.pk).update(**{field: updated})
+            setattr(self, field, updated)
 
     def untested_repos(self) -> list[str]:
         modified = set(cast("list[str]", self.repos_modified or []))
