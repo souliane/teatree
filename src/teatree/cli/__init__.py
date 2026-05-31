@@ -25,6 +25,7 @@ from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
 )
 from teatree.cli.assess import assess_app
+from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
 from teatree.cli.codex import codex_app
 from teatree.cli.config import config_app
@@ -112,6 +113,7 @@ app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
+app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")
 app.add_typer(codex_app, name="codex")
 app.add_typer(review_app, name="review")
