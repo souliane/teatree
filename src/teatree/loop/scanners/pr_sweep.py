@@ -496,7 +496,9 @@ class GhPrApiClient:
         rc, out, _ = self._run_gh(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
         )
-        return True, out.strip() if rc == 0 else ""
+        if rc == 0 and out.strip():
+            return True, out.strip()
+        return True, "sha-unavailable"
 
     def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"

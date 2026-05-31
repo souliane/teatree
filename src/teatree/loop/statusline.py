@@ -313,6 +313,16 @@ def live_loops_anchor() -> list[str]:
     if not leases:
         return []
 
+    # Exclude the loop-owner lease: it is a session-ownership token, not a
+    # work loop, and its countdown is meaningless in the shared zones file
+    # (every terminal would show the same "owner Nm" chunk regardless of
+    # which session is actually the owner). The per-session owner badge in
+    # statusline.sh replaces that signal with a context-aware you ✓ /
+    # owner·pid / unclaimed display.
+    leases = [(name, acquired_at) for name, acquired_at in leases if name != "loop-owner"]
+    if not leases:
+        return []
+
     chunks = list(starmap(_loop_chunk, leases))
     parts = ["loop running", *chunks]
     waiting = _waiting_clause()

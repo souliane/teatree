@@ -249,7 +249,7 @@ def _fetch_review_state(api: object, repo: str, iid: int) -> _ReviewState:
     approver_names: tuple[str, ...] = tuple(str(n) for n in names) if isinstance(names, list) else ()
     return _ReviewState(
         open_discussions=_open_discussion_count(discussions),
-        draft_notes=int(draft_count),
+        draft_notes=int(draft_count) if draft_count is not None else 0,
         approvals=approvals_count,
         approved_by=approver_names,
     )

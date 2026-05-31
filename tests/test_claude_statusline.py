@@ -25,11 +25,19 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
-def _run(payload: dict, *, state_dir: Path, statusline_file: Path | None = None) -> subprocess.CompletedProcess:
+def _run(
+    payload: dict,
+    *,
+    state_dir: Path,
+    statusline_file: Path | None = None,
+    registry_dir: Path | None = None,
+) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     if statusline_file is not None:
         env["TEATREE_STATUSLINE_FILE"] = str(statusline_file)
+    if registry_dir is not None:
+        env["T3_LOOP_REGISTRY_DIR"] = str(registry_dir)
     return subprocess.run(
         [str(SCRIPT)],
         input=json.dumps(payload),
@@ -334,3 +342,115 @@ class TestFreshnessInlineRefresh:
         result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
         plain = _strip_ansi(result.stdout)
         assert "old=5" in plain
+
+
+class TestLoopOwnerBadge:
+    """Per-session loop-owner badge in the g_context header group.
+
+    The badge reads ``loop-registry.json`` at display time so each terminal
+    reflects its own session's ownership relationship — unlike the shared
+    loop line written by the loop owner.
+    """
+
+    def _write_registry(self, registry_dir: Path, *, session_id: str, pid: int = 4242) -> None:
+        registry_dir.mkdir(parents=True, exist_ok=True)
+        reg = registry_dir / "loop-registry.json"
+        reg.write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": session_id, "pid": pid}}),
+            encoding="utf-8",
+        )
+
+    def test_you_badge_when_owner_matches_session(self, tmp_path: Path) -> None:
+        """Same session owns the loop → green ``loop-owner: you ✓``."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="my-session-abc", pid=1234)
+
+        result = _run(
+            {"session_id": "my-session-abc", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loop-owner: you ✓" in plain, plain
+        # Confirm it is in the header (first line).
+        header = plain.splitlines()[0]
+        assert "loop-owner: you ✓" in header, header
+        # Green SGR present in the raw (non-stripped) output.
+        assert "\033[1;32m" in result.stdout, "expected green SGR for owner=you"
+
+    def test_foreign_owner_badge_shows_short_sid_and_pid(self, tmp_path: Path) -> None:
+        """Different session owns the loop → yellow ``abcdef01·pid4242``."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="abcdef0123456789", pid=4242)
+
+        result = _run(
+            {"session_id": "other-session", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "abcdef01·pid4242" in plain, plain
+        assert "loop-owner:" in plain, plain
+        # Yellow SGR present (neutral — a foreign owner is normal from a non-owner terminal).
+        assert "\033[1;33m" in result.stdout, "expected yellow SGR for foreign owner"
+
+    def test_unclaimed_badge_when_registry_has_no_owner(self, tmp_path: Path) -> None:
+        """Readable registry but no owner key → dim ``loop-owner: unclaimed``."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        registry_dir.mkdir()
+        reg = registry_dir / "loop-registry.json"
+        reg.write_text(json.dumps({}), encoding="utf-8")
+
+        result = _run(
+            {"session_id": "any-session", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loop-owner: unclaimed" in plain, plain
+
+    def test_badge_absent_when_registry_missing(self, tmp_path: Path) -> None:
+        """No registry file → NO badge (fail-open)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "empty-registry"
+        # Directory does NOT exist — registry file unreadable.
+
+        result = _run(
+            {"session_id": "any-session", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loop-owner" not in plain, plain
+
+    def test_badge_absent_when_no_session_id(self, tmp_path: Path) -> None:
+        """No session_id in payload → NO badge (cannot determine ownership)."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="some-session", pid=999)
+
+        result = _run(
+            {"model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "loop-owner" not in plain, plain

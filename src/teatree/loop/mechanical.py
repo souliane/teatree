@@ -208,7 +208,7 @@ def _artifact_still_terminal(task: "Task") -> bool:
     if not issue_url:
         return False
     try:
-        overlay = get_overlay()
+        overlay = get_overlay(task.ticket.overlay or None)
         host = get_code_host_for_url(overlay, issue_url)
     except Exception:
         logger.exception("todo_completion: could not resolve code host for %s", issue_url)
@@ -243,7 +243,7 @@ def assign_gitlab_reviewer(payload: ActionPayload) -> None:
         from teatree.backends.loader import get_code_host  # noqa: PLC0415
         from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
-        overlay = get_overlay()
+        overlay = get_overlay(str(payload.get("overlay") or "") or None)
         host = get_code_host(overlay)
     except Exception:
         logger.exception("Could not resolve code host for cap-B assignment of %s", pr_url)
