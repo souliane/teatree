@@ -149,6 +149,7 @@ class ArchitecturalReviewScanner:
         aggregate = task_model.objects.filter(
             ticket__overlay=self.overlay_name,
             phase=ARCHITECTURAL_REVIEW_PHASE,
+            status=task_model.Status.COMPLETED,
         ).aggregate(ts=Max("session__started_at"))
         return aggregate["ts"]
 
