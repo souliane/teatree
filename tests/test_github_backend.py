@@ -481,64 +481,98 @@ class TestGitHubCodeHost:
         assert result == ""
 
     def test_list_my_prs_searches_by_author_across_forge(self) -> None:
-        search_response = {
-            "items": [
-                {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
-                {"number": 2, "title": "second", "html_url": "https://github.com/org/other/pull/2"},
-            ],
-        }
-        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+        items = [
+            {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},
+            {"number": 2, "title": "second", "html_url": "https://github.com/org/other/pull/2"},
+        ]
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
             host = GitHubCodeHost(token="tok")
             result = host.list_my_prs(author="alice")
         assert len(result) == 2
         assert result[0]["number"] == 1
-        mock_get.assert_called_once_with(
+        mock_search.assert_called_once_with(
             "search/issues?q=is%3Apr+is%3Aopen+author%3Aalice&per_page=100",
             token="tok",
         )
 
-    def test_list_my_prs_returns_empty_when_response_missing_items(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"total_count": 0}):
+    def test_list_my_prs_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_my_prs(author="alice") == []
 
-    def test_list_my_prs_returns_empty_when_response_not_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+    def test_list_my_prs_paginates_beyond_first_page(self) -> None:
+        # A factory with >100 open PRs hits GitHub search's 100-item cap; items
+        # on page 2 are silently dropped, breaking the PR-sweep/followup scanners.
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
             host = GitHubCodeHost()
-            assert host.list_my_prs(author="alice") == []
+            result = host.list_my_prs(author="alice")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        argv = mock_run.call_args_list[0].args
+        assert "--paginate" in argv
 
     def test_list_review_requested_prs_searches_by_reviewer(self) -> None:
-        search_response = {"items": [{"number": 7, "title": "needs review"}]}
-        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+        items = [{"number": 7, "title": "needs review"}]
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
             host = GitHubCodeHost(token="tok")
             result = host.list_review_requested_prs(reviewer="alice")
         assert len(result) == 1
         assert result[0]["number"] == 7
-        mock_get.assert_called_once_with(
+        mock_search.assert_called_once_with(
             "search/issues?q=is%3Apr+is%3Aopen+review-requested%3Aalice&per_page=100",
             token="tok",
         )
 
-    def test_list_review_requested_prs_returns_empty_when_response_not_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+    def test_list_review_requested_prs_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_review_requested_prs(reviewer="alice") == []
 
+    def test_list_review_requested_prs_paginates_beyond_first_page(self) -> None:
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.list_review_requested_prs(reviewer="alice")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        argv = mock_run.call_args_list[0].args
+        assert "--paginate" in argv
+
     def test_list_assigned_issues_searches_by_assignee(self) -> None:
-        search_response = {"items": [{"number": 11, "title": "bug to fix"}]}
-        with patch.object(github_mod, "_gh_api_get", return_value=search_response) as mock_get:
+        items = [{"number": 11, "title": "bug to fix"}]
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=items) as mock_search:
             host = GitHubCodeHost(token="tok")
             result = host.list_assigned_issues(assignee="alice")
         assert len(result) == 1
-        mock_get.assert_called_once_with(
+        mock_search.assert_called_once_with(
             "search/issues?q=is%3Aissue+is%3Aopen+assignee%3Aalice&per_page=100",
             token="tok",
         )
 
-    def test_list_assigned_issues_returns_empty_when_response_not_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+    def test_list_assigned_issues_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.list_assigned_issues(assignee="alice") == []
+
+    def test_list_assigned_issues_paginates_beyond_first_page(self) -> None:
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.list_assigned_issues(assignee="alice")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        argv = mock_run.call_args_list[0].args
+        assert "--paginate" in argv
 
     def test_create_issue_posts_payload_with_labels(self) -> None:
         created = {"html_url": "https://github.com/org/repo/issues/9", "number": 9}
@@ -558,18 +592,31 @@ class TestGitHubCodeHost:
             assert host.create_issue(repo="org/repo", title="t", body="b") == {}
 
     def test_search_open_issues_filters_to_repo_and_returns_items(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value={"items": [{"number": 9}]}) as mock_get:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[{"number": 9}]) as mock_search:
             host = GitHubCodeHost(token="tok")
             result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
         assert result == [{"number": 9}]
-        endpoint = mock_get.call_args[0][0]
+        endpoint = mock_search.call_args[0][0]
         assert "repo%3Aorg%2Frepo" in endpoint
         assert "is%3Aopen" in endpoint
 
-    def test_search_open_issues_returns_empty_when_response_not_dict(self) -> None:
-        with patch.object(github_mod, "_gh_api_get", return_value=[]):
+    def test_search_open_issues_returns_empty_when_no_results(self) -> None:
+        with patch.object(github_mod, "_gh_api_search_paginated", return_value=[]):
             host = GitHubCodeHost()
             assert host.search_open_issues(repo="org/repo", query="x") == []
+
+    def test_search_open_issues_paginates_beyond_first_page(self) -> None:
+        page_one = [{"number": i} for i in range(100)]
+        page_two = [{"number": 100}]
+        slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
+        assert len(result) == 101
+        assert {"number": 100} in result
+        argv = mock_run.call_args_list[0].args
+        assert "--paginate" in argv
 
     def test_post_pr_comment(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
@@ -710,14 +757,14 @@ class TestGitHubCodeHost:
             {"user": {"login": "alice"}, "state": "COMMENTED"},
             {"user": {"login": "alice"}, "state": "APPROVED"},
         ]
-        with patch.object(github_mod, "_gh_api_get", return_value=reviews) as mock_get:
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=reviews) as mock_paginated:
             host = GitHubCodeHost(token="tok")
             result = host.get_review_state(
                 pr_url="https://github.com/o/r/pull/7",
                 reviewer="alice",
             )
         assert result == ReviewState.APPROVED
-        mock_get.assert_called_once_with("repos/o/r/pulls/7/reviews?per_page=100", token="tok")
+        mock_paginated.assert_called_once_with("repos/o/r/pulls/7/reviews?per_page=100", token="tok")
 
     def test_get_review_state_returns_dismissed_when_latest_is_dismissed(self) -> None:
         from teatree.backends.protocols import ReviewState  # noqa: PLC0415
@@ -726,7 +773,7 @@ class TestGitHubCodeHost:
             {"user": {"login": "alice"}, "state": "APPROVED"},
             {"user": {"login": "alice"}, "state": "DISMISSED"},
         ]
-        with patch.object(github_mod, "_gh_api_get", return_value=reviews):
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=reviews):
             host = GitHubCodeHost()
             assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (
                 ReviewState.DISMISSED
@@ -735,13 +782,12 @@ class TestGitHubCodeHost:
     def test_get_review_state_ignores_comment_only_state(self) -> None:
         from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
-        # COMMENTED is not a terminal state and is dropped; falls through
-        # to requested_reviewers lookup, which lists Alice → PENDING.
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
-            mock_get.side_effect = [
-                [{"user": {"login": "alice"}, "state": "COMMENTED"}],
-                {"requested_reviewers": [{"login": "alice"}]},
-            ]
+        # COMMENTED is not a terminal state; falls through to requested_reviewers → PENDING.
+        commented = [{"user": {"login": "alice"}, "state": "COMMENTED"}]
+        with (
+            patch.object(github_mod, "_gh_api_get_paginated", return_value=commented),
+            patch.object(github_mod, "_gh_api_get", return_value={"requested_reviewers": [{"login": "alice"}]}),
+        ):
             host = GitHubCodeHost()
             result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")
         assert result == ReviewState.PENDING
@@ -749,11 +795,11 @@ class TestGitHubCodeHost:
     def test_get_review_state_returns_pending_when_in_requested_reviewers(self) -> None:
         from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
-            mock_get.side_effect = [
-                [],  # no reviews submitted
-                {"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]},
-            ]
+        pr_payload = {"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]}
+        with (
+            patch.object(github_mod, "_gh_api_get_paginated", return_value=[]),
+            patch.object(github_mod, "_gh_api_get", return_value=pr_payload),
+        ):
             host = GitHubCodeHost()
             assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (
                 ReviewState.PENDING
@@ -770,8 +816,10 @@ class TestGitHubCodeHost:
     def test_get_review_state_returns_none_when_no_match_anywhere(self) -> None:
         from teatree.backends.protocols import ReviewState  # noqa: PLC0415
 
-        with patch.object(github_mod, "_gh_api_get") as mock_get:
-            mock_get.side_effect = [[], {"requested_reviewers": []}]
+        with (
+            patch.object(github_mod, "_gh_api_get_paginated", return_value=[]),
+            patch.object(github_mod, "_gh_api_get", return_value={"requested_reviewers": []}),
+        ):
             host = GitHubCodeHost()
             assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (ReviewState.NONE)
 
@@ -780,6 +828,24 @@ class TestGitHubCodeHost:
 
         host = GitHubCodeHost()
         assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="") == ReviewState.NONE
+
+    def test_get_review_state_paginates_beyond_first_page(self) -> None:
+        # GitHub returns reviews oldest-first. With >100 reviews the latest
+        # terminal state lives on page 2+; a single GET misreads dismissed-then-
+        # re-approved as still DISMISSED — spuriously blocking the PR sweep.
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        page_one = [{"user": {"login": "alice"}, "state": "APPROVED"}] * 100
+        page_two = [{"user": {"login": "alice"}, "state": "DISMISSED"}]
+        slurped = json.dumps([page_one, page_two])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped)
+            host = GitHubCodeHost()
+            result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")
+        assert result == ReviewState.DISMISSED
+        argv = mock_run.call_args_list[0].args
+        assert "--paginate" in argv
+        assert "--slurp" in argv
 
     def test_get_pr_open_state_maps_open_to_open(self) -> None:
         from teatree.backends.protocols import PrOpenState  # noqa: PLC0415

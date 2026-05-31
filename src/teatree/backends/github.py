@@ -174,6 +174,38 @@ def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]
     return flattened
 
 
+def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+    """Fetch every page of a GitHub search endpoint and return a flat item list.
+
+    Search responses wrap results in ``{"items": [...], "total_count": N}``
+    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
+    bare arrays per page via ``--slurp``) cannot be used here.
+    ``--paginate`` + ``--slurp`` emits each page as a search-object element;
+    this pulls the ``items`` list from each page and flattens them.
+    """
+    result = _run_gh(
+        "gh",
+        "api",
+        endpoint,
+        "--paginate",
+        "--slurp",
+        "--header",
+        "Accept: application/vnd.github+json",
+        token=token,
+    )
+    pages = json.loads(result.stdout)
+    if not isinstance(pages, list):
+        return []
+    items: list[RawAPIDict] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_items = cast("RawAPIDict", page).get("items")
+        if isinstance(page_items, list):
+            items.extend(cast("list[RawAPIDict]", page_items))
+    return items
+
+
 def _gh_api_post(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
     """Call ``gh api`` (POST) and return parsed JSON."""
     cmd = [
@@ -272,13 +304,7 @@ class GitHubCodeHost:
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
-        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
-        if not isinstance(data, dict):
-            return []
-        items = cast("RawAPIDict", data).get("items")
-        if not isinstance(items, list):
-            return []
-        return cast("list[RawAPIDict]", items)
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def list_review_requested_prs(
         self,
@@ -290,13 +316,7 @@ class GitHubCodeHost:
         if updated_after:
             terms.append(f"updated:>={updated_after}")
         query = quote_plus(" ".join(terms))
-        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
-        if not isinstance(data, dict):
-            return []
-        items = cast("RawAPIDict", data).get("items")
-        if not isinstance(items, list):
-            return []
-        return cast("list[RawAPIDict]", items)
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         data = _gh_api_post(
@@ -333,13 +353,7 @@ class GitHubCodeHost:
 
     def list_assigned_issues(self, *, assignee: str) -> list[RawAPIDict]:
         query = quote_plus(f"is:issue is:open assignee:{assignee}")
-        data = _gh_api_get(f"search/issues?q={query}&per_page=100", token=self._token)
-        if not isinstance(data, dict):
-            return []
-        items = cast("RawAPIDict", data).get("items")
-        if not isinstance(items, list):
-            return []
-        return cast("list[RawAPIDict]", items)
+        return _gh_api_search_paginated(f"search/issues?q={query}&per_page=100", token=self._token)
 
     def create_issue(
         self,
@@ -368,11 +382,7 @@ class GitHubCodeHost:
         its body, without paging the whole issue list.
         """
         terms = quote_plus(f"repo:{repo} is:issue is:open {query}")
-        data = _gh_api_get(f"search/issues?q={terms}&per_page=100", token=self._token)
-        if not isinstance(data, dict):
-            return []
-        items = cast("RawAPIDict", data).get("items")
-        return cast("list[RawAPIDict]", items) if isinstance(items, list) else []
+        return _gh_api_search_paginated(f"search/issues?q={terms}&per_page=100", token=self._token)
 
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
@@ -490,7 +500,7 @@ class GitHubCodeHost:
             return ReviewState.NONE
 
         base = f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}"
-        reviews = _gh_api_get(f"{base}/reviews?per_page=100", token=self._token)
+        reviews = _gh_api_get_paginated(f"{base}/reviews?per_page=100", token=self._token)
         terminal = _latest_review_state_from_reviews(reviews, reviewer)
         if terminal is not None:
             return terminal
