@@ -32,6 +32,12 @@ released in the tick ``finally`` (only ``loop-tick`` is); the TTL is the
 sole release. The CAS shape is name-parameterized so the in-flight
 reactive-Slack-answer loop (#1063/#1069) reuses it via
 ``loop-slack-answer-owner``.
+
+#1604: ``owner_pid`` makes the DB lease self-describing for eviction.
+``evict_stale_owner`` uses it to distinguish a LIVE foreign claim (null or
+different live pid → KEEP) from a post-compaction same-session restart
+(same pid → safe to evict). A null ``owner_pid`` is treated conservatively
+as "owner process unknown → KEEP" (INV4: bias toward preservation).
 """
 
 from django.db import models
@@ -46,6 +52,7 @@ class LoopLease(models.Model):
     name = models.CharField(max_length=128, unique=True)
     owner = models.CharField(max_length=255, blank=True)
     session_id = models.CharField(max_length=255, blank=True, default="")
+    owner_pid = models.IntegerField(null=True, blank=True, default=None)
     acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
 

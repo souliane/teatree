@@ -28,6 +28,8 @@ from django_typer.management import TyperCommand, command
 
 
 def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+    import os  # noqa: PLC0415
+
     from teatree.core.models import LoopLease  # noqa: PLC0415
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
@@ -39,7 +41,14 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
         else:
             stdout_write(f"ERROR  {msg}")
         raise SystemExit(2)
-    won, owner = LoopLease.objects.claim_ownership(slot, session_id=session_id, take_over=take_over)
+    # #1604: record the durable session pid for the ``loop-owner`` slot only
+    # so ``evict_stale_owner`` can distinguish a post-compaction same-process
+    # self-reclaim from a genuinely foreign live lease. Other slots (e.g.
+    # ``loop-slack-answer-owner``) are per-tick ephemeral and don't need it.
+    owner_pid = os.getppid() if slot == "loop-owner" else None
+    won, owner = LoopLease.objects.claim_ownership(
+        slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
+    )
     if json_output:
         stdout_write(json.dumps({"ok": won, "slot": slot, "owner_session": owner}, indent=2))
     elif won:
