@@ -55,10 +55,15 @@ _BUDGET_TOP_LEVEL_BYTES = 80_800
 # same class of load-bearing safety fact, plus the mandatory tach
 # dependency-graph edge for the new `core → hooks` reuse; corpus was at
 # capacity after the #1540 bump.
-_BUDGET_APPENDICES_BYTES = 104_400
+# Reviewed bump (#1629): the §5.6.3 cron-window paragraph now documents the
+# span (not fire-instant) availability semantics + the 1 h cadence cap — a
+# load-bearing safety fact (the prior fire-instant wording silently broke
+# away-mode for the shipped example), and the appendix corpus was at capacity.
+_BUDGET_APPENDICES_BYTES = 104_528
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
-_BUDGET_TOTAL_BYTES = 185_200
+# Reviewed bump (#1629): tracks the appendix span-semantics correction above.
+_BUDGET_TOTAL_BYTES = 185_328
 
 
 def _repo_root() -> pathlib.Path:

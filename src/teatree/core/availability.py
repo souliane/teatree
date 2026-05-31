@@ -28,10 +28,12 @@ import json
 import os
 import tempfile
 import tomllib
+import warnings
 import zoneinfo
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 from croniter import croniter
@@ -43,17 +45,57 @@ MODE_PRESENT = "present"
 MODE_AWAY = "away"
 _VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY})
 
-# Any active cron tick within this many seconds of *now* counts as
-# "present". The schedule format is cron, which is a fire-time format
-# rather than a span; the window is the inverse — "did the cron fire
-# within the past <step> seconds?" — and a one-minute window matches
-# the smallest cron resolution.
-_WINDOW_SECONDS = 60
+# A query landing exactly on a fire instant counts as inside that fire's span.
+_CRON_EPSILON = timedelta(microseconds=1)
+
+# A single fire presents for its natural cadence (the smallest gap between
+# consecutive fires), but never longer than this. Without the cap a sparse
+# cron like ``0 9 * * 1-5`` — whose only inter-fire gap is ~1 day (or ~3 days
+# across a weekend) — would present continuously for that whole gap.
+_MAX_SPAN = timedelta(hours=1)
+
+# How many consecutive fires to sample when measuring a cron's cadence. Six
+# spans every realistic shape (hourly ranges, twice-daily, daily) — enough to
+# observe the smallest gap even for irregular sets like ``0 9,17``.
+_CADENCE_SAMPLE = 6
 
 
 def override_path() -> Path:
     """Location of the durable availability-override JSON file."""
     return DATA_DIR / "availability_override.json"
+
+
+def _validated_timezone(tz: str) -> str:
+    """Return *tz* if it names a valid ``zoneinfo`` key, otherwise ``""``."""
+    if not tz:
+        return ""
+    try:
+        zoneinfo.ZoneInfo(tz)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return ""
+    else:
+        return tz
+
+
+def _cron_cadence(expr: str, anchor: datetime) -> timedelta:
+    """Smallest gap between consecutive fires of *expr* near *anchor*.
+
+    This is the cron's natural cadence — 1 minute for ``* …``, 1 hour for
+    ``0 …`` over an hour range, ~1 day for a single daily fire. It is what a
+    fire "covers" as a span, before the :data:`_MAX_SPAN` cap is applied.
+    """
+    itr = croniter(expr, anchor)
+    fires = [itr.get_next(datetime) for _ in range(_CADENCE_SAMPLE)]
+    return min(b - a for a, b in pairwise(fires))
+
+
+def _is_sparse_window(expr: str) -> bool:
+    """True when *expr* fires less often than :data:`_MAX_SPAN`.
+
+    Such a window presents for only ~1 hour per fire, not as a continuous
+    span — e.g. ``0 9 * * 1-5`` is present roughly 09:00-09:59, not all day.
+    """
+    return _cron_cadence(expr, datetime(2000, 1, 1, tzinfo=UTC)) > _MAX_SPAN
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +130,8 @@ class Schedule:
         """
         if not isinstance(raw, dict):
             return cls()
-        tz = str(raw.get("timezone", "")).strip()
+        tz_raw = str(raw.get("timezone", "")).strip()
+        tz = _validated_timezone(tz_raw)
         raw_windows = raw.get("windows", [])
         if not isinstance(raw_windows, list):
             raw_windows = []
@@ -99,6 +142,14 @@ class Schedule:
             expr = entry.strip()
             if expr and croniter.is_valid(expr):
                 validated.append(expr)
+                if _is_sparse_window(expr):
+                    warnings.warn(
+                        f"availability window {expr!r} fires sparsely: it marks "
+                        f"you present for only ~1 hour per fire, not as a "
+                        f"continuous span. Use a per-minute or per-hour range "
+                        f"(e.g. '* 9-16 * * 1-5') to be present across a window.",
+                        stacklevel=2,
+                    )
         return cls(timezone=tz, windows=tuple(validated))
 
     def is_present_at(self, when: datetime) -> bool:
@@ -106,15 +157,25 @@ class Schedule:
 
         Empty schedule means ``present`` — the conservative default
         (an agent without a configured schedule answers in-band).
+
+        A cron expression is a fire-time pattern, not a duration.  To
+        evaluate it as a *span*, we find the most recent fire (``get_prev``)
+        and the span it covers — its natural cadence (:func:`_cron_cadence`),
+        capped at :data:`_MAX_SPAN`.  *when* is "present" when it lands within
+        that span of the last fire.  Consecutive hourly fires therefore cover
+        the full hour, per-minute fires cover continuously, and a sparse
+        single-fire cron covers only its own hour (not the whole gap to its
+        next fire, which would over-present for up to ~3 days across a
+        weekend).
         """
         if not self.windows:
             return True
         local_when = self._localize(when)
+        start = local_when + _CRON_EPSILON
         for expr in self.windows:
-            base = local_when - timedelta(seconds=_WINDOW_SECONDS)
-            itr = croniter(expr, base)
-            fire = itr.get_next(datetime)
-            if fire <= local_when:
+            prev = croniter(expr, start).get_prev(datetime)
+            span = min(_cron_cadence(expr, prev - _CRON_EPSILON), _MAX_SPAN)
+            if start - prev <= span:
                 return True
         return False
 
@@ -123,7 +184,7 @@ class Schedule:
             return when
         try:
             tz = zoneinfo.ZoneInfo(self.timezone)
-        except zoneinfo.ZoneInfoNotFoundError:
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
             return when
         if when.tzinfo is None:
             return when.replace(tzinfo=UTC).astimezone(tz)
