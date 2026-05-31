@@ -421,8 +421,14 @@ def _quote_bash_allow(ctx: GateContext) -> dict:
     return _bash('gh issue create --title t --body "Routine status update."')
 
 
-# quote-scanner Slack-MCP arm (mcp__*slack* send) — handler scans, but the MCP
-# tool is NOT in any PreToolUse matcher (phantom).
+# quote-scanner Slack-MCP arm (mcp__*slack* send) — now reachable via the
+# ``mcp__.*[Ss]lack.*`` PreToolUse matcher (#171). The arm is default-ON; the
+# corpus enables ``mcp_privacy_gate_enabled`` explicitly so the must-DENY fires
+# regardless of any developer-local config leaking through.
+
+
+def _arrange_mcp_privacy_gate(ctx: GateContext) -> None:
+    ctx.write_teatree_toml("[teatree]\nmcp_privacy_gate_enabled = true\n")
 
 
 def _quote_slack_deny(ctx: GateContext) -> dict:
@@ -447,6 +453,29 @@ def _dispatch_quote_allow(ctx: GateContext) -> dict:
         "session_id": ctx.session_id,
         "tool_name": "Agent",
         "tool_input": {"prompt": "Implement the acme widget per the spec."},
+    }
+
+
+# dispatch-prompt quote-scanner ON TaskCreated (the fan-out arm, #171): the
+# fan-out path bypasses PreToolUse, so this TaskCreated handler scans the
+# task subject/description. Ships default-OFF (opt-in pending #1640-class
+# fan-out validation), so the corpus enables it explicitly to prove it CAN
+# fire when on: reachable + denies a HIGH-quote fan-out + allows a clean one.
+
+
+def _arrange_dispatch_quote_on_task(ctx: GateContext) -> None:
+    ctx.write_teatree_toml("[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n")
+
+
+def _dispatch_quote_task_deny(ctx: GateContext) -> dict:
+    return {"session_id": ctx.session_id, "task_subject": "do work", "task_description": _HIGH_QUOTE}
+
+
+def _dispatch_quote_task_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": ctx.session_id,
+        "task_subject": "do work",
+        "task_description": "Implement the acme widget per the spec.",
     }
 
 
@@ -593,11 +622,11 @@ _AGENT_PLAN_GATE_PHANTOM = (
     "path is now covered by the TaskCreated plan-gate) — tracked in #171"
 )
 _DISPATCH_QUOTE_PHANTOM = (
-    "phantom gate — Agent/Task absent from any PreToolUse matcher + fan-out bypass — tracked in #171"
+    "phantom gate — the PreToolUse Agent arm is unreachable (Agent absent from any "
+    "PreToolUse matcher + fan-out bypass); the fan-out path is now covered by the "
+    "reachable TaskCreated counterpart row. The Agent matcher itself is PR B — tracked in #171"
 )
 _ORCH_AGENT_PHANTOM = "phantom gate — Agent absent from any PreToolUse matcher — tracked in #171"
-_QUOTE_SLACK_PHANTOM = "phantom gate — mcp__*slack* absent from any PreToolUse matcher — tracked in #171"
-_BARE_SLACK_PHANTOM = "phantom gate — mcp__*slack* absent from any PreToolUse matcher — tracked in #171"
 _MR_META_MCP_PHANTOM = "phantom gate — mcp__glab__glab_mr_* absent from any PreToolUse matcher — tracked in #171"
 
 
@@ -700,7 +729,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__claude_ai_Slack__slack_send_message",
         deny_input=_quote_slack_deny,
         allow_input=_quote_slack_allow,
-        phantom_reason=_QUOTE_SLACK_PHANTOM,
+        arrange=_arrange_mcp_privacy_gate,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",
@@ -710,6 +739,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_dispatch_quote_deny,
         allow_input=_dispatch_quote_allow,
         phantom_reason=_DISPATCH_QUOTE_PHANTOM,
+    ),
+    GateRow(
+        gate_id="dispatch-prompt-quote-scanner-on-task-create",
+        handler=router.handle_dispatch_prompt_quote_scanner_on_task_create,
+        event="TaskCreated",
+        matched="Task",
+        deny_input=_dispatch_quote_task_deny,
+        allow_input=_dispatch_quote_task_allow,
+        arrange=_arrange_dispatch_quote_on_task,
     ),
     GateRow(
         gate_id="banned-terms-bash",
@@ -735,7 +773,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__claude_ai_Slack__slack_send_message",
         deny_input=_bare_slack_deny,
         allow_input=_bare_slack_allow,
-        phantom_reason=_BARE_SLACK_PHANTOM,
+        arrange=_arrange_mcp_privacy_gate,
     ),
     GateRow(
         gate_id="block-uncovered-diff",
@@ -797,24 +835,29 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 )
 
 
-# The five known phantom CATEGORIES (#171). The Slack-MCP category spans two
-# rows (quote-scanner + bare-reference; banned_terms has no Slack arm), so the
-# row count is six. The categories are asserted explicitly below so a row
-# losing/gaining its phantom status without a deliberate update is caught.
+# The remaining known phantom CATEGORIES after PR A (#171). PR A made the
+# Slack-MCP arm of the publish-privacy gates reachable (the ``mcp__.*[Ss]lack.*``
+# matcher) and added a reachable TaskCreated counterpart for the dispatch-quote
+# fan-out. What stays phantom is the THREE PreToolUse Agent arms + the glab-MR
+# MCP arm — all four are repaired in PR B (the Agent matcher and the
+# ``mcp__glab__glab_mr_*`` matcher). The ``dispatch-prompt-quote-scanner`` row
+# (PreToolUse/Agent) stays phantom for the same reason as its two Agent siblings
+# (no Agent matcher yet) even though the dispatch-quote CONCERN is now covered by
+# the reachable ``dispatch-prompt-quote-scanner-on-task-create`` row. The
+# categories are asserted explicitly below so a row losing/gaining its phantom
+# status without a deliberate update is caught.
 _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
     {
-        "enforce-agent-plan-gate",  # Agent not in matcher (fan-out covered by TaskCreated)
-        "dispatch-prompt-quote-scanner",  # Agent/Task not in matcher + fan-out bypass
-        "enforce-orchestrator-boundary-agent",  # Agent not in matcher
-        "quote-scanner-slack-mcp",  # mcp__*slack* not in matcher
-        "bare-reference-slack-mcp",  # mcp__*slack* not in matcher
-        "validate-mr-metadata-mcp",  # mcp__glab__glab_mr_* not in matcher
+        "enforce-agent-plan-gate",  # Agent not in matcher — PR B
+        "dispatch-prompt-quote-scanner",  # PreToolUse Agent arm not in matcher — PR B (fan-out now covered)
+        "enforce-orchestrator-boundary-agent",  # Agent not in matcher — PR B
+        "validate-mr-metadata-mcp",  # mcp__glab__glab_mr_* not in matcher — PR B
     }
 )
 # No allow-phantoms remain: the plan-tracker mismatch (#167) is fixed, so a
 # real teatree-plan /plan now clears both plan gates.
 _EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
-_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 5
+_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 4
 
 
 # ── fixtures (state isolation — the dev's real ~/.teatree.toml can't leak) ──
