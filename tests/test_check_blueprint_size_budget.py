@@ -59,21 +59,19 @@ class TestBudgetEnforcement:
 
     def test_total_corpus_over_budget_fails(self, fake_repo: Path) -> None:
         # Each individual file under its budget, but combined they bust
-        # the total — exercises the third breach branch.
-        _write(fake_repo, "BLUEPRINT.md", "x" * (gate._BUDGET_TOP_LEVEL_BYTES - 100))
-        _write(
-            fake_repo,
-            "docs/blueprint/configuration.md",
-            "y" * (gate._BUDGET_APPENDICES_BYTES - 100),
-        )
-        # 79_900 + 99_900 = 179_800 — under 180_000 total.
+        # the total — exercises the third breach branch. Sizes are derived
+        # from the constants so the pair lands exactly at the total budget,
+        # then a little extra corpus tips it over without breaching either
+        # per-file budget.
+        top_fill = gate._BUDGET_TOP_LEVEL_BYTES
+        appendix_fill = gate._BUDGET_TOTAL_BYTES - top_fill
+        assert appendix_fill <= gate._BUDGET_APPENDICES_BYTES
+        _write(fake_repo, "BLUEPRINT.md", "x" * top_fill)
+        _write(fake_repo, "docs/blueprint/configuration.md", "y" * appendix_fill)
         assert gate.main() == 0
-        # Add one more appendix to push the combined corpus past the cap.
-        _write(
-            fake_repo,
-            "docs/blueprint/loop-topology.md",
-            "z" * 500,
-        )
+        # Add more corpus to push the combined total past the cap while each
+        # individual file stays under its own budget.
+        _write(fake_repo, "docs/blueprint/loop-topology.md", "z" * 100)
         assert gate.main() == 1
 
 

@@ -12,6 +12,8 @@
 A personal workflow harness wrapped around an AI coding agent. Single-author tool;
 the code lives in a public repo in case any of it is useful to anyone else.
 
+Experimental: APIs and config keys may change without backwards-compatibility guarantees — the only obligation is that all registered overlays are updated in the same change.
+
 Teatree sits at the shell, alongside the editor. It turns a ticket URL into a
 merged pull request by creating synchronized worktrees across the repos a ticket
 touches, provisioning isolated databases and ports, driving the work through
