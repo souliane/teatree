@@ -63,7 +63,7 @@ t3 teatree questions dismiss 42 --reason "stale"
 [teatree.availability]
 timezone = "Europe/Paris"
 # Work hours: 09:00–16:59 Mon-Fri. Outside this window → away-mode.
-windows = ["0 9-16 * * 1-5"]
+windows = ["* 9-16 * * 1-5"]
 ```
 
 Multiple expressions OR together — any active = present.

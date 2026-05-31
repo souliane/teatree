@@ -429,8 +429,7 @@ class GitLabAPI(GitLabHTTPClient):
         cached = self._get_cached(cache_key, _TTL_DISCUSSIONS)
         if cached is not None:
             return cached  # type: ignore[return-value]
-        data = self.get_json(f"projects/{project_id}/merge_requests/{mr_iid}/discussions?per_page=100")
-        result = data if isinstance(data, list) else []
+        result = self.get_json_paginated(f"projects/{project_id}/merge_requests/{mr_iid}/discussions?per_page=100")
         self._set_cached(cache_key, result)
         return result
 

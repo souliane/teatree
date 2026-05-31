@@ -18,7 +18,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.config import _match_canonical_ep, _resolve_ep_project_path, discover_active_overlay, discover_overlays
+from teatree.config import (
+    OverlayEntry,
+    _match_canonical_ep,
+    _resolve_ep_project_path,
+    discover_active_overlay,
+    discover_overlays,
+)
 
 from ._shared import _write_manage_py, _write_toml
 
@@ -354,3 +360,43 @@ def test_canonical_ep_name_suffix_match_skipping_nonmatch() -> None:
 
 def test_canonical_ep_name_no_match_returns_none() -> None:
     assert _match_canonical_ep("ghost", {"t3-acme", "t3-teatree"}) is None
+
+
+# ── canonical_overlay_name (CLI route/dedup key) ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("t3-acme", "acme"),
+        ("acme", "acme"),
+        ("t3-beta", "beta"),
+        ("beta", "beta"),
+    ],
+)
+def test_canonical_overlay_name_strips_t3_prefix(name: str, expected: str) -> None:
+    assert OverlayEntry.canonical_overlay_name(name) == expected
+
+
+def test_bare_alias_table_still_folds_into_t3_prefixed_entry_point(tmp_path: Path) -> None:
+    """A bare ``[overlays.beta]`` table folds into ``t3-beta`` (the #1108 guard).
+
+    ``canonical_overlay_name`` is the CLI route key only — it must NOT widen the
+    legacy-alias fold. Discovery still emits ONE entry (``t3-beta``) for a bare
+    alias table, exactly as before.
+    """
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[overlays.beta]\nmode = "auto"\n')
+
+    entry_point = MagicMock()
+    entry_point.name = "t3-beta"
+    entry_point.value = "beta_pkg.overlay:BetaOverlay"
+
+    with (
+        patch("importlib.metadata.entry_points", return_value=[entry_point]),
+        patch("teatree.config._resolve_ep_project_path", return_value=None),
+    ):
+        result = discover_overlays(config_path=config_path)
+
+    names = {entry.name for entry in result}
+    assert names == {"t3-beta"}

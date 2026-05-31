@@ -2,10 +2,14 @@
 
 Subcommands. ``t3 <overlay> pending-chat list`` prints rows from the
 last hour (or all pending if ``--all``), oldest first.
-``t3 <overlay> pending-chat mark-answered <slack_ts> [--overlay X]``
-stamps ``answered_at`` on the matching row(s); the agent calls this
-once per direct reply to a queued user question, so the Stop hook
-stops nagging on already-answered rows.
+``t3 <overlay> pending-chat mark-answered <slack_ts>`` stamps
+``answered_at`` on the row(s) matching ``slack_ts``; the agent calls
+this once per direct reply to a queued user question, so the Stop hook
+stops nagging on already-answered rows. The stamp keys on ``slack_ts``
+alone — symmetric with the unscoped Stop-hook gate — so it clears the
+question regardless of which overlay recorded it (the concurrent
+multi-overlay case, where the recording overlay and the answering
+session routinely differ).
 
 The ``mark-answered`` path is also reachable via ``notify_user``'s
 ``answering_slack_ts=`` kwarg or the ``answer-<anything>-<ts>``
@@ -67,18 +71,17 @@ class Command(TyperCommand):
     def mark_answered(
         self,
         slack_ts: Annotated[str, typer.Argument(help="The Slack ts of the question being answered.")],
-        overlay: Annotated[
-            str,
-            typer.Option("--overlay", help="Scope the stamp to one overlay (default: empty / v1 single-overlay)."),
-        ] = "",
     ) -> str:
-        """Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+        """Stamp ``answered_at = now`` on rows matching ``slack_ts``.
 
-        Idempotent: zero rows is a successful no-op (the second call
-        sees the row already stamped). Empty ``slack_ts`` is rejected.
+        The stamp keys on ``slack_ts`` alone — the unique idempotency key,
+        symmetric with the unscoped Stop-hook gate — so it clears the
+        question regardless of which overlay recorded it (the concurrent
+        multi-overlay case). Idempotent: zero rows is a successful no-op.
+        Empty ``slack_ts`` is rejected.
         """
         if not slack_ts.strip():
             self.stderr.write("slack_ts must not be empty")
             raise SystemExit(2)
-        stamped = PendingChatInjection.agent_answered_question(slack_ts, overlay=overlay)
-        return f"stamped {stamped} row(s) as answered (ts={slack_ts}, overlay={overlay!r})."
+        stamped = PendingChatInjection.agent_answered_question(slack_ts)
+        return f"stamped {stamped} row(s) as answered (ts={slack_ts})."

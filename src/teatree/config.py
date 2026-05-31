@@ -278,6 +278,21 @@ class OverlayEntry:
     project_path: Path | None = None
     overrides: dict[str, Any] = field(default_factory=dict)
 
+    @staticmethod
+    def canonical_overlay_name(name: str) -> str:
+        """The route/dedup key for an overlay identifier: ``name`` minus the ``t3-`` prefix.
+
+        A TOML overlay table and the ``t3-``-prefixed entry point that registers
+        it address the same overlay; this strip is the key under which CLI
+        sub-apps are routed and deduplicated so the pair cannot register two
+        sub-apps.
+
+        This is the CLI-routing key only — distinct from the legacy-alias fold
+        in :func:`_match_canonical_ep`, which maps a bare ``[overlays.<alias>]``
+        table onto an installed entry point. Keep the two separate.
+        """
+        return name.removeprefix("t3-")
+
 
 @dataclass
 class UserSettings:

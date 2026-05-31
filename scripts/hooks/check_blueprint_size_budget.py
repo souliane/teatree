@@ -55,15 +55,20 @@ _BUDGET_TOP_LEVEL_BYTES = 80_800
 # same class of load-bearing safety fact, plus the mandatory tach
 # dependency-graph edge for the new `core → hooks` reuse; corpus was at
 # capacity after the #1540 bump.
-# Reviewed bump: the `skill_loading_gate_enabled` per-overlay config-key row
-# documenting the §17.6.4 skill-loading kill-switch is a load-bearing config
-# fact, and the appendix corpus was again at capacity; raised by the minimal
-# amount (with ~600 B headroom) to admit the row, matching the #1488 precedent.
+# Reviewed bump (#1629): the §5.6.3 cron-window paragraph now documents the
+# span (not fire-instant) availability semantics + the 1 h cadence cap — a
+# load-bearing safety fact (the prior fire-instant wording silently broke
+# away-mode for the shipped example), and the appendix corpus was at capacity.
+# Reviewed bump (#1636): the `skill_loading_gate_enabled` per-overlay config-key
+# row documenting the §17.6.4 skill-loading kill-switch is a load-bearing config
+# fact; on top of the #1629 base the merged appendix corpus is 104,864 B, so the
+# budget is raised to the next ~1 KB step (~536 B headroom) to admit the row.
 _BUDGET_APPENDICES_BYTES = 105_400
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
-# Reviewed bump: total tracked the appendix bump for the
-# `skill_loading_gate_enabled` config-key row.
+# Reviewed bump (#1629): tracks the appendix span-semantics correction above.
+# Reviewed bump (#1636): tracks the appendix bump for the
+# `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
 _BUDGET_TOTAL_BYTES = 185_800
 
 
