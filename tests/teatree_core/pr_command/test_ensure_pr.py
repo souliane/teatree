@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -7,7 +8,9 @@ from django.test import TestCase
 
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
+from teatree.core.management.commands._ensure_pr import create_or_defer_pr
 from teatree.core.orphan_guard import BranchReport, BranchStatus
+from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
 
@@ -101,7 +104,7 @@ class TestEnsurePr(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command.git, "current_branch", return_value="feat-q"),
             patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
-            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
             patch.object(
                 pr_command,
                 "classify_branch",
@@ -150,7 +153,7 @@ class TestEnsurePr(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command.git, "current_branch", return_value="feat-q"),
             patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
-            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
             patch.object(
                 pr_command,
                 "classify_branch",
@@ -187,7 +190,7 @@ class TestEnsurePr(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command.git, "current_branch", return_value="feat-q"),
             patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
-            patch.object(ensure_pr_mod.git, "last_commit_message", return_value=("feat: x", "body")),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
             patch.object(
                 pr_command,
                 "classify_branch",
@@ -201,3 +204,98 @@ class TestEnsurePr(TestCase):
             pytest.raises(CommandFailedError, match="rate limit"),
         ):
             call_command("pr", "ensure-pr")
+
+
+class TestCreatePrTitleSourcing(TestCase):
+    """#1534: the PR title/body must come from the branch's OWN commit.
+
+    Real git under ``tmp_path`` — only the forge ``create_pr`` is mocked.
+    ``origin/main`` carries an unrelated, already-merged commit ``M``; the
+    feature branch carries its own work ``B``. The repo's WORKING TREE is left
+    checked out on the default branch at ``M`` (the main-clone / wrong-ref /
+    slug condition #1534 describes), so the former ``HEAD``-based sourcing
+    would title the PR after ``M``. The opened PR must be titled after ``B``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    @staticmethod
+    def _set_identity(clone: Path) -> None:
+        """Give the tmp clone a commit identity (the Docker CI image has none)."""
+        _run_git("config", "user.email", "t@t", cwd=clone)
+        _run_git("config", "user.name", "t", cwd=clone)
+
+    def _origin_and_feature(self, branch_commits: list[str], *, default_branch: str = "main") -> Path:
+        origin = self._tmp_path / "origin.git"
+        _run_git("init", "-q", "--bare", "-b", default_branch, str(origin), cwd=self._tmp_path)
+        clone = self._tmp_path / "clone"
+        _run_git("clone", "-q", str(origin), str(clone), cwd=self._tmp_path)
+        self._set_identity(clone)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat(lifecycle): unrelated already-merged (#1426)", cwd=clone)
+        # M (the unrelated, already-merged head) IS origin/<default>. The
+        # branch is built on a side ref and the working tree is then returned
+        # to the default branch at M — the main-clone / wrong-ref condition
+        # where HEAD-based sourcing wrongly picks M.
+        _run_git("push", "-q", "origin", default_branch, cwd=clone)
+        # Point ``origin`` at the GitHub slug so the spec carries the real
+        # repo; the bare-origin push above already populated origin/<default>.
+        _run_git("remote", "set-url", "origin", "git@github.com:souliane/teatree.git", cwd=clone)
+        _run_git("checkout", "-q", "-b", "1534-fix-the-real-work", cwd=clone)
+        for subject in branch_commits:
+            _run_git("commit", "--allow-empty", "-q", "-m", subject, cwd=clone)
+        _run_git("checkout", "-q", default_branch, cwd=clone)
+        return clone
+
+    def _host(self) -> MagicMock:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/1"}
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        return host
+
+    def test_title_derives_from_branch_commit_not_default_head(self) -> None:
+        clone = self._origin_and_feature(["fix(y): the real work"])
+        host = self._host()
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = create_or_defer_pr(str(clone), "1534-fix-the-real-work")
+
+        assert result["url"] == "https://github.com/souliane/teatree/pull/1"
+        (spec,) = host.create_pr.call_args.args
+        assert spec.title == "fix(y): the real work"
+        assert "1426" not in spec.title
+        assert "1426" not in spec.description
+
+    def test_oldest_unique_commit_is_the_title_for_multi_commit_branch(self) -> None:
+        clone = self._origin_and_feature(["fix(y): the real work", "fix(y): a follow-up commit", "fix(y): one more"])
+        host = self._host()
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            create_or_defer_pr(str(clone), "1534-fix-the-real-work")
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.title == "fix(y): the real work"
+
+    def test_no_unique_commit_falls_back_to_wip_not_default_head(self) -> None:
+        """Guard: a branch with no commits over origin/<default> must NOT title after M."""
+        origin = self._tmp_path / "origin.git"
+        _run_git("init", "-q", "--bare", "-b", "main", str(origin), cwd=self._tmp_path)
+        clone = self._tmp_path / "clone"
+        _run_git("clone", "-q", str(origin), str(clone), cwd=self._tmp_path)
+        self._set_identity(clone)
+        _run_git("commit", "--allow-empty", "-q", "-m", "feat(lifecycle): unrelated already-merged (#1426)", cwd=clone)
+        _run_git("push", "-q", "origin", "main", cwd=clone)
+        _run_git("remote", "set-url", "origin", "git@github.com:souliane/teatree.git", cwd=clone)
+        # Feature branch sits exactly on origin/main — zero unique commits.
+        _run_git("checkout", "-q", "-b", "empty-branch", cwd=clone)
+        host = self._host()
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            create_or_defer_pr(str(clone), "empty-branch")
+
+        (spec,) = host.create_pr.call_args.args
+        assert spec.title == "WIP: empty-branch"
+        assert "1426" not in spec.title

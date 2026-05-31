@@ -63,8 +63,30 @@ def _ticket_extra_for_branch(branch_name: str) -> dict | None:
     return ticket.extra if isinstance(ticket.extra, dict) else None
 
 
+def _branch_own_commit_message(repo_path: str, branch_name: str) -> tuple[str, str]:
+    """Return ``(subject, body)`` of the branch's OWN first (oldest) commit.
+
+    #1534: the PR title/body must describe the work being shipped — the
+    branch's own commit — never the default branch's head. Reading
+    ``HEAD`` (the former behaviour) could pick up an unrelated, already-
+    merged commit when the wrong ref was checked out or ``--repo`` was a
+    slug, opening a PR titled after a stale default-branch commit. Sourcing
+    explicitly from ``origin/<default>..<branch>`` makes the title
+    independent of the working tree and matches the squash-PR-title
+    convention (the branch's first own commit). The oldest unique commit is
+    the canonical title when the branch has several. No unique commit yields
+    ``("", "")`` so the caller keeps its safe ``WIP:`` fallback rather than
+    mislabelling the PR after the default-branch head.
+    """
+    try:
+        default = git.default_branch(repo=repo_path)
+    except (CommandFailedError, RuntimeError, ValueError):
+        default = "main"
+    return git.first_commit_message(repo=repo_path, range_spec=f"origin/{default}..{branch_name}")
+
+
 def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
-    """Build the PR spec from the last commit and create it, or defer (#792).
+    """Build the PR spec from the branch's own commit and create it, or defer (#792).
 
     The "no commits between" create failure is the pre-push stale-remote
     race (the remote ref still lags this in-flight push); deferring it lets
@@ -75,7 +97,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     if host is None:
         return EnsurePrResult(error="no code host configured")
 
-    commit_subject, commit_body = git.last_commit_message(repo=repo_path)
+    commit_subject, commit_body = _branch_own_commit_message(repo_path, branch_name)
     title = commit_subject or f"WIP: {branch_name}"
     raw_description = (
         f"{commit_subject}\n\n{commit_body}"
