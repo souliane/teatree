@@ -7,9 +7,10 @@ a regression here is a bypass.
 
 Each corpus entry calls the same real gate function the PreToolUse hook uses:
 ``_deny_match`` (F3/F6/F8/--no-verify/blocked-tools),
-``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing), and
-``handle_block_out_of_band_merge`` (raw merge on managed repos).  No matchers are
-re-implemented in this test.
+``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing),
+``handle_block_out_of_band_merge`` (raw merge on managed repos), and
+``handle_enforce_skill_loading`` (skill-loading lockout vs bypass dimension).
+No matchers are re-implemented in this test.
 """
 
 import json
@@ -20,7 +21,12 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _deny_match, _extract_bash_ai_sig_payload, handle_block_out_of_band_merge
+from hooks.scripts.hook_router import (
+    _deny_match,
+    _extract_bash_ai_sig_payload,
+    handle_block_out_of_band_merge,
+    handle_enforce_skill_loading,
+)
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -283,6 +289,76 @@ def test_must_deny_ai_sig_routes_to_scanner(command: str, label: str) -> None:
         f"  command : {command!r}\n"
         f"  label   : {label}"
     )
+
+
+class TestSkillLoadingLockoutDimension:
+    """Over-block (lockout) vs under-block (bypass) corpus for the skill-loading gate.
+
+    MUST-ALLOW: a bare ``<session>.pending`` demand whose ONLY loaded form is
+    namespaced (``rules`` demanded, ``t3:rules`` loaded by the Skill tool)
+    must clear the gate — both canonicalize UP to ``t3:rules`` — otherwise
+    the gate hard-wedges every Bash/Edit/Write with no in-session
+    self-rescue but the per-call token. MUST-DENY (defang guard): a
+    genuinely-unloaded resolvable skill still blocks. MUST-DENY
+    (distinctness): a demand for ``t3:code`` is NOT satisfied by a loaded
+    ``other:code`` — canonicalizing UP keeps distinct namespaces distinct,
+    which the bare-strip approach would have wrongly conflated.
+
+    ``rules``/``code`` are real plugin-owned skills, so they canonicalize to
+    ``t3:*``; the fixture also seeds them as resolvable so the gate reaches
+    the block path rather than failing open on a stale name.
+    """
+
+    @pytest.fixture
+    def skill_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        original_state = router.STATE_DIR
+        router.STATE_DIR = tmp_path / "state"
+        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
+        skills_dir = tmp_path / "skills"
+        for name in ("rules", "code"):
+            skill = skills_dir / name
+            skill.mkdir(parents=True, exist_ok=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(skills_dir))
+        yield
+        router.STATE_DIR = original_state
+
+    def _write(self, session_id: str, suffix: str, names: list[str]) -> None:
+        (router.STATE_DIR / f"{session_id}.{suffix}").write_text("\n".join(names) + "\n", encoding="utf-8")
+
+    def test_must_allow_bare_demand_namespaced_loaded(self, skill_gate: None) -> None:
+        self._write("sess-skill-allow", "pending", ["rules"])
+        self._write("sess-skill-allow", "skills", ["t3:rules"])
+        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-allow", "tool_name": "Bash"})
+        assert blocked is False, "LOCKOUT regression — bare demand 'rules' not cleared by loaded 't3:rules'."
+
+    def test_must_deny_distinct_namespace_not_conflated(self, skill_gate: None) -> None:
+        self._write("sess-skill-distinct", "pending", ["code"])
+        self._write("sess-skill-distinct", "skills", ["other:code"])
+        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-distinct", "tool_name": "Bash"})
+        assert blocked is True, "CONFLATION regression — demand 't3:code' wrongly cleared by loaded 'other:code'."
+
+    def test_must_deny_genuinely_unloaded_skill(self, skill_gate: None) -> None:
+        self._write("sess-skill-deny", "pending", ["code"])
+        self._write("sess-skill-deny", "skills", ["rules"])
+        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-deny", "tool_name": "Bash"})
+        assert blocked is True, "BYPASS regression — genuinely-unloaded 'code' was allowed."
+
+    def test_must_deny_distinct_when_owned_set_unreadable(
+        self, skill_gate: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Strict-degrade guard: when the owned-set scan fails (returns empty),
+        # the canonicalizer collapses to verbatim equality. A bare demand
+        # ``code`` and a loaded namespaced ``t3:rules`` then never match, so
+        # the gate must still BLOCK — skill A (rules) can never satisfy a
+        # demand for skill B (code). The safe failure mode over-blocks
+        # (recoverable via kill-switch / token / circuit breaker); it must
+        # never fail open onto the wrong skill.
+        monkeypatch.setattr(router, "_plugin_owned_skills", lambda: (_ for _ in ()).throw(OSError("unreadable")))
+        self._write("sess-skill-unreadable", "pending", ["code"])
+        self._write("sess-skill-unreadable", "skills", ["t3:rules"])
+        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-unreadable", "tool_name": "Bash"})
+        assert blocked is True, "STRICT-DEGRADE regression — demand 'code' wrongly cleared while owned set unreadable."
 
 
 class TestMustDenyMerge:
