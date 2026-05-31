@@ -221,6 +221,8 @@ class TestLiveLoopsAnchor:
     """
 
     def test_returns_one_line_naming_each_loop(self) -> None:
+        # loop-owner is excluded from the shared line — its badge is
+        # per-session in statusline.sh. The other two loops appear.
         leases = [
             ("loop-tick", None),
             ("loop-slack-answer", None),
@@ -236,7 +238,8 @@ class TestLiveLoopsAnchor:
         assert "loops live" not in lines[0]
         assert "tick" in lines[0]
         assert "slack-answer" in lines[0]
-        assert "owner" in lines[0]
+        # loop-owner excluded from the shared line (per-session badge in sh).
+        assert "owner" not in lines[0]
 
     def test_no_live_leases_returns_empty(self) -> None:
         # Empty list → no lines (no statusline noise when no loop is live).
@@ -254,6 +257,8 @@ class TestZonesForIntegratesLoopsAnchor:
     """``zones_for`` surfaces the consolidated loop summary in the anchors zone."""
 
     def test_zones_for_appends_consolidated_loop_line(self, tmp_path: Path) -> None:
+        # loop-owner lease present but excluded from the shared line
+        # (per-session badge in statusline.sh replaces it).
         with (
             patch(
                 "teatree.loop.statusline._live_loop_leases",
@@ -268,7 +273,8 @@ class TestZonesForIntegratesLoopsAnchor:
         assert "loop running · " in body
         assert "loops live" not in body
         assert "tick" in body
-        assert "owner" in body
+        # loop-owner absent from the shared zones file.
+        assert "owner" not in body
         # Per-loop dump tokens absent.
         assert "loop:tick" not in body
         assert "loop:owner" not in body
