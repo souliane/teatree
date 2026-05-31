@@ -659,6 +659,20 @@ the local clone — not stale copies. If you use a fork from someone else, you
 are trusting that person's skill files as agent instructions. Review changes
 before pulling.
 
+**Leak backstop:** the banned-terms gate scans diffs, commit messages, and
+publish-surface bodies — but a customer/tenant brand name already committed
+never appears in a later diff, so it would stay hidden. `t3 banned-terms
+scan-tree` is the full-tree backstop: it walks every git-tracked file (`git
+ls-files`) and scans its content for the high-confidence brand list, exiting
+non-zero with the offending `file:line` list. Its matcher is
+underscore-tolerant — `wt_777_<brand>` and `<brand>_x` are caught where the
+diff gate's word-boundary matcher misses them — while common-word entries keep
+strict boundaries (no substring noise) and the email carve-out is preserved.
+The brand list comes from `[teatree].banned_brands` in `~/.teatree.toml` or the
+`$TEATREE_BANNED_BRANDS` environment variable, so the public repo ships with
+none (a clean no-op). A CI job runs the scan on push to `main` and on a daily
+schedule.
+
 ## Project Structure
 
 ```text

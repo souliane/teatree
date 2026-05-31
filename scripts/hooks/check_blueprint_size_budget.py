@@ -29,7 +29,12 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 80_200
+_BUDGET_TOP_LEVEL_BYTES = 80_800
+# Reviewed bump (#1570): the full-tree banned-brand backstop scan
+# (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
+# `banned-terms-tree` CI job) is the same class of load-bearing
+# leak-prevention safety fact as the diff/payload banned-terms gate, and
+# the top-level corpus was at capacity (80,199 B, 1 B of headroom).
 # Reviewed bump (#1474): the §17.6.4 gate-2 self-rescue invariant is a
 # load-bearing safety fact, and the appendix corpus was already at capacity.
 # Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
@@ -51,7 +56,9 @@ _BUDGET_TOP_LEVEL_BYTES = 80_200
 # dependency-graph edge for the new `core → hooks` reuse; corpus was at
 # capacity after the #1540 bump.
 _BUDGET_APPENDICES_BYTES = 104_400
-_BUDGET_TOTAL_BYTES = 184_600
+# Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
+# security-gates paragraph; total corpus tracked the top-level bump.
+_BUDGET_TOTAL_BYTES = 185_200
 
 
 def _repo_root() -> pathlib.Path:

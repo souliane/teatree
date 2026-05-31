@@ -1,0 +1,60 @@
+"""Banned-terms CLI — the full-tree backstop scan (#1570).
+
+``t3 banned-terms scan-tree`` enumerates every git-tracked file and scans
+its committed CONTENT for the high-confidence brand list, exiting non-zero
+with the offending ``file:line`` list. It is the backstop the diff-only
+posting gate cannot provide: a brand name already committed never appears
+in a post-landing diff. CI runs this on push-to-main and on a schedule.
+"""
+
+from pathlib import Path
+
+import typer
+from rich.console import Console
+
+from teatree.core.banned_terms_tree import scan_committed_tree
+
+banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop scans.")
+_console = Console()
+
+_FINDINGS_EXIT_CODE = 1
+
+
+@banned_terms_app.callback()
+def _root() -> None:
+    """Banned-terms backstop scans.
+
+    A callback keeps ``scan-tree`` a named subcommand even though it is
+    currently the only command — Typer otherwise collapses a single
+    command into the group root.
+    """
+
+
+@banned_terms_app.command(name="scan-tree")
+def scan_tree(
+    repo_root: Path | None = typer.Option(
+        None,
+        "--repo-root",
+        help="Repository root to scan (defaults to the current directory).",
+    ),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Override the ~/.teatree.toml term-list config (else resolved as the gate does).",
+    ),
+) -> None:
+    """Scan every git-tracked file for committed high-confidence brand names."""
+    root = repo_root if repo_root is not None else Path.cwd()
+    findings = scan_committed_tree(root, config_path=config)
+    if not findings:
+        _console.print("[green]banned-terms scan-tree: clean (0 findings).[/]")
+        return
+
+    _console.print(f"[red]banned-terms scan-tree: {len(findings)} committed brand-name finding(s).[/]")
+    for finding in findings:
+        _console.print(f"  {finding.render()}")
+    _console.print(
+        "\nA high-confidence brand name is committed to the tree. Scrub it "
+        "(the diff-only gate cannot see it — it is not in any new diff)."
+    )
+    raise typer.Exit(_FINDINGS_EXIT_CODE)

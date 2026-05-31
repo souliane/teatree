@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Daily full-tree banned-brand backstop (#1570). The diff-only gate
+    # cannot see a brand name already committed; this catches a pre-existing
+    # leak even when no new diff touches it.
+    - cron: "17 6 * * *"
 
 jobs:
   lint:
@@ -102,6 +107,31 @@ jobs:
       # A strict build is the second half of the gate: a broken link or
       # missing nav target fails CI instead of shipping a broken site.
       - run: uv run mkdocs build --strict
+
+  banned-terms-tree:
+    # Full-tree banned-brand backstop (souliane/teatree#1570). The
+    # diff/payload banned-terms gate only ever sees a *change*; a brand
+    # name ALREADY committed never appears in a post-landing diff. This
+    # job scans every git-tracked file's content for the high-confidence
+    # brand list on push-to-main and on a daily schedule, failing CI if a
+    # brand is present. The public repo ships with no brands; the list is
+    # supplied from the TEATREE_BANNED_BRANDS secret so no tenant name is
+    # ever committed. With no secret configured the scan is a clean no-op.
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Full-tree banned-brand scan
+        env:
+          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+        run: uv run t3 banned-terms scan-tree --repo-root .
 
   uv-audit:
     # Job name preserved for compatibility with the PR-sweep scanner's
