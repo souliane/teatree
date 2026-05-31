@@ -53,42 +53,46 @@ class TicketCompletionScanner:
     def scan(self) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
         for ticket in self._candidate_tickets():
-            if _has_draft_mrs(ticket):
-                signals.append(
-                    ScanSignal(
-                        kind="ticket.reopen_needed",
-                        summary=f"Ticket {ticket.ticket_number} — draft MRs exist, reopening",
-                        payload={
-                            "ticket_id": ticket.pk,
-                            "ticket_state": ticket.state,
-                            "issue_url": ticket.issue_url,
-                        },
-                    ),
-                )
-                continue
-
-            host = get_code_host_for_url(self.overlay, ticket.issue_url)
-            if host is None:
-                continue
             try:
-                issue_data = host.get_issue(ticket.issue_url)
-            except Exception:  # noqa: BLE001
-                logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
+                if _has_draft_mrs(ticket):
+                    signals.append(
+                        ScanSignal(
+                            kind="ticket.reopen_needed",
+                            summary=f"Ticket {ticket.ticket_number} — draft MRs exist, reopening",
+                            payload={
+                                "ticket_id": ticket.pk,
+                                "ticket_state": ticket.state,
+                                "issue_url": ticket.issue_url,
+                            },
+                        ),
+                    )
+                    continue
+
+                host = get_code_host_for_url(self.overlay, ticket.issue_url)
+                if host is None:
+                    continue
+                try:
+                    issue_data = host.get_issue(ticket.issue_url)
+                except Exception:  # noqa: BLE001
+                    logger.warning("Failed to fetch issue for ticket %s (%s), skipping", ticket.pk, ticket.issue_url)
+                    continue
+                if not isinstance(issue_data, dict) or "error" in issue_data:
+                    continue
+                if self.overlay.is_issue_done(issue_data):
+                    signals.append(
+                        ScanSignal(
+                            kind="ticket.completion_detected",
+                            summary=f"Ticket {ticket.ticket_number} — issue done upstream",
+                            payload={
+                                "ticket_id": ticket.pk,
+                                "ticket_state": ticket.state,
+                                "issue_url": ticket.issue_url,
+                            },
+                        ),
+                    )
+            except Exception:
+                logger.exception("TicketCompletionScanner failed on ticket %s", ticket.pk)
                 continue
-            if not isinstance(issue_data, dict) or "error" in issue_data:
-                continue
-            if self.overlay.is_issue_done(issue_data):
-                signals.append(
-                    ScanSignal(
-                        kind="ticket.completion_detected",
-                        summary=f"Ticket {ticket.ticket_number} — issue done upstream",
-                        payload={
-                            "ticket_id": ticket.pk,
-                            "ticket_state": ticket.state,
-                            "issue_url": ticket.issue_url,
-                        },
-                    ),
-                )
         return signals
 
     def _candidate_tickets(self) -> Iterable["Ticket"]:

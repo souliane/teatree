@@ -39,6 +39,7 @@ independent of both, so a row can be drained, loop-replied, and
 agent-answered without a double reply (#1014).
 """
 
+import logging
 from dataclasses import dataclass, field
 
 from teatree.backends.protocols import MessagingBackend
@@ -46,6 +47,8 @@ from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_self_filter import OwnSlackIdentity, filter_self_messages, resolve_own_identity
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 def _event_ts(event: RawAPIDict) -> str:
@@ -106,34 +109,38 @@ class SlackDmInboundScanner:
         signals: list[ScanSignal] = []
         for event in dms:
             ts = _event_ts(event)
-            text = _event_text(event)
-            if not ts or not text.strip():
-                continue
-            channel = _event_channel(event)
-            user_id = _event_user(event)
-            row = PendingChatInjection.record(
-                channel=channel,
-                slack_ts=ts,
-                text=text,
-                overlay=self.overlay,
-                user_id=user_id,
-            )
-            if row is None:
-                # Duplicate ``ts`` — the scanner over-polled. Skip the
-                # signal so the dispatcher doesn't re-route a row that
-                # the previous tick already queued.
-                continue
-            signals.append(
-                ScanSignal(
-                    kind="slack.user_reply",
-                    summary=f"Slack user reply {ts}: {text[:80]}",
-                    payload={
-                        "ts": ts,
-                        "channel": channel,
-                        "user_id": user_id,
-                        "text": text,
-                        "overlay": self.overlay,
-                    },
+            try:
+                text = _event_text(event)
+                if not ts or not text.strip():
+                    continue
+                channel = _event_channel(event)
+                user_id = _event_user(event)
+                row = PendingChatInjection.record(
+                    channel=channel,
+                    slack_ts=ts,
+                    text=text,
+                    overlay=self.overlay,
+                    user_id=user_id,
                 )
-            )
+                if row is None:
+                    # Duplicate ``ts`` — the scanner over-polled. Skip the
+                    # signal so the dispatcher doesn't re-route a row that
+                    # the previous tick already queued.
+                    continue
+                signals.append(
+                    ScanSignal(
+                        kind="slack.user_reply",
+                        summary=f"Slack user reply {ts}: {text[:80]}",
+                        payload={
+                            "ts": ts,
+                            "channel": channel,
+                            "user_id": user_id,
+                            "text": text,
+                            "overlay": self.overlay,
+                        },
+                    )
+                )
+            except Exception:
+                logger.exception("SlackDmInboundScanner failed on DM event %s", ts)
+                continue
         return signals

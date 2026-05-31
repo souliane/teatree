@@ -11,6 +11,7 @@ The cache lives on ``Ticket(role="reviewer")`` rows in ``extra``
 then deleted — no migration command required.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -18,6 +19,8 @@ from teatree.backends.protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket as _Ticket
@@ -210,7 +213,11 @@ def _orphaned_task_signals(
     candidates = candidates.exclude(issue_url="").exclude(issue_url__in=scanned_urls).distinct()
     signals: list[ScanSignal] = []
     for ticket in candidates:
-        state = host.get_pr_open_state(pr_url=ticket.issue_url)
+        try:
+            state = host.get_pr_open_state(pr_url=ticket.issue_url)
+        except Exception:
+            logger.exception("ReviewerPrsScanner failed to get PR state for %s", ticket.issue_url)
+            continue
         if state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
             # OPEN → live review still owed; UNKNOWN → fail open. Never reap.
             continue
@@ -291,32 +298,36 @@ class ReviewerPrsScanner:
             url = _pr_url(pr)
             if not url or not self._url_allowed(url):
                 continue
-            # #1321 (post-#1328 rewire): the 4 review-candidate skip-conditions
-            # belong on the colleague-MR review-sweep path — exactly this loop.
-            # ``list_review_requested_prs`` can return MRs the agent must not
-            # dispatch ``t3:reviewer`` on (self-authored, self-approved,
-            # self-noted, or already merged/closed); filter them here BEFORE
-            # adding the URL to ``scanned_urls`` so the orphan-task sweep
-            # still reaps the corresponding ticket via ``get_pr_open_state``
-            # when the MR is genuinely merged/closed. The full identity set
-            # (not just the primary alias) is matched so an MR authored under
-            # any of the user's github/gitlab aliases is recognised as own
-            # work (#1321 multi-identity).
-            reasons = should_review_candidate_reasons(pr, current_user=primary_reviewer, self_identities=reviewers)
-            if reasons:
-                # #1321: a reviewing task already created for a self-authored
-                # OPEN MR (before this gate, or via another path) lingers
-                # forever — the orphan sweep only reaps MERGED/CLOSED PRs.
-                # Emit a reconciliation signal so the queue self-heals on the
-                # next tick. Other skip reasons (already-approved, merged,
-                # broadcast-reacted) are handled by the existing orphan sweep
-                # or are genuinely review-engaged, so only ``author_is_self``
-                # drives reconciliation here.
-                if "author_is_self" in reasons:
-                    signals.extend(self._self_authored_reconcile_signals(url, ticket_model))
+            try:
+                # #1321 (post-#1328 rewire): the 4 review-candidate skip-conditions
+                # belong on the colleague-MR review-sweep path — exactly this loop.
+                # ``list_review_requested_prs`` can return MRs the agent must not
+                # dispatch ``t3:reviewer`` on (self-authored, self-approved,
+                # self-noted, or already merged/closed); filter them here BEFORE
+                # adding the URL to ``scanned_urls`` so the orphan-task sweep
+                # still reaps the corresponding ticket via ``get_pr_open_state``
+                # when the MR is genuinely merged/closed. The full identity set
+                # (not just the primary alias) is matched so an MR authored under
+                # any of the user's github/gitlab aliases is recognised as own
+                # work (#1321 multi-identity).
+                reasons = should_review_candidate_reasons(pr, current_user=primary_reviewer, self_identities=reviewers)
+                if reasons:
+                    # #1321: a reviewing task already created for a self-authored
+                    # OPEN MR (before this gate, or via another path) lingers
+                    # forever — the orphan sweep only reaps MERGED/CLOSED PRs.
+                    # Emit a reconciliation signal so the queue self-heals on the
+                    # next tick. Other skip reasons (already-approved, merged,
+                    # broadcast-reacted) are handled by the existing orphan sweep
+                    # or are genuinely review-engaged, so only ``author_is_self``
+                    # drives reconciliation here.
+                    if "author_is_self" in reasons:
+                        signals.extend(self._self_authored_reconcile_signals(url, ticket_model))
+                    continue
+                scanned_urls.add(url)
+                signals.extend(self._signals_for_pr(pr, url, cache, ticket_model, primary_reviewer))
+            except Exception:
+                logger.exception("ReviewerPrsScanner failed on PR %s", url)
                 continue
-            scanned_urls.add(url)
-            signals.extend(self._signals_for_pr(pr, url, cache, ticket_model, primary_reviewer))
         signals.extend(_orphaned_task_signals(ticket_model, scanned_urls, self.host, self.overlay_name))
         return signals
 

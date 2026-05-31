@@ -116,12 +116,22 @@ class RedCardScanner:
         signals: list[ScanSignal] = []
 
         for event in self._drain_reactions():
-            signal = self._handle_reaction(event, target_user)
+            ts = _event_ts(event)
+            try:
+                signal = self._handle_reaction(event, target_user)
+            except Exception:
+                logger.exception("RedCardScanner failed on reaction event %s", ts)
+                continue
             if signal is not None:
                 signals.append(signal)
 
         for event in self._drain_dms():
-            signal = self._handle_dm(event, target_user)
+            ts = _event_ts(event)
+            try:
+                signal = self._handle_dm(event, target_user)
+            except Exception:
+                logger.exception("RedCardScanner failed on DM event %s", ts)
+                continue
             if signal is not None:
                 signals.append(signal)
 
