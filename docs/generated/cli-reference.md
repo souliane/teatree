@@ -19,6 +19,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
+│ banned-terms    Banned-terms backstop scans.                                 │
 │ ci              CI pipeline helpers.                                         │
 │ codex           Auto-dispatch /codex:review surfaces.                        │
 │ review          Code review helpers.                                         │
@@ -258,6 +259,38 @@ Usage: t3 config test-trigger [OPTIONS] PROMPT
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 banned-terms`
+
+```
+Usage: t3 banned-terms [OPTIONS] COMMAND [ARGS]...
+
+ Banned-terms backstop scans.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ scan-tree  Scan every git-tracked file for committed high-confidence brand   │
+│            names.                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 banned-terms scan-tree`
+
+```
+Usage: t3 banned-terms scan-tree [OPTIONS]
+
+ Scan every git-tracked file for committed high-confidence brand names.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo-root        PATH  Repository root to scan (defaults to the current    │
+│                          directory).                                         │
+│ --config           PATH  Override the ~/.teatree.toml term-list config (else │
+│                          resolved as the gate does).                         │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
