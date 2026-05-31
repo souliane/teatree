@@ -903,29 +903,49 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
     )
 
 
-def test_every_pretooluse_deny_handler_has_a_registry_row() -> None:
-    """Coverage guard: every PreToolUse handler that can deny has a row.
-
-    Enumerated against ``_HANDLERS['PreToolUse']`` so a newly-added deny gate
-    that omits its registry row is caught here rather than slipping in unfired.
-    """
-    covered = {row.handler for row in GATE_REGISTRY}
-    pretooluse_deny_handlers = {
-        router.handle_enforce_skill_loading,
-        router.handle_enforce_plan_gate,
-        router.handle_enforce_agent_plan_gate,
-        router.handle_protect_default_branch,
-        router.handle_bare_reference_pretool,
-        router.handle_quote_scanner_pretool,
-        router.handle_dispatch_prompt_quote_scanner,
-        router.handle_banned_terms_pretool,
-        router.handle_block_direct_commands,
-        router.handle_block_out_of_band_merge,
-        router.handle_block_raw_review_post,
-        router.handle_validate_mr_metadata,
-        router.handle_block_ai_signature,
-        router.handle_block_uncovered_diff,
-        router.handle_enforce_orchestrator_boundary,
+_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] = frozenset(
+    {
+        # Emits ``permissionDecision=allow`` (or ``None``) — it unblocks the
+        # settings.json write, it never denies content.
+        router.handle_allow_classifier_relax_settings_write,
+        # Side-effect-only mirror — always returns ``False`` (posts the
+        # AskUserQuestion to Slack, never denies).
+        router.handle_mirror_question_to_slack,
+        # Availability router — its deny is a routing conversion of an
+        # AskUserQuestion into a DeferredQuestion, not a content/enforcement
+        # gate with a must-deny corpus payload.
+        router.handle_route_away_mode_question,
+        # Loop-bootstrap enforcer — its deny is a one-off setup nudge to
+        # register the background-loop cron, not a content/enforcement gate.
+        router.handle_enforce_loop_registration,
     }
-    missing = pretooluse_deny_handlers - covered
-    assert not missing, f"PreToolUse deny handlers missing a registry row: {sorted(h.__name__ for h in missing)}"
+)
+
+
+def test_every_pretooluse_deny_handler_has_a_registry_row() -> None:
+    """Coverage guard: every PreToolUse deny gate has a registry row.
+
+    The deny-handler universe is derived from the live registry
+    (``router._HANDLERS['PreToolUse']``) minus an explicit, documented
+    allow-list of the handlers that legitimately have no :class:`GateRow`
+    (``_NON_DENY_PRETOOLUSE_HANDLERS``: allow-emitters, side-effect mirrors,
+    routers, bootstrap enforcers). A future deny gate added to the registry
+    that is in neither the registry rows NOR the allow-list trips this guard —
+    forcing it into the liveness registry rather than slipping in unfired.
+    Exempting a genuinely-non-deny handler requires a deliberate, reviewable
+    addition to the allow-list, not a silent omission.
+    """
+    registry: list[Callable[[dict], bool | None]] = router._HANDLERS["PreToolUse"]
+    allowlisted = _NON_DENY_PRETOOLUSE_HANDLERS - set(registry)
+    assert not allowlisted, (
+        "Non-deny allow-list names handlers absent from the live PreToolUse "
+        f"registry (stale exemptions): {sorted(h.__name__ for h in allowlisted)}"
+    )
+    deny_handlers = set(registry) - _NON_DENY_PRETOOLUSE_HANDLERS
+    covered = {row.handler for row in GATE_REGISTRY}
+    missing = deny_handlers - covered
+    assert not missing, (
+        "PreToolUse deny handlers missing a registry row "
+        "(add a GateRow, or add to _NON_DENY_PRETOOLUSE_HANDLERS if genuinely "
+        f"non-deny): {sorted(h.__name__ for h in missing)}"
+    )
