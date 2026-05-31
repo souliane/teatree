@@ -19,16 +19,28 @@ Three groups, each scoped to one overlay over the window ``[since, now)``:
     ``TaskAttempt`` runs inside the window. Failed agent runs are the durable
     proxy for "blocked" — core makes no live forge calls; an overlay opts into
     richer signals via :meth:`OverlayBase.get_checking_sources`.
+
+Multi-overlay aggregation (``gather_all_overlays_report``):
+
+:func:`gather_all_overlays_report` merges per-overlay groups into a single
+:class:`AllOverlaysReport`. Each overlay-scoped item carries an ``[overlay]``
+inline tag in its detail so the reader can tell provenance. The global
+:class:`DeferredQuestion` query runs exactly once for the whole report — not
+once per overlay — so a pending question never appears more than once.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TypedDict
 
-from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.merge_clear import MergeAudit, MergeClear
+from teatree.core._checking_gather import (
+    _MergedScope,
+    deferred_questions,
+    merged_group_from_qs,
+    motion_for_overlay,
+    ticket_url,
+)
 from teatree.core.models.task import TaskAttempt
-from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 
 #: Per-group item cap; beyond it the renderer appends "…and X more".
@@ -49,6 +61,15 @@ class CheckGroupDict(TypedDict):
 
 class CheckingReportDict(TypedDict):
     since: str
+    merged: CheckGroupDict
+    in_flight: CheckGroupDict
+    needs_you: CheckGroupDict
+    terse: str
+
+
+class AllOverlaysReportDict(TypedDict):
+    all_overlays: list[str]
+    earliest_since: str
     merged: CheckGroupDict
     in_flight: CheckGroupDict
     needs_you: CheckGroupDict
@@ -151,6 +172,53 @@ class CheckingReport:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True, slots=True)
+class AllOverlaysReport:
+    """Aggregated "what did I miss" report spanning all configured overlays.
+
+    ``earliest_since`` is the oldest window start across all overlays —
+    the header stamps from that so the user sees the widest window covered.
+    Items in overlay-scoped groups carry an ``[overlay]`` tag in their detail.
+    ``DeferredQuestion`` items are global (no overlay tag).
+    """
+
+    all_overlays: list[str]
+    earliest_since: datetime
+    merged: CheckGroup
+    in_flight: CheckGroup
+    needs_you: CheckGroup
+
+    def to_dict(self) -> AllOverlaysReportDict:
+        return AllOverlaysReportDict(
+            all_overlays=self.all_overlays,
+            earliest_since=self.earliest_since.isoformat(),
+            merged=self.merged.to_dict(),
+            in_flight=self.in_flight.to_dict(),
+            needs_you=self.needs_you.to_dict(),
+            terse=self.to_terse(),
+        )
+
+    def to_terse(self, *, cap: int = DEFAULT_CAP) -> str:
+        """Render the terse view for all overlays.
+
+        Header: ``Since <local HH:MM> · all overlays``.
+        Empty report: ``Nothing since <local time>.``
+        """
+        from django.utils import timezone  # noqa: PLC0415
+
+        local = (
+            timezone.localtime(self.earliest_since) if timezone.is_aware(self.earliest_since) else self.earliest_since
+        )
+        stamp = local.strftime("%H:%M")
+        groups = [self.merged, self.in_flight, self.needs_you]
+        if all(group.total == 0 for group in groups):
+            return f"Nothing since {stamp}."
+        lines = [f"Since {stamp} · all overlays"]
+        for group in groups:
+            lines.extend(group.render(cap=cap))
+        return "\n".join(lines)
+
+
 def build_pr_url(*, slug: str, pr_id: int, code_host: str) -> str:
     """Build a clickable PR/MR web URL from a real ``owner/repo`` slug + id.
 
@@ -173,19 +241,76 @@ def build_pr_url(*, slug: str, pr_id: int, code_host: str) -> str:
     return f"https://github.com/{clean}/pull/{pr_id}"
 
 
-@dataclass(frozen=True, slots=True)
-class _MergedScope:
-    """How the merged group is scoped to one overlay (#1559).
+def gather_all_overlays_report(
+    *,
+    overlay_windows: dict[str, tuple[datetime, datetime]],
+    overlay_configs: dict[str, tuple[str, list[str]]],
+    cap: int = DEFAULT_CAP,
+) -> AllOverlaysReport:
+    """Build an :class:`AllOverlaysReport` spanning every overlay in *overlay_windows*.
 
-    ``overlay_name`` is the ticket-FK back-compat scope for ticket-bearing
-    CLEARs; ``overlay_repos`` (``owner/repo`` or bare ``repo``) is the
-    resolved-repo scope for NULL-ticket ceremony CLEARs; ``code_host`` picks
-    the PR URL shape.
+    *overlay_windows* maps overlay name → ``(since, now)`` pair.
+    *overlay_configs* maps overlay name → ``(code_host, overlay_repos)`` pair.
+
+    The global :class:`DeferredQuestion` query runs exactly ONCE — pending
+    questions are not scoped per overlay, so repeating the query per overlay
+    would duplicate them in the output.
+
+    Overlay-scoped items (merged, in-flight, failed attempts) have their
+    detail text suffixed with ``[overlay]`` so the reader sees provenance.
     """
+    merged_items, in_flight_items, failed_items, earliest_since = _accumulate_overlays(
+        overlay_windows=overlay_windows, overlay_configs=overlay_configs, cap=cap
+    )
+    in_flight_items.sort(
+        key=lambda item: int(item.label.lstrip("#")) if item.label.lstrip("#").isdigit() else 0,
+        reverse=True,
+    )
+    overlay_slug = next(iter(overlay_windows), "") or "<overlay>"
+    needs_you_items = deferred_questions(overlay_slug=overlay_slug)
+    needs_you_items.extend(failed_items)
+    effective_since = earliest_since or next(iter(overlay_windows.values()), (None, None))[0] or datetime.now(UTC)
+    return AllOverlaysReport(
+        all_overlays=list(overlay_windows),
+        earliest_since=effective_since,
+        merged=CheckGroup(title="Merged", items=merged_items[:cap], total=len(merged_items)),
+        in_flight=CheckGroup(title="In-flight", items=in_flight_items[:cap], total=len(in_flight_items)),
+        needs_you=CheckGroup(title="Needs you", items=needs_you_items[:cap], total=len(needs_you_items)),
+    )
 
-    overlay_name: str
-    code_host: str
-    overlay_repos: list[str]
+
+def _accumulate_overlays(
+    *,
+    overlay_windows: dict[str, tuple[datetime, datetime]],
+    overlay_configs: dict[str, tuple[str, list[str]]],
+    cap: int,
+) -> tuple[list[CheckItem], list[CheckItem], list[CheckItem], datetime | None]:
+    merged_items: list[CheckItem] = []
+    in_flight_items: list[CheckItem] = []
+    failed_items: list[CheckItem] = []
+    seen_in_flight: set[int] = set()
+    seen_failed: set[int] = set()
+    earliest_since: datetime | None = None
+
+    for overlay_name, window in overlay_windows.items():
+        if earliest_since is None or window[0] < earliest_since:
+            earliest_since = window[0]
+        code_host, overlay_repos = overlay_configs.get(overlay_name, ("", []))
+        scope = _MergedScope(overlay_name=overlay_name, code_host=code_host, overlay_repos=overlay_repos)
+        overlay_tag = f"[{overlay_name}]"
+        items, _ = merged_group_from_qs(since=window[0], now=window[1], scope=scope, cap=cap, overlay_tag=overlay_tag)
+        merged_items.extend(items)
+        new_in_flight, new_failed = motion_for_overlay(
+            window=window,
+            overlay_name=overlay_name,
+            overlay_tag=overlay_tag,
+            seen_in_flight=seen_in_flight,
+            seen_failed=seen_failed,
+        )
+        in_flight_items.extend(new_in_flight)
+        failed_items.extend(new_failed)
+
+    return merged_items, in_flight_items, failed_items, earliest_since
 
 
 def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each kwarg is a documented window/scope input.
@@ -221,112 +346,9 @@ def gather_checking_report(  # noqa: PLR0913 — read-report entry-point; each k
     )
 
 
-def _pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: str) -> str:
-    """Prefer an exact stored PR URL, else a host-aware built URL, else issue URL.
-
-    A stored ``extra['pr_urls']`` entry that mentions the pr_id is the exact
-    forge web_url/html_url and wins. Otherwise the host-aware builder produces
-    a URL from *repo_slug* — but only when it is a real ``owner/repo`` (a
-    workstream/branch slug yields ``""`` from :func:`build_pr_url`, #1559). If
-    no real repo is known, fall back to the ticket's issue URL so the reference
-    is still clickable rather than a wrong-host link.
-    """
-    if ticket is not None:
-        stored = (ticket.extra or {}).get("pr_urls") or []
-        if isinstance(stored, list):
-            for url in stored:
-                if isinstance(url, str) and url and str(pr_id) in url:
-                    return url
-    built = build_pr_url(slug=repo_slug, pr_id=pr_id, code_host=code_host)
-    if built:
-        return built
-    return ticket.issue_url if ticket is not None else ""
-
-
-def _resolved_repo_slug(clear: MergeClear) -> str:
-    """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable.
-
-    Wraps :func:`merge_execution.resolve_pr_repo_slug` (the same resolver the
-    sanctioned merge keystone uses): an ``owner/repo``-shaped CLEAR slug as-is,
-    else the ticket's ``issue_url`` repo, else the running clone's ``origin``.
-    The resolver fails closed with :class:`MergePreconditionError` when nothing
-    resolves; this read path swallows that into ``""`` so a catch-up report is
-    never wedged by a single unresolvable row.
-    """
-    from teatree.core.merge_execution import MergePreconditionError, resolve_pr_repo_slug  # noqa: PLC0415
-
-    try:
-        return resolve_pr_repo_slug(clear)
-    except MergePreconditionError:
-        return ""
-
-
-def _repo_in_overlay(repo_slug: str, overlay_repos: list[str]) -> bool:
-    """True when *repo_slug* (a resolved ``owner/repo``) belongs to the overlay.
-
-    An overlay declares its repos either as ``owner/repo`` (an exact match) or
-    as a bare ``repo`` name (matching any owner, since a self-hosted namespace
-    varies) — the same two shapes :mod:`teatree.loop.tick_resolvers` honours.
-    """
-    if not repo_slug:
-        return False
-    repo_name = repo_slug.rsplit("/", 1)[-1]
-    for declared in overlay_repos:
-        if not declared:
-            continue
-        if "/" in declared:
-            if declared == repo_slug:
-                return True
-        elif declared == repo_name:
-            return True
-    return False
-
-
 def _merged_group(*, since: datetime, now: datetime, scope: _MergedScope, cap: int) -> CheckGroup:
-    qs = (
-        MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
-        .select_related("clear", "clear__ticket")
-        .order_by("-merged_at")
-    )
-    # Resolve each merge's real repo once (the resolver may read a git remote),
-    # then scope and render from the cached slug — never re-resolving per field.
-    scoped: list[tuple[MergeAudit, str]] = []
-    for audit in qs:
-        repo_slug = _resolved_repo_slug(audit.clear)
-        if _audit_in_overlay(audit, repo_slug=repo_slug, scope=scope):
-            scoped.append((audit, repo_slug))
-    items = [
-        CheckItem(
-            label=f"{repo_slug or audit.clear.slug}#{audit.clear.pr_id}",
-            url=_pr_url_for(
-                audit.clear.ticket,
-                repo_slug=repo_slug,
-                pr_id=audit.clear.pr_id,
-                code_host=scope.code_host,
-            ),
-            detail=(audit.clear.ticket.short_description if audit.clear.ticket else ""),
-        )
-        for audit, repo_slug in scoped[:cap]
-    ]
-    return CheckGroup(title="Merged", items=items, total=len(scoped))
-
-
-def _audit_in_overlay(audit: MergeAudit, *, repo_slug: str, scope: _MergedScope) -> bool:
-    """Whether *audit*'s merge belongs to the scoped overlay (#1559).
-
-    An unscoped report (no ``overlay_name``) includes every merge. Otherwise a
-    merge is in scope when EITHER its CLEAR's ticket is linked to this overlay
-    (the precise back-compat path for ticket-bearing CLEARs) OR — the ceremony
-    case — the CLEAR has no ticket and its already-resolved repo belongs to
-    this overlay. A NULL-ticket CLEAR whose repo belongs to a *different*
-    overlay is excluded; a blanket ``ticket IS NULL`` rule would over-report it.
-    """
-    if not scope.overlay_name:
-        return True
-    ticket = audit.clear.ticket
-    if ticket is not None:
-        return ticket.overlay == scope.overlay_name
-    return _repo_in_overlay(repo_slug, scope.overlay_repos)
+    items, total = merged_group_from_qs(since=since, now=now, scope=scope, cap=cap, overlay_tag="")
+    return CheckGroup(title="Merged", items=items, total=total)
 
 
 def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
@@ -344,52 +366,24 @@ def _in_flight_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
         if tr.ticket_id in seen:
             continue
         seen.add(tr.ticket_id)
-        ticket = tr.ticket
+        tick = tr.ticket
         items.append(
             CheckItem(
-                label=f"#{ticket.ticket_number}",
-                url=_ticket_url(ticket),
+                label=f"#{tick.ticket_number}",
+                url=ticket_url(tick),
                 detail=f"→ {tr.to_state}",
             ),
         )
-    # Stable latest-first order: the queryset is ordered by ticket_id for the
-    # dedup, so re-sort the deduped items by ticket number descending (newest
-    # ticket first) before capping.
     items.sort(key=lambda item: int(item.label.lstrip("#")) if item.label.lstrip("#").isdigit() else 0, reverse=True)
     return CheckGroup(title="In-flight", items=items[:cap], total=len(items))
-
-
-def _ticket_url(ticket: Ticket) -> str:
-    """Clickable reference for a ticket: a PR URL for PR-bearing states, else issue URL."""
-    if ticket.issue_url:
-        return ticket.issue_url
-    stored = (ticket.extra or {}).get("pr_urls") or []
-    if isinstance(stored, list) and stored and isinstance(stored[-1], str):
-        return stored[-1]
-    return ""
 
 
 def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: int) -> CheckGroup:
     items: list[CheckItem] = []
 
-    # Pending questions are NOT window-bounded — an old pending question still
-    # needs the user. The id is a LOCAL DeferredQuestion handle, not an external
-    # forge ref, so it must not render as a bare ``#NNN`` (that reads like an
-    # unlinked issue and breaks the all-refs-clickable contract). Use the
-    # bare-``#``-free ``Q<id>`` handle, and let the actionable answer command
-    # carry the line's content — a command is an acceptable non-URL reference.
     overlay_slug = overlay_name or "<overlay>"
-    for question in DeferredQuestion.pending():
-        snippet = question.question.strip().replace("\n", " ")[:60]
-        items.append(
-            CheckItem(
-                label=f"Q{question.pk}: {snippet}",
-                url="",
-                detail=f"t3 {overlay_slug} questions answer {question.pk} <text>",
-            ),
-        )
+    items.extend(deferred_questions(overlay_slug=overlay_slug))
 
-    # Failed agent runs inside the window are the durable "blocked" proxy.
     failed = (
         TaskAttempt.objects.filter(ended_at__gte=since, ended_at__lt=now)
         .filter(exit_code__gt=0)
@@ -400,14 +394,14 @@ def _needs_you_group(*, since: datetime, now: datetime, overlay_name: str, cap: 
         failed = failed.filter(task__ticket__overlay=overlay_name)
     seen_tickets: set[int] = set()
     for attempt in failed:
-        ticket = attempt.task.ticket
-        if ticket.pk in seen_tickets:
+        tick = attempt.task.ticket
+        if tick.pk in seen_tickets:
             continue
-        seen_tickets.add(ticket.pk)
+        seen_tickets.add(tick.pk)
         items.append(
             CheckItem(
-                label=f"#{ticket.ticket_number}",
-                url=_ticket_url(ticket),
+                label=f"#{tick.ticket_number}",
+                url=ticket_url(tick),
                 detail="failed agent run",
             ),
         )
