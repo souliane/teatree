@@ -815,6 +815,89 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.CODED
 
+    def test_valueerror_in_one_ticket_does_not_abort_sweep_or_tick(self) -> None:
+        """A ValueError-family error from _apply_phase_transition must not crash the whole tick.
+
+        Regression for the factory-wedge class: a shipping task on a REVIEWED ticket
+        whose session has no testing/reviewing attestations raises QualityGateError
+        (a ValueError subclass) during replay. The old suppress(RuntimeError) does not
+        catch it, so the entire _reap_stale_task_claims call — and with it
+        reclaim_orphaned_claims + reap_stale_claims — never runs, wedging the loop on
+        every tick for as long as the stuck row exists.
+
+        After the fix:
+        - the offending ticket's transition error is logged and skipped
+        - the healthy ticket's transition still fires (sweep continues)
+        - the stale claim sweep still runs (reap_stale_claims executes)
+        - run_tick completes without raising
+        """
+        import tempfile  # noqa: PLC0415
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        # Stuck ticket: REVIEWED + shipping task COMPLETED but session has no
+        # testing/reviewing attestations → _apply_phase_transition raises QualityGateError.
+        stuck_ticket = Ticket.objects.create(state=Ticket.State.REVIEWED)
+        stuck_session = Session.objects.create(ticket=stuck_ticket, agent_id="ship-agent")
+        Task.objects.create(
+            ticket=stuck_ticket,
+            session=stuck_session,
+            phase="shipping",
+            status=Task.Status.COMPLETED,
+        )
+
+        # Healthy ticket: half-advanced coding task that replay should recover.
+        healthy_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        healthy_session = Session.objects.create(ticket=healthy_ticket, agent_id="code-agent")
+        Task.objects.create(
+            ticket=healthy_ticket,
+            session=healthy_session,
+            phase="coding",
+            status=Task.Status.COMPLETED,
+        )
+
+        # Orphaned claim that reclaim_orphaned_claims must reclaim — verifies the
+        # sibling claim sweeps still run even when replay hit an error on the first
+        # ticket. reclaim_orphaned_claims runs before reap_stale_claims in the same
+        # _reap_stale_task_claims call, so returning this task to PENDING confirms
+        # that the claim sweeps were not skipped by the replay error.
+        orphan_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        orphan_session = Session.objects.create(ticket=orphan_ticket, agent_id="stale-agent")
+        orphan_task = Task.objects.create(
+            ticket=orphan_ticket,
+            session=orphan_session,
+            status=Task.Status.CLAIMED,
+            claimed_by="dead-worker",
+            lease_expires_at=timezone.now() - timedelta(minutes=10),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Must not raise — the stuck ticket's QualityGateError is isolated.
+            run_tick(TickRequest(scanners=[]), statusline_path=Path(tmp) / "statusline.txt")
+
+        # The healthy ticket was advanced by replay despite the error on the stuck one.
+        healthy_ticket.refresh_from_db()
+        assert healthy_ticket.state == Ticket.State.CODED, (
+            f"healthy ticket not advanced — replay aborted early (state={healthy_ticket.state!r})"
+        )
+
+        # The stuck ticket stays at REVIEWED — the error was non-fatal and no bad advance happened.
+        stuck_ticket.refresh_from_db()
+        assert stuck_ticket.state == Ticket.State.REVIEWED, (
+            f"stuck ticket unexpectedly advanced to {stuck_ticket.state!r}"
+        )
+
+        # The orphaned claim was reclaimed to PENDING — reclaim_orphaned_claims ran
+        # after the replay error, confirming the sibling sweeps were not skipped.
+        orphan_task.refresh_from_db()
+        assert orphan_task.status == Task.Status.PENDING, (
+            f"orphaned claim was not reclaimed — sibling sweeps did not run (status={orphan_task.status!r})"
+        )
+        assert orphan_task.claimed_by == ""
+
 
 def test_tick_captures_mechanical_handler_exception(
     tmp_path: Path,
