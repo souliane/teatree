@@ -17,12 +17,20 @@ delivered to the handler's ``event`` by a registered ``hooks.json`` matcher
 (PreToolUse: the tool name matches a matcher regex; TaskCreated/Stop: a handler
 is registered on that event).
 
-Five gates are known phantoms: their handler logic is correct but assertion (c)
-fails because the dispatch path never reaches them. They are
-``xfail(strict=True)`` so the suite is GREEN now and any later fix flips the
-row to an unexpected-pass that FAILS the build, forcing the xfail removal. The
-final assertion makes the phantom roster LOUD (also visible via ``-rsx``) so a
-reader sees exactly which gates are known-dead — no silent truncation.
+After PR B (#171) three gates remain phantoms — the PreToolUse ``Agent`` arms of
+the plan-gate, dispatch-quote, and orchestrator-boundary gates. Their handler
+logic is correct but assertion (c) fails: the harness Workflow/Task fan-out
+vehicle that spawns sub-agents bypasses PreToolUse, so an ``Agent`` matcher
+would deliver no real dispatch (adding one would be corpus-green-but-production-
+phantom). Each fan-out concern is enforced in production on the ``TaskCreated``
+seam instead (the plan-gate and dispatch-quote have reachable TaskCreated
+counterparts; the orchestrator-boundary Agent arm has no TaskCreated signal —
+``run_in_background`` is absent there — so no production-live routing exists).
+They are ``xfail(strict=True)`` so the suite is GREEN now and any later genuine
+fix flips the row to an unexpected-pass that FAILS the build, forcing the xfail
+removal. The final assertion makes the phantom roster LOUD (also visible via
+``-rsx``) so a reader sees exactly which gates are known-dead — no silent
+truncation.
 
 The plan-gate rows use the real ``teatree-plan`` / ``t3:teatree-plan`` skill
 name. The tracker now matches it by exact final-segment membership, so a real
@@ -550,8 +558,17 @@ def _orch_bash_allow(ctx: GateContext) -> dict:
 
 
 # enforce-orchestrator-boundary Agent arm (#1442): a foreground Agent dispatch
-# from the main agent denies — but Agent is NOT in any PreToolUse matcher
-# (phantom). run_in_background clears it.
+# from the main agent denies — but Agent is NOT in any PreToolUse matcher AND
+# the fan-out vehicle that spawns sub-agents bypasses PreToolUse entirely, so
+# this arm stays production-phantom (the TaskCreated seam that reaches the
+# fan-out carries no run_in_background field, this gate's only signal). The
+# deny ships default-OFF behind orchestrator_boundary_agent_gate_enabled; the
+# arrange enables it so assertion (a) still proves the handler denies its real
+# must-DENY payload. run_in_background / a [fg-ok: <reason>] token clears it.
+
+
+def _arrange_orch_agent_gate(ctx: GateContext) -> None:
+    ctx.write_teatree_toml("[teatree]\norchestrator_boundary_agent_gate_enabled = true\n")
 
 
 def _orch_agent_deny(ctx: GateContext) -> dict:
@@ -617,17 +634,31 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 # ── the registry ──────────────────────────────────────────────────────────
 
+# The harness Workflow/Task fan-out vehicle that spawns sub-agents BYPASSES
+# PreToolUse (docs/claude-code-internals.md §9, verified against the Claude Code
+# binary), so an `Agent` PreToolUse matcher would NOT deliver a real dispatch to
+# these handlers — adding it would be corpus-green-but-production-phantom. The
+# production-live enforcement of each fan-out concern rides TaskCreated instead.
+# These three therefore stay xfail with no `Agent` matcher (the deliberate STEP 0
+# deviation in #171 PR B); the genuine fix is the TaskCreated counterpart, which
+# exists and is reachable for the plan-gate and dispatch-quote concerns.
 _AGENT_PLAN_GATE_PHANTOM = (
-    "phantom gate — Agent/Task absent from any PreToolUse matcher (the fan-out "
-    "path is now covered by the TaskCreated plan-gate) — tracked in #171"
+    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
+    "vehicle); an Agent matcher would not fire in production. The fan-out path is "
+    "enforced by the reachable enforce-plan-gate-on-task-create — tracked in #1644"
 )
 _DISPATCH_QUOTE_PHANTOM = (
-    "phantom gate — the PreToolUse Agent arm is unreachable (Agent absent from any "
-    "PreToolUse matcher + fan-out bypass); the fan-out path is now covered by the "
-    "reachable TaskCreated counterpart row. The Agent matcher itself is PR B — tracked in #171"
+    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
+    "vehicle); an Agent matcher would not fire in production. The fan-out path is "
+    "enforced by the reachable dispatch-prompt-quote-scanner-on-task-create — tracked in #1644"
 )
-_ORCH_AGENT_PHANTOM = "phantom gate — Agent absent from any PreToolUse matcher — tracked in #171"
-_MR_META_MCP_PHANTOM = "phantom gate — mcp__glab__glab_mr_* absent from any PreToolUse matcher — tracked in #171"
+_ORCH_AGENT_PHANTOM = (
+    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
+    "vehicle); an Agent matcher would not fire in production, and the TaskCreated seam "
+    "that reaches the fan-out carries no run_in_background field — this gate's only "
+    "signal — so no production-live routing exists. Ships reachable-only-if-the-harness-"
+    "changes, default-OFF behind orchestrator_boundary_agent_gate_enabled — tracked in #1644"
+)
 
 
 GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
@@ -704,7 +735,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="mcp__glab__glab_mr_create",
         deny_input=_mr_meta_mcp_deny,
         allow_input=_mr_meta_mcp_allow,
-        phantom_reason=_MR_META_MCP_PHANTOM,
     ),
     GateRow(
         gate_id="block-ai-signature",
@@ -798,6 +828,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Agent",
         deny_input=_orch_agent_deny,
         allow_input=_orch_agent_allow,
+        arrange=_arrange_orch_agent_gate,
         phantom_reason=_ORCH_AGENT_PHANTOM,
     ),
     GateRow(
@@ -835,29 +866,34 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 )
 
 
-# The remaining known phantom CATEGORIES after PR A (#171). PR A made the
-# Slack-MCP arm of the publish-privacy gates reachable (the ``mcp__.*[Ss]lack.*``
-# matcher) and added a reachable TaskCreated counterpart for the dispatch-quote
-# fan-out. What stays phantom is the THREE PreToolUse Agent arms + the glab-MR
-# MCP arm — all four are repaired in PR B (the Agent matcher and the
-# ``mcp__glab__glab_mr_*`` matcher). The ``dispatch-prompt-quote-scanner`` row
-# (PreToolUse/Agent) stays phantom for the same reason as its two Agent siblings
-# (no Agent matcher yet) even though the dispatch-quote CONCERN is now covered by
-# the reachable ``dispatch-prompt-quote-scanner-on-task-create`` row. The
-# categories are asserted explicitly below so a row losing/gaining its phantom
-# status without a deliberate update is caught.
+# The remaining known phantom CATEGORIES after PR B (#171). PR B repaired the
+# one genuine CAUSE-B phantom — ``validate-mr-metadata-mcp`` — by adding the
+# ``mcp__glab__glab_mr_.*`` PreToolUse matcher (an ordinary MCP call merely
+# omitted from the matcher; it now fires in production). What stays phantom is
+# the THREE PreToolUse Agent arms, and STEP 0 of PR B proved they stay
+# PRODUCTION-phantom even with an ``Agent`` matcher: the harness Workflow/Task
+# fan-out vehicle that spawns sub-agents bypasses PreToolUse entirely
+# (docs/claude-code-internals.md §9), so an ``Agent`` matcher would deliver no
+# real dispatch — adding it would be corpus-green-but-production-phantom. The
+# fan-out concern of two of them is enforced in production by their reachable
+# TaskCreated counterparts (``enforce-plan-gate-on-task-create``,
+# ``dispatch-prompt-quote-scanner-on-task-create``); the orchestrator-boundary
+# Agent arm has NO production-live routing at all because its only signal
+# (``run_in_background``) is absent from the TaskCreated payload. They are kept
+# xfail (NOT given an ``Agent`` matcher) so the corpus keeps telling the truth.
+# The categories are asserted explicitly below so a row losing/gaining its
+# phantom status without a deliberate update is caught.
 _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
     {
-        "enforce-agent-plan-gate",  # Agent not in matcher — PR B
-        "dispatch-prompt-quote-scanner",  # PreToolUse Agent arm not in matcher — PR B (fan-out now covered)
-        "enforce-orchestrator-boundary-agent",  # Agent not in matcher — PR B
-        "validate-mr-metadata-mcp",  # mcp__glab__glab_mr_* not in matcher — PR B
+        "enforce-agent-plan-gate",  # Agent/Task bypasses PreToolUse; enforced on TaskCreated
+        "dispatch-prompt-quote-scanner",  # Agent/Task bypasses PreToolUse; enforced on TaskCreated
+        "enforce-orchestrator-boundary-agent",  # Agent/Task bypasses PreToolUse; no TaskCreated signal
     }
 )
 # No allow-phantoms remain: the plan-tracker mismatch (#167) is fixed, so a
 # real teatree-plan /plan now clears both plan gates.
 _EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
-_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 4
+_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 3
 
 
 # ── fixtures (state isolation — the dev's real ~/.teatree.toml can't leak) ──
@@ -951,9 +987,10 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
 
     Makes the dead-gate roster LOUD: a reader running ``pytest -rsx`` sees each
     xfail reason, and this test fails if a phantom is silently added/removed
-    from the registry without updating the expected rosters. Five phantom
-    CATEGORIES are documented; the Slack-MCP category spans two rows, so the
-    reachability roster has six entries.
+    from the registry without updating the expected rosters. After PR B (#171)
+    the roster is exactly the three PreToolUse Agent arms, all production-phantom
+    because the harness fan-out vehicle bypasses PreToolUse (the one genuine
+    CAUSE-B phantom, ``validate-mr-metadata-mcp``, was repaired by a real matcher).
     """
     reachability = frozenset(row.gate_id for row in GATE_REGISTRY if row.phantom_reason is not None)
     allow = frozenset(row.gate_id for row in GATE_REGISTRY if row.allow_phantom_reason is not None)
