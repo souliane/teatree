@@ -15,7 +15,7 @@ metadata:
 
 This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new features, `t3:retro` when a retro touches skills) declare `requires: [architecture-design]` so it loads BEFORE coding starts. The flywheel (BLUEPRINT § 17.1 invariant 2) is enforcement encoded as structure, not prose vigilance — this companion is the structure for the "design first, then code" step.
 
-Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the seven-check architecture pass below, plus the `ARCHITECTURE.md` template the implementer fills in before touching `src/`.
+Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the eight-check architecture pass below, plus the `ARCHITECTURE.md` template the implementer fills in before touching `src/`.
 
 ## When the gate fires
 
@@ -137,7 +137,7 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 ## Workflow
 
 1. Read `BLUEPRINT.md` and the appendix for the touched section.
-2. Run the seven checks against the proposed change.
+2. Run the eight checks against the proposed change.
 3. Write `ARCHITECTURE.md` in the worktree root.
 4. Hand off to the implementation skill (`t3:code`) — it picks up from here with TDD.
 
