@@ -210,6 +210,142 @@ class TestRealUnloadedSkillStillEnforced:
         assert payload is None
 
 
+class TestCanonicalNamespaceMatching:
+    """A demand and its loaded form are matched by their fully-qualified canonical.
+
+    ``<session>.skills`` / ``<session>.pending`` record a skill VERBATIM in
+    whatever shape arrived: the Skill-tool PostToolUse records the
+    NAMESPACED form (``t3:code``) while InstructionsLoaded / the loader's
+    pending writer record the BARE form (``code``). Matching normalizes UP
+    to the qualified canonical (``code`` → ``t3:code`` for a plugin-owned
+    skill) so a bare demand is satisfied by its namespaced loaded form and
+    vice versa — WITHOUT conflating distinct skills across namespaces
+    (``t3:review`` ≠ ``other:review``). An unresolvable namespace fails open.
+
+    ``code``/``rules``/``review`` are real plugin-owned lifecycle skills, so
+    they canonicalize to ``t3:*``; ``ac-*`` names are not plugin-owned and
+    stay bare.
+    """
+
+    def test_bare_pending_satisfied_by_namespaced_loaded(self, gate: Path) -> None:
+        # The deadlock reproduction: pending demand is bare ``code`` (the
+        # loader's form), loaded set has ONLY the namespaced ``t3:code`` (the
+        # Skill tool's form). Pre-fix verbatim membership never matches, so
+        # the gate blocks forever. Canonicalizing UP satisfies the demand.
+        _write_pending("sess-bare-pending", ["code"])
+        _write_loaded("sess-bare-pending", ["t3:code"])
+        blocked, payload, _ = _run({"session_id": "sess-bare-pending", "tool_name": "Bash"})
+        assert blocked is False
+        assert payload is None
+
+    def test_namespaced_pending_satisfied_by_bare_loaded(self, gate: Path) -> None:
+        # Symmetric: pending ``t3:code`` (namespaced demand), loaded has the
+        # bare ``code`` (InstructionsLoaded form) → both canonicalize to
+        # ``t3:code`` and match.
+        _write_pending("sess-ns-pending", ["t3:code"])
+        _write_loaded("sess-ns-pending", ["code"])
+        blocked, payload, _ = _run({"session_id": "sess-ns-pending", "tool_name": "Edit"})
+        assert blocked is False
+        assert payload is None
+
+    def test_distinct_namespaces_are_not_conflated(self, gate: Path) -> None:
+        # The qualified name is the identity: a demand for ``t3:code`` is NOT
+        # satisfied by a loaded ``other:code`` (different plugin). The
+        # bare-strip approach would wrongly match these; canonicalizing UP
+        # keeps them distinct, so the gate still blocks. ``code`` is a real
+        # plugin-owned skill (also seeded as resolvable in the fixture), so
+        # the demand canonicalizes to ``t3:code``.
+        _write_pending("sess-distinct", ["code"])
+        _write_loaded("sess-distinct", ["other:code"])
+        blocked, payload, _ = _run({"session_id": "sess-distinct", "tool_name": "Bash"})
+        assert blocked is True
+        assert payload is not None
+        assert payload["permissionDecision"] == "deny"
+        assert "/code" in payload["permissionDecisionReason"]
+
+    def test_legacy_mixed_state_with_both_spellings(self, gate: Path) -> None:
+        # Today's legacy ``.skills`` may carry the SAME skill under both the
+        # bare and namespaced spelling. A bare pending demand still matches —
+        # canonicalization collapses both loaded forms onto ``t3:rules``.
+        _write_pending("sess-legacy", ["rules"])
+        _write_loaded("sess-legacy", ["rules", "t3:rules", "t3:code"])
+        blocked, payload, _ = _run({"session_id": "sess-legacy", "tool_name": "Bash"})
+        assert blocked is False
+        assert payload is None
+
+    def test_genuinely_unloaded_skill_still_blocks(self, gate: Path) -> None:
+        # The fix must not defang the gate: a demand with NO matching loaded
+        # form (bare or namespaced) still hard-blocks.
+        _write_pending("sess-still-blocks", ["code"])
+        _write_loaded("sess-still-blocks", ["rules"])
+        blocked, payload, _ = _run({"session_id": "sess-still-blocks", "tool_name": "Bash"})
+        assert blocked is True
+        assert payload is not None
+        assert payload["permissionDecision"] == "deny"
+        assert "/code" in payload["permissionDecisionReason"]
+
+
+class TestSnapshotSymmetry:
+    """The matcher resolves ``(owned, namespace)`` ONCE and threads it through both sides.
+
+    The demand side and the loaded side must canonicalize against the SAME
+    ``owned`` snapshot. If each name re-scanned the filesystem, a flaky read
+    (``OSError`` returning an empty set on the second call) would have the
+    demand side canonicalize ``code`` → ``t3:code`` while the loaded side
+    canonicalizes ``t3:code`` → ``t3:code`` against a different (empty)
+    snapshot — an asymmetric match. Resolving once kills that asymmetry: with
+    a single snapshot, a flaky read can only make the WHOLE invocation strict
+    (re-block, recoverable), never produce a one-sided over-match.
+    """
+
+    def test_owned_scan_called_once_per_invocation(self, gate: Path) -> None:
+        _write_pending("sess-snap-once", ["code"])
+        _write_loaded("sess-snap-once", ["t3:code"])
+
+        calls = {"n": 0}
+        real = router._plugin_owned_skills
+
+        def counting() -> set[str]:
+            calls["n"] += 1
+            return real()
+
+        with patch.object(router, "_plugin_owned_skills", counting):
+            blocked, payload, _ = _run({"session_id": "sess-snap-once", "tool_name": "Bash"})
+
+        assert blocked is False
+        assert payload is None
+        assert calls["n"] == 1, f"owned-set scanned {calls['n']} times; must resolve ONE snapshot per invocation"
+
+    def test_flaky_scan_does_not_produce_asymmetric_overmatch(self, gate: Path) -> None:
+        # If the owned-set read succeeds for the demand side then raises for
+        # the loaded side, a per-name resolution would over-match (demand
+        # canonicalizes to ``t3:code``, loaded falls back to verbatim
+        # ``t3:code``) — clearing the gate on a flaky read. With ONE snapshot
+        # the loaded ``t3:code`` (verbatim) demand ``code`` either both match
+        # (snapshot populated) or both stay strict (snapshot empty); a
+        # mid-invocation failure can never satisfy demand A with loaded B.
+        _write_pending("sess-snap-flaky", ["code"])
+        _write_loaded("sess-snap-flaky", ["rules"])  # genuinely distinct from ``code``
+
+        calls = {"n": 0}
+
+        def flaky() -> set[str]:
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                msg = "second scan fails"
+                raise OSError(msg)
+            return {"code", "rules"}
+
+        with patch.object(router, "_plugin_owned_skills", flaky):
+            blocked, payload, _ = _run({"session_id": "sess-snap-flaky", "tool_name": "Bash"})
+
+        # A demand for ``code`` with only ``rules`` loaded must still block; a
+        # second-call failure must not flip it open.
+        assert blocked is True
+        assert payload is not None
+        assert "/code" in payload["permissionDecisionReason"]
+
+
 class TestMixedResolvability:
     """A mix of a stale name and a real-unloaded name blocks only on the real one."""
 

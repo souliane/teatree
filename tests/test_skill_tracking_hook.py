@@ -206,7 +206,16 @@ def skill_fixture_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("skill_fixture_tree")
 class TestRequiresClosureTracking:
-    """Loading a skill records its resolved ``requires:`` closure (#689)."""
+    """Loading a skill records its resolved ``requires:`` closure (#689).
+
+    The persisted ``.skills`` set is the fully-qualified canonical form: the
+    WRITE boundary normalizes each closure member UP to its plugin namespace
+    (:func:`normalize_skill_name`), so a plugin-owned ``code`` is recorded
+    as ``t3:code`` regardless of whether the source event was the Skill tool
+    (already namespaced) or InstructionsLoaded (bare). The fixture skills are
+    plugin-owned (seeded under the ``T3_SKILL_SEARCH_DIRS`` override), so
+    they canonicalize to ``t3:*``; ``ac-django`` is not owned and stays bare.
+    """
 
     def test_post_tool_use_expands_to_requires_closure(self) -> None:
         handle_track_skill_usage(
@@ -217,8 +226,8 @@ class TestRequiresClosureTracking:
             }
         )
         # code requires workspace, workspace requires rules — all must appear,
-        # deps before dependents (topological order).
-        assert _read_skills("sess-clo-1") == ["rules", "workspace", "code"]
+        # deps before dependents (topological order), as canonical names.
+        assert _read_skills("sess-clo-1") == ["t3:rules", "t3:workspace", "t3:code"]
 
     def test_instructions_loaded_expands_to_requires_closure(self) -> None:
         handle_track_skill_usage(
@@ -228,7 +237,7 @@ class TestRequiresClosureTracking:
             }
         )
         # review -> code -> workspace -> rules
-        assert _read_skills("sess-clo-2") == ["rules", "workspace", "code", "review"]
+        assert _read_skills("sess-clo-2") == ["t3:rules", "t3:workspace", "t3:code", "t3:review"]
 
     def test_closure_deduplicates_across_events(self) -> None:
         handle_track_skill_usage(
@@ -247,7 +256,7 @@ class TestRequiresClosureTracking:
         )
         # rules/workspace/code from the first call; debug adds only itself
         # (rules already present) — no duplicates.
-        assert _read_skills("sess-clo-3") == ["rules", "workspace", "code", "debug"]
+        assert _read_skills("sess-clo-3") == ["t3:rules", "t3:workspace", "t3:code", "t3:debug"]
 
     def test_string_names_in_instructions_loaded_get_closure(self) -> None:
         handle_track_skill_usage(
@@ -256,11 +265,21 @@ class TestRequiresClosureTracking:
                 "skills": ["code"],
             }
         )
-        assert _read_skills("sess-clo-4") == ["rules", "workspace", "code"]
+        assert _read_skills("sess-clo-4") == ["t3:rules", "t3:workspace", "t3:code"]
+
+    def test_bare_then_namespaced_same_skill_recorded_once(self) -> None:
+        # Legacy + Skill-tool spellings of the SAME skill must collapse: a
+        # bare InstructionsLoaded ``debug`` then a namespaced Skill-tool
+        # ``t3:debug`` record ``t3:debug`` once, not twice.
+        handle_track_skill_usage({"session_id": "sess-clo-mixed", "skills": ["debug"]})
+        handle_track_skill_usage(
+            {"session_id": "sess-clo-mixed", "tool_name": "Skill", "tool_input": {"skill": "t3:debug"}}
+        )
+        assert _read_skills("sess-clo-mixed") == ["t3:rules", "t3:debug"]
 
     def test_unknown_skill_passes_through_without_error(self) -> None:
         # A framework skill with no trigger entry (ac-django) must still be
-        # recorded — it just has no closure to expand.
+        # recorded — it just has no closure to expand and no plugin namespace.
         handle_track_skill_usage(
             {
                 "session_id": "sess-clo-5",
@@ -282,10 +301,10 @@ class TestRequiresClosureTracking:
             }
         )
         tracked = _read_skills("sess-clo-6")
-        assert tracked == ["rules", "debug"]
+        assert tracked == ["t3:rules", "t3:debug"]
         # "code"/"workspace"/"review" were never loaded — suggested != loaded.
-        assert "code" not in tracked
-        assert "review" not in tracked
+        assert "t3:code" not in tracked
+        assert "t3:review" not in tracked
 
 
 class TestSessionEndRetro:
