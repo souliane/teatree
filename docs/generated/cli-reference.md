@@ -4034,13 +4034,15 @@ Usage: t3 teatree checking show [OPTIONS]
  Print a terse, grouped, clickable report of changes since the last check.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --since             TEXT  ISO timestamp override for the window start (does  │
-│                           NOT advance the marker).                           │
-│ --json                    Emit the structured report as JSON instead of the  │
-│                           terse view.                                        │
-│ --no-advance              Read the window without advancing the last-checked │
-│                           marker.                                            │
-│ --help                    Show this message and exit.                        │
+│ --since               TEXT  ISO timestamp override for the window start      │
+│                             (does NOT advance the marker).                   │
+│ --json                      Emit the structured report as JSON instead of    │
+│                             the terse view.                                  │
+│ --no-advance                Read the window without advancing the            │
+│                             last-checked marker.                             │
+│ --this-overlay              Scope to the current overlay only (default:      │
+│                             aggregate all configured overlays).              │
+│ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
