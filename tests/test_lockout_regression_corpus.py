@@ -150,12 +150,14 @@ _MUST_ALLOW_AI_SIG_ROUTING: list[tuple[str, str]] = [
     ids=[label for _, label in _MUST_ALLOW_AI_SIG_ROUTING],
 )
 def test_must_allow_ai_sig_routing_passes(command: str, label: str) -> None:
-    """Clean commits without banned trailers produce a non-None payload.
+    """Clean ``-m`` commits return their message text (a non-None string).
 
-    The payload extraction path must NOT classify these as non-commit commands.
-    Non-None means the message WILL be scanned; the scanner passes it because
-    there is no banned trailer.  None would skip the scan entirely — a different
-    kind of bug that this test guards against.
+    For a ``git commit -m <msg>`` command, ``_extract_bash_ai_sig_payload``
+    must return the message text so the AI-signature scanner can inspect it.
+    Returning ``None`` would mean the scanner never sees the payload — a bypass
+    for a ``-m`` commit carrying a banned trailer.  These entries have no banned
+    trailer, so the scanner passes them; what this test guards is that the
+    function returns a scannable string rather than ``None``.
     """
     payload = _extract_bash_ai_sig_payload(command)
     assert payload is not None, (
@@ -217,11 +219,24 @@ _MUST_DENY_DENY_MATCH: list[tuple[str, str]] = [
     # --no-verify
     ("git commit --no-verify -m 'skip hooks'", "--no-verify on commit"),
     ("git push --no-verify origin main", "--no-verify on push"),
+    # --no-gpg-sign (in _QUOTE_STRIPPED_BLOCKED ~line 176)
+    ("git commit --no-gpg-sign -m msg", "--no-gpg-sign on commit"),
     # blocked tools (not prefixed by readonly/t3)
     ("pip install requests", "bare pip install"),
     ("python manage.py migrate", "bare manage.py migrate"),
     ("docker compose up -d", "bare docker compose up"),
     ("npx playwright test", "bare playwright test"),
+    # remaining _QUOTE_STRIPPED_BLOCKED tools
+    (".venv/bin/python script.py", ".venv/bin invocation"),
+    ("nx serve", "bare nx serve"),
+    ("createdb mydb", "bare createdb"),
+    ("dropdb mydb", "bare dropdb"),
+    ("npm run build", "bare npm run"),
+    ("pg_dump mydb", "bare pg_dump"),
+    ("pg_restore mydb.dump", "bare pg_restore"),
+    ("dslr restore mysnap", "dslr restore (mutating subcommand)"),
+    ("uv run t3 worktree status", "uv run t3 (use t3 directly)"),
+    ("safety check", "safety check (use pip-audit instead)"),
 ]
 
 
@@ -282,8 +297,21 @@ class TestMustDenyMerge:
         [
             ("gh pr merge 1", "gh pr merge on managed repo"),
             ("glab mr merge 1", "glab mr merge on managed repo"),
+            (
+                "gh api repos/example-org/repo/pulls/1/merge -X PUT",
+                "REST-API merge via gh api PUT (_is_raw_merge_api_write arm)",
+            ),
+            (
+                "glab api projects/1/merge_requests/1/merge --method POST",
+                "REST-API merge via glab api POST (_is_raw_merge_api_write arm)",
+            ),
         ],
-        ids=["gh pr merge on managed repo", "glab mr merge on managed repo"],
+        ids=[
+            "gh pr merge on managed repo",
+            "glab mr merge on managed repo",
+            "REST-API merge via gh api PUT (_is_raw_merge_api_write arm)",
+            "REST-API merge via glab api POST (_is_raw_merge_api_write arm)",
+        ],
     )
     def test_merge_on_managed_repo_is_denied(
         self,
