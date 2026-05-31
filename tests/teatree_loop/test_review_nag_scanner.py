@@ -286,15 +286,19 @@ class TestReviewNagScanner(_EnableReviewNagMixin, TestCase):
         signals = ReviewNagScanner(messaging=None, user_slack_id="U_ME").scan()
         assert signals == []
 
-    def test_dm_transport_failure_still_marks_done(self) -> None:
-        """A raised ``open_dm`` or ``post_message`` on the DM must NOT crash the tick."""
+    def test_dm_transport_failure_leaves_train_open_for_retry(self) -> None:
+        """DM failure leaves the nag train open so a future tick can retry.
+
+        A raised ``open_dm`` or ``post_message`` must NOT crash the tick
+        and must NOT close the nag train.
+        """
         post = self._seed_post(days_old=6.0, last_nag_step=4)
         slack = FakeSlack(raise_on_open_dm=RuntimeError("slack down"))
         signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
         post.refresh_from_db()
-        # Still marks the row done — we don't keep retrying a broken DM.
-        assert post.done_at is not None
-        assert [s.kind for s in signals] == ["review_nag.stale_dm"]
+        # Train stays open so a future tick can retry the DM.
+        assert post.done_at is None
+        assert [s.kind for s in signals] == ["review_nag.stale_no_dm"]
 
     def test_no_user_slack_id_skips_stale_dm_but_still_marks_done(self) -> None:
         """At +5d with no user_slack_id, mark the row done without the DM.
