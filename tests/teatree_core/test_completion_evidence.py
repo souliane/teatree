@@ -88,6 +88,19 @@ class TestAssertsOutcome:
     def test_no_verb_or_no_cue_does_not_assert(self, note: str) -> None:
         assert asserts_outcome(note) is False
 
+    @pytest.mark.parametrize("note", ["merged", "it's merged", "merged to main", "  deployed", "its shipped"])
+    def test_note_initial_bare_outcome_verb_asserts(self, note: str) -> None:
+        # Hole C: the canonical phantom shape is an outcome verb at the very
+        # start of a short note (optionally after a leading it's/its/it is),
+        # with no other cue. It must read as an assertion so the gate can fire.
+        assert asserts_outcome(note) is True
+
+    @pytest.mark.parametrize("note", ["the merge was hard", "we discussed shipping later", "a posted note was wrong"])
+    def test_non_initial_bare_verb_does_not_assert(self, note: str) -> None:
+        # The note-initial carve-out must not fire when the verb is buried in
+        # prose with no context cue — that is ordinary internal-progress text.
+        assert asserts_outcome(note) is False
+
 
 class TestHasResolvablePointer:
     @pytest.mark.parametrize(
@@ -100,7 +113,7 @@ class TestHasResolvablePointer:
             "commit 1a2b3c4d landed",
             "at @1a2b3c4d",
             "deployed at sha 1a2b3c4d5e",
-            "merged abcdef1234 cleanly",
+            "merged via commit 1234567890abcdef",
             "forge note_AbC123 recorded",
             "landed via src/teatree/core/task.py",
             "updated ./scripts/run.sh",
@@ -119,12 +132,45 @@ class TestHasResolvablePointer:
             "merged a/b",
             "merged the deadbeef branch",
             "released the co/op feature",
+            # Hole A: a bare 10+ digit/hex run with no commit cue is not a SHA.
+            "build 1234567890",
+            "merged abcdef1234 cleanly",
         ],
     )
     def test_spoof_or_empty_is_not_a_pointer(self, note: str) -> None:
         # The tightened shape rules reject vacuous matches that the original
-        # regexes let through (bare word/word, hex-like English words).
+        # regexes let through (bare word/word, hex-like English words, and a
+        # bare long hex/digit run with no commit cue).
         assert has_resolvable_pointer(note) is False
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "merged via commit 1234567890abcdef",
+            "at sha 1a2b3c4d",
+            "rebased onto @deadbeef1",
+        ],
+    )
+    def test_cued_sha_still_resolves(self, note: str) -> None:
+        # Dropping the bare long-hex path must not drop a legitimately cued SHA.
+        assert has_resolvable_pointer(note) is True
+
+    @pytest.mark.parametrize("note", ["fix the.thing.now", "ran the.test.again", "see what.we.did"])
+    def test_dotted_prose_is_not_a_module_path(self, note: str) -> None:
+        # Hole B: ordinary 3-segment dotted prose is not a module pointer.
+        assert has_resolvable_pointer(note) is False
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "see teatree.core.completion_evidence",
+            "in src.teatree.core.task",
+            "see tests.teatree_core.test_task",
+            "the module foo.bar.baz.py",
+        ],
+    )
+    def test_genuine_module_path_still_resolves(self, note: str) -> None:
+        assert has_resolvable_pointer(note) is True
 
 
 class TestEvidenceFromNote:
@@ -170,6 +216,26 @@ class TestCheckCompletionEvidence:
 
     @pytest.mark.parametrize("note", ["", *INTERNAL_PROGRESS_NOTES, "shipped the feature"])
     def test_no_outcome_assertion_passes(self, note: str) -> None:
+        check_completion_evidence(note)  # does not raise
+
+    @pytest.mark.parametrize("note", ["merged", "it's merged", "merged to main"])
+    def test_note_initial_phantom_claim_without_pointer_is_refused(self, note: str) -> None:
+        # Hole C: a terse note that is just an outcome verb (no pointer) is the
+        # canonical phantom completion and must now be gated.
+        with pytest.raises(CompletionEvidenceError, match="no resolvable artifact pointer"):
+            check_completion_evidence(note)
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "merged via commit 1234567890abcdef",
+            "merged (see https://example.com/mr/9)",
+            "merged !6219",
+        ],
+    )
+    def test_note_initial_outcome_verb_with_pointer_still_passes(self, note: str) -> None:
+        # The Hole C carve-out only bites when there is no pointer; a real
+        # pointer alongside the leading verb must keep the completion passing.
         check_completion_evidence(note)  # does not raise
 
     def test_error_message_names_the_claim_kind_and_pointer_kinds(self) -> None:
