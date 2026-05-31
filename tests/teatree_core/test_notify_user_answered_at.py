@@ -79,6 +79,31 @@ class TestExplicitAnsweringSlackTs(TestCase):
 
         assert PendingChatInjection.objects.get().answered_at is None
 
+    @patch.dict("os.environ", {"T3_OVERLAY_NAME": "overlay-beta"})
+    def test_stamps_row_recorded_under_a_different_overlay(self) -> None:
+        """Sub-case (b): a reply from one overlay clears a question recorded by another.
+
+        In a concurrent multi-overlay deployment the answering session's
+        ``T3_OVERLAY_NAME`` routinely differs from the overlay that recorded
+        the question. The earlier scoped stamp forwarded ``T3_OVERLAY_NAME``
+        into an exact-overlay filter and stamped 0 rows, so ``answered_at``
+        stayed NULL and the unscoped Stop-hook gate nagged forever. The
+        ts-keyed stamp clears the row regardless of the answering overlay.
+        """
+        PendingChatInjection.record(channel="D", slack_ts="1700000000.0001", text="why?", overlay="overlay-alpha")
+
+        sent = notify_user(
+            "Because the migration ran out of order.",
+            kind=NotifyKind.ANSWER,
+            idempotency_key="cross-overlay-answer",
+            backend=_backend(),
+            user_id="U_ME",
+            answering_slack_ts="1700000000.0001",
+        )
+
+        assert sent is True
+        assert PendingChatInjection.objects.get().answered_at is not None
+
 
 class TestIdempotencyKeyPattern(TestCase):
     """``answer-<anything>-<slack_ts>`` key auto-stamps without explicit kwarg."""
