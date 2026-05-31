@@ -290,7 +290,13 @@ class TestPostComment:
             assert "approve-live-post" in result.output
 
     def test_inline_anchor_falls_back_to_discussion_note(self, monkeypatch):
-        """If GitLab posts a non-DiffNote on the ``--live`` path, the command reports failure."""
+        """If GitLab downgrades to a non-DiffNote, the command succeeds (rc=0) with a warning.
+
+        The comment is live on GitLab; returning rc=1 would cause callers to retry
+        and double-post.  The fix: record the claim and return rc=0 with a message
+        that names the downgraded type so the caller knows the note was not anchored
+        inline.
+        """
         from teatree.core.models import LivePostApproval  # noqa: PLC0415
 
         LivePostApproval.record(mr_url="org/repo!1", slack_ts="1700000000.0001", slack_user_id="U-OP")
@@ -305,7 +311,7 @@ class TestPostComment:
                 app,
                 ["review", "post-comment", "org/repo", "1", "msg", "--file", "a.py", "--line", "5", "--live"],
             )
-            assert result.exit_code == 1
+            assert result.exit_code == 0
             assert "not anchored inline" in result.output
 
     def test_inline_context_line_rejected(self, monkeypatch):
@@ -687,8 +693,9 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: (
-            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
         mock_api.post_status.return_value = 201
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
@@ -703,8 +710,9 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: (
-            _discussions_with_author("someone-else") if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: (
+            _discussions_with_author("someone-else") if "/discussions" in endpoint else []
         )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
@@ -717,19 +725,23 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: [] if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: []
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
             assert "review before approve" in result.output
             mock_api.post_status.assert_not_called()
 
-    def test_approve_refused_when_discussions_not_a_list(self, monkeypatch):
-        """A non-list discussions payload is treated as 'no review yet'."""
+    def test_approve_refused_when_discussions_only_have_other_authors(self, monkeypatch):
+        """Approve refuses when discussions exist but none authored by the approving identity."""
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: "unexpected" if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: (
+            _discussions_with_author("unrelated-user") if "/discussions" in endpoint else []
+        )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
             assert result.exit_code == 1
@@ -747,7 +759,8 @@ class TestApprove:
             {"id": "d3", "notes": ["not-a-dict-note"]},
             {"id": "d4", "notes": [{"id": 9, "author": {"username": "reviewer-bot"}}]},
         ]
-        mock_api.get_json.side_effect = lambda endpoint: discussions if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: discussions if "/discussions" in endpoint else []
         mock_api.post_status.return_value = 201
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])
@@ -773,8 +786,9 @@ class TestApprove:
         monkeypatch.setenv("GITLAB_TOKEN", "test-token")
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: (
-            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
         mock_api.post_status.return_value = 403
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
@@ -791,8 +805,9 @@ class TestApprove:
         monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
         mock_api = MagicMock()
         mock_api.current_username.return_value = "reviewer-bot"
-        mock_api.get_json.side_effect = lambda endpoint: (
-            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else {"id": 1}
+        mock_api.get_json.side_effect = lambda endpoint: {"id": 1}
+        mock_api.get_json_paginated.side_effect = lambda endpoint: (
+            _discussions_with_author("reviewer-bot") if "/discussions" in endpoint else []
         )
         with patch.object(gitlab_api_mod, "GitLabAPI", return_value=mock_api):
             result = runner.invoke(app, ["review", "approve", "org/repo", "7"])

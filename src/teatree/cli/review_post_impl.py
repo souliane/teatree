@@ -125,8 +125,7 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
     notes = result_dict.get("notes")
     first_note = notes[0] if isinstance(notes, list) and notes else {}
     note_type = first_note.get("type") if isinstance(first_note, dict) else None
-    if note_type != "DiffNote":
-        return f"Comment posted but not anchored inline (type={note_type!r}). discussion_id={discussion_id}", 1
+    note_web_url = str(first_note.get("web_url", "")) if isinstance(first_note, dict) else ""
     record_note_claim(service._resolve_base_url, repo, mr, discussion_id, endpoint="discussions", file=file, line=line)
     notify_review_after_receipt(
         service._resolve_base_url,
@@ -135,7 +134,12 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
         review_action=ReviewAfterReceipt(
             action="post_comment",
             summary=f"posted inline comment discussion_id={discussion_id} on {repo}!{mr}",
-            note_web_url=str(first_note.get("web_url", "")) if isinstance(first_note, dict) else "",
+            note_web_url=note_web_url,
         ),
     )
+    if note_type != "DiffNote":
+        return (
+            f"OK discussion_id={discussion_id} (posted but not anchored inline, type={note_type!r}; "
+            "the MR diff may have shifted since position was resolved)"
+        ), 0
     return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
