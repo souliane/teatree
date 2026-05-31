@@ -101,8 +101,8 @@ _RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
         # line, so scan raw.
         re.compile(
             r"\bgit\s+push\b.*"
-            r"(?:-o\s+merge_request\.merge_when_pipeline_succeeds"
-            r"|--push-option=merge_request\.merge_when_pipeline_succeeds)"
+            r"(?:-o\s+['\"]?merge_request\.merge_when_pipeline_succeeds"
+            r"|--push-option=['\"]?merge_request\.merge_when_pipeline_succeeds)"
         ),
         (
             "BLOCKED: `git push -o merge_request.merge_when_pipeline_succeeds` "
