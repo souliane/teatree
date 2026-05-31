@@ -76,7 +76,47 @@ _READONLY_CMD_PREFIX_RE = re.compile(
 
 # Forbidden command patterns → deny messages.  Each entry is
 # (compiled regex matching the Bash command, human-readable deny reason).
-_BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+# Patterns that match a VALUE or CONFIG TOKEN that can legitimately appear
+# inside a quoted argument in a real bypass (e.g. ``git -c "core.hooksPath=x"``
+# or ``git push -o "merge_request.merge_when_pipeline_succeeds"``).  These
+# must be scanned against the RAW command so quoting cannot evade them.
+_RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
+    (
+        # F3: ``git -c core.hooksPath=…`` redirects git's hooks directory,
+        # silencing all hooks — semantically identical to ``--no-verify``.
+        # The value (e.g. ``/dev/null``) can appear inside single- or
+        # double-quoted args: ``git -c "core.hooksPath=/dev/null"`` is a real
+        # bypass and must be caught against the raw command.
+        re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE),
+        (
+            "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        # F8: ``git push -o merge_request.merge_when_pipeline_succeeds`` schedules
+        # a GitLab auto-merge, bypassing the FSM keystone transition
+        # (``t3 <overlay> ticket merge``). The ``--push-option=`` long form is
+        # equivalent.  The push-option value can appear quoted on the command
+        # line, so scan raw.
+        re.compile(
+            r"\bgit\s+push\b.*"
+            r"(?:-o\s+['\"]?merge_request\.merge_when_pipeline_succeeds"
+            r"|--push-option=['\"]?merge_request\.merge_when_pipeline_succeeds)"
+        ),
+        (
+            "BLOCKED: `git push -o merge_request.merge_when_pipeline_succeeds` "
+            "schedules an auto-merge bypassing the FSM keystone — "
+            "use `t3 <overlay> ticket merge` instead."
+        ),
+    ),
+]
+
+# Patterns that match a TOOL INVOCATION that, in any real command, appears
+# unquoted at command position.  These are scanned against a quote-stripped
+# copy of the command so a tool name that merely appears inside a quoted
+# commit message / grep argument does not false-block.
+_QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"\.venv/bin/"),
         "BLOCKED: `.venv/bin/...` — use `uv run` instead so the resolved environment matches `pyproject.toml`.",
@@ -154,6 +194,14 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
             "or `uv tool install --editable <teatree-repo>`)."
         ),
     ),
+]
+
+# Keep the combined list for any existing code that references _BLOCKED_COMMANDS
+# directly (e.g. downstream tests that import it). Both partitions are included
+# so the union is identical to the original list.
+_BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+    *_RAW_SCAN_BLOCKED,
+    *_QUOTE_STRIPPED_BLOCKED,
 ]
 
 
@@ -1517,7 +1565,8 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
 
     if tool_name == "Bash":
         command = tool_input.get("command", "")
-        if "glab mr create" not in command and "glab mr update" not in command:
+        # Use \s+ (not plain `in`) so double-space variants are caught (F1).
+        if not re.search(r"\bglab\s+mr\s+(?:create|update)\b", command):
             return None
         title_match = re.search(r"""--title\s+['"]([^'"]+)['"]""", command)
         desc_match = re.search(r"""--description\s+['"]([^'"]+)['"]""", command)
@@ -1662,39 +1711,102 @@ def _read_message_file(command: str) -> str | None:
         return None
 
 
+_AI_SIG_PR_RE = re.compile(
+    r"\b(?:"
+    r"gh\s+pr\s+(?:create|edit|comment)"
+    r"|glab\s+mr\s+(?:create|update|edit)"
+    # F2: REST-API create endpoints — effective POST creates a PR/MR and
+    # must carry an AI-sig scan just like `gh pr create` / `glab mr create`.
+    # GET reads (no body flag, bare endpoint) are excluded by the
+    # _is_api_create_endpoint_write helper.
+    r"|gh\s+api\b"
+    r"|glab\s+api\b"
+    r")\b",
+)
+_AI_SIG_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
+# REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.
+# Distinguishes a PR/MR create from a list read (GET) or the merge endpoint
+# already covered by _MERGE_ENDPOINT_RE.  The \d+-free form matches both the
+# collection endpoint (/pulls, /merge_requests) and a per-MR update endpoint
+# (/pulls/42, /merge_requests/42) when written as a POST.
+_API_CREATE_ENDPOINT_RE = re.compile(r"/(?:pulls|merge_requests)(?:/\d+)?(?:[/?'\"\s]|$)")
+
+
+def _is_api_create_endpoint_write(command: str) -> bool:
+    """Whether *command* is a REST-API POST/PATCH to a PR/MR collection endpoint.
+
+    True only when the command targets a ``.../pulls`` or
+    ``.../merge_requests`` endpoint (without the ``/N/merge`` suffix already
+    covered by :data:`_MERGE_ENDPOINT_RE`) AND its effective HTTP method is
+    not GET.  Reuses the gate-3 effective-method classifier (last
+    ``-X``/``--method`` wins; default POST with a body flag, else GET).
+    A bare GET to the list endpoint reads PR list and must NOT be treated as
+    a create-class mutation.
+    """
+    if not _API_CREATE_ENDPOINT_RE.search(command):
+        return False
+    # Exclude the merge endpoint (already handled by out-of-band-merge gate).
+    if _MERGE_ENDPOINT_RE.search(command):
+        return False
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
+    if methods:
+        is_read = methods[-1] == "GET"
+    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
+        is_read = False
+    else:
+        is_read = True
+    return not is_read
+
+
+def _extract_bash_ai_sig_payload(command: str) -> str | None:
+    """Return the scannable payload for a Bash command, or ``None``.
+
+    Split out of :func:`_extract_ai_sig_payload` to keep that function under
+    the PLR0911 return-count ceiling (same pattern as
+    :func:`_resolve_high_match`).
+    """
+    is_commit = bool(_AI_SIG_COMMIT_RE.search(command))
+    if not is_commit and not _AI_SIG_PR_RE.search(command):
+        return None
+    # F2: gh api / glab api only trigger when it's actually a create-endpoint
+    # POST — a bare GET read must not be treated as PR create.
+    if not is_commit:
+        api_match = re.search(r"\b(?:gh|glab)\s+api\b", command)
+        if api_match and not _is_api_create_endpoint_write(command):
+            return None
+    # Inline message wins; file-based arg is the multi-line fallback (#831).
+    flag_re = _GIT_COMMIT_M_RE if is_commit else _PR_BODY_FLAG_RE
+    inline = flag_re.search(command)
+    if inline is not None:
+        return inline.group(2)
+    from_file = _read_message_file(command)
+    if from_file is not None:
+        return from_file
+    # A PR command with no body is still a scannable surface (empty string);
+    # a commit with no -m opens an editor — no inline payload (None).
+    return None if is_commit else ""
+
+
 def _extract_ai_sig_payload(data: dict) -> str | None:
     """Return the PR-body / commit-message text to scan, else ``None``.
 
-    Covers ``gh pr create --body``, ``glab mr create/update
-    --description``, ``git commit -m`` (inline), the file-based message
-    path (``git commit -F/-C``, ``gh pr create --body-file``, ``glab mr
-    create --description <file>`` — the standard multi-line / #831
-    shape), and the MR/PR MCP create/update tools. ``None`` ⇒ not a
-    PR/commit mutation, or a file-based arg whose file is
+    Covers ``gh pr create/edit/comment --body``, ``glab mr
+    create/update/edit --description``, ``git commit -m`` (inline), the
+    file-based message path (``git commit -F/-C``, ``gh pr create
+    --body-file``, ``glab mr create --description <file>`` — the standard
+    multi-line / #831 shape), ``gh api``/``glab api`` POST to a
+    PR/MR-create endpoint (F2), and the MR/PR MCP create/update tools.
+    ``None`` ⇒ not a PR/commit mutation, or a file-based arg whose file is
     missing/binary (fail open).
-    """
+
+    Uses word-boundary + ``\\s+`` regexes (not plain ``in``) so double-space
+    variants (``git  commit``, ``glab  mr  create``) are caught (F1).
+    """  # noqa: D301
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
 
     if tool_name == "Bash":
-        command = tool_input.get("command", "")
-        pr_cmds = ("gh pr create", "gh pr edit", "glab mr create", "glab mr update")
-        is_pr = any(c in command for c in pr_cmds)
-        is_commit = "git commit" in command
-        if not (is_pr or is_commit):
-            return None
-        # Inline message wins when present; otherwise fall back to the
-        # file-based arg (the multi-line path #831 actually used).
-        inline = _PR_BODY_FLAG_RE.search(command) if is_pr else _GIT_COMMIT_M_RE.search(command)
-        if inline is not None:
-            return inline.group(2)
-        from_file = _read_message_file(command)
-        if from_file is not None:
-            return from_file
-        # No scannable payload found. A PR command with neither inline
-        # body nor a readable file is treated as nothing-to-scan ('');
-        # a commit with no -m and no file opens an editor (None).
-        return "" if is_pr else None
+        return _extract_bash_ai_sig_payload(tool_input.get("command", ""))
 
     if tool_name in _PR_CREATE_TOOLS:
         return tool_input.get("body", "") or tool_input.get("description", "")
@@ -2145,13 +2257,20 @@ def _is_merge_class_mutation(data: dict) -> bool:
     """Whether this tool call moves a PR toward review/merge.
 
     ``gh pr ready`` (un-drafting) or a non-draft ``gh pr create`` /
-    ``glab mr create``. ``gh pr ready --undo`` (return-to-draft, the
-    gate's own remediation) and ``--draft`` creation are excluded.
+    ``glab mr create`` or a ``gh api``/``glab api`` POST to a PR/MR
+    collection endpoint (F2 — same semantic effect, same gate coverage
+    needed). ``gh pr ready --undo`` (return-to-draft, the gate's own
+    remediation) and ``--draft`` creation are excluded.
     """
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if _GH_PR_READY_RE.search(command) or _PR_MR_CREATE_RE.search(command):
+    if _GH_PR_READY_RE.search(command):
+        return not _DRAFT_FLAG_RE.search(command)
+    if _PR_MR_CREATE_RE.search(command):
+        return not _DRAFT_FLAG_RE.search(command)
+    # F2: gh/glab api POST to a PR/MR create endpoint is merge-class too.
+    if re.search(r"\b(?:gh|glab)\s+api\b", command) and _is_api_create_endpoint_write(command):
         return not _DRAFT_FLAG_RE.search(command)
     return False
 
@@ -2338,7 +2457,7 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
     r"\bmake\b|"
     r"\bsleep\s+\d{2,}|"
     r"\bfind\s+\S+.*-exec\b|"
-    r"\bls\s+-[a-zA-Z]*R\b"
+    r"\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b"
     r")",
 )
 
@@ -4695,6 +4814,25 @@ _REMOTE_DUMP_DENY_REASON = (
 )
 
 
+_SHELL_CHAIN_RE = re.compile(r"[;|`]|\$\(|&&|\|\|")
+# Strip both single- and double-quoted literals for the tool-invocation scan so
+# that a blocked tool name mentioned inside any quoted argument (e.g. a git
+# commit message or a grep pattern) does not false-block the command.
+# Value/config patterns (F3, F8) are scanned against the raw command instead,
+# so stripping both quote styles here is safe.
+_QUOTED_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+
+
+def _has_shell_chain(command: str) -> bool:
+    """True if *command* contains a shell-chaining operator after the first token.
+
+    Used by F6 fix: a command like ``grep '' /dev/null; blocked-cmd`` starts
+    with a read-only prefix but chains a blocked command. The allowlist must
+    not short-circuit when a chain operator is present.
+    """
+    return bool(_SHELL_CHAIN_RE.search(command))
+
+
 def _deny_match(command: str) -> str | None:
     """Return a deny reason for *command*, or None if it should pass through."""
     # Checked FIRST — even before t3/read-only bypass — because agents must
@@ -4702,10 +4840,25 @@ def _deny_match(command: str) -> str | None:
     if _REMOTE_DUMP_ENV_RE.search(command):
         return _REMOTE_DUMP_DENY_REASON
     stripped = command.lstrip()
-    if _T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped):
+    # F6: only honor the readonly/t3 prefix allowlist when there is no shell
+    # chaining operator in the command. ``grep x /dev/null; pip install y``
+    # starts with a read-only prefix but chains a blocked write — the gate
+    # must inspect the full command rather than short-circuiting on the prefix.
+    if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
         return None
-    for pattern, reason in _BLOCKED_COMMANDS:
+    # Scan VALUE/CONFIG patterns against the raw command so that quoting the
+    # value (e.g. ``git -c "core.hooksPath=/dev/null"``) cannot evade the gate.
+    for pattern, reason in _RAW_SCAN_BLOCKED:
         if pattern.search(command):
+            return reason + " If `t3` fails, fix the CLI — do not work around it."
+    # Scan TOOL-INVOCATION patterns against a quote-stripped copy so that a
+    # blocked tool name that appears only inside a quoted commit message or grep
+    # argument (e.g. ``git commit -m 'fix: handle pip install edge case'``) does
+    # not false-block the command.  Real blocked invocations are unquoted and
+    # still match the stripped target.
+    quote_stripped = _QUOTED_LITERAL_RE.sub(" ", command)
+    for pattern, reason in _QUOTE_STRIPPED_BLOCKED:
+        if pattern.search(quote_stripped):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
     return None
 
@@ -4768,8 +4921,11 @@ def _is_raw_merge_api_write(command: str) -> bool:
     ``-X``/``--method`` value wins; with no method flag the default is POST
     when a body/field flag is present, else GET. A GET to the merge endpoint
     reads merge status and must NOT be denied.
+
+    Uses a word-boundary regex (not plain ``in``) so double-space variants
+    are caught (same class as F4).
     """
-    if "glab api" not in command and "gh api" not in command:
+    if not _GLAB_GH_API_RE.search(command):
         return False
     if not _MERGE_ENDPOINT_RE.search(command):
         return False
@@ -4935,6 +5091,9 @@ _REVIEW_POST_DENY_REASON = (
 )
 
 
+_GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
+
+
 def _is_raw_review_write(command: str) -> bool:
     """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
 
@@ -4945,8 +5104,11 @@ def _is_raw_review_write(command: str) -> bool:
     GET read); with no method flag the forge defaults to POST when a body/field
     flag is present, else GET. A forced GET sends body flags as query params
     and cannot create a comment, so it is the only read (#1568).
+
+    Uses a word-boundary regex (not plain ``in``) so ``glab  api`` /
+    ``gh  api`` double-space variants are caught (F4).
     """
-    if "glab api" not in command and "gh api" not in command:
+    if not _GLAB_GH_API_RE.search(command):
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
         return False
