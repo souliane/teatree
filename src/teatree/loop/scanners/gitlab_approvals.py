@@ -3,9 +3,9 @@
 The webhook path (``IncomingEventsScanner`` + ``SCHEDULE_MERGE``) already
 drives the sanctioned auto-merge keystone when GitLab fires an
 ``approved`` webhook to ``/hooks/gitlab/``. That path is blocked for
-Slack Connect workspaces (the AcmeCodeReviewBot ``#the-review-team``
-channel is Connect-only, the bot cannot join), and other deployments
-have not enabled the GitLab webhook at all. This scanner is the
+Slack Connect workspaces where the bot cannot join the overlay's
+review channel, and other deployments that have not enabled the GitLab
+webhook at all. This scanner is the
 poll-driven complement: every tick it walks the active user's open MRs,
 asks GitLab for the approval state, and — when the merge guard says yes
 — emits the same ``incoming_event.merge_*`` signal the dispatcher
@@ -68,7 +68,16 @@ class GitLabApprovalsScanner:
             return []
         signals: list[ScanSignal] = []
         for pr in self._collect_unique_prs(authors):
-            signal = self._scan_one(pr)
+            try:
+                signal = self._scan_one(pr)
+            except ScannerError:
+                raise  # auth/network escalation — must surface to the dispatcher
+            except Exception:
+                logger.exception(
+                    "GitLabApprovalsScanner: _scan_one failed for %s",
+                    _str_field(pr, "web_url", "html_url"),
+                )
+                continue
             if signal is not None:
                 signals.append(signal)
         return signals
