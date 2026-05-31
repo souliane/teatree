@@ -334,6 +334,27 @@ class TestF3CoreHooksPathBypass:
         assert result is not True, f"legitimate command must not be blocked: {command!r}"
         assert capsys.readouterr().out.strip() == ""
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # lowercase — git config keys are case-insensitive per git-config(1)
+            "git -c core.hookspath=/dev/null commit --allow-empty -m x",
+            "git commit -c core.hookspath=/dev/null -m x",
+            # uppercase
+            "git -c CORE.HOOKSPATH=/dev/null commit --allow-empty -m x",
+            # mixed case
+            "git -c core.HooksPath=/dev/null commit -m bypass",
+            "git -c Core.hooksPath=/dev/null commit -m bypass",
+        ],
+    )
+    def test_f3_case_insensitive_hooks_path_is_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        """Git config keys are case-insensitive; all case variants must be blocked."""
+        result = handle_block_direct_commands(_bash_event(command))
+        assert result is True, f"case-variant core.hooksPath bypass must be blocked: {command!r}"
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
 
 # ── F4: double-space glab  api review-post bypass ────────────────────────
 

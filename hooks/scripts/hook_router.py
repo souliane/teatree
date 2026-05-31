@@ -139,7 +139,7 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     (
         # F3: ``git -c core.hooksPath=…`` redirects git's hooks directory,
         # silencing all hooks — semantically identical to ``--no-verify``.
-        re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*="),
+        re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE),
         (
             "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
             "(equivalent to `--no-verify`) — fix the hook failure instead."
