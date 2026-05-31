@@ -5,7 +5,10 @@ the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
 ``ShipExecutor`` and on success advances ``SHIPPED → IN_REVIEW``.
 """
 
+import shutil
+import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +29,12 @@ def _clear_overlay_cache() -> Iterator[None]:
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
+
+_GIT = shutil.which("git") or "git"
+
+
+def _run_git(*args: str, cwd: Path) -> None:
+    subprocess.run([_GIT, "-C", str(cwd), *args], check=True, capture_output=True)
 
 
 class TestShipExecutor(TestCase):
@@ -474,6 +483,184 @@ class TestShipMultiWorkstreamStaleUrlGuard(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra["pr_url_by_branch"]["s-1263-pr-b-current"] == "https://example.com/pr/b-new"
+
+
+class TestShipReconcilesWorktreeBranch(TestCase):
+    """#1519: ship pushes the worktree's ACTUAL git branch and reconciles the DB.
+
+    ``workspace ticket <N>`` mints ``Worktree.branch`` as ``<N>-ticket``;
+    the agent renames the git branch in the worktree to the
+    ``<N>-<type>-<desc>`` convention. ``ShipExecutor`` pushed the
+    DB-recorded (stale) ref and left the worktree↔branch DB mapping
+    desynced. The fix resolves the current git branch, pushes that, and
+    reconciles ``Worktree.branch`` (and ``Ticket.extra['branch']``) — but
+    only for a real branch that belongs to this ticket; a detached HEAD or
+    an unrelated branch falls back to the recorded branch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_repo(self, tmp_path: Path) -> None:
+        self.repo = tmp_path / "repo"
+        self.repo.mkdir()
+        _run_git("init", "-q", "-b", "main", cwd=self.repo)
+        _run_git("config", "user.email", "t@t", cwd=self.repo)
+        _run_git("config", "user.name", "t", cwd=self.repo)
+        _run_git("commit", "--allow-empty", "-q", "-m", "initial", cwd=self.repo)
+
+    def _checkout(self, branch: str) -> None:
+        (self.repo / "f.txt").write_text(branch, encoding="utf-8")
+        _run_git("checkout", "-q", "-b", branch, cwd=self.repo)
+        _run_git("add", "f.txt", cwd=self.repo)
+        _run_git("commit", "-q", "-m", f"work on {branch}", cwd=self.repo)
+
+    def _ticket(self, *, recorded_branch: str, extra: dict | None = None) -> Ticket:
+        merged = {"branch": recorded_branch, **(extra or {})}
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://github.com/souliane/teatree/issues/1519",
+            extra=merged,
+        )
+        Worktree.objects.create(
+            ticket=ticket,
+            overlay="test",
+            repo_path=str(self.repo),
+            branch=recorded_branch,
+            extra={"worktree_path": str(self.repo)},
+        )
+        return ticket
+
+    def _host(self) -> MagicMock:
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/pr/1519"}
+        host.current_user.return_value = "souliane"
+        return host
+
+    def test_pushes_actual_branch_and_reconciles_db_on_drift(self) -> None:
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # (a) pushes the REAL branch, not the stale recorded one.
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo")
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "1519-fix-foo"
+        # (b) the DB rows are reconciled to the current branch.
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-fix-foo"
+        assert ticket.extra["branch"] == "1519-fix-foo"
+
+    def test_no_drift_leaves_db_unchanged(self) -> None:
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-fix-foo")
+        host = self._host()
+        worktree = ticket.worktrees.get()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch.object(Worktree, "save", autospec=True) as wt_save,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-fix-foo")
+        # No spurious reconcile write when the names already agree.
+        wt_save.assert_not_called()
+        worktree.refresh_from_db()
+        assert worktree.branch == "1519-fix-foo"
+
+    def test_detached_head_falls_back_to_recorded_branch(self) -> None:
+        self._checkout("1519-fix-foo")
+        sha = subprocess.run(
+            [_GIT, "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        _run_git("checkout", "-q", sha, cwd=self.repo)  # detached HEAD
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        # Falls back to the recorded branch — never pushes the bare SHA / HEAD.
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket")
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-ticket"
+
+    def test_unrelated_branch_falls_back_and_is_not_pushed(self) -> None:
+        self._checkout("9999-someone-elses-branch")  # not prefixed 1519-
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push") as push,
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        push.assert_called_once_with(repo=str(self.repo), remote="origin", branch="1519-ticket")
+        (spec,) = host.create_pr.call_args.args
+        assert spec.branch == "1519-ticket"
+        ticket.refresh_from_db()
+        assert ticket.worktrees.get().branch == "1519-ticket"
+
+    def test_redelivery_adopts_recorded_url_after_reconcile(self) -> None:
+        """#1522 idempotency holds: a second run adopts the recorded PR url.
+
+        The first run reconciles the branch and records the url under the
+        ACTUAL branch; the redelivered job resolves the same branch and
+        short-circuits on the recorded url instead of re-creating the PR.
+        """
+        self._checkout("1519-fix-foo")
+        ticket = self._ticket(recorded_branch="1519-ticket")
+        host = self._host()
+
+        patches = (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
+            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            first = ShipExecutor(ticket).run()
+        assert first.ok is True
+        assert host.create_pr.call_count == 1
+
+        ticket.refresh_from_db()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            second = ShipExecutor(ticket).run()
+
+        assert second.ok is True
+        assert second.detail == "https://example.com/pr/1519"
+        # No second PR — the recorded url for the reconciled branch is adopted.
+        assert host.create_pr.call_count == 1
 
 
 class TestSanitizeCloseKeywords:
