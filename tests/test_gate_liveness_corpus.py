@@ -17,17 +17,17 @@ delivered to the handler's ``event`` by a registered ``hooks.json`` matcher
 (PreToolUse: the tool name matches a matcher regex; TaskCreated/Stop: a handler
 is registered on that event).
 
-Six gates are known phantoms: their handler logic is correct but assertion (c)
+Five gates are known phantoms: their handler logic is correct but assertion (c)
 fails because the dispatch path never reaches them. They are
 ``xfail(strict=True)`` so the suite is GREEN now and any later fix flips the
 row to an unexpected-pass that FAILS the build, forcing the xfail removal. The
 final assertion makes the phantom roster LOUD (also visible via ``-rsx``) so a
 reader sees exactly which gates are known-dead — no silent truncation.
 
-The plan-gate rows deliberately use the real ``teatree-plan`` /
-``t3:teatree-plan`` skill name (``grep -r teatree-plan tests/`` was previously
-empty — the validity hole) to prove a real ``/plan`` does NOT currently clear
-the gate.
+The plan-gate rows use the real ``teatree-plan`` / ``t3:teatree-plan`` skill
+name. The tracker now matches it by exact final-segment membership, so a real
+``/plan`` clears the gate (the validity hole is closed); the new
+``TaskCreated`` plan-gate row proves the fan-out path is enforced too.
 """
 
 import json
@@ -100,9 +100,10 @@ class GateRow:
     allow_input: PayloadBuilder
     arrange: Arranger = field(default=lambda _ctx: None)
     # A phantom gate fails reachability (c). ``phantom_reason`` is the xfail
-    # text for (c). ``allow_phantom`` additionally marks (b) xfail when a real
-    # must-ALLOW payload cannot clear the gate (the plan-gate tracker mismatch:
-    # a real ``teatree-plan`` /plan is never recorded, so the gate stays armed).
+    # text for (c). ``allow_phantom_reason`` additionally marks (b) xfail when a
+    # real must-ALLOW payload cannot clear the gate. No row currently sets it
+    # (the #167 plan-tracker mismatch that needed it is fixed), but the
+    # mechanism stays for a future gate whose allow-path is genuinely blocked.
     phantom_reason: str | None = None
     allow_phantom_reason: str | None = None
 
@@ -276,6 +277,26 @@ def _agent_plan_allow(ctx: GateContext) -> dict:
         {"tool_name": "Skill", "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION}}
     )
     return _agent("implement the acme feature", run_in_background=True)
+
+
+# plan gate (TaskCreated): the fan-out path. A fanned-out Task with no recent
+# /plan must block; a real t3:teatree-plan or a [skip-plan-gate] token clears it.
+
+
+def _task_created_plan(*, skip: bool) -> dict:
+    token = "[skip-plan-gate: false-trigger] " if skip else ""
+    return {
+        "session_id": "sess-liveness",
+        "task_subject": f"{token}build the acme feature",
+        "task_description": "",
+    }
+
+
+def _task_created_plan_allow(ctx: GateContext) -> dict:
+    router.handle_track_plan_skill_timestamp(
+        {"tool_name": "Skill", "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION}}
+    )
+    return _task_created_plan(skip=False)
 
 
 # protect-default-branch (PreToolUse Edit/Write/Read): an Edit on a file in a
@@ -558,14 +579,9 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 # ── the registry ──────────────────────────────────────────────────────────
 
-_PLAN_GATE_PHANTOM = (
-    "phantom gate — the plan tracker keys on startswith('plan'), which never "
-    "matches the real 'teatree-plan' skill, so a genuine /plan can never clear "
-    "the gate (must-ALLOW still denied) — tracked in #167"
-)
 _AGENT_PLAN_GATE_PHANTOM = (
-    "phantom gate — teatree-plan untracked (a real /plan never clears it) AND "
-    "Agent/Task absent from any PreToolUse matcher + fan-out bypass — tracked in #167"
+    "phantom gate — Agent/Task absent from any PreToolUse matcher (the fan-out "
+    "path is now covered by the TaskCreated plan-gate) — tracked in #171"
 )
 _DISPATCH_QUOTE_PHANTOM = (
     "phantom gate — Agent/Task absent from any PreToolUse matcher + fan-out bypass — tracked in #171"
@@ -607,7 +623,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=lambda c: _edit_in_workspace(c, satisfied=False),
         allow_input=lambda c: _edit_in_workspace(c, satisfied=True),
         arrange=_arrange_plan_gate,
-        allow_phantom_reason=_PLAN_GATE_PHANTOM,
     ),
     GateRow(
         gate_id="enforce-agent-plan-gate",
@@ -618,7 +633,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         allow_input=_agent_plan_allow,
         arrange=_arrange_agent_plan_gate,
         phantom_reason=_AGENT_PLAN_GATE_PHANTOM,
-        allow_phantom_reason=_AGENT_PLAN_GATE_PHANTOM,
+    ),
+    GateRow(
+        gate_id="enforce-plan-gate-on-task-create",
+        handler=router.handle_enforce_plan_gate_on_task_create,
+        event="TaskCreated",
+        matched="Task",
+        deny_input=lambda _c: _task_created_plan(skip=False),
+        allow_input=_task_created_plan_allow,
+        arrange=_arrange_agent_plan_gate,
     ),
     GateRow(
         gate_id="protect-default-branch",
@@ -765,13 +788,13 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 )
 
 
-# The six known phantom CATEGORIES (#167/#171). The Slack-MCP category spans
-# two rows (quote-scanner + bare-reference; banned_terms has no Slack arm), so
-# the row count is seven. The categories are asserted explicitly below so a row
+# The five known phantom CATEGORIES (#171). The Slack-MCP category spans two
+# rows (quote-scanner + bare-reference; banned_terms has no Slack arm), so the
+# row count is six. The categories are asserted explicitly below so a row
 # losing/gaining its phantom status without a deliberate update is caught.
 _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
     {
-        "enforce-agent-plan-gate",  # Agent not in matcher + fan-out bypass
+        "enforce-agent-plan-gate",  # Agent not in matcher (fan-out covered by TaskCreated)
         "dispatch-prompt-quote-scanner",  # Agent/Task not in matcher + fan-out bypass
         "enforce-orchestrator-boundary-agent",  # Agent not in matcher
         "quote-scanner-slack-mcp",  # mcp__*slack* not in matcher
@@ -779,14 +802,10 @@ _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
         "validate-mr-metadata-mcp",  # mcp__glab__glab_mr_* not in matcher
     }
 )
-# Gates a real must-ALLOW payload cannot clear (the plan-tracker mismatch).
-_EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset(
-    {
-        "enforce-plan-gate",  # teatree-plan never recorded → Edit stays blocked
-        "enforce-agent-plan-gate",  # teatree-plan never recorded → Agent stays blocked
-    }
-)
-_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 6
+# No allow-phantoms remain: the plan-tracker mismatch (#167) is fixed, so a
+# real teatree-plan /plan now clears both plan gates.
+_EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
+_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 5
 
 
 # ── fixtures (state isolation — the dev's real ~/.teatree.toml can't leak) ──
@@ -845,10 +864,9 @@ def test_gate_allows_real_must_allow_payload(
 ) -> None:
     """(b) The gate ALLOWS its real must-ALLOW payload.
 
-    Xfailed only for the plan-gate rows: their must-ALLOW payload is a REAL
-    ``teatree-plan`` /plan, which the startswith('plan') tracker never records,
-    so the gate stays armed and (wrongly) denies — the validity hole this
-    corpus pins.
+    No row is xfailed here anymore: the plan-tracker mismatch (#167) is fixed,
+    so a real ``teatree-plan`` /plan clears both plan gates and every gate's
+    must-ALLOW payload passes through.
     """
     _mark_xfail(request, row.allow_phantom_reason)
     row.arrange(gate_ctx)
@@ -881,9 +899,9 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
 
     Makes the dead-gate roster LOUD: a reader running ``pytest -rsx`` sees each
     xfail reason, and this test fails if a phantom is silently added/removed
-    from the registry without updating the expected rosters. Six phantom
+    from the registry without updating the expected rosters. Five phantom
     CATEGORIES are documented; the Slack-MCP category spans two rows, so the
-    reachability roster has seven entries.
+    reachability roster has six entries.
     """
     reachability = frozenset(row.gate_id for row in GATE_REGISTRY if row.phantom_reason is not None)
     allow = frozenset(row.gate_id for row in GATE_REGISTRY if row.allow_phantom_reason is not None)

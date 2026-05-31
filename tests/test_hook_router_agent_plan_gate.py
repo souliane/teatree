@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import handle_enforce_agent_plan_gate, handle_track_plan_skill_timestamp
+from hooks.scripts.hook_router import _is_plan_skill, handle_enforce_agent_plan_gate, handle_track_plan_skill_timestamp
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def _record_plan_skill() -> dict:
     return {
         "session_id": "sess-1",
         "tool_name": "Skill",
-        "tool_input": {"skill": "plan"},
+        "tool_input": {"skill": "t3:teatree-plan"},
     }
 
 
@@ -197,13 +197,21 @@ class TestPlanTimestampTracking:
         handle_track_plan_skill_timestamp(data)
         assert not gate_env.is_file()
 
-    def test_plan_variant_names_count_as_plan(self, gate_env: Path) -> None:
-        # ``t3:plan``, ``plan-something``, etc. all count.
-        for skill in ("t3:plan", "plan", "plan-feature"):
+    def test_real_plan_skill_records_timestamp(self, gate_env: Path) -> None:
+        # Only the real planning skill (``teatree-plan``, namespaced as
+        # ``t3:teatree-plan``) writes the marker.
+        for skill in ("teatree-plan", "t3:teatree-plan"):
             gate_env.unlink(missing_ok=True)
             data = {"session_id": "s", "tool_name": "Skill", "tool_input": {"skill": skill}}
             handle_track_plan_skill_timestamp(data)
             assert gate_env.is_file(), f"timestamp should be written for skill={skill!r}"
+        # The old prefix-fiction names are NOT planning skills and must not
+        # write the marker (the #167 regression pin).
+        for skill in ("plan", "t3:plan", "plan-feature"):
+            gate_env.unlink(missing_ok=True)
+            data = {"session_id": "s", "tool_name": "Skill", "tool_input": {"skill": skill}}
+            handle_track_plan_skill_timestamp(data)
+            assert not gate_env.is_file(), f"timestamp should NOT be written for skill={skill!r}"
 
     def test_end_to_end_plan_then_agent_dispatch_allowed(self, gate_env: Path) -> None:
         # Record a plan invocation, then dispatch — must pass.
@@ -221,3 +229,18 @@ class TestToolScope:
     def test_other_tools_pass_through(self, gate_env: Path, tool_name: str) -> None:
         data = {"session_id": "sess-1", "tool_name": tool_name, "tool_input": {}}
         assert handle_enforce_agent_plan_gate(data) is False
+
+
+# ── Plan-skill name matching (the #167 phantom-match fix) ─────────────────
+
+
+class TestIsPlanSkill:
+    """``_is_plan_skill`` matches the real ``teatree-plan`` name exactly."""
+
+    @pytest.mark.parametrize("skill", ["teatree-plan", "t3:teatree-plan", "plugin/teatree-plan"])
+    def test_real_plan_skill_names_match(self, skill: str) -> None:
+        assert _is_plan_skill(skill) is True
+
+    @pytest.mark.parametrize("skill", ["plan", "planning", "t3:plan", "plan-feature", "t3:code"])
+    def test_prefix_fiction_and_unrelated_names_do_not_match(self, skill: str) -> None:
+        assert _is_plan_skill(skill) is False
