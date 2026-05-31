@@ -18,6 +18,7 @@ on its next turn.
 from typing import Annotated
 
 import typer
+from django.db import transaction
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -89,19 +90,20 @@ class Command(TyperCommand):
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
         try:
-            row = DeferredQuestion.consume(question_id, answer=text)
+            with transaction.atomic():
+                row = DeferredQuestion.consume(question_id, answer=text)
+                if row is None:
+                    self.stderr.write(f"question #{question_id} not found or already resolved")
+                    raise SystemExit(1)
+                DeferredQuestionAudit.objects.create(
+                    question=row,
+                    action="answered",
+                    answer_text=text,
+                    resolver_id=resolver_id,
+                )
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(2) from exc
-        if row is None:
-            self.stderr.write(f"question #{question_id} not found or already resolved")
-            raise SystemExit(1)
-        DeferredQuestionAudit.objects.create(
-            question=row,
-            action="answered",
-            answer_text=text,
-            resolver_id=resolver_id,
-        )
         return f"answered #{row.pk}."
 
     @command()
@@ -120,17 +122,18 @@ class Command(TyperCommand):
         """Dismiss a pending question without answering it."""
         clean_reason = reason.strip() or "no longer relevant"
         try:
-            row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
+            with transaction.atomic():
+                row = DeferredQuestion.consume(question_id, dismissed_reason=clean_reason)
+                if row is None:
+                    self.stderr.write(f"question #{question_id} not found or already resolved")
+                    raise SystemExit(1)
+                DeferredQuestionAudit.objects.create(
+                    question=row,
+                    action="dismissed",
+                    dismissed_reason=clean_reason,
+                    resolver_id=resolver_id,
+                )
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(2) from exc
-        if row is None:
-            self.stderr.write(f"question #{question_id} not found or already resolved")
-            raise SystemExit(1)
-        DeferredQuestionAudit.objects.create(
-            question=row,
-            action="dismissed",
-            dismissed_reason=clean_reason,
-            resolver_id=resolver_id,
-        )
         return f"dismissed #{row.pk}."
