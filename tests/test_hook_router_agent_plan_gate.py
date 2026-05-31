@@ -26,7 +26,12 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import _is_plan_skill, handle_enforce_agent_plan_gate, handle_track_plan_skill_timestamp
+from hooks.scripts.hook_router import (
+    _is_plan_skill,
+    handle_enforce_agent_plan_gate,
+    handle_enforce_plan_gate_on_task_create,
+    handle_track_plan_skill_timestamp,
+)
 
 
 @pytest.fixture
@@ -244,3 +249,56 @@ class TestIsPlanSkill:
     @pytest.mark.parametrize("skill", ["plan", "planning", "t3:plan", "plan-feature", "t3:code"])
     def test_prefix_fiction_and_unrelated_names_do_not_match(self, skill: str) -> None:
         assert _is_plan_skill(skill) is False
+
+
+# ── TaskCreated plan-gate: default-OFF opt-in (#1640) ─────────────────────
+
+
+def _seed_teatree_toml(body: str) -> None:
+    """Write ``~/.teatree.toml`` (HOME is temp-isolated by conftest)."""
+    home = Path.home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".teatree.toml").write_text(body, encoding="utf-8")
+
+
+def _task_create(subject: str = "build foo", description: str = "") -> dict:
+    return {"session_id": "sess-1", "task_subject": subject, "task_description": description}
+
+
+class TestTaskCreatePlanGateDefaultOff:
+    """``handle_enforce_plan_gate_on_task_create`` ships inert (opt-in).
+
+    The TaskCreated plan-gate keys on the interactive ``teatree-plan`` skill —
+    the wrong signal and unsatisfiable unattended (#1640) — so it must default
+    OFF: with no config (or the flag unset/broken) a fan-out with no recent
+    ``/plan`` is ALLOWED. Only an explicit ``= true`` arms it.
+    """
+
+    def test_plan_gate_on_task_create_default_off(self, gate_env: Path) -> None:
+        # No ~/.teatree.toml at all: missing config ⇒ disabled ⇒ allow even
+        # with no recent plan timestamp.
+        assert not gate_env.is_file()
+        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
+
+    def test_flag_unset_is_allow(self, gate_env: Path) -> None:
+        _seed_teatree_toml("[teatree]\nskill_loading_gate_enabled = true\n")
+        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
+
+    def test_broken_config_is_disabled(self, gate_env: Path) -> None:
+        _seed_teatree_toml("this is not = valid toml [[[\n")
+        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
+
+    def test_explicit_true_arms_the_gate_and_denies(self, gate_env: Path, capsys) -> None:
+        _seed_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
+        blocked = handle_enforce_plan_gate_on_task_create(_task_create())
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        # TaskCreated deny envelope: continue=false + stopReason. The deny
+        # reason keeps its prefix so the circuit breaker still classifies it.
+        assert out["continue"] is False
+        assert "PLAN-GATE ENFORCEMENT (TaskCreated)" in out["stopReason"]
+
+    def test_explicit_true_with_recent_plan_allows(self, gate_env: Path) -> None:
+        _seed_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
+        _write_ts(gate_env, time.time() - 5 * 60)  # fresh /plan, 5 min ago
+        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False

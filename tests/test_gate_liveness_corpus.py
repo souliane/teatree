@@ -283,6 +283,15 @@ def _agent_plan_allow(ctx: GateContext) -> dict:
 # /plan must block; a real t3:teatree-plan or a [skip-plan-gate] token clears it.
 
 
+def _arrange_task_created_plan_gate(ctx: GateContext) -> None:
+    # The TaskCreated plan-gate ships default-OFF (opt-in, pending the
+    # correct-signal design in #1640), so the corpus must explicitly enable it
+    # to prove it CAN fire when on: reachable + denies a missing-plan fan-out +
+    # allows a planned one.
+    _arrange_agent_plan_gate(ctx)
+    ctx.write_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
+
+
 def _task_created_plan(*, skip: bool) -> dict:
     token = "[skip-plan-gate: false-trigger] " if skip else ""
     return {
@@ -641,7 +650,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Task",
         deny_input=lambda _c: _task_created_plan(skip=False),
         allow_input=_task_created_plan_allow,
-        arrange=_arrange_agent_plan_gate,
+        arrange=_arrange_task_created_plan_gate,
     ),
     GateRow(
         gate_id="protect-default-branch",

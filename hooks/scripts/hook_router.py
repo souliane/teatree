@@ -1351,28 +1351,36 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
 
 
 def _agent_plan_gate_on_task_create_enabled() -> bool:
-    """Whether the plan-gate-on-task-create gate is enabled (default True).
+    """Whether the plan-gate-on-task-create gate is enabled (default OFF, opt-in).
 
-    Best-effort read of ``[teatree] agent_plan_gate_on_task_create_enabled``
-    from ``~/.teatree.toml``, modeled exactly on
-    :func:`_skill_loading_gate_enabled`. Fails OPEN to enabled on a
-    missing/broken config; an explicit ``false`` is the one-line
-    kill-switch (never a code edit).
+    The new TaskCreated plan-gate ships inert pending the design fix in issue
+    #1640 — ``teatree-plan`` is an interactive backlog-prioritization skill
+    (``subagent_safe: false``), the wrong signal for "planned this
+    implementation change", and is unsatisfiable in an unattended run. Enable
+    explicitly with ``[teatree] agent_plan_gate_on_task_create_enabled = true``
+    once #1640 defines the correct signal. Default-OFF is the safe state: an
+    unvalidated gate stays inert (never wedges the loop); the flag is the
+    deliberate enable.
+
+    This deliberately DIFFERS from :func:`_skill_loading_gate_enabled` (which
+    fails OPEN to enabled). That gate is mid-re-enable (#165) and proven; this
+    gate's enforcement semantics are not finalized, so it fails CLOSED to
+    disabled — only an explicit ``true`` turns it on.
     """
     import tomllib  # noqa: PLC0415
 
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return True
+        return False
     try:
         with config_path.open("rb") as f:
             config = tomllib.load(f)
     except Exception:  # noqa: BLE001
-        return True
+        return False
     teatree = config.get("teatree") if isinstance(config, dict) else None
     if not isinstance(teatree, dict):
-        return True
-    return teatree.get("agent_plan_gate_on_task_create_enabled") is not False
+        return False
+    return teatree.get("agent_plan_gate_on_task_create_enabled") is True
 
 
 def _task_text_plan_skip_token(text: str) -> str | None:
@@ -1403,14 +1411,16 @@ def handle_enforce_plan_gate_on_task_create(data: dict) -> bool:
     :func:`handle_enforce_skill_loading_on_task_create` — it does NOT route
     through ``_fail_open_or_deny`` / ``_is_self_rescue`` (those are
     PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
-    command). The off-ramps that keep the operator from being locked out
-    are: the default-on kill-switch (``[teatree]
-    agent_plan_gate_on_task_create_enabled = false``), the ``window == 0``
-    sentinel, the ``[skip-plan-gate: <reason>]`` token, a missing session id
-    (fail-open), a broken ``~/.teatree.toml`` (fail-open), and ``main``'s
-    per-handler exception swallow. The master ``gate_fail_open`` switch
-    still protects the operator because rescue commands run as ``Bash``,
-    never as fanned-out ``Task``s.
+    command). The gate ships default-OFF (opt-in via ``[teatree]
+    agent_plan_gate_on_task_create_enabled = true``) pending the
+    correct-signal design in #1640, so by default it is inert. When enabled,
+    the off-ramps that keep the operator from being locked out are: the
+    opt-in flag itself (set it back to ``false`` / unset to disable), the
+    ``window == 0`` sentinel, the ``[skip-plan-gate: <reason>]`` token, a
+    missing session id (fail-open), a broken ``~/.teatree.toml``
+    (fail-disabled), and ``main``'s per-handler exception swallow. The master
+    ``gate_fail_open`` switch still protects the operator because rescue
+    commands run as ``Bash``, never as fanned-out ``Task``s.
     """
     session_id = data.get("session_id", "")
     if not session_id or not _agent_plan_gate_on_task_create_enabled():
@@ -1435,8 +1445,9 @@ def handle_enforce_plan_gate_on_task_create(data: dict) -> bool:
         f"recent `/plan` invocation (within the last {window} minutes). Unblock "
         "paths: (a) call the Skill tool with skill=`t3:teatree-plan` to plan "
         "first, (b) prefix the task subject/description with "
-        "`[skip-plan-gate: <reason>]` (reason mandatory), or (c) disable via "
-        "`[teatree] agent_plan_gate_on_task_create_enabled = false` in "
+        "`[skip-plan-gate: <reason>]` (reason mandatory), or (c) disable this "
+        "opt-in gate by removing/clearing "
+        "`[teatree] agent_plan_gate_on_task_create_enabled` in "
         "`~/.teatree.toml`."
     )
     return emit_task_create_deny(reason)
