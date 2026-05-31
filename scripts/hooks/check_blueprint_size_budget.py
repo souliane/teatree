@@ -29,7 +29,7 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 81_200
+_BUDGET_TOP_LEVEL_BYTES = 81_800
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -73,6 +73,10 @@ _BUDGET_TOP_LEVEL_BYTES = 81_200
 # the TaskCreated dispatch-quote fan-out gate — load-bearing config facts; on
 # top of the #169 base the merged appendix corpus is 107,249 B, so the budget is
 # raised to the next ~1 KB step (~751 B headroom) to admit the rows.
+# Reviewed bump (#166): the anti-pattern-catalog SSOT paragraph (the structured
+# source feeding the three review tiers + the catalog↔linter/eval reachability
+# ledger) is a load-bearing architectural fact; the top-level corpus was at
+# capacity, so the top-level + total budgets are raised one minimal step.
 _BUDGET_APPENDICES_BYTES = 108_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
@@ -81,10 +85,10 @@ _BUDGET_APPENDICES_BYTES = 108_000
 # `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
 # Reviewed bump (#169): tracks the top-level + appendix bumps for the
 # two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
-# Reviewed bump (#171): tracks the appendix bump for the two new config-key rows
-# (`mcp_privacy_gate_enabled`, `dispatch_quote_gate_on_task_create_enabled`);
-# merged total 188,134 B, raised to the next ~1 KB step (~866 B headroom).
-_BUDGET_TOTAL_BYTES = 189_000
+# Reviewed bump (#171+#166 merge): post-merge total corpus is 188,987 B
+# (top-level 81,738 + appendices 107,249); raised to the next ~1 KB step
+# (~1,013 B headroom).
+_BUDGET_TOTAL_BYTES = 190_000
 
 
 def _repo_root() -> pathlib.Path:
