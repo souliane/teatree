@@ -308,15 +308,70 @@ class TestAgentAnsweredQuestion:
 
         assert stamped == 0
 
-    def test_overlay_scoping(self) -> None:
+    def test_stamps_every_row_sharing_the_ts(self) -> None:
+        """The stamp keys on ``slack_ts`` alone — it does not narrow by overlay.
+
+        Two rows sharing a ``slack_ts`` are the same user DM recorded under
+        two overlays (the scanner ran in both). They are the same question,
+        so answering it stamps both — keeping the stamp symmetric with the
+        unscoped gate. The old exact-overlay filter stamped at most one,
+        stranding the other row unanswered so the gate nagged forever.
+        """
         PendingChatInjection.record(channel="D", slack_ts="ts-x", text="why?", overlay="ovA")
         PendingChatInjection.record(channel="D", slack_ts="ts-x", text="why?", overlay="ovB")
 
-        stamped = PendingChatInjection.agent_answered_question("ts-x", overlay="ovA")
+        stamped = PendingChatInjection.agent_answered_question("ts-x")
+
+        assert stamped == 2
+        assert PendingChatInjection.objects.get(overlay="ovA").answered_at is not None
+        assert PendingChatInjection.objects.get(overlay="ovB").answered_at is not None
+
+    def test_cross_overlay_answer_clears_gate(self) -> None:
+        """Sub-case (b): the user's real concurrent multi-overlay deployment.
+
+        One overlay's session records the question; a *different* overlay's
+        session answers it. The old exact-overlay filter stamped 0 rows
+        here (the answering overlay never matched the recording overlay),
+        so ``answered_at`` stayed NULL and the unscoped gate nagged forever.
+        Keying the stamp on ``slack_ts`` alone clears the gate regardless.
+        """
+        PendingChatInjection.record(
+            channel="D", slack_ts="ts-cross", text="why does this fail?", overlay="overlay-alpha"
+        )
+
+        unanswered_before = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+        assert [r.slack_ts for r in unanswered_before] == ["ts-cross"]
+
+        stamped = PendingChatInjection.agent_answered_question("ts-cross")
 
         assert stamped == 1
-        assert PendingChatInjection.objects.get(overlay="ovA").answered_at is not None
-        assert PendingChatInjection.objects.get(overlay="ovB").answered_at is None
+        assert PendingChatInjection.unanswered_questions_since(timedelta(hours=1)) == []
+
+    def test_genuinely_unanswered_row_still_nags(self) -> None:
+        """The gate must not be weakened: answering one ts leaves others nagging."""
+        PendingChatInjection.record(channel="D", slack_ts="ts-answered", text="why?", overlay="overlay-alpha")
+        PendingChatInjection.record(channel="D", slack_ts="ts-open", text="what about this?", overlay="overlay-beta")
+
+        PendingChatInjection.agent_answered_question("ts-answered")
+
+        still_nagging = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+        assert [r.slack_ts for r in still_nagging] == ["ts-open"]
+
+    def test_gate_clears_after_answer(self) -> None:
+        """The Stop-hook gate must clear once the satisfier stamps the row.
+
+        Record under a concrete overlay, answer it, and the gate must
+        return an empty list — the permanent-nag is eliminated.
+        """
+        PendingChatInjection.record(channel="D", slack_ts="ts-q2", text="why does this fail?", overlay="overlay-alpha")
+
+        unanswered_before = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+        assert [r.slack_ts for r in unanswered_before] == ["ts-q2"]
+
+        PendingChatInjection.agent_answered_question("ts-q2")
+
+        unanswered_after = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
+        assert unanswered_after == []
 
 
 class TestUnansweredQuestionsSince:

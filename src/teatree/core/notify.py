@@ -180,9 +180,12 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
     ``idempotency_key="answer-<anything>-<slack_ts>"`` — the agent used
     the answer-key convention; the ts is extracted from the suffix.
 
-    The active overlay (``T3_OVERLAY_NAME``) scopes the stamp to its own
-    queue; the empty overlay (the default in the single-overlay v1 path)
-    matches the empty-overlay rows the scanner records under.
+    The stamp keys on ``slack_ts`` alone — symmetric with the unscoped
+    Stop-hook gate — so a reply sent from one overlay's session clears a
+    question recorded under a *different* overlay (the concurrent multi-
+    overlay case). Scoping by the active ``T3_OVERLAY_NAME`` here was the
+    original defect: it stamped 0 rows whenever the answering session's
+    overlay differed from the recording overlay, leaving the gate nagging.
     """
     ts = answering_slack_ts
     if not ts:
@@ -192,16 +195,13 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
         ts = match.group(1)
     # Deferred import (mirrors ``_resolve_user_id`` / ``_maybe_linkify``
     # in this module): the answer-stamp is an opt-in side path; keeping
-    # the model + os imports out of ``teatree.core.notify`` import time
-    # avoids perturbing the module-import graph that the on-behalf gate
-    # and notify suites rely on.
-    import os  # noqa: PLC0415
-
+    # the model import out of ``teatree.core.notify`` import time avoids
+    # perturbing the module-import graph that the on-behalf gate and
+    # notify suites rely on.
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415
 
-    overlay = os.environ.get("T3_OVERLAY_NAME", "")
     try:
-        PendingChatInjection.agent_answered_question(ts, overlay=overlay)
+        PendingChatInjection.agent_answered_question(ts)
     except Exception as exc:  # noqa: BLE001 — best-effort; never break notify_user
         logger.debug("notify_user answered_at stamp failed for ts=%s: %s", ts, exc)
 
