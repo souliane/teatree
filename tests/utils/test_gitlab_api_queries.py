@@ -429,7 +429,7 @@ def test_get_mr_discussions_returns_list(monkeypatch: pytest.MonkeyPatch) -> Non
     client = gitlab_api.GitLabAPI(token="test-token")
     monkeypatch.setattr(
         client,
-        "get_json",
+        "get_json_paginated",
         lambda endpoint: [{"id": "d1", "notes": []}],
     )
 
@@ -438,9 +438,9 @@ def test_get_mr_discussions_returns_list(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result == [{"id": "d1", "notes": []}]
 
 
-def test_get_mr_discussions_returns_empty_when_not_a_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_mr_discussions_returns_empty_when_no_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     client = gitlab_api.GitLabAPI(token="test-token")
-    monkeypatch.setattr(client, "get_json", lambda endpoint: None)
+    monkeypatch.setattr(client, "get_json_paginated", lambda endpoint: [])
 
     result = client.get_mr_discussions(42, 1)
 
