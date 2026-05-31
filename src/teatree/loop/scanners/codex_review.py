@@ -233,7 +233,8 @@ class GhCodexPrApi:
             return []
         if not isinstance(data, list):
             return []
-        return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
+        decoded = (_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict))
+        return [pr for pr in decoded if pr is not None]
 
     def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
@@ -245,9 +246,12 @@ class GhCodexPrApi:
         return result.returncode, result.stdout, result.stderr
 
 
-def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
+def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
     number_raw = raw.get("number")
-    number = number_raw if isinstance(number_raw, int) else 0
+    if not isinstance(number_raw, int):
+        logger.warning("codex_review: skipping PR with missing/non-int number in %s payload: %r", slug, raw)
+        return None
+    number = number_raw
     head_sha = _as_str(raw.get("headRefOid"))
     is_draft = bool(raw.get("isDraft"))
     url = _as_str(raw.get("url"))

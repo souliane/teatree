@@ -376,32 +376,40 @@ class TestGhCodexPrApi:
 
 
 class TestDecodePr:
-    """``_decode_pr`` is defensive — coerces missing/wrong-type fields to safe defaults."""
+    """``_decode_pr`` skips PRs with a missing/non-int number, and coerces other missing fields to safe defaults."""
 
-    def test_missing_fields_default_to_safe_values(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={})
+    def test_missing_number_returns_none(self) -> None:
+        """A payload with no number field must be skipped — pr_id=0 poisons the marker table."""
+        assert _decode_pr(slug=SLUG, raw={}) is None
+
+    def test_non_int_number_returns_none(self) -> None:
+        """A non-integer number (e.g. stringified) is not a valid PR id — skip."""
+        assert _decode_pr(slug=SLUG, raw={"number": "not-an-int"}) is None
+
+    def test_valid_number_with_missing_optional_fields_uses_safe_defaults(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 42})
+        assert pr is not None
         assert pr.slug == SLUG
-        assert pr.number == 0
+        assert pr.number == 42
         assert pr.head_sha == ""
         assert pr.is_draft is False
         assert pr.changed_files == ()
         assert pr.url == ""
         assert pr.title == ""
 
-    def test_non_int_number_falls_back_to_zero(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"number": "not-an-int"})
-        assert pr.number == 0
-
     def test_non_list_files_falls_back_to_empty(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"files": "not-a-list"})
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "files": "not-a-list"})
+        assert pr is not None
         assert pr.changed_files == ()
 
     def test_non_dict_file_entry_is_skipped(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"files": ["bare-string", {"path": "src/a.py"}]})
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "files": ["bare-string", {"path": "src/a.py"}]})
+        assert pr is not None
         assert pr.changed_files == ("src/a.py",)
 
     def test_blank_path_in_file_entry_is_skipped(self) -> None:
-        pr = _decode_pr(slug=SLUG, raw={"files": [{"path": ""}, {"path": "src/a.py"}]})
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "files": [{"path": ""}, {"path": "src/a.py"}]})
+        assert pr is not None
         assert pr.changed_files == ("src/a.py",)
 
 
