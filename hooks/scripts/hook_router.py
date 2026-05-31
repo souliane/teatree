@@ -4798,26 +4798,23 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 # endpoint is denied; plain GET reads pass through.
 #
 # Conservative by construction: it matches ONLY the review-comment endpoints
-# (discussions / notes / comments) AND only when a write is present (an HTTP
-# method override of POST/PUT/PATCH, or a request-body flag the forge CLIs
-# use to carry a payload — ``-f``/``--field``/``-F``/``--raw-field``/
-# ``--input``/``-d``/``--data``). An EXPLICIT ``-X GET``/``--method GET`` is
-# always a read regardless of any body/query flag: the forge sends ``-f`` as a
-# query parameter on a forced GET, never a body write, so an explicit GET truly
-# cannot create a comment (#1568). A bare read (``glab api .../discussions``)
-# and any non-review endpoint pass through untouched. Fails OPEN on an
-# internal parse error — a gate bug must never wedge the fleet.
+# (discussions / notes / comments) and classifies the command by its EFFECTIVE
+# HTTP method — the one gh (2.87.3) / glab (1.80.4) actually send. Both CLIs
+# resolve repeated ``-X``/``--method`` flags LAST-WINS (empirically verified:
+# ``-X GET -X POST`` POSTs, ``--method GET --method PATCH`` PATCHes), and when
+# NO method flag is given they default to POST if a request-body/field flag is
+# present, else GET. A command is a READ iff its effective method is GET —
+# only then does the forge send ``-f`` as a query parameter rather than a body
+# write, so a comment cannot be created (#1568). Every other effective method
+# (POST/PUT/PATCH/DELETE/…) is a write. A bare read (``glab api
+# .../discussions``) and any non-review endpoint pass through untouched. Fails
+# OPEN on an internal parse error — a gate bug must never wedge the fleet.
 
 _REVIEW_POST_ENDPOINT_RE = re.compile(
     r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
 )
-_REVIEW_POST_METHOD_WRITE_RE = re.compile(
-    r"(?:-X|--method)[\s=]+['\"]?(?:POST|PUT|PATCH)\b",
-    re.IGNORECASE,
-)
-_REVIEW_POST_METHOD_READ_RE = re.compile(
-    r"(?:-X|--method)[\s=]+['\"]?GET\b",
-    re.IGNORECASE,
+_REVIEW_POST_METHOD_RE = re.compile(
+    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b",
 )
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
@@ -4836,19 +4833,25 @@ def _is_raw_review_write(command: str) -> bool:
     """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
 
     True only when the command targets a ``.../discussions``, ``.../notes``,
-    or ``.../comments`` endpoint AND carries a write signal (a POST/PUT/PATCH
-    method override or a request-body flag). An explicit ``-X GET``/
-    ``--method GET`` is always classified read — a forced GET sends body flags
-    as query params and cannot create a comment (#1568). A plain GET read
-    returns False.
+    or ``.../comments`` endpoint AND its EFFECTIVE HTTP method is not GET. The
+    effective method models gh/glab semantics: the LAST ``-X``/``--method``
+    value wins (so ``-X GET -X POST`` is a POST write, ``-X POST -X GET`` is a
+    GET read); with no method flag the forge defaults to POST when a body/field
+    flag is present, else GET. A forced GET sends body flags as query params
+    and cannot create a comment, so it is the only read (#1568).
     """
     if "glab api" not in command and "gh api" not in command:
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
         return False
-    if _REVIEW_POST_METHOD_READ_RE.search(command):
-        return False
-    return bool(_REVIEW_POST_METHOD_WRITE_RE.search(command) or _REVIEW_POST_BODY_FLAG_RE.search(command))
+    methods = [m.upper() for m in _REVIEW_POST_METHOD_RE.findall(command)]
+    if methods:
+        is_read = methods[-1] == "GET"
+    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
+        is_read = False
+    else:
+        is_read = True
+    return not is_read
 
 
 def handle_block_raw_review_post(data: dict) -> bool:
@@ -4856,10 +4859,11 @@ def handle_block_raw_review_post(data: dict) -> bool:
 
     Forces the sanctioned ``t3 <overlay> review post-comment`` /
     ``post-draft-note`` path (draft-default + dedup + on-behalf approval),
-    which a direct REST POST skips. Conservative: only clear review-write
-    POSTs are denied — bare reads, explicit ``-X GET``/``--method GET`` reads,
-    and non-review endpoints pass through. Returns True when a deny was emitted
-    (caller stops the handler chain).
+    which a direct REST write skips. Conservative: a command is denied only
+    when its effective HTTP method (last ``-X``/``--method`` wins; default POST
+    when a body flag is present) is not GET. Reads — bare, explicit-GET, or
+    write-then-GET — and non-review endpoints pass through. Returns True when a
+    deny was emitted (caller stops the handler chain).
     """
     if data.get("tool_name") != "Bash":
         return False
