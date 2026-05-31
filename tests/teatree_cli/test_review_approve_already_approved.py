@@ -44,6 +44,10 @@ class _AlreadyApprovedAPI:
         self.calls.append(("get_json", endpoint))
         if endpoint.endswith("/approvals"):
             return {"approved_by": [{"user": {"username": "souliane"}}]}
+        return []
+
+    def get_json_paginated(self, endpoint: str) -> list:
+        self.calls.append(("get_json_paginated", endpoint))
         # discussions probe for the review-before-approve precondition
         return [{"notes": [{"author": {"username": "souliane"}}]}]
 
@@ -65,6 +69,10 @@ class _GenuineAuthFailureAPI:
         self.calls.append(("get_json", endpoint))
         if endpoint.endswith("/approvals"):
             return {"approved_by": [{"user": {"username": "someone-else"}}]}
+        return []
+
+    def get_json_paginated(self, endpoint: str) -> list:
+        self.calls.append(("get_json_paginated", endpoint))
         return [{"notes": [{"author": {"username": "souliane"}}]}]
 
     def post_status(self, endpoint: str) -> int:
