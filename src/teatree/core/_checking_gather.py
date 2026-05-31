@@ -30,13 +30,19 @@ class _MergedScope:
     overlay_repos: list[str]
 
 
+def _url_matches_pr_id(url: str, pr_id: int) -> bool:
+    """True when *url*'s last path segment equals *pr_id* (not just a substring)."""
+    segment = url.rstrip("/").rsplit("/", 1)[-1]
+    return segment == str(pr_id)
+
+
 def pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: str) -> str:
     """Prefer an exact stored PR URL, else a host-aware built URL, else issue URL."""
     if ticket is not None:
         stored = (ticket.extra or {}).get("pr_urls") or []
         if isinstance(stored, list):
             for url in stored:
-                if isinstance(url, str) and url and str(pr_id) in url:
+                if isinstance(url, str) and url and _url_matches_pr_id(url, pr_id):
                     return url
     from teatree.core.checking import build_pr_url  # noqa: PLC0415
 
