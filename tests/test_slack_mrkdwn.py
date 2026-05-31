@@ -99,6 +99,25 @@ class TestSlackLinkifyMarkdownLinks:
             "fixes <https://github.com/souliane/teatree/issues/1011|#1011> in <https://example.com/pr/1|the PR>"
         )
 
+    def test_label_with_gt_inside_is_entity_escaped(self) -> None:
+        # A '>' in the label would terminate the mrkdwn token early.
+        out = slack_linkify("[before > after](https://x.com)")
+        # The token must be a single valid <url|label> — exactly one unescaped
+        # '>' (the terminator) and the label '>' must be entity-escaped.
+        assert out.count("<") == 1
+        assert out.count(">") == 1  # only the terminator
+        assert "&gt;" in out
+
+    def test_label_with_lt_inside_is_entity_escaped(self) -> None:
+        out = slack_linkify("[a < b](https://x.com)")
+        assert out.count("<") == 1
+        assert out.count(">") == 1
+        assert "&lt;" in out
+
+    def test_label_with_amp_inside_is_entity_escaped(self) -> None:
+        out = slack_linkify("[a & b](https://x.com)")
+        assert "&amp;" in out
+
     def test_label_with_pipe_inside_is_escaped(self) -> None:
         # Slack mrkdwn doesn't support pipes in labels; the helper substitutes
         # them with a unicode bar so the label stays readable rather than the
