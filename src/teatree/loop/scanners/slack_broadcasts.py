@@ -388,6 +388,7 @@ class SlackBroadcastsScanner:
         mr_urls = {state.url for state in states}
         for sibling_row in ScannedBroadcast.objects.filter(
             classification=ScannedBroadcast.Classification.ALL_MERGED,
+            overlay=self.overlay,
         ).exclude(pk=row.pk):
             sibling_urls = sibling_row.mr_urls if isinstance(sibling_row.mr_urls, list) else []
             if not mr_urls.intersection(sibling_urls):
