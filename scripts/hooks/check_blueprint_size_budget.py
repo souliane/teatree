@@ -55,10 +55,16 @@ _BUDGET_TOP_LEVEL_BYTES = 80_800
 # same class of load-bearing safety fact, plus the mandatory tach
 # dependency-graph edge for the new `core → hooks` reuse; corpus was at
 # capacity after the #1540 bump.
-_BUDGET_APPENDICES_BYTES = 104_400
+# Reviewed bump: the `skill_loading_gate_enabled` per-overlay config-key row
+# documenting the §17.6.4 skill-loading kill-switch is a load-bearing config
+# fact, and the appendix corpus was again at capacity; raised by the minimal
+# amount (with ~600 B headroom) to admit the row, matching the #1488 precedent.
+_BUDGET_APPENDICES_BYTES = 105_400
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
-_BUDGET_TOTAL_BYTES = 185_200
+# Reviewed bump: total tracked the appendix bump for the
+# `skill_loading_gate_enabled` config-key row.
+_BUDGET_TOTAL_BYTES = 185_800
 
 
 def _repo_root() -> pathlib.Path:
