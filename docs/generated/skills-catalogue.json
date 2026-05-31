@@ -37,6 +37,10 @@
       "summary": "Daily follow-up \u2014 batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review"
     },
     {
+      "name": "full-speed",
+      "summary": "Parallel backlog blast \u2014 classify the actionable backlog, fan out autonomous-safe work across isolated worktrees, surface the rest"
+    },
+    {
       "name": "handover",
       "summary": "Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
     },
