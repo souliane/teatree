@@ -305,6 +305,7 @@ class TestF3CoreHooksPathBypass:
             "git commit -c core.hooksPath=/dev/null -m 'x'",
             "git -c core.hooksPath=/tmp commit -m 'bypass'",
             "git -c 'core.hooksPath=/dev/null' commit -m 'bypass'",
+            'git -c "core.hooksPath=/dev/null" commit -m x',
         ],
     )
     def test_f3_hooks_path_override_is_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -534,6 +535,7 @@ class TestF6ReadonlyPrefixChainBypass:
         "command",
         [
             'git commit -m "fix: handle pip install edge case"',
+            "git commit -m 'fix: handle pip install edge case'",
             'git log --oneline | grep "pip install"',
             'cat setup.py | grep "manage.py migrate"',
             'echo "checking docker compose up" && ls',

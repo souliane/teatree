@@ -76,7 +76,47 @@ _READONLY_CMD_PREFIX_RE = re.compile(
 
 # Forbidden command patterns → deny messages.  Each entry is
 # (compiled regex matching the Bash command, human-readable deny reason).
-_BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+# Patterns that match a VALUE or CONFIG TOKEN that can legitimately appear
+# inside a quoted argument in a real bypass (e.g. ``git -c "core.hooksPath=x"``
+# or ``git push -o "merge_request.merge_when_pipeline_succeeds"``).  These
+# must be scanned against the RAW command so quoting cannot evade them.
+_RAW_SCAN_BLOCKED: list[tuple[re.Pattern[str], str]] = [
+    (
+        # F3: ``git -c core.hooksPath=…`` redirects git's hooks directory,
+        # silencing all hooks — semantically identical to ``--no-verify``.
+        # The value (e.g. ``/dev/null``) can appear inside single- or
+        # double-quoted args: ``git -c "core.hooksPath=/dev/null"`` is a real
+        # bypass and must be caught against the raw command.
+        re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE),
+        (
+            "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
+            "(equivalent to `--no-verify`) — fix the hook failure instead."
+        ),
+    ),
+    (
+        # F8: ``git push -o merge_request.merge_when_pipeline_succeeds`` schedules
+        # a GitLab auto-merge, bypassing the FSM keystone transition
+        # (``t3 <overlay> ticket merge``). The ``--push-option=`` long form is
+        # equivalent.  The push-option value can appear quoted on the command
+        # line, so scan raw.
+        re.compile(
+            r"\bgit\s+push\b.*"
+            r"(?:-o\s+merge_request\.merge_when_pipeline_succeeds"
+            r"|--push-option=merge_request\.merge_when_pipeline_succeeds)"
+        ),
+        (
+            "BLOCKED: `git push -o merge_request.merge_when_pipeline_succeeds` "
+            "schedules an auto-merge bypassing the FSM keystone — "
+            "use `t3 <overlay> ticket merge` instead."
+        ),
+    ),
+]
+
+# Patterns that match a TOOL INVOCATION that, in any real command, appears
+# unquoted at command position.  These are scanned against a quote-stripped
+# copy of the command so a tool name that merely appears inside a quoted
+# commit message / grep argument does not false-block.
+_QUOTE_STRIPPED_BLOCKED: list[tuple[re.Pattern[str], str]] = [
     (
         re.compile(r"\.venv/bin/"),
         "BLOCKED: `.venv/bin/...` — use `uv run` instead so the resolved environment matches `pyproject.toml`.",
@@ -136,15 +176,6 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
         re.compile(r"\bgit\s+\S+.*--no-gpg-sign\b"),
         "BLOCKED: `--no-gpg-sign` — do not bypass signing without explicit user approval.",
     ),
-    (
-        # F3: ``git -c core.hooksPath=…`` redirects git's hooks directory,
-        # silencing all hooks — semantically identical to ``--no-verify``.
-        re.compile(r"\bgit\b.*-c\s+['\"]?core\.hooksPath\s*=", re.IGNORECASE),
-        (
-            "BLOCKED: `git -c core.hooksPath=…` bypasses git hooks "
-            "(equivalent to `--no-verify`) — fix the hook failure instead."
-        ),
-    ),
     # NOTE: ``gh pr merge`` / ``glab mr merge`` are NOT static-blocked here.
     # A pure regex cannot tell a teatree-managed repo (must use the keystone
     # `t3 <overlay> ticket merge` transition) from a lightweight repo with no
@@ -163,22 +194,14 @@ _BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
             "or `uv tool install --editable <teatree-repo>`)."
         ),
     ),
-    (
-        # F8: ``git push -o merge_request.merge_when_pipeline_succeeds`` schedules
-        # a GitLab auto-merge, bypassing the FSM keystone transition
-        # (``t3 <overlay> ticket merge``). The ``--push-option=`` long form is
-        # equivalent.
-        re.compile(
-            r"\bgit\s+push\b.*"
-            r"(?:-o\s+merge_request\.merge_when_pipeline_succeeds"
-            r"|--push-option=merge_request\.merge_when_pipeline_succeeds)"
-        ),
-        (
-            "BLOCKED: `git push -o merge_request.merge_when_pipeline_succeeds` "
-            "schedules an auto-merge bypassing the FSM keystone — "
-            "use `t3 <overlay> ticket merge` instead."
-        ),
-    ),
+]
+
+# Keep the combined list for any existing code that references _BLOCKED_COMMANDS
+# directly (e.g. downstream tests that import it). Both partitions are included
+# so the union is identical to the original list.
+_BLOCKED_COMMANDS: list[tuple[re.Pattern[str], str]] = [
+    *_RAW_SCAN_BLOCKED,
+    *_QUOTE_STRIPPED_BLOCKED,
 ]
 
 
@@ -4792,10 +4815,12 @@ _REMOTE_DUMP_DENY_REASON = (
 
 
 _SHELL_CHAIN_RE = re.compile(r"[;|`]|\$\(|&&|\|\|")
-# Strip only double-quoted literals: single-quoted args are left intact so that
-# patterns that need to detect content inside single-quoted git -c arguments
-# (e.g. the F3 core.hooksPath bypass) continue to match.
-_DOUBLE_QUOTED_LITERAL_RE = re.compile(r'"[^"]*"')
+# Strip both single- and double-quoted literals for the tool-invocation scan so
+# that a blocked tool name mentioned inside any quoted argument (e.g. a git
+# commit message or a grep pattern) does not false-block the command.
+# Value/config patterns (F3, F8) are scanned against the raw command instead,
+# so stripping both quote styles here is safe.
+_QUOTED_LITERAL_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 
 
 def _has_shell_chain(command: str) -> bool:
@@ -4821,15 +4846,19 @@ def _deny_match(command: str) -> str | None:
     # must inspect the full command rather than short-circuiting on the prefix.
     if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
         return None
-    # Strip double-quoted literals before scanning _BLOCKED_COMMANDS so that a
-    # blocked tool name mentioned inside a double-quoted argument (e.g. a git
-    # commit -m message or a grep pattern) does not false-block the command.
-    # Single-quoted strings are left intact so patterns that look inside them
-    # (e.g. F3 core.hooksPath detection) still fire. Real blocked invocations
-    # are unquoted and still match the stripped scan target.
-    scan_target = _DOUBLE_QUOTED_LITERAL_RE.sub(" ", command)
-    for pattern, reason in _BLOCKED_COMMANDS:
-        if pattern.search(scan_target):
+    # Scan VALUE/CONFIG patterns against the raw command so that quoting the
+    # value (e.g. ``git -c "core.hooksPath=/dev/null"``) cannot evade the gate.
+    for pattern, reason in _RAW_SCAN_BLOCKED:
+        if pattern.search(command):
+            return reason + " If `t3` fails, fix the CLI — do not work around it."
+    # Scan TOOL-INVOCATION patterns against a quote-stripped copy so that a
+    # blocked tool name that appears only inside a quoted commit message or grep
+    # argument (e.g. ``git commit -m 'fix: handle pip install edge case'``) does
+    # not false-block the command.  Real blocked invocations are unquoted and
+    # still match the stripped target.
+    quote_stripped = _QUOTED_LITERAL_RE.sub(" ", command)
+    for pattern, reason in _QUOTE_STRIPPED_BLOCKED:
+        if pattern.search(quote_stripped):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
     return None
 
