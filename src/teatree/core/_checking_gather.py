@@ -62,20 +62,51 @@ def resolved_repo_slug(clear: MergeClear) -> str:
         return ""
 
 
+def repo_entry_matches(declared: str, resolved_slug: str, *, overlay_owner: str | None) -> bool:
+    """Whether a declared overlay repo matches a resolved ``owner/repo`` slug.
+
+    A fully-qualified declared ``owner/repo`` matches only its exact slug. A
+    bare declared repo name matches on repo segment, but only when the resolved
+    slug's owner is allowed: a concrete *overlay_owner* requires the resolved
+    owner to equal it — so a same-named repo under a different owner (declared
+    ``acme-product`` vs resolved ``attacker-org/acme-product`` for an overlay
+    owned by ``acme-org``) does NOT match. ``overlay_owner=None`` leaves the
+    owner unconstrained (an overlay that declares no owner at all).
+    """
+    if not declared or not resolved_slug:
+        return False
+    if "/" in declared:
+        return declared == resolved_slug
+    resolved_owner, _, resolved_name = resolved_slug.rpartition("/")
+    if declared != resolved_name:
+        return False
+    return overlay_owner is None or resolved_owner == overlay_owner
+
+
+def _overlay_owners(overlay_repos: list[str]) -> set[str]:
+    """The set of owners declared by the overlay's fully-qualified ``owner/repo`` entries."""
+    return {declared.split("/", 1)[0] for declared in overlay_repos if declared and "/" in declared}
+
+
 def repo_in_overlay(repo_slug: str, overlay_repos: list[str]) -> bool:
-    """True when *repo_slug* (a resolved ``owner/repo``) belongs to the overlay."""
+    """True when *repo_slug* (a resolved ``owner/repo``) belongs to the overlay.
+
+    When the overlay declares any fully-qualified ``owner/repo``, a bare declared
+    repo name is honoured only for resolved slugs whose owner is one of those
+    declared owners — a same-named repo under a foreign owner cannot be claimed.
+    An overlay that declares no owner at all keeps the lenient bare-name match.
+    """
     if not repo_slug:
         return False
-    repo_name = repo_slug.rsplit("/", 1)[-1]
-    for declared in overlay_repos:
-        if not declared:
-            continue
-        if "/" in declared:
-            if declared == repo_slug:
-                return True
-        elif declared == repo_name:
-            return True
-    return False
+    owners = _overlay_owners(overlay_repos)
+    resolved_owner = repo_slug.rpartition("/")[0]
+    if owners and resolved_owner not in owners:
+        # Constrained overlay, foreign owner: only an exact qualified entry can match.
+        return any(declared == repo_slug for declared in overlay_repos if declared and "/" in declared)
+    overlay_owner = resolved_owner if owners else None
+    return any(
+        repo_entry_matches(declared, repo_slug, overlay_owner=overlay_owner) for declared in overlay_repos if declared
+    )
 
 
 def ticket_url(ticket: Ticket) -> str:
