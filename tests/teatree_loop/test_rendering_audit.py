@@ -248,6 +248,59 @@ class TestInflightPrRows:
         assert "(pipeline failed)" not in text, repr(text)
 
 
+def _orphaned(task_id: int, overlay: str = "teatree") -> DispatchAction:
+    """Build a ``todo.orphaned`` statusline action as the dispatcher emits it."""
+    return DispatchAction(
+        kind="statusline",
+        zone="action_needed",
+        detail=f"Task {task_id} — artifact state unverifiable, needs operator review",
+        payload={
+            "task_id": task_id,
+            "ticket_id": task_id + 1000,
+            "issue_url": f"https://example.com/issues/{task_id}",
+            "overlay": overlay,
+        },
+    )
+
+
+class TestOrphanedTaskCollapse:
+    """N ``todo.orphaned`` signals collapse to ONE summary line in action_needed."""
+
+    def test_single_orphaned_task_renders_one_summary_line(self) -> None:
+        zones = zones_for([_orphaned(42)], colorize=False)
+        text = _blob(zones.action_needed)
+        assert "task needs operator review" in text, repr(text)
+        assert "1 task" in text, repr(text)
+
+    def test_many_orphaned_tasks_render_exactly_one_summary_line(self) -> None:
+        actions = [_orphaned(i) for i in range(1, 12)]
+        zones = zones_for(actions, colorize=False)
+        lines = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+        # Exactly one line mentions operator review — not 11 separate rows.
+        review_lines = [ln for ln in lines if "operator review" in ln]
+        assert len(review_lines) == 1, repr(lines)
+        assert "11 tasks need operator review" in review_lines[0], repr(review_lines[0])
+
+    def test_orphaned_task_summary_includes_count(self) -> None:
+        actions = [_orphaned(i) for i in range(1, 4)]
+        zones = zones_for(actions, colorize=False)
+        text = _blob(zones.action_needed)
+        assert "3 tasks need operator review" in text, repr(text)
+
+    def test_orphaned_tasks_from_different_overlays_each_get_one_line(self) -> None:
+        actions = [
+            _orphaned(1, overlay="overlay-a"),
+            _orphaned(2, overlay="overlay-a"),
+            _orphaned(3, overlay="overlay-b"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        lines = [item if isinstance(item, str) else item.text for item in zones.action_needed]
+        review_lines = [ln for ln in lines if "operator review" in ln]
+        assert len(review_lines) == 2, repr(lines)
+        assert any("overlay-a" in ln and "2 tasks" in ln for ln in review_lines), repr(review_lines)
+        assert any("overlay-b" in ln and "1 task" in ln for ln in review_lines), repr(review_lines)
+
+
 class TestNoRunningTasksLine(django.test.TestCase):
     """The DB-backed ``agents:`` row is gone post-#1156.
 
