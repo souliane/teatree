@@ -18,6 +18,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.core._checking_gather import pr_url_for
 from teatree.core.checking import (
     AllOverlaysReport,
     CheckGroup,
@@ -410,6 +411,54 @@ class TestPureRenderers:
             needs_you=CheckGroup(title="Needs you"),
         )
         assert report.to_terse().startswith("Nothing since ")
+
+
+class TestPrUrlForPathSegmentMatch(TestCase):
+    """``pr_url_for`` must match pr_id as a path segment, not a bare substring (#1621).
+
+    When ``pr_urls`` contains both ``/pull/123`` and ``/pull/12``, resolving
+    pr_id=12 must return the ``/pull/12`` URL, not ``/pull/123``.
+    """
+
+    def _ticket_with_urls(self, *urls: str) -> Ticket:
+        t = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://github.com/synthetic-owner/synthetic-repo/issues/1",
+            state=Ticket.State.IN_REVIEW,
+        )
+        t.extra = {"pr_urls": list(urls)}
+        t.save(update_fields=["extra"])
+        return t
+
+    def test_github_shorter_id_not_confused_with_longer(self) -> None:
+        ticket = self._ticket_with_urls(
+            "https://github.com/synthetic-owner/synthetic-repo/pull/123",
+            "https://github.com/synthetic-owner/synthetic-repo/pull/12",
+        )
+        result = pr_url_for(ticket, repo_slug="synthetic-owner/synthetic-repo", pr_id=12, code_host="github")
+        assert result == "https://github.com/synthetic-owner/synthetic-repo/pull/12"
+
+    def test_gitlab_shorter_id_not_confused_with_longer(self) -> None:
+        ticket = self._ticket_with_urls(
+            "https://gitlab.com/synthetic-owner/synthetic-repo/-/merge_requests/123",
+            "https://gitlab.com/synthetic-owner/synthetic-repo/-/merge_requests/12",
+        )
+        result = pr_url_for(ticket, repo_slug="synthetic-owner/synthetic-repo", pr_id=12, code_host="gitlab")
+        assert result == "https://gitlab.com/synthetic-owner/synthetic-repo/-/merge_requests/12"
+
+    def test_no_match_falls_through_to_builder(self) -> None:
+        ticket = self._ticket_with_urls(
+            "https://github.com/synthetic-owner/synthetic-repo/pull/99",
+        )
+        result = pr_url_for(ticket, repo_slug="synthetic-owner/synthetic-repo", pr_id=7, code_host="github")
+        assert result == "https://github.com/synthetic-owner/synthetic-repo/pull/7"
+
+    def test_single_entry_exact_match_still_works(self) -> None:
+        ticket = self._ticket_with_urls(
+            "https://github.com/synthetic-owner/synthetic-repo/pull/7",
+        )
+        result = pr_url_for(ticket, repo_slug="synthetic-owner/synthetic-repo", pr_id=7, code_host="github")
+        assert result == "https://github.com/synthetic-owner/synthetic-repo/pull/7"
 
 
 class TestAllOverlaysAggregation(CheckingTestBase):
