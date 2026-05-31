@@ -96,7 +96,7 @@ def _record_plan() -> dict:
     return {
         "session_id": "sess-1",
         "tool_name": "Skill",
-        "tool_input": {"skill": "plan"},
+        "tool_input": {"skill": "t3:teatree-plan"},
     }
 
 
@@ -260,7 +260,9 @@ class TestSessionScope:
         target.write_text("x = 1\n", encoding="utf-8")
 
         # Plan in session A.
-        handle_track_plan_invocation({"session_id": "sess-A", "tool_name": "Skill", "tool_input": {"skill": "plan"}})
+        handle_track_plan_invocation(
+            {"session_id": "sess-A", "tool_name": "Skill", "tool_input": {"skill": "t3:teatree-plan"}}
+        )
 
         # Edit attempt in session B — no plan, no read for session B.
         data_b = {

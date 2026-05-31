@@ -1350,6 +1350,109 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     return emit_task_create_deny(reason)
 
 
+def _agent_plan_gate_on_task_create_enabled() -> bool:
+    """Whether the plan-gate-on-task-create gate is enabled (default OFF, opt-in).
+
+    The new TaskCreated plan-gate ships inert pending the design fix in issue
+    #1640 — ``teatree-plan`` is an interactive backlog-prioritization skill
+    (``subagent_safe: false``), the wrong signal for "planned this
+    implementation change", and is unsatisfiable in an unattended run. Enable
+    explicitly with ``[teatree] agent_plan_gate_on_task_create_enabled = true``
+    once #1640 defines the correct signal. Default-OFF is the safe state: an
+    unvalidated gate stays inert (never wedges the loop); the flag is the
+    deliberate enable.
+
+    This deliberately DIFFERS from :func:`_skill_loading_gate_enabled` (which
+    fails OPEN to enabled). That gate is mid-re-enable (#165) and proven; this
+    gate's enforcement semantics are not finalized, so it fails CLOSED to
+    disabled — only an explicit ``true`` turns it on.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return False
+    return teatree.get("agent_plan_gate_on_task_create_enabled") is True
+
+
+def _task_text_plan_skip_token(text: str) -> str | None:
+    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
+
+    Scans only the first 512 characters (matching
+    :func:`_agent_prompt_skip_token`) so a buried token in a long task body
+    does not silently authorise dispatch.
+    """
+    match = _SKIP_PLAN_GATE_RE.search(text[:512])
+    if not match:
+        return None
+    return match.group(1).strip() or None
+
+
+def handle_enforce_plan_gate_on_task_create(data: dict) -> bool:
+    """Deny a fanned-out ``Task`` lacking a fresh ``/plan`` or a skip token.
+
+    Closes the fan-out loophole in :func:`handle_enforce_agent_plan_gate`:
+    the ``PreToolUse`` Agent/Task plan-gate is skipped on the Workflow/Task
+    fan-out path, so this ``TaskCreated`` handler enforces the same
+    freshness proof there. It reuses the wall-clock machinery
+    (:func:`_plan_gate_window_minutes`, :func:`_plan_skill_recently_invoked`,
+    the ``last-plan-skill-ts`` marker), so a single up-front
+    ``t3:teatree-plan`` authorises a whole fan-out.
+
+    NEVER-LOCKOUT: this deliberately mirrors
+    :func:`handle_enforce_skill_loading_on_task_create` — it does NOT route
+    through ``_fail_open_or_deny`` / ``_is_self_rescue`` (those are
+    PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
+    command). The gate ships default-OFF (opt-in via ``[teatree]
+    agent_plan_gate_on_task_create_enabled = true``) pending the
+    correct-signal design in #1640, so by default it is inert. When enabled,
+    the off-ramps that keep the operator from being locked out are: the
+    opt-in flag itself (set it back to ``false`` / unset to disable), the
+    ``window == 0`` sentinel, the ``[skip-plan-gate: <reason>]`` token, a
+    missing session id (fail-open), a broken ``~/.teatree.toml``
+    (fail-disabled), and ``main``'s per-handler exception swallow. The master
+    ``gate_fail_open`` switch still protects the operator because rescue
+    commands run as ``Bash``, never as fanned-out ``Task``s.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id or not _agent_plan_gate_on_task_create_enabled():
+        return False
+
+    window = _plan_gate_window_minutes()
+    # Sentinel 0 disables the freshness window — a single up-front /plan
+    # authorises the whole fan-out without re-planning each wave (#1488).
+    if window == 0:
+        return False
+
+    subject = data.get("task_subject", "") or ""
+    description = data.get("task_description", "") or ""
+    if _task_text_plan_skip_token(f"{subject}\n{description}"):
+        return False
+
+    if _plan_skill_recently_invoked():
+        return False
+
+    reason = (
+        "PLAN-GATE ENFORCEMENT (TaskCreated): this fanned-out task requires a "
+        f"recent `/plan` invocation (within the last {window} minutes). Unblock "
+        "paths: (a) call the Skill tool with skill=`t3:teatree-plan` to plan "
+        "first, (b) prefix the task subject/description with "
+        "`[skip-plan-gate: <reason>]` (reason mandatory), or (c) disable this "
+        "opt-in gate by removing/clearing "
+        "`[teatree] agent_plan_gate_on_task_create_enabled` in "
+        "`~/.teatree.toml`."
+    )
+    return emit_task_create_deny(reason)
+
+
 # ── PreToolUse: enforce-plan-gate (#1133) ────────────────────────────
 #
 # Denies ``Edit``/``Write`` on files under ``$T3_WORKSPACE_DIR`` when the
@@ -1363,7 +1466,7 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
 # ``<session>.skills`` / ``<session>.reads`` pattern:
 #
 # - ``<session>.plan-invocations`` — records each ``Skill`` tool call
-#   whose ``skill`` field is ``plan`` (or a ``plan*`` variant).
+#   whose ``skill`` field is a real planning skill (e.g. ``teatree-plan``).
 # - ``<session>.workspace-reads`` — records resolved workspace-relative
 #   file paths that the agent has ``Read`` this session. Reads outside
 #   the workspace are NOT recorded, so an unrelated ``~/.zshrc`` read
@@ -1410,6 +1513,17 @@ def _plan_gate_enabled() -> bool:
     return any(overlay_cfg.get("plan_gate") is True for overlay_cfg in (config.get("overlays") or {}).values())
 
 
+# Real planning-skill ``name:``s (skills/teatree-plan/SKILL.md frontmatter),
+# matched by exact final-segment membership rather than a ``startswith``
+# prefix that never matches ``teatree-plan``.
+_PLAN_SKILL_NAMES: frozenset[str] = frozenset({"teatree-plan"})
+
+
+def _is_plan_skill(skill: str) -> bool:
+    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+    return final in _PLAN_SKILL_NAMES
+
+
 def handle_track_plan_invocation(data: dict) -> None:
     """PostToolUse: record a ``/plan`` invocation for the current session."""
     if data.get("tool_name") != "Skill":
@@ -1417,10 +1531,7 @@ def handle_track_plan_invocation(data: dict) -> None:
     skill = data.get("tool_input", {}).get("skill", "")
     if not skill:
         return
-    # Accept ``plan``, ``t3:plan``, ``plan-*`` — any variant whose final
-    # path segment starts with ``plan``.
-    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
-    if not final.startswith("plan"):
+    if not _is_plan_skill(skill):
         return
     session_id = data.get("session_id", "")
     if not session_id:
@@ -1516,7 +1627,8 @@ def handle_enforce_plan_gate(data: dict) -> bool:
 #
 # The marker file is written by ``handle_track_plan_skill_timestamp``
 # (PostToolUse), which fires on every ``Skill`` tool call whose final
-# path segment starts with ``plan`` (``plan``, ``t3:plan``, ``plan-*``).
+# path segment is a real planning-skill name (``teatree-plan``, invoked
+# as ``t3:teatree-plan``).
 # This is wall-clock based rather than per-session so an orchestrator's
 # /plan in turn N still authorises sub-agent dispatches across the
 # following turns, until the cooldown lapses.
@@ -1591,20 +1703,19 @@ def _agent_prompt_skip_token(prompt: str) -> str | None:
 
 
 def handle_track_plan_skill_timestamp(data: dict) -> None:
-    """PostToolUse: write a POSIX timestamp when a ``plan*`` skill is invoked.
+    """PostToolUse: write a POSIX timestamp when the plan skill is invoked.
 
-    Mirrors the routing of :func:`handle_track_plan_invocation` (final
-    path segment starts with ``plan``), but writes a wall-clock marker
-    used by the Agent-dispatch plan-gate (#1302) instead of a per-
-    session boolean.
+    Mirrors the routing of :func:`handle_track_plan_invocation` (the final
+    path segment is a real planning-skill name, e.g. ``teatree-plan``), but
+    writes a wall-clock marker used by the Agent-dispatch plan-gate instead
+    of a per-session boolean.
     """
     if data.get("tool_name") != "Skill":
         return
     skill = data.get("tool_input", {}).get("skill", "")
     if not skill:
         return
-    final = skill.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
-    if not final.startswith("plan"):
+    if not _is_plan_skill(skill):
         return
     import time  # noqa: PLC0415
 
@@ -1643,8 +1754,8 @@ def handle_enforce_agent_plan_gate(data: dict) -> bool:
     reason = (
         f"BLOCKED: `{tool_name}` dispatch requires a recent `/plan` invocation "
         f"(within the last {window} minutes) or an explicit per-call opt-out. "
-        "Unblock paths: (a) call the Skill tool with skill=`plan` to plan this "
-        "dispatch first, or (b) prefix the Agent prompt with "
+        "Unblock paths: (a) call the Skill tool with skill=`t3:teatree-plan` to "
+        "plan this dispatch first, or (b) prefix the Agent prompt with "
         "`[skip-plan-gate: <reason>]` (reason mandatory) — e.g. "
         "`[skip-plan-gate: trivial-bug-fix]`. "
         "Override the window via `TEATREE_PLAN_GATE_WINDOW_MINUTES`. (#1302)"
@@ -6508,7 +6619,7 @@ _HANDLERS: dict[str, list] = {
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
     ],
-    "TaskCreated": [handle_enforce_skill_loading_on_task_create],
+    "TaskCreated": [handle_enforce_skill_loading_on_task_create, handle_enforce_plan_gate_on_task_create],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
