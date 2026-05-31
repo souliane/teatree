@@ -55,7 +55,9 @@ class TestConsolidatedLoopAnchor:
 
     def test_includes_relative_minutes_when_acquired_at_known(self) -> None:
         # Each lease carries its own acquire instant; 2 minutes elapsed of
-        # the 720s cadence → next tick in 10m.
+        # the 720s cadence → next tick in 10m. The loop-owner lease is
+        # excluded from the shared loop line — its badge is per-session in
+        # statusline.sh instead.
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
         leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
@@ -69,7 +71,8 @@ class TestConsolidatedLoopAnchor:
         # Per-loop name + relative minutes, no headline count.
         assert "loops live" not in line, line
         assert "tick 10m" in line, line
-        assert "owner 10m" in line, line
+        # loop-owner is excluded from the shared line (per-session badge in sh).
+        assert "owner" not in line, line
 
     def test_names_only_when_no_lease_history(self) -> None:
         leases = [("loop-tick", None)]
@@ -186,6 +189,8 @@ class TestZonesForIntegration:
 
     def test_line_one_is_per_loop_summary(self, tmp_path: Path) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
+        # The loop-owner lease is present but excluded from the shared line
+        # (it is rendered as a per-session badge in statusline.sh instead).
         leases = [("loop-tick", acquired_at), ("loop-owner", acquired_at)]
         with (
             patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
@@ -197,9 +202,9 @@ class TestZonesForIntegration:
         body = target.read_text()
         first_line = body.splitlines()[0]
         assert first_line.startswith("loop running · "), repr(first_line)
-        # 60s elapsed of 720s → next tick in 11m; each loop named.
+        # 60s elapsed of 720s → next tick in 11m; loop-tick appears, loop-owner absent.
         assert "tick 11m" in first_line, first_line
-        assert "owner 11m" in first_line, first_line
+        assert "owner" not in first_line, first_line
         assert "loops live" not in first_line, first_line
         # Per-loop tokens removed at the top.
         assert "\nloop:tick" not in body
