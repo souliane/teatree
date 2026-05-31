@@ -51,7 +51,10 @@ class TestFindBareReferencesPositives:
     @pytest.mark.parametrize(
         ("text", "expected"),
         [
-            ("fixed #1500", "#1500"),
+            # ``fixed`` is a valid GitHub/GitLab close keyword but the line
+            # ``I fixed #1500 last week`` has prose before the keyword so the
+            # line-start anchor does not exempt it.
+            ("I fixed #1500 last week", "#1500"),
             ("merged !6301", "!6301"),
             ("see issue #42 for details", "#42"),
             ("MR !7 is green", "!7"),
@@ -65,6 +68,8 @@ class TestFindBareReferencesPositives:
         assert expected in find_bare_references(text)
 
     def test_multiple_bare_refs_all_returned(self) -> None:
+        # ``closes #1500`` is NOT at end-of-line here (`` and #1501`` follows),
+        # so the trailer exemption does not apply; all three refs are flagged.
         refs = find_bare_references("closes #1500 and #1501, supersedes !42")
         assert "#1500" in refs
         assert "#1501" in refs
@@ -316,6 +321,128 @@ class TestConventionalTitleSuffixExemption:
         assert payload is not None
         assert "ref: feat(x): desc (#123) and more" in payload
         assert "feat(x): desc\n" in payload or payload.endswith("feat(x): desc")
+
+
+class TestBodyCloseTrailerExemption:
+    """Leading auto-close / relates trailers in body content are exempt (#1619).
+
+    A line that STARTS with a recognised close/relates keyword (``Closes``,
+    ``Fixes``, ``Resolves``, ``Refs``, ``Relates-to``, and their variants)
+    followed by a single ``#N`` or ``!N`` ref at end-of-line is the canonical
+    AGENTS.md convention for auto-closing issues on merge. The platform
+    auto-links these trailer keywords natively; requiring a markdown link would
+    defeat the auto-close mechanism.
+
+    The exemption is anchored to ``^`` (MULTILINE) + keyword + end-of-line so
+    a mid-sentence bare ref cannot be smuggled past the gate by prefixing prose
+    with a close keyword.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Closes #1613",
+            "closes #1613",
+            "CLOSES #1613",
+            "Fixes #1613",
+            "Fixed #1613",
+            "Resolves #1613",
+            "Resolved #1613",
+            "Refs #10",
+            "Ref #10",
+            "Relates-to #10",
+            "Relates to #10",
+            "relate to #10",
+            "Closes !42",
+            "Fixes !42",
+            "Refs !10",
+            "Closes: #1613",
+            "Fixes: #1613",
+            "Some commit body.\n\nCloses #1613",
+            "Summary.\n\nFixes #10\n",
+        ],
+    )
+    def test_close_trailer_line_is_not_flagged(self, text: str) -> None:
+        assert find_bare_references(text) == []
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            # Prose before the keyword → NOT a trailer, must flag.
+            ("see #1613 for context", "#1613"),
+            ("I fixed #1500 last week", "#1500"),
+            ("this supersedes !42", "!42"),
+            # Trailing prose after the ref → NOT a clean trailer, must flag.
+            ("fixes #123 in the parser", "#123"),
+            ("closes #1500 and then #1501", "#1500"),
+            # Mid-sentence keyword + ref where the ref is not the last token.
+            ("relates to #10 as discussed", "#10"),
+        ],
+    )
+    def test_mid_sentence_or_trailing_prose_is_still_flagged(self, text: str, expected: str) -> None:
+        assert expected in find_bare_references(text)
+
+    def test_closes_ref_in_pr_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create --title "feat: some feature" --body "Closes #1613"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_fixes_ref_in_pr_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create --title "fix: something" --body "Fixes #1613"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_resolves_ref_in_glab_mr_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'glab mr create --title "fix: bug" --description "Resolves #1613"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_refs_in_glab_mr_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'glab mr create --title "chore: update" --description "Refs #10"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_relates_to_in_commit_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'chore: maintenance' -m 'Relates-to #10'"
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_closes_mr_ref_in_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create --title "fix: something" --body "Closes !42"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_close_trailer_with_prose_body_is_still_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        body = "This implements the feature described in the ticket.\n\nCloses #1613"
+        cmd = f'gh pr create --title "feat: feature" --body "{body}"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_mid_sentence_close_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create --title "feat: something" --body "see #1613 for context"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is True
+        assert "#1613" in _out(capsys)["permissionDecisionReason"]
+
+    def test_trailing_prose_after_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create --title "fix: parser" --body "fixes #123 in the parser"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is True
+        assert "#123" in _out(capsys)["permissionDecisionReason"]
+
+    def test_bare_slack_ref_mid_sentence_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(
+            {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": "see #1613 for context"}}
+        )
+        assert blocked is True
+        assert "#1613" in _out(capsys)["permissionDecisionReason"]
 
 
 class TestStopSoftWarn:
