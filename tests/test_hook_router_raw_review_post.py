@@ -57,6 +57,13 @@ class TestDeniesRawReviewWrites:
             "glab api projects/42/merge_requests/7/discussions --method=GET --method PATCH -f body=x",
             # DELETE is a write — an effective GET is the ONLY read.
             "glab api projects/42/merge_requests/7/notes -X DELETE -f x",
+            # pflag NO-SPACE shorthand (`-XPOST`/`-XPUT`) is a real method
+            # override; the spaced-only regex missed it, leaving the IDENTICAL
+            # `-XPUT` bypass on this gate. Must be DENIED.
+            "gh api repos/o/r/pulls/12/comments -XPOST -f body=hi",
+            "glab api projects/42/merge_requests/7/notes -XPUT -f body=x",
+            # No-space last-wins: earlier GET overridden by trailing POST → write.
+            "gh api repos/o/r/pulls/12/comments -XGET -XPOST -f body=hi",
         ],
     )
     def test_raw_review_write_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -94,6 +101,8 @@ class TestAllowsReadsAndUnrelated:
             "glab api projects/42/merge_requests/7/discussions -X GET -f sort=asc",
             "glab api projects/42/merge_requests/7/discussions --method GET -f sort=asc",
             "gh api repos/o/r/pulls/12/notes --method=GET -f per_page=100",
+            # No-space explicit GET forces a read — must NOT over-block.
+            "glab api projects/42/merge_requests/7/discussions -XGET -f sort=asc",
             # Repeated method flags, GET LAST — effective method is GET, so a
             # write-then-GET command is a read (last-wins, no false-deny).
             "gh api repos/o/r/pulls/12/comments -X POST -X GET",
