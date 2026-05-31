@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -11,6 +12,9 @@ from teatree.core.models.errors import RedisSlotsExhaustedError
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
     from teatree.core.models.ticket import Ticket
+
+
+logger = logging.getLogger(__name__)
 
 
 class _OverlayFilterMixin:
@@ -285,20 +289,26 @@ class TaskQuerySet(models.QuerySet):
         because ``_apply_phase_transition`` itself no-ops for a held task.
         Returns the number of tickets a transition actually fired for.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
         # Latest COMPLETED task per ticket: iterate newest-first and keep
         # the first one seen for each ticket. ``distinct("ticket_id")`` is
         # Postgres-only; teatree's production DB is SQLite (the #786 B1
         # backend-agnostic lesson), so this stays a plain ordered scan.
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
         replayed = 0
         seen: set[int] = set()
         for task in self.filter(status=Task.Status.COMPLETED).select_related("ticket").order_by("-pk"):
             if task.ticket_id in seen:
                 continue
             seen.add(task.ticket_id)
-            if task._apply_phase_transition():  # noqa: SLF001  # the shared single transition path (#883)
-                replayed += 1
+            try:
+                if task._apply_phase_transition():  # noqa: SLF001  # the shared single transition path (#883)
+                    replayed += 1
+            except (TransitionNotAllowed, ValueError) as exc:
+                # Per-ticket isolation: one un-gated ticket must not abort the sweep.
+                logger.warning("replay skip task=%s ticket=%s %s: %s", task.pk, task.ticket_id, type(exc).__name__, exc)
         return replayed
 
     def reap_stale_claims(self) -> int:
