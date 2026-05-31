@@ -1,9 +1,11 @@
+from pathlib import Path
 from subprocess import CompletedProcess
 
 import pytest
 
 from teatree.utils import git
 from teatree.utils import run as utils_run_mod
+from tests.teatree_core.cleanup._shared import _run_git
 
 
 def test_default_branch_prefers_symbolic_ref_and_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -248,6 +250,47 @@ def test_last_commit_message_subject_only(monkeypatch: pytest.MonkeyPatch) -> No
     subject, body = git.last_commit_message()
     assert subject == "feat: add feature"
     assert body == ""
+
+
+def _origin_with_branch(tmp_path: Path, branch_commits: list[tuple[str, str]]) -> Path:
+    """An ``origin/main`` clone with a ``feature`` branch carrying ``branch_commits``.
+
+    The shared ``GIT_*``-stripped runner keeps the tmp repo isolated from the
+    outer ``git commit`` hook env (#288).
+    """
+    origin = tmp_path / "origin.git"
+    _run_git("init", "-q", "--bare", "-b", "main", str(origin), cwd=tmp_path)
+    clone = tmp_path / "clone"
+    _run_git("clone", "-q", str(origin), str(clone), cwd=tmp_path)
+    _run_git("config", "user.email", "t@t", cwd=clone)
+    _run_git("config", "user.name", "t", cwd=clone)
+    _run_git("commit", "--allow-empty", "-q", "-m", "feat(lifecycle): unrelated already-merged", cwd=clone)
+    _run_git("push", "-q", "origin", "main", cwd=clone)
+    _run_git("checkout", "-q", "-b", "feature", cwd=clone)
+    for subject, body in branch_commits:
+        message = f"{subject}\n\n{body}" if body else subject
+        _run_git("commit", "--allow-empty", "-q", "-m", message, cwd=clone)
+    return clone
+
+
+def test_first_commit_message_returns_oldest_branch_commit_not_default_head(tmp_path: Path) -> None:
+    clone = _origin_with_branch(
+        tmp_path,
+        [("fix(y): the real work", "Body line.\n\nSecond paragraph."), ("fix(y): a follow-up", "")],
+    )
+    subject, body = git.first_commit_message(repo=str(clone), range_spec="origin/main..feature")
+    assert subject == "fix(y): the real work"
+    assert body == "Body line.\n\nSecond paragraph."
+
+
+def test_first_commit_message_empty_when_no_commits_in_range(tmp_path: Path) -> None:
+    clone = _origin_with_branch(tmp_path, [("fix(y): work", "")])
+    assert git.first_commit_message(repo=str(clone), range_spec="origin/main..origin/main") == ("", "")
+
+
+def test_first_commit_message_empty_range_spec_yields_empty(tmp_path: Path) -> None:
+    clone = _origin_with_branch(tmp_path, [("fix(y): work", "")])
+    assert git.first_commit_message(repo=str(clone), range_spec="") == ("", "")
 
 
 def test_worktree_add_with_and_without_create_branch(monkeypatch: pytest.MonkeyPatch) -> None:
