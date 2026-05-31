@@ -178,6 +178,62 @@ class TestPassesOnceLoaded:
         assert payload is None
 
 
+class TestCanonicalNamespaceMatching:
+    """The ``(pending minus skills)`` minus-set matches by fully-qualified canonical.
+
+    ``<session>.skills`` / ``<session>.pending`` record a skill VERBATIM:
+    the Skill-tool PostToolUse records the namespaced form (``t3:review``)
+    while InstructionsLoaded / the loader's pending writer record the bare
+    form (``review``). The minus-set computation must treat a bare pending
+    demand as satisfied when only the namespaced loaded form is present (and
+    vice versa) — the same deadlock the PreToolUse gate had. It normalizes
+    UP to the qualified canonical (``review`` → ``t3:review`` for a
+    plugin-owned skill), NOT down to the bare segment, so distinct
+    namespaces are never conflated. ``review``/``code``/``workspace`` are
+    real plugin-owned skills, so they canonicalize to ``t3:*``.
+    """
+
+    def test_bare_pending_satisfied_by_namespaced_loaded(self, gate: Path) -> None:
+        # pending bare ``review``, loaded only namespaced ``t3:review`` (plus
+        # its companions in namespaced form) → the minus-set is empty and the
+        # neutral description detects no new lifecycle, so the gate passes.
+        _write_pending("sess-task", ["review"])
+        _write_loaded("sess-task", ["t3:review", "t3:code", "t3:workspace"])
+        blocked, payload = _run(_task(description="do some neutral work"))
+        assert blocked is False
+        assert payload is None
+
+    def test_distinct_namespaces_are_not_conflated(self, gate: Path) -> None:
+        # A demand for ``t3:review`` is NOT satisfied by a loaded
+        # ``other:review`` — the bare-strip approach would wrongly clear it.
+        _write_pending("sess-task", ["review"])
+        _write_loaded("sess-task", ["other:review", "other:code", "other:workspace"])
+        blocked, payload = _run(_task(description="do some neutral work"))
+        assert blocked is True
+        assert payload is not None
+        assert "/review" in payload["stopReason"]
+
+    def test_legacy_mixed_state_with_both_spellings(self, gate: Path) -> None:
+        # Legacy ``.skills`` carrying the same skill under both spellings:
+        # canonicalization collapses both onto ``t3:review`` so a bare demand
+        # is satisfied.
+        _write_pending("sess-task", ["review"])
+        _write_loaded("sess-task", ["review", "t3:review", "t3:code", "t3:workspace"])
+        blocked, payload = _run(_task(description="do some neutral work"))
+        assert blocked is False
+        assert payload is None
+
+    def test_genuinely_unloaded_skill_still_blocks(self, gate: Path) -> None:
+        # The fix must not defang the gate: a resolvable bare demand with NO
+        # matching loaded form (bare or namespaced) still blocks.
+        _write_pending("sess-task", ["review"])
+        _write_loaded("sess-task", ["t3:code"])
+        blocked, payload = _run(_task(description="do some neutral work"))
+        assert blocked is True
+        assert payload is not None
+        assert "/review" in payload["stopReason"]
+
+
 class TestFailOpenOnStaleName:
     """An unresolvable demanded skill never blocks (fail-open on rename/removal)."""
 

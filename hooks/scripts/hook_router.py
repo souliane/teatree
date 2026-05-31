@@ -838,7 +838,7 @@ def handle_user_prompt_submit(data: dict) -> None:
         return
 
     skill_list = ", ".join(f"/{s}" for s in suggestions)
-    pending.write_text("\n".join(suggestions) + "\n", encoding="utf-8")
+    pending.write_text("\n".join(normalize_skill_name(s) for s in suggestions) + "\n", encoding="utf-8")
     parts = [f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}."]
     if t3_reminder:
         parts.append(t3_reminder)
@@ -1040,6 +1040,41 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 # ``skills/<skill>/SKILL.md``; :func:`_skill_resolves` handles both so the
 # gate keeps enforcing load-first for a genuinely-installed overlay skill
 # while still failing open on a stale name.
+#
+# ``<session>.skills`` (the loaded set) and ``<session>.pending`` record a
+# skill VERBATIM in whatever shape arrived: the ``Skill``-tool ``PostToolUse``
+# records the NAMESPACED form (``t3:rules``), the ``InstructionsLoaded``
+# event and the loader's pending writer record the BARE form (``rules``).
+# The same skill therefore appears under either spelling.
+#
+# The namespaced name is the IDENTITY; the bare name is a lossy projection
+# of it. Conflating distinct skills across namespaces (``t3:review`` vs a
+# hypothetical ``other:review``) by stripping the qualifier would be wrong,
+# so both the WRITE boundary (the pending writer, :func:`_record_skills`)
+# and the MATCH boundary (:func:`handle_enforce_skill_loading` /
+# :func:`handle_enforce_skill_loading_on_task_create`) normalize UP to the
+# fully-qualified canonical via :func:`_canonical_skill_token` — a bare name
+# owned by this plugin gains its namespace (``rules`` → ``t3:rules``), never
+# stripped down to the bare segment. WRITE keeps state clean going forward;
+# MATCH stays robust against today's mixed legacy state.
+#
+# :func:`_canonical_skill_token` is PURE, TOTAL and IDEMPOTENT: it takes the
+# resolved ``(owned, namespace)`` snapshot as arguments rather than reading
+# the filesystem itself. The MATCH boundary resolves that snapshot ONCE per
+# gate invocation and threads it through BOTH the demand side and the loaded
+# side, so a flaky directory read can never canonicalize the two sides
+# against different snapshots (the silent, environment-dependent
+# under/over-match the per-name scan risked). With an EMPTY ``owned`` (the
+# scan failed) the canonicalizer degrades to VERBATIM equality: a bare
+# ``code`` and a namespaced ``t3:code`` do NOT match. That strict-degrade is
+# the SAFE failure mode — it may re-block (recoverable via the kill-switch,
+# the per-call ``[skill-load-ok:]`` token, or the deny circuit breaker), but
+# it never satisfies a demand for skill B with skill A. Never-lockout is now
+# supplied by those off-ramps, so this prefers strict-degrade over the
+# original "a missed normalization fails open" rationale.
+#
+# This is the INVERSE operation from RESOLUTION (:func:`_skill_resolves`),
+# which deliberately does NOT touch the namespace — see its docstring.
 
 
 def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
@@ -1074,6 +1109,127 @@ def _skill_resolves(name: str, search_dirs: list[Path]) -> bool:
     if not segment or segment == "SKILL.md":
         return False
     return any((d / segment / "SKILL.md").is_file() for d in search_dirs)
+
+
+def _plugin_namespace() -> str:
+    """Return this plugin's namespace from its manifest, defaulting to ``t3``.
+
+    The Claude Code Skill tool prefixes a plugin-owned skill with the
+    plugin's ``name`` (``.claude-plugin/plugin.json``) — ``rules`` is
+    invoked as ``t3:rules``. Read it from the manifest so a renamed plugin
+    stays correct; fall back to ``t3`` on any read failure (the hook must
+    never crash).
+    """
+    manifest = Path(__file__).resolve().parents[2] / ".claude-plugin" / "plugin.json"
+    try:
+        name = json.loads(manifest.read_text(encoding="utf-8")).get("name", "")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return "t3"
+    return name if isinstance(name, str) and name else "t3"
+
+
+def _plugin_skills_dirs() -> list[Path]:
+    """Directories whose skills this plugin owns (namespaces under its prefix).
+
+    Production: the plugin's own ``skills/`` tree ONLY — never the shared
+    agent install dirs (``~/.claude/skills`` carries non-plugin ``ac-*``
+    skills that must stay unqualified). Tests point at a fixture tree via
+    the ``T3_SKILL_SEARCH_DIRS`` override (the same seam the resolver uses),
+    treating the seeded skills as plugin-owned.
+    """
+    override = os.environ.get("T3_SKILL_SEARCH_DIRS", "")
+    if override:
+        return [Path(d) for d in override.split(os.pathsep) if d]
+    return [Path(__file__).resolve().parents[2] / "skills"]
+
+
+def _plugin_owned_skills() -> set[str]:
+    """Return the bare names of skills owned by this plugin.
+
+    These are the names the Skill tool namespaces under
+    :func:`_plugin_namespace`. A bare ``rules`` present here canonicalizes
+    to ``<namespace>:rules``; a name absent here (a supplementary ``ac-*``
+    installed elsewhere) is left unqualified.
+    """
+    owned: set[str] = set()
+    for skills_root in _plugin_skills_dirs():
+        try:
+            owned.update(d.name for d in skills_root.iterdir() if (d / "SKILL.md").is_file())
+        except OSError:
+            continue
+    return owned
+
+
+def _canonical_skill_token(name: str, owned: frozenset[str], namespace: str) -> str:
+    """Canonicalize *name* against an explicit ``(owned, namespace)`` snapshot.
+
+    PURE, TOTAL and IDEMPOTENT — ``f(f(x)) == f(x)`` for every input and it
+    never raises. It takes the snapshot as arguments rather than reading the
+    filesystem, so the demand side and the loaded side of a match always
+    canonicalize against the SAME snapshot (no environment-dependent
+    asymmetry from a flaky directory scan).
+
+    The bare segment is the final ``/``-segment after stripping a trailing
+    ``/`` and a ``/SKILL.md`` suffix. A ``:`` splits it on the LAST colon
+    into ``(prefix, bare)``; with no colon ``prefix`` is empty. Then:
+
+    - ``prefix`` non-empty → ``f"{prefix}:{bare}"`` VERBATIM. An already-qualified
+    token is a fixed point; a foreign namespace is preserved, so ``other:review``
+    can never equal ``t3:review`` and our own ``t3:review`` never collapses to bare.
+    - ``prefix`` empty and ``bare in owned`` → ``f"{namespace}:{bare}"`` (a
+    plugin-owned bare name is promoted UP to its namespace).
+    - else → ``bare`` (a non-owned ``ac-*`` stays bare).
+
+    With ``owned == frozenset()`` (the scan failed) only the promotion arm is
+    disabled, so this collapses to VERBATIM equality: ``f("code") == "code"``
+    and ``f("t3:code") == "t3:code"`` and the two do NOT match. That
+    strict-degrade is the SAFE failure mode — it may re-block (recoverable
+    via the kill-switch, the per-call token, or the deny circuit breaker),
+    but it NEVER satisfies a demand for skill B with skill A.
+    """
+    segment = name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1]
+    if not segment:
+        return ""
+    if ":" in segment:
+        prefix, bare = segment.rsplit(":", 1)
+        if prefix:
+            return f"{prefix}:{bare}"
+        # Leading-colon ``:bare``: no real prefix; fall through to bare rules.
+        segment = bare
+        if not segment:
+            return ""
+    if segment in owned:
+        return f"{namespace}:{segment}"
+    return segment
+
+
+def _skill_canon_snapshot() -> tuple[frozenset[str], str]:
+    """Resolve the ``(owned, namespace)`` snapshot ONCE for a gate invocation.
+
+    Wraps the fallible owned-set scan so the resolver stays TOTAL: any read
+    failure degrades to an empty set, which :func:`_canonical_skill_token`
+    treats as strict (verbatim) equality — the safe failure mode.
+    """
+    try:
+        owned = frozenset(_plugin_owned_skills())
+    except OSError:
+        owned = frozenset()
+    return owned, _plugin_namespace()
+
+
+def normalize_skill_name(name: str) -> str:
+    """Resolve a skill *name* UP to its fully-qualified canonical form.
+
+    Thin WRITE-boundary wrapper over :func:`_canonical_skill_token` that
+    resolves the ``(owned, namespace)`` snapshot internally — writers
+    (the pending writer, :func:`_record_skills`, :func:`handle_track_skill_usage`)
+    are not hot, so a per-call snapshot read is fine. The MATCH boundary
+    instead resolves ONE snapshot and threads it through both sides via
+    :func:`_canonical_skill_token` directly. NOT used for RESOLUTION (see
+    :func:`_skill_resolves`).
+    """
+    owned, namespace = _skill_canon_snapshot()
+    return _canonical_skill_token(name, owned, namespace) or name
 
 
 # Per-call escape mirroring the ``[skip-skill-gate: <reason>]`` token of
@@ -1131,8 +1287,11 @@ def handle_enforce_skill_loading(data: dict) -> bool:
     if not pending_lines:
         return False
 
-    loaded = set(_read_lines(_state_file(session_id, "skills")))
-    unloaded = [s for s in pending_lines if s not in loaded]
+    owned, namespace = _skill_canon_snapshot()
+    loaded_canonical = {
+        _canonical_skill_token(s, owned, namespace) for s in _read_lines(_state_file(session_id, "skills"))
+    }
+    unloaded = [s for s in pending_lines if _canonical_skill_token(s, owned, namespace) not in loaded_canonical]
     if not unloaded:
         return False
 
@@ -1313,9 +1472,16 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     if _task_text_skip_token(f"{subject}\n{description}"):
         return False
 
-    loaded = set(_read_lines(_state_file(session_id, "skills")))
-    pending = [s for s in _read_lines(_state_file(session_id, "pending")) if s not in loaded]
-    detected = [s for s in _companions_for_task_text(description) if s not in loaded]
+    owned, namespace = _skill_canon_snapshot()
+    loaded_canonical = {
+        _canonical_skill_token(s, owned, namespace) for s in _read_lines(_state_file(session_id, "skills"))
+    }
+
+    def _is_loaded(name: str) -> bool:
+        return _canonical_skill_token(name, owned, namespace) in loaded_canonical
+
+    pending = [s for s in _read_lines(_state_file(session_id, "pending")) if not _is_loaded(s)]
+    detected = [s for s in _companions_for_task_text(description) if not _is_loaded(s)]
 
     demanded: list[str] = []
     for name in [*pending, *detected]:
@@ -3146,8 +3312,15 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
 
 
 def _record_skills(skills_file: Path, existing: set[str], skills: list[str]) -> None:
-    """Append the resolved closure of *skills*, preserving order, deduped."""
-    for name in _resolve_skill_closure(skills):
+    """Append the resolved closure of *skills* as canonical names, deduped.
+
+    Each name is normalized UP to its fully-qualified form
+    (:func:`normalize_skill_name`) before dedup so the persisted ``.skills``
+    set stays canonical regardless of whether the source was the
+    Skill-tool (already namespaced) or InstructionsLoaded (bare).
+    """
+    for resolved in _resolve_skill_closure(skills):
+        name = normalize_skill_name(resolved)
         if name and name not in existing:
             existing.add(name)
             _append_line(skills_file, name)
@@ -3168,7 +3341,7 @@ def handle_track_skill_usage(data: dict) -> None:
 
     _ensure_state_dir()
     skills_file = _state_file(session_id, "skills")
-    existing = set(_read_lines(skills_file))
+    existing = {normalize_skill_name(s) for s in _read_lines(skills_file)}
 
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
