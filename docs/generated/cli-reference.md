@@ -4744,19 +4744,20 @@ Usage: t3 teatree pending_chat list [OPTIONS]
 ```
 Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
 
- Stamp ``answered_at = now`` on rows matching ``(overlay, slack_ts)``.
+ Stamp ``answered_at = now`` on rows matching ``slack_ts``.
 
- Idempotent: zero rows is a successful no-op (the second call
- sees the row already stamped). Empty ``slack_ts`` is rejected.
+ The stamp keys on ``slack_ts`` alone — the unique idempotency key,
+ symmetric with the unscoped Stop-hook gate — so it clears the
+ question regardless of which overlay recorded it (the concurrent
+ multi-overlay case). Idempotent: zero rows is a successful no-op.
+ Empty ``slack_ts`` is rejected.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    slack_ts      TEXT  The Slack ts of the question being answered.        │
 │                          [required]                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --overlay        TEXT  Scope the stamp to one overlay (default: empty / v1   │
-│                        single-overlay).                                      │
-│ --help                 Show this message and exit.                           │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
