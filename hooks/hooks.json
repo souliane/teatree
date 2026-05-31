@@ -46,6 +46,16 @@
             "timeout": 6
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*[Ss]lack.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "PostToolUse": [

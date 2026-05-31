@@ -16,11 +16,16 @@ patterns.
 """
 
 import json
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from hooks.scripts.hook_router import handle_dispatch_prompt_quote_scanner
+from hooks.scripts.hook_router import (
+    handle_dispatch_prompt_quote_scanner,
+    handle_dispatch_prompt_quote_scanner_on_task_create,
+)
 from teatree.hooks.quote_scanner import dispatch_quote_ok_reason, extract_dispatch_payload
 
 
@@ -185,3 +190,104 @@ class TestToolScope:
     def test_non_dict_tool_input_is_a_noop(self, tmp_path: Path) -> None:
         data = {"session_id": "s", "tool_name": "Agent", "tool_input": "not-a-dict"}
         assert handle_dispatch_prompt_quote_scanner(data) is False
+
+
+def _task(description: str, *, subject: str = "do work", session_id: str = "sess-1") -> dict:
+    """A ``TaskCreated`` event payload (no ``tool_input`` — the fan-out schema)."""
+    return {"session_id": session_id, "task_subject": subject, "task_description": description}
+
+
+def _run_task(description: str, *, subject: str = "do work", session_id: str = "sess-1") -> tuple[bool, dict | None]:
+    """Invoke the TaskCreated gate, capturing its ``continue:false`` stop envelope."""
+    data = _task(description, subject=subject, session_id=session_id)
+    out = StringIO()
+    with patch("sys.stdout", out):
+        blocked = handle_dispatch_prompt_quote_scanner_on_task_create(data)
+    raw = out.getvalue().strip()
+    return blocked, (json.loads(raw) if raw else None)
+
+
+def _enable_task_gate() -> None:
+    (Path.home() / ".teatree.toml").write_text(
+        "[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n", encoding="utf-8"
+    )
+
+
+class TestOnTaskCreateGate:
+    """The TaskCreated dispatch-quote arm (#171): scans the fan-out task subject/description.
+
+    The PreToolUse dispatch-quote gate keys on ``Agent``/``Task`` but the
+    harness Workflow/Task fan-out (where dispatch prompts are actually created)
+    BYPASSES ``PreToolUse`` — only ``TaskCreated`` reaches it. This arm rides
+    that event. It ships default-OFF (opt-in, a #1640-class fan-out gate whose
+    live behavior is unvalidated) and emits the ``TaskCreated`` teammate-stop
+    envelope (``continue: false``), NOT the PreToolUse deny.
+    """
+
+    def test_high_quote_denies_when_enabled(self, tmp_path: Path) -> None:
+        _enable_task_gate()
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
+        assert blocked is True
+        assert payload is not None
+        # TaskCreated deny schema — teammate-stop, not PreToolUse hookSpecificOutput.
+        assert payload["continue"] is False
+        assert "stopReason" in payload
+        assert "permissionDecision" not in payload
+        assert "pre-dispatch quote-scanner" in payload["stopReason"]
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "deny"
+
+    def test_high_quote_in_subject_denies(self, tmp_path: Path) -> None:
+        _enable_task_gate()
+        blocked, payload = _run_task("ordinary brief", subject="## User mandate")
+        assert blocked is True
+        assert payload is not None
+        assert payload["continue"] is False
+
+    def test_clean_task_is_allowed(self, tmp_path: Path) -> None:
+        _enable_task_gate()
+        blocked, payload = _run_task("Implement the export endpoint per the spec.")
+        assert blocked is False
+        assert payload is None
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "allow"
+
+    def test_quote_ok_token_clears_high_match(self, tmp_path: Path) -> None:
+        _enable_task_gate()
+        blocked, payload = _run_task(f"[quote-ok: exact-wording-required]\n\n{_HIGH_VOICE_PROMPT}")
+        assert blocked is False
+        assert payload is None
+        ledger = _ledger_lines(tmp_path)
+        assert ledger[-1]["decision"] == "allow-override"
+        assert ledger[-1]["override"] is True
+
+    def test_default_off_passes_through_even_on_high_quote(self, tmp_path: Path) -> None:
+        # No ~/.teatree.toml (flag unset) → the gate is inert by default. A HIGH
+        # quote must pass through untouched (the gate ships opt-in pending #1640).
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
+        assert blocked is False
+        assert payload is None
+        # Inert ⇒ never reaches the scan/ledger path.
+        assert _ledger_lines(tmp_path) == []
+
+    def test_explicit_false_disables(self, tmp_path: Path) -> None:
+        (Path.home() / ".teatree.toml").write_text(
+            "[teatree]\ndispatch_quote_gate_on_task_create_enabled = false\n", encoding="utf-8"
+        )
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
+        assert blocked is False
+        assert payload is None
+
+    def test_broken_config_fails_disabled(self, tmp_path: Path) -> None:
+        # A broken ~/.teatree.toml fails CLOSED to disabled (mirrors the #167
+        # plan-gate-on-task-create posture): an unvalidated gate must never wedge
+        # the fan-out on a config the operator can't parse.
+        (Path.home() / ".teatree.toml").write_text("not = valid = toml [[[", encoding="utf-8")
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT)
+        assert blocked is False
+        assert payload is None
+
+    def test_missing_session_id_passes_through(self, tmp_path: Path) -> None:
+        _enable_task_gate()
+        blocked, payload = _run_task(_HIGH_VOICE_PROMPT, session_id="")
+        assert blocked is False
+        assert payload is None
+        assert _ledger_lines(tmp_path) == []
