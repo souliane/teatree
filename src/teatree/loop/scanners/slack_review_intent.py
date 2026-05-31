@@ -87,7 +87,12 @@ class SlackReviewIntentScanner:
 
         reactions, drained_file = self._drain_reactions()
         for event in reactions:
-            signal = self._handle_reaction(event, target_user)
+            ts = event.get("ts") or event.get("event_ts", "<unknown>")
+            try:
+                signal = self._handle_reaction(event, target_user)
+            except Exception:
+                logger.exception("SlackReviewIntentScanner failed on reaction event %s", ts)
+                continue
             if signal is not None:
                 signals.append(signal)
         if drained_file:
@@ -99,7 +104,12 @@ class SlackReviewIntentScanner:
             commit_reactions_drain()
 
         for event in self._drain_mentions():
-            signal = self._handle_mention(event, target_user)
+            ts = event.get("ts") or event.get("event_ts", "<unknown>")
+            try:
+                signal = self._handle_mention(event, target_user)
+            except Exception:
+                logger.exception("SlackReviewIntentScanner failed on mention event %s", ts)
+                continue
             if signal is not None:
                 signals.append(signal)
 
