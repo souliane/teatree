@@ -233,3 +233,7 @@ depends_on = []
 [[modules]]
 path = "teatree.trigger_parser"
 depends_on = []
+
+[[modules]]
+path = "teatree.quality"
+depends_on = []

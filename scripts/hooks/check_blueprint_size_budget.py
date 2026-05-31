@@ -29,7 +29,7 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 81_200
+_BUDGET_TOP_LEVEL_BYTES = 81_800
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -67,6 +67,10 @@ _BUDGET_TOP_LEVEL_BYTES = 81_200
 # (gate-liveness #168 + transcript-replay #169, the local-only privacy-safe
 # real-run conformance eval) is the same class of load-bearing safety fact, and
 # the appendix corpus was at capacity after the #1636 bump.
+# Reviewed bump (#166): the anti-pattern-catalog SSOT paragraph (the structured
+# source feeding the three review tiers + the catalog↔linter/eval reachability
+# ledger) is a load-bearing architectural fact; the top-level corpus was at
+# capacity, so the top-level + total budgets are raised one minimal step.
 _BUDGET_APPENDICES_BYTES = 106_400
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
@@ -75,7 +79,9 @@ _BUDGET_APPENDICES_BYTES = 106_400
 # `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
 # Reviewed bump (#169): tracks the top-level + appendix bumps for the
 # two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
-_BUDGET_TOTAL_BYTES = 187_200
+# Reviewed bump (#166): tracks the top-level bump for the anti-pattern-catalog
+# SSOT paragraph.
+_BUDGET_TOTAL_BYTES = 188_000
 
 
 def _repo_root() -> pathlib.Path:

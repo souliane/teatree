@@ -64,4 +64,5 @@ nav:
       - Overlay Extension Points: generated/overlay-extension-points.md
       - Skill Delegation Matrix: generated/skill-delegation-matrix.md
       - Skills Catalogue: generated/skills-catalogue.md
+      - Anti-Pattern Catalog: generated/antipattern-catalog.md
   - Contributing: contributing.md
