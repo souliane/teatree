@@ -45,6 +45,11 @@ class TestDeniesRawReviewWrites:
             "gh api repos/o/r/pulls/12/comments -f body='please fix'",
             "gh api repos/o/r/issues/12/comments --method POST -f body=x",
             "gh api repos/o/r/pulls/12/comments -X POST --raw-field body=@note.txt",
+            # Body flag with NO explicit method — still a write (#1568).
+            "glab api projects/42/merge_requests/7/discussions -f body=hi",
+            # Explicit non-GET write methods stay writes even with a body flag.
+            "glab api projects/42/merge_requests/7/comments --method PATCH -f body=x",
+            "glab api projects/42/merge_requests/7/notes -X PUT -f body=x",
         ],
     )
     def test_raw_review_write_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -76,6 +81,12 @@ class TestAllowsReadsAndUnrelated:
             "glab api projects/42/merge_requests/7/discussions",
             "glab api projects/42/merge_requests/7/notes --paginate",
             "gh api repos/o/r/pulls/12/comments",
+            # Explicit GET read with a body flag carrying a query param (#1568):
+            # `-X GET`/`--method GET` forces a GET, so `-f` is a query param,
+            # never a body write — must NOT be denied.
+            "glab api projects/42/merge_requests/7/discussions -X GET -f sort=asc",
+            "glab api projects/42/merge_requests/7/discussions --method GET -f sort=asc",
+            "gh api repos/o/r/pulls/12/notes --method=GET -f per_page=100",
             # Non-review forge reads/writes.
             "glab api projects/42/merge_requests/7",
             "glab api projects/42/merge_requests/7/approvals -X POST",

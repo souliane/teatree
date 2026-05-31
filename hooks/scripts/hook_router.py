@@ -4801,7 +4801,10 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 # (discussions / notes / comments) AND only when a write is present (an HTTP
 # method override of POST/PUT/PATCH, or a request-body flag the forge CLIs
 # use to carry a payload — ``-f``/``--field``/``-F``/``--raw-field``/
-# ``--input``/``-d``/``--data``). A bare read (``glab api .../discussions``)
+# ``--input``/``-d``/``--data``). An EXPLICIT ``-X GET``/``--method GET`` is
+# always a read regardless of any body/query flag: the forge sends ``-f`` as a
+# query parameter on a forced GET, never a body write, so an explicit GET truly
+# cannot create a comment (#1568). A bare read (``glab api .../discussions``)
 # and any non-review endpoint pass through untouched. Fails OPEN on an
 # internal parse error — a gate bug must never wedge the fleet.
 
@@ -4810,6 +4813,10 @@ _REVIEW_POST_ENDPOINT_RE = re.compile(
 )
 _REVIEW_POST_METHOD_WRITE_RE = re.compile(
     r"(?:-X|--method)[\s=]+['\"]?(?:POST|PUT|PATCH)\b",
+    re.IGNORECASE,
+)
+_REVIEW_POST_METHOD_READ_RE = re.compile(
+    r"(?:-X|--method)[\s=]+['\"]?GET\b",
     re.IGNORECASE,
 )
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
@@ -4830,11 +4837,16 @@ def _is_raw_review_write(command: str) -> bool:
 
     True only when the command targets a ``.../discussions``, ``.../notes``,
     or ``.../comments`` endpoint AND carries a write signal (a POST/PUT/PATCH
-    method override or a request-body flag). A plain GET read returns False.
+    method override or a request-body flag). An explicit ``-X GET``/
+    ``--method GET`` is always classified read — a forced GET sends body flags
+    as query params and cannot create a comment (#1568). A plain GET read
+    returns False.
     """
     if "glab api" not in command and "gh api" not in command:
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
+        return False
+    if _REVIEW_POST_METHOD_READ_RE.search(command):
         return False
     return bool(_REVIEW_POST_METHOD_WRITE_RE.search(command) or _REVIEW_POST_BODY_FLAG_RE.search(command))
 
@@ -4845,8 +4857,9 @@ def handle_block_raw_review_post(data: dict) -> bool:
     Forces the sanctioned ``t3 <overlay> review post-comment`` /
     ``post-draft-note`` path (draft-default + dedup + on-behalf approval),
     which a direct REST POST skips. Conservative: only clear review-write
-    POSTs are denied — bare reads and non-review endpoints pass through.
-    Returns True when a deny was emitted (caller stops the handler chain).
+    POSTs are denied — bare reads, explicit ``-X GET``/``--method GET`` reads,
+    and non-review endpoints pass through. Returns True when a deny was emitted
+    (caller stops the handler chain).
     """
     if data.get("tool_name") != "Bash":
         return False
