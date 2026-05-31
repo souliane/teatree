@@ -10,13 +10,17 @@ Table-driven over :data:`INVARIANT_REGISTRY`, mirroring #168's registry shape
 and the ``tests/eval/test_scenarios_anti_vacuous.py`` PASS-green / RED-surgical
 pattern:
 
-the ``all_pass`` fixture is GREEN on every invariant; each invariant ships a
-``<id>_violation`` fixture that goes RED on THAT invariant (asserting the
+the ``all_pass`` fixture is GREEN on every LIVE invariant; each live invariant
+ships a ``<id>_violation`` fixture that goes RED on THAT invariant (asserting the
 offending index) and GREEN on all others (surgical — anti-vacuity); a coverage
-guard asserts every registry invariant has a RED fixture; a tier guard asserts
-only ``deterministic`` invariants ship; a privacy test asserts the report leaks
-no fixture payload and clears the publication scanner; and a mirrored-constants
-lockstep test runs against ``hooks.scripts.hook_router``.
+guard asserts every live invariant has a RED fixture; a tier guard asserts
+only ``deterministic`` invariants ship live; a privacy test asserts the report
+leaks no fixture payload and clears the publication scanner; and a
+mirrored-constants lockstep test runs against ``hooks.scripts.hook_router``.
+
+The deferred plan-conformance invariant (``DEFERRED_INVARIANTS``, #1640) is NOT
+in the live registry, so the live eval never evaluates it; a dedicated test
+keeps its predicate exercised against its own RED fixture.
 """
 
 import re
@@ -29,7 +33,14 @@ import hooks.scripts.hook_router as router
 from teatree.core.privacy_gate import scan_for_publication
 from teatree.eval import transcript_conformance as tc
 from teatree.eval.session_transcript import parse_session_jsonl
-from teatree.eval.transcript_conformance import INVARIANT_REGISTRY, Invariant, render_report, render_report_json, replay
+from teatree.eval.transcript_conformance import (
+    DEFERRED_INVARIANTS,
+    INVARIANT_REGISTRY,
+    Invariant,
+    render_report,
+    render_report_json,
+    replay,
+)
 
 _FIXTURES: Final[Path] = Path(__file__).parent / "fixtures" / "transcripts"
 _PASS_FIXTURE: Final[Path] = _FIXTURES / "all_pass.session.jsonl"
@@ -86,15 +97,40 @@ def test_violation_fixture_is_green_on_other_invariants(invariant: Invariant) ->
 
 
 def test_every_invariant_has_a_red_fixture() -> None:
-    """Coverage guard: a registry invariant without a RED fixture fails the build."""
+    """Coverage guard: a live invariant without a RED fixture fails the build."""
     missing = [inv.id for inv in INVARIANT_REGISTRY if not (_FIXTURES / f"{inv.id}_violation.session.jsonl").is_file()]
-    assert not missing, f"invariants missing a RED violation fixture: {missing}"
+    assert not missing, f"live invariants missing a RED violation fixture: {missing}"
 
 
 def test_only_deterministic_invariants_ship() -> None:
     """Tier guard: only ``deterministic`` (GREEN-tier) invariants are live-runnable."""
     non_green = [(inv.id, inv.confidence) for inv in INVARIANT_REGISTRY if inv.confidence != "deterministic"]
     assert not non_green, f"non-deterministic invariants must not ship in the live registry: {non_green}"
+
+
+# ── deferred plan-conformance invariant (#1640, not live) ─────────────────────
+
+
+def test_plan_invariant_is_deferred_not_live() -> None:
+    """The plan-conformance invariant ships deferred — never in the live registry.
+
+    ``teatree-plan`` is the interactive board-prioritization skill, the wrong
+    signal for "this implementation change was planned" (#1640); evaluating it
+    live would emit false violations. The default ``replay`` must never run it.
+    """
+    assert any(inv.id == "plan_gate_fired_or_skipped" for inv in DEFERRED_INVARIANTS)
+    assert all(inv.id != "plan_gate_fired_or_skipped" for inv in INVARIANT_REGISTRY)
+
+
+def test_deferred_plan_invariant_predicate_still_works() -> None:
+    """The deferred predicate stays exercised: RED on its own fixture, GREEN on the clean one."""
+    (plan_invariant,) = (inv for inv in DEFERRED_INVARIANTS if inv.id == "plan_gate_fired_or_skipped")
+    fixture = _FIXTURES / f"{plan_invariant.id}_violation.session.jsonl"
+    assert fixture.is_file(), f"missing RED fixture for the deferred invariant: {fixture}"
+    red = _result_for(plan_invariant, fixture)
+    assert not red.ok, "deferred plan invariant stayed GREEN on its own violation fixture (vacuous)"
+    assert red.offending_index is not None
+    assert _result_for(plan_invariant, _PASS_FIXTURE).ok
 
 
 # ── privacy ──────────────────────────────────────────────────────────────────
