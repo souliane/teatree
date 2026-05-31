@@ -86,9 +86,8 @@ _BUDGET_APPENDICES_BYTES = 108_000
 # Reviewed bump (#169): tracks the top-level + appendix bumps for the
 # two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
 # Reviewed bump (#171+#166 merge): post-merge total corpus is 188,987 B
-# (top-level 81,738 + appendices 107,249); raised to the next ~1 KB step
-# (~1,013 B headroom).
-_BUDGET_TOTAL_BYTES = 190_000
+# (top-level 81,738 + appendices 107,249); raised to 189,500 (~513 B headroom).
+_BUDGET_TOTAL_BYTES = 189_500
 
 
 def _repo_root() -> pathlib.Path:
