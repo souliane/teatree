@@ -45,6 +45,18 @@ class TestDeniesRawReviewWrites:
             "gh api repos/o/r/pulls/12/comments -f body='please fix'",
             "gh api repos/o/r/issues/12/comments --method POST -f body=x",
             "gh api repos/o/r/pulls/12/comments -X POST --raw-field body=@note.txt",
+            # Body flag with NO explicit method — gh/glab default to POST (#1568).
+            "glab api projects/42/merge_requests/7/discussions -f body=hi",
+            # Explicit non-GET write methods stay writes even with a body flag.
+            "glab api projects/42/merge_requests/7/comments --method PATCH -f body=x",
+            "glab api projects/42/merge_requests/7/notes -X PUT -f body=x",
+            # Repeated method flags resolve LAST-WINS in gh (2.87.3) / glab
+            # (1.80.4): a GET token followed by a write method is a genuine
+            # write, not a read — the bypass the cold-review flagged (#1568).
+            "gh api repos/o/r/pulls/12/comments -X GET -X POST -f body=hi",
+            "glab api projects/42/merge_requests/7/discussions --method=GET --method PATCH -f body=x",
+            # DELETE is a write — an effective GET is the ONLY read.
+            "glab api projects/42/merge_requests/7/notes -X DELETE -f x",
         ],
     )
     def test_raw_review_write_is_denied(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
@@ -76,6 +88,15 @@ class TestAllowsReadsAndUnrelated:
             "glab api projects/42/merge_requests/7/discussions",
             "glab api projects/42/merge_requests/7/notes --paginate",
             "gh api repos/o/r/pulls/12/comments",
+            # Explicit GET read with a body flag carrying a query param (#1568):
+            # `-X GET`/`--method GET` forces a GET, so `-f` is a query param,
+            # never a body write — must NOT be denied.
+            "glab api projects/42/merge_requests/7/discussions -X GET -f sort=asc",
+            "glab api projects/42/merge_requests/7/discussions --method GET -f sort=asc",
+            "gh api repos/o/r/pulls/12/notes --method=GET -f per_page=100",
+            # Repeated method flags, GET LAST — effective method is GET, so a
+            # write-then-GET command is a read (last-wins, no false-deny).
+            "gh api repos/o/r/pulls/12/comments -X POST -X GET",
             # Non-review forge reads/writes.
             "glab api projects/42/merge_requests/7",
             "glab api projects/42/merge_requests/7/approvals -X POST",
