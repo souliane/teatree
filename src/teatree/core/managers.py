@@ -374,6 +374,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         name: str,
         *,
         session_id: str,
+        owner_pid: int | None = None,
         ttl_seconds: int = 1800,
         take_over: bool = False,
     ) -> tuple[bool, str]:
@@ -398,9 +399,17 @@ class LoopLeaseQuerySet(models.QuerySet):
         back from a hijacking session within one tick.
 
         On a win the row's ``session_id``/``acquired_at``/
-        ``lease_expires_at`` are set. The returned ``current_owner_session``
-        is read back *after* the write so a loser reports WHO actually
-        holds it.
+        ``lease_expires_at``/``owner_pid`` are set. The returned
+        ``current_owner_session`` is read back *after* the write so a
+        loser reports WHO actually holds it.
+
+        ``owner_pid`` (#1604): the durable session process id (the long-lived
+        session process, not the ephemeral hook/tick subprocess). Stored on
+        win so ``evict_stale_owner`` can distinguish a post-compaction
+        same-process self-reclaim (same pid → safe to evict) from a
+        genuinely different live session (different live pid → KEEP).
+        Callers that cannot resolve the session pid pass ``None``; the
+        stored null is treated conservatively as "unknown → KEEP" (INV4).
         """
         now = timezone.now()
         expires = now + timedelta(seconds=ttl_seconds)
@@ -415,11 +424,75 @@ class LoopLeaseQuerySet(models.QuerySet):
             )
         won = candidates.update(
             session_id=session_id,
+            owner_pid=owner_pid,
             acquired_at=now,
             lease_expires_at=expires,
         )
         current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
         return won == 1, current
+
+    def evict_stale_owner(
+        self,
+        name: str,
+        *,
+        keep_session_id: str,
+        current_pid: int | None,
+    ) -> int:
+        """Evict the ``name`` lease iff it is safe to do so (#1604).
+
+        Decision table (INV1 / INV4 / #786 B1 backend-agnostic CAS):
+
+        - Expired / null expiry: EVICT (lease is already dead).
+        - Live + same session + matching pid: EVICT (post-compaction
+            same-process self-reclaim; session rotated its id).
+        - Live + null owner_pid: KEEP (unknown process, INV4 bias).
+        - Live + dead owner_pid: EVICT.
+        - Live + alive owner_pid != current_pid: KEEP (INV1, foreign lease).
+
+        The final UPDATE re-asserts the safety condition in its ``WHERE``
+        clause (backend-agnostic CAS) so a concurrent tick that refreshed
+        the lease between our read and this write is not evicted.
+
+        Returns the number of rows orphaned (0 or 1).
+        """
+        try:
+            from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+        except ImportError:
+            pid_alive = None  # type: ignore[assignment]
+
+        now = timezone.now()
+        candidates = self.filter(name=name).exclude(session_id=keep_session_id)
+        row = candidates.values("session_id", "owner_pid", "lease_expires_at").first()
+        if not row or not (row["session_id"] or ""):
+            return 0
+
+        expires_at = row["lease_expires_at"]
+        is_live = expires_at is not None and expires_at > now
+
+        if not is_live:
+            return candidates.filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)).update(
+                session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None
+            )
+
+        stored_pid = row["owner_pid"]
+        if stored_pid is None:
+            return 0
+
+        if current_pid is not None and stored_pid == current_pid:
+            return (
+                self.filter(name=name, owner_pid=stored_pid, lease_expires_at__gt=now)
+                .exclude(session_id=keep_session_id)
+                .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
+            )
+
+        if pid_alive is not None and not pid_alive(stored_pid):
+            return (
+                self.filter(name=name, owner_pid=stored_pid)
+                .exclude(session_id=keep_session_id)
+                .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
+            )
+
+        return 0
 
     def heartbeat_ownership(self, name: str, *, session_id: str, ttl_seconds: int = 1800) -> bool:
         """Extend the loop-owner lease IFF this session still holds it (#1073).

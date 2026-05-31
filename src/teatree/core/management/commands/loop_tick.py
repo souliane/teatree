@@ -167,10 +167,17 @@ class Command(TyperCommand):
         # the hook-layer "no owner → you are owner"). `loop-owner` is
         # NEVER released — its TTL + per-tick re-claim is its sole
         # lifecycle (unlike `loop-tick`, released in the finally below).
+        import os as _os  # noqa: PLC0415
+
         session_id = current_session_id()
         owner_ttl = _loop_owner_ttl_seconds()
+        # #1604: record the durable session pid (the long-lived session
+        # process, not this ephemeral tick subprocess). ``os.getppid()``
+        # returns the parent of ``t3 loop tick``, which is the session
+        # process that launched the cron — the same value the hook layer
+        # records in ``_tick_owner_record``.
         won_owner, owner_session = LoopLease.objects.claim_ownership(
-            "loop-owner", session_id=session_id, ttl_seconds=owner_ttl
+            "loop-owner", session_id=session_id, ttl_seconds=owner_ttl, owner_pid=_os.getppid()
         )
         if not won_owner:
             self._emit_skip(

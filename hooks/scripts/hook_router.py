@@ -3589,8 +3589,57 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
-def _evict_stale_db_lease_owner(session_id: str) -> None:
-    """Orphan any ``LoopLease`` ``loop-owner`` row not held by ``session_id``.
+def _live_lease_is_foreign(stored_pid: int, current_pid: int | None) -> bool:
+    """Return True iff a LIVE foreign-session lease should be treated as genuinely foreign.
+
+    Called only for live leases whose ``session_id`` differs from the current session.
+    Returns False (evictable) when stored_pid matches current_pid (post-compaction
+    same-process self-reclaim) or pid_alive confirms the owner process is dead.
+    Returns True (KEEP) when pid_alive is unavailable (conservative bias, INV4) or
+    the owner process is still alive and belongs to a different OS process (INV1).
+    """
+    if current_pid is not None and stored_pid == current_pid:
+        return False
+    try:
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
+    except ImportError:
+        return True
+    else:
+        return pid_alive(stored_pid)
+
+
+def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
+    """Return the session id of a genuinely LIVE foreign ``loop-owner`` DB lease, or ``""``.
+
+    #1604: called when the file registry has no entry for the tick-owner
+    (empty after prune / fail-safe) to detect registry/DB desync. If the
+    DB shows a live claim by a *different* session that is also a
+    *different alive process*, that session is still the rightful owner —
+    the new session must stay idle (INV1). Fails open (returns ``""``) on
+    any DB/import error so a hiccup never blocks the SessionStart directive.
+    """
+    if not _bootstrap_teatree_django():
+        return ""
+    try:
+        import datetime  # noqa: PLC0415
+
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
+        owner_session = (row or {}).get("session_id") or ""
+        is_foreign_session = bool(owner_session) and owner_session != session_id
+        expires_at = (row or {}).get("lease_expires_at")
+        is_live = expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)
+        stored_pid = (row or {}).get("owner_pid")
+        pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
+    except Exception:  # noqa: BLE001
+        return ""
+    else:
+        return owner_session if (is_foreign_session and is_live and pid_is_foreign) else ""
+
+
+def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> None:
+    """Conditionally evict the ``LoopLease`` ``loop-owner`` row (#1604).
 
     #1380 (#1107 follow-up). Context compaction rotates the Claude
     ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
@@ -3603,12 +3652,14 @@ def _evict_stale_db_lease_owner(session_id: str) -> None:
     session can never own its own loop until ``t3 loop claim
     --take-over`` runs manually.
 
-    Compaction is the natural eviction point. Whenever the SessionStart
-    handler records a new session as the tick-owner, any stale DB row
-    (session_id != new id, including the empty-string baseline) is
-    orphaned so the new session's next tick CAS-claims it cleanly. The
-    lease stays the authoritative liveness source; the registry is the
-    discovery channel.
+    #1604 fix: the eviction now goes through
+    ``LoopLease.objects.evict_stale_owner``, which consults the stored
+    ``owner_pid`` and a liveness check before orphaning. A LIVE foreign
+    lease (different live pid) is KEPT — only an expired, dead-pid, or
+    same-process (post-compaction) lease is evicted. This closes the
+    desync hijack: when the file registry is empty (e.g. pruned by the
+    fail-safe) but the DB shows a live foreign lease, the new session
+    stays idle instead of stealing the claim.
 
     Best-effort: any Django bootstrap / DB error fails open. The hook
     must never block the SessionStart directive over a DB hiccup.
@@ -3620,11 +3671,7 @@ def _evict_stale_db_lease_owner(session_id: str) -> None:
     except Exception:  # noqa: BLE001
         return
     try:
-        LoopLease.objects.filter(name="loop-owner").exclude(session_id=session_id).update(
-            session_id="",
-            acquired_at=None,
-            lease_expires_at=None,
-        )
+        LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id=session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001
         return
 
@@ -3688,6 +3735,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     agent_id = data.get("agent_id", "")
 
     became_owner_after_rotation = False
+    current_pid = os.getppid()
     with _loop_registry_txn() as box:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
@@ -3701,31 +3749,43 @@ def handle_session_start_bootstrap(data: dict) -> None:
                 owner_session=owner.get("session_id", "?"),
             )
             emit_osc = False
+        elif owner is None:
+            # No live registry owner (fresh machine OR dead-owner prune OR
+            # #810 fail-safe returning {}). Before claiming, consult the DB
+            # for a live foreign lease (#1604): the registry/DB can desync
+            # when the incumbent's entry was pruned but its DB lease is
+            # still valid. A live DB lease from a different session means
+            # we are NOT the rightful owner — stay idle (INV1).
+            db_live_owner = _db_live_foreign_owner(session_id, current_pid=current_pid)
+            if db_live_owner:
+                box[0] = registry
+                context = _TICK_DISPATCH_NON_OWNER_DIRECTIVE.format(
+                    owner_session=db_live_owner,
+                )
+                emit_osc = False
+            else:
+                # No live owner anywhere — this session is the tick-owner.
+                # Mark for stale DB eviction (post-compaction path).
+                became_owner_after_rotation = True
+                box[0] = _tick_owner_record(session_id, agent_id or "")
+                context = _TICK_DISPATCH_OWNER_DIRECTIVE
+                emit_osc = True
         else:
-            # No live owner, or this session already owns it (incl. the
-            # post-compaction same-session restart — nothing to re-spawn,
-            # the cron keeps ticking). This session is the tick-owner.
-            # ``owner is None`` here = a fresh machine OR a dead-owner
-            # prune; both can leave a stale DB lease behind. The
-            # ``same-session refresh`` case (``owner.session_id ==
-            # session_id``) does not need eviction — gating on this flag
-            # spares those SessionStarts the Django startup cost.
-            became_owner_after_rotation = owner is None
+            # This session already owns the registry — same-session restart
+            # (post-compaction same-id, or hook re-fire). No eviction needed.
             box[0] = _tick_owner_record(session_id, owner.get("agent_id", "") if owner else agent_id or "")
             context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
 
-    # #1380: orphan any stale DB ``loop-owner`` row from a rotated session
-    # (compaction rotated the Claude ``session_id``, leaving the DB lease
-    # under the previous id with an unexpired ``lease_expires_at``). The
-    # lease stays the authoritative liveness source; this aligns it with
-    # the file registry we just rewrote so the new session's next
-    # ``t3 loop tick`` CAS-claims cleanly without ``--take-over``. Outside
-    # the flock — the DB has its own CAS serialization; holding the
+    # #1380 / #1604: conditionally evict any stale DB ``loop-owner`` row.
+    # Only runs when the registry had no entry (fresh machine or dead-owner
+    # prune) and the DB also showed no live foreign lease. The eviction is
+    # conditional on liveness so a LIVE foreign DB lease is preserved.
+    # Outside the flock — the DB has its own CAS serialization; holding the
     # registry flock across a Django bootstrap would needlessly stall
     # sibling SessionStart hooks.
     if became_owner_after_rotation:
-        _evict_stale_db_lease_owner(session_id)
+        _evict_stale_db_lease_owner(session_id, current_pid=current_pid)
 
     # OSC write is a tty side effect, not registry state — keep it out of
     # the flock critical section.
@@ -4684,6 +4744,10 @@ def handle_block_direct_commands(data: dict) -> bool:
 # weakens the gate.
 
 _OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+# REST-API merge endpoint: ``(merge_requests|pulls)/<n>/merge``.
+# Matches both GitHub (``repos/OWNER/REPO/pulls/<n>/merge``) and
+# GitLab (``projects/<id>/merge_requests/<n>/merge``) URL shapes.
+_MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
 _OUT_OF_BAND_MERGE_REASON = (
     "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
     "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
@@ -4693,6 +4757,30 @@ _OUT_OF_BAND_MERGE_REASON = (
     "teatree-managed and the cwd could not be resolved, run the merge from inside "
     "the repo's working tree so the gate can classify it."
 )
+
+
+def _is_raw_merge_api_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a merge endpoint.
+
+    True only when the command targets a ``.../pulls/<n>/merge`` or
+    ``.../merge_requests/<n>/merge`` endpoint AND its EFFECTIVE HTTP method is
+    not GET. Reuses the gate-3 effective-method classifier: the LAST
+    ``-X``/``--method`` value wins; with no method flag the default is POST
+    when a body/field flag is present, else GET. A GET to the merge endpoint
+    reads merge status and must NOT be denied.
+    """
+    if "glab api" not in command and "gh api" not in command:
+        return False
+    if not _MERGE_ENDPOINT_RE.search(command):
+        return False
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
+    if methods:
+        is_read = methods[-1] == "GET"
+    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
+        is_read = False
+    else:
+        is_read = True
+    return not is_read
 
 
 def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
@@ -4766,7 +4854,15 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
-    """Block a raw ``gh pr merge`` / ``glab mr merge`` on a managed repo.
+    """Block a raw merge command or REST-API merge write on a managed repo.
+
+    Covers two bypass vectors. The literal subcommand form (``gh pr merge`` /
+    ``glab mr merge``) is matched by :data:`_OUT_OF_BAND_MERGE_RE`. The REST-API
+    form (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
+    .../merge_requests/<n>/merge --method POST``) is matched by
+    :func:`_is_raw_merge_api_write`, which reuses gate-3's effective-method
+    classifier (last ``-X``/``--method`` wins; default POST with a body flag, else
+    GET). A GET to the merge endpoint reads merge status and is NOT denied.
 
     Carve-out for the permanent-lockout case (#126): a merge is allowed only
     when the cwd repo is confidently NOT teatree-managed. Managed repos and
@@ -4775,7 +4871,9 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not command or not _OUT_OF_BAND_MERGE_RE.search(command):
+    if not command:
+        return False
+    if not _OUT_OF_BAND_MERGE_RE.search(command) and not _is_raw_merge_api_write(command):
         return False
     cwd = _resolve_cwd_repo(data)
     if cwd is None:
@@ -4813,8 +4911,16 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 _REVIEW_POST_ENDPOINT_RE = re.compile(
     r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
 )
+# Two captured forms of the gh/glab HTTP-method flag, both empirically valid
+# against gh (2.87.3) / glab (1.80.4): the spaced/``=`` form (``-X PUT``,
+# ``--method=POST``) and the pflag NO-SPACE shorthand (``-XPUT``). The
+# no-space form is a real method override (``gh api -XGET /rate_limit`` returns
+# 200), so omitting it let ``-XPUT`` evade classification → ``is_read=True`` →
+# the merge/review write slipped through. Consumers flatten the two capture
+# groups and keep last-wins effective-method semantics.
 _REVIEW_POST_METHOD_RE = re.compile(
-    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b",
+    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b"
+    r"|(?<=-X)([A-Za-z]+)\b",
 )
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
@@ -4844,7 +4950,7 @@ def _is_raw_review_write(command: str) -> bool:
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for m in _REVIEW_POST_METHOD_RE.findall(command)]
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
         is_read = methods[-1] == "GET"
     elif _REVIEW_POST_BODY_FLAG_RE.search(command):
