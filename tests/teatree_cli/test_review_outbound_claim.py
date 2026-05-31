@@ -44,6 +44,10 @@ class _StubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        return []
+
+    def get_json_paginated(self, endpoint: str) -> list:
+        self.calls.append(("get_json_paginated", endpoint, None))
         if "discussions" in endpoint:
             return [{"notes": [{"author": {"username": "souliane"}}]}]
         return []
@@ -151,7 +155,7 @@ class TestFailurePathsDoNotRecordClaims:
 
     def test_review_first_precondition_blocks_approve_and_records_no_claim(self) -> None:
         service, stub = _service()
-        stub.get_json = lambda _endpoint: []  # type: ignore[method-assign]
+        stub.get_json_paginated = lambda _endpoint: []  # type: ignore[method-assign]
         _msg, code = service.approve("org/repo", 8)
         assert code == 1
         assert not OutboundClaim.objects.filter(kind=OutboundClaim.Kind.GITLAB_APPROVE).exists()
