@@ -8,6 +8,10 @@ window. The marker advances ONLY on the default path: ``--since`` (the user
 named an explicit window) and ``--no-advance`` (an inspection-only run) both
 leave the checkpoint untouched.
 
+Default path (no ``--this-overlay``): aggregates all configured overlays,
+advancing each overlay's marker independently after gathering. ``--this-overlay``
+restores the pre-existing single-overlay scope (backward-compat).
+
 Read-only: every query underneath is a select; the command never transitions a
 ticket nor writes any row except the checkpoint marker. The return value is the
 output channel (``django-typer`` serialises it) — JSON when ``--json``, else
@@ -16,14 +20,15 @@ the terse human view.
 
 import json
 import os
+from datetime import datetime
 from typing import Annotated
 
 import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.checking import gather_checking_report
-from teatree.core.checkpoint import advance_checkpoint_monotonic, resolve_window_start
+from teatree.core.checking import gather_all_overlays_report, gather_checking_report
+from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
 
 
 class Command(TyperCommand):
@@ -47,10 +52,43 @@ class Command(TyperCommand):
             bool,
             typer.Option("--no-advance", help="Read the window without advancing the last-checked marker."),
         ] = False,
+        this_overlay: Annotated[
+            bool,
+            typer.Option(
+                "--this-overlay",
+                help="Scope to the current overlay only (default: aggregate all configured overlays).",
+            ),
+        ] = False,
     ) -> str:
         """Print a terse, grouped, clickable report of changes since the last check."""
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
+
+        if this_overlay:
+            return self._show_single_overlay(
+                overlay_name=overlay_name,
+                now=now,
+                since=since,
+                json_output=json_output,
+                no_advance=no_advance,
+            )
+        return self._show_all_overlays(
+            now=now,
+            since=since,
+            json_output=json_output,
+            no_advance=no_advance,
+        )
+
+    def _show_single_overlay(
+        self,
+        *,
+        overlay_name: str,
+        now: datetime,
+        since: str,
+        json_output: bool,
+        no_advance: bool,
+    ) -> str:
+        """Single-overlay path (``--this-overlay`` or backward-compat)."""
         window_start = resolve_window_start(since=since, now=now)
         report = gather_checking_report(
             since=window_start,
@@ -59,16 +97,49 @@ class Command(TyperCommand):
             code_host=self._resolve_code_host(),
             overlay_repos=self._resolve_overlay_repos(),
         )
-        # Advance only on the default path: an explicit --since or --no-advance
-        # is an inspection that must not move the user's last-checked marker.
-        # The advance is monotonic — it never writes a marker earlier than the
-        # stored one, so a clock regression or a future/skewed marker cannot
-        # collapse a real window or mark unreported events as seen.
         if not since and not no_advance:
             advance_checkpoint_monotonic(now)
         if json_output:
             return json.dumps(report.to_dict())
         return report.to_terse(overlay_name=overlay_name)
+
+    def _show_all_overlays(
+        self,
+        *,
+        now: datetime,
+        since: str,
+        json_output: bool,
+        no_advance: bool,
+    ) -> str:
+        """All-overlays path (default): aggregate every configured overlay."""
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        overlays = get_all_overlays()
+
+        overlay_windows: dict[str, tuple[datetime, datetime]] = {}
+        overlay_configs: dict[str, tuple[str, list[str]]] = {}
+
+        for name, overlay in overlays.items():
+            path = checkpoint_path(overlay=name)
+            window_start = resolve_window_start(since=since, now=now, path=path)
+            overlay_windows[name] = (window_start, now)
+            code_host = _overlay_code_host(overlay)
+            repos = _overlay_repos(overlay)
+            overlay_configs[name] = (code_host, repos)
+
+        report = gather_all_overlays_report(
+            overlay_windows=overlay_windows,
+            overlay_configs=overlay_configs,
+        )
+
+        if not since and not no_advance:
+            for name in overlays:
+                path = checkpoint_path(overlay=name)
+                advance_checkpoint_monotonic(now, path)
+
+        if json_output:
+            return json.dumps(report.to_dict())
+        return report.to_terse()
 
     @staticmethod
     def _resolve_code_host() -> str:
@@ -103,3 +174,18 @@ class Command(TyperCommand):
             return [repo for repo in repos if isinstance(repo, str) and repo]
         except Exception:  # noqa: BLE001 — config read must never wedge a read-only report
             return []
+
+
+def _overlay_code_host(overlay: object) -> str:
+    try:
+        return overlay.config.code_host or ""  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _overlay_repos(overlay: object) -> list[str]:
+    try:
+        repos = list(overlay.metadata.get_followup_repos()) + list(overlay.get_repos())  # type: ignore[union-attr]
+        return [r for r in repos if isinstance(r, str) and r]
+    except Exception:  # noqa: BLE001
+        return []

@@ -51,6 +51,10 @@ class _ApproveStubAPI:
 
     def get_json(self, endpoint: str) -> object:
         self.calls.append(("get_json", endpoint, None))
+        return []
+
+    def get_json_paginated(self, endpoint: str) -> list:
+        self.calls.append(("get_json_paginated", endpoint, None))
         return [{"notes": [{"author": {"username": "souliane"}}]}]
 
     def post_status(self, endpoint: str) -> int:

@@ -16,7 +16,10 @@ from teatree.cli.review_approval import identity_has_reviewed, identity_in_appro
 def _api(*, username: str = "souliane", discussions: Any = None) -> MagicMock:
     api = MagicMock()
     api.current_username.return_value = username
-    api.get_json.return_value = discussions if discussions is not None else []
+    # identity_has_reviewed uses get_json_paginated; identity_in_approved_by uses get_json.
+    resolved = discussions if discussions is not None else []
+    api.get_json_paginated.return_value = resolved if isinstance(resolved, list) else []
+    api.get_json.return_value = resolved
     return api
 
 
@@ -32,6 +35,7 @@ class TestIdentityHasReviewed:
         assert error  # non-empty diagnostic
         assert "identity" in error.lower() or "token" in error.lower()
         api.get_json.assert_not_called()
+        api.get_json_paginated.assert_not_called()
 
     def test_returns_true_when_identity_authored_a_note(self) -> None:
         discussions = [

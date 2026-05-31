@@ -27,9 +27,7 @@ def identity_has_reviewed(api: "GitLabAPI", encoded_repo: str, mr: int) -> tuple
     username = api.current_username()
     if not username:
         return False, "Could not resolve the approving GitLab identity (check token / `glab auth status`)."
-    discussions = api.get_json(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
-    if not isinstance(discussions, list):
-        return False, ""
+    discussions = api.get_json_paginated(f"projects/{encoded_repo}/merge_requests/{mr}/discussions?per_page=100")
     for discussion in discussions:
         if not isinstance(discussion, dict):
             continue
