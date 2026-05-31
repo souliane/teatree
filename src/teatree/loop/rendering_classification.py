@@ -181,48 +181,89 @@ def _classify_disposition(c: _ClassifiedActions, overlay: str, payload: Payload,
     c.disposition_refs.setdefault(overlay, {}).setdefault(reason, []).append(ref)
 
 
+def _is_orphaned_task(payload: Payload) -> bool:
+    """True when *payload* belongs to a ``todo.orphaned`` operator-review advisory.
+
+    The scanner emits one signal per unverifiable task; without collapse,
+    N orphaned tasks produce N identical-shaped rows in ``action_needed``
+    and flood the statusline. The classifier intercepts them and collapses
+    the whole batch to one summary line (``N tasks need operator review``).
+    The ScanSignals themselves are preserved for non-statusline consumers;
+    only the rendered view collapses.
+    """
+    return isinstance(payload.get("task_id"), int)
+
+
+def _emit_orphaned_summaries(
+    c: _ClassifiedActions,
+    orphaned_counts: dict[str, int],
+) -> None:
+    """Append one collapsed ``N tasks need operator review`` entry per overlay."""
+    for overlay, count in sorted(orphaned_counts.items()):
+        prefix = f"[{overlay}] " if overlay else ""
+        label = "task needs" if count == 1 else "tasks need"
+        c.other.append(("action_needed", StatuslineEntry(text=f"{prefix}{count} {label} operator review")))
+
+
+def _classify_one(c: _ClassifiedActions, action: DispatchAction) -> None:
+    """Route one statusline action into the right classified bucket.
+
+    Pre-condition: ``action.kind == "statusline"``, not a slack user reply,
+    and not a ``todo.orphaned`` advisory (both filtered by the caller).
+    """
+    payload = action.payload if isinstance(action.payload, dict) else {}
+    url_str = _str_field(payload, "url")
+    overlay = _str_field(payload, "overlay")
+    prefix = f"[{overlay}] " if overlay else ""
+
+    state = payload.get("state")
+    ticket_number = payload.get("ticket_number")
+    if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
+        c.active_tickets.setdefault(overlay, []).append(
+            _active_ticket_tuple(ticket_number=ticket_number, state=state, payload=payload),
+        )
+        return
+    if payload.get("stale") is True:
+        c.stale_refs.setdefault(overlay, []).append(
+            _issue_ref_from(
+                issue_url=_str_field(payload, "issue_url"),
+                ticket_number=_str_field(payload, "ticket_number"),
+            ),
+        )
+        return
+    reason = payload.get("reason")
+    if isinstance(reason, str):
+        _classify_disposition(c, overlay, payload, reason)
+        return
+    if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
+        c.ready_refs.setdefault(overlay, []).append(
+            _issue_ref_from(
+                url=_str_field(payload, "url"),
+                issue_url=_str_field(payload, "issue_url"),
+                ticket_number=_str_field(payload, "ticket_number"),
+                title=_str_field(payload, "title"),
+            ),
+        )
+        return
+    if _is_dm_action(action, payload):
+        c.dms.setdefault(overlay, []).append(_dm_ref_from(payload))
+        return
+    ref = _pr_ref(action)
+    if ref is not None:
+        bucket = c.action_prs if action.zone == "action_needed" else c.inflight_prs
+        bucket.setdefault(overlay, []).append(ref)
+        return
+    c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
+
+
 def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
     c = _ClassifiedActions()
+    orphaned_counts: dict[str, int] = {}
     for action in actions:
-        payload = action.payload if isinstance(action.payload, dict) else {}
-        url_str = _str_field(payload, "url")
-        overlay = _str_field(payload, "overlay")
-        prefix = f"[{overlay}] " if overlay else ""
-
         if action.kind != "statusline":
             continue
-        state = payload.get("state")
-        ticket_number = payload.get("ticket_number")
-        if action.zone == "anchors" and isinstance(state, str) and isinstance(ticket_number, str):
-            c.active_tickets.setdefault(overlay, []).append(
-                _active_ticket_tuple(ticket_number=ticket_number, state=state, payload=payload),
-            )
-            continue
-        if payload.get("stale") is True:
-            c.stale_refs.setdefault(overlay, []).append(
-                _issue_ref_from(
-                    issue_url=_str_field(payload, "issue_url"),
-                    ticket_number=_str_field(payload, "ticket_number"),
-                ),
-            )
-            continue
-        reason = payload.get("reason")
-        if isinstance(reason, str):
-            _classify_disposition(c, overlay, payload, reason)
-            continue
-        if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
-            c.ready_refs.setdefault(overlay, []).append(
-                _issue_ref_from(
-                    url=_str_field(payload, "url"),
-                    issue_url=_str_field(payload, "issue_url"),
-                    ticket_number=_str_field(payload, "ticket_number"),
-                    title=_str_field(payload, "title"),
-                ),
-            )
-            continue
-        if _is_dm_action(action, payload):
-            c.dms.setdefault(overlay, []).append(_dm_ref_from(payload))
-            continue
+        payload = action.payload if isinstance(action.payload, dict) else {}
+        overlay = _str_field(payload, "overlay")
         if _is_slack_user_reply(action, payload):
             # #1113 Defect 2 defense-in-depth: raw Slack reply text + ts must
             # never reach ``c.other`` and render verbatim, even if the
@@ -230,12 +271,11 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
             # Slack-answer loop (``teatree.loop.slack_answer``); the
             # statusline never surfaces it.
             continue
-        ref = _pr_ref(action)
-        if ref is not None:
-            bucket = c.action_prs if action.zone == "action_needed" else c.inflight_prs
-            bucket.setdefault(overlay, []).append(ref)
+        if action.zone == "action_needed" and _is_orphaned_task(payload):
+            orphaned_counts[overlay] = orphaned_counts.get(overlay, 0) + 1
             continue
-        c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
+        _classify_one(c, action)
+    _emit_orphaned_summaries(c, orphaned_counts)
     _dedup_classified(c)
     return c
 
