@@ -1129,8 +1129,11 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list  List discovered eval scenarios.                                        │
-│ run   Run one scenario by name, or all scenarios when no name is given.      │
+│ list               List discovered eval scenarios.                           │
+│ run                Run one scenario by name, or all scenarios when no name   │
+│                    is given.                                                 │
+│ transcript-replay  Replay a real session transcript against teatree          │
+│                    behavioural invariants.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1161,6 +1164,33 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │ --max-turns        INTEGER  Override the scenario's max_turns                │
 │                             (per-invocation).                                │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval transcript-replay`
+
+```
+Usage: t3 eval transcript-replay [OPTIONS]
+
+ Replay a real session transcript against teatree behavioural invariants.
+
+ The #169 complement to the #168 gate-liveness corpus: #168 proves the gates
+ CAN fire on synthetic payloads; this proves they DID (or weren't needed) in
+ a REAL run. Django-free, stdout-only, no transport: privacy by construction.
+ Exits non-zero on any invariant violation; skips and exits 0 when no
+ transcript is found. The report names only invariant ids and event indexes —
+ never a tool input, prompt, hook output, or quote.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --latest     --no-latest          Replay the newest session for the cwd's    │
+│                                   project.                                   │
+│                                   [default: latest]                          │
+│ --session                   TEXT  Replay a specific session id (in the cwd's │
+│                                   project).                                  │
+│ --file                      PATH  Replay a specific session JSONL file path. │
+│ --format                    TEXT  Report format: text or json.               │
+│                                   [default: text]                            │
+│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
