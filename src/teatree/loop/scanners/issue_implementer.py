@@ -15,6 +15,7 @@ idempotency). Dispatch routing of the emitted signals lands in C4 (#1554);
 C3 stops at claim + signal emission.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -22,6 +23,8 @@ from teatree.backends.protocols import CodeHostBackend
 from teatree.core.models import ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 def _issue_url(issue: RawAPIDict) -> str:
@@ -94,27 +97,32 @@ class IssueImplementerScanner:
             return []
         signals: list[ScanSignal] = []
         for issue in self._collect_unique_issues(assignees):
-            if not _issue_is_open(issue):
-                continue
-            if self.label not in _issue_labels(issue):
-                continue
-            url = _issue_url(issue)
-            if not url:
-                continue
-            marker = ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
-            if marker is None:
-                continue
-            signals.append(
-                ScanSignal(
-                    kind="issue_implementer.claimed",
-                    summary=f"Claimed for auto-implement: {_issue_title(issue)}",
-                    payload={
-                        "url": url,
-                        "raw": issue,
-                        "overlay": self.overlay_name,
-                    },
+            url = _issue_url(issue) or "<unknown>"
+            try:
+                if not _issue_is_open(issue):
+                    continue
+                if self.label not in _issue_labels(issue):
+                    continue
+                url = _issue_url(issue)
+                if not url:
+                    continue
+                marker = ImplementedIssueMarker.objects.claim(url, overlay=self.overlay_name)
+                if marker is None:
+                    continue
+                signals.append(
+                    ScanSignal(
+                        kind="issue_implementer.claimed",
+                        summary=f"Claimed for auto-implement: {_issue_title(issue)}",
+                        payload={
+                            "url": url,
+                            "raw": issue,
+                            "overlay": self.overlay_name,
+                        },
+                    )
                 )
-            )
+            except Exception:
+                logger.exception("IssueImplementerScanner failed on issue %s", url)
+                continue
         return signals
 
     def _resolve_identities(self) -> tuple[str, ...]:

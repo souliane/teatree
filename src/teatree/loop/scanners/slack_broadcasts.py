@@ -270,7 +270,14 @@ class SlackBroadcastsScanner:
     def _scan_channel(self, channel: str) -> list[ScanSignal]:
         signals: list[ScanSignal] = []
         for message in self.fetch_channel_history(channel=channel):
-            signals.extend(self._handle_message(channel, message))
+            ts = message.get("ts", "<unknown>")
+            try:
+                signals.extend(self._handle_message(channel, message))
+            except ConnectChannelBotRestrictedError:
+                raise
+            except Exception:
+                logger.exception("SlackBroadcastsScanner failed on message %s in %s", ts, channel)
+                continue
         return signals
 
     def _handle_message(self, channel: str, message: RawAPIDict) -> list[ScanSignal]:

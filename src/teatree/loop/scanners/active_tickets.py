@@ -19,12 +19,15 @@ execution_target=HEADLESS)``. The actual LLM call lives in the
 headless worker — no synchronous LLM in scan().
 """
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 
 from teatree.loop.scanners.base import ScanSignal
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
@@ -44,31 +47,35 @@ class ActiveTicketsScanner:
             qs = qs.filter(overlay=self.overlay_name)
         signals: list[ScanSignal] = []
         for ticket in qs.only("id", "state", "overlay", "issue_url", "extra", "short_description"):
-            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-            cached_title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
-            cached_title = cached_title if isinstance(cached_title, str) else ""
-            title = ticket.short_description or cached_title
-            # ``tracker_404`` is the last-observed-404 marker the tracker
-            # client persists on the ticket extras; the renderer drops the
-            # URL when set so dead permalinks don't surface (#1163, #1156).
-            tracker_404 = bool(extra.get("tracker_404", False)) if isinstance(extra, dict) else False
-            issue_url = "" if tracker_404 else ticket.issue_url
-            if not ticket.short_description and cached_title:
-                _enqueue_short_describe(ticket)
-            signals.append(
-                ScanSignal(
-                    kind="ticket.active",
-                    summary=f"#{ticket.ticket_number} {ticket.state}",
-                    payload={
-                        "ticket_id": ticket.pk,
-                        "ticket_number": ticket.ticket_number,
-                        "state": ticket.state,
-                        "issue_url": issue_url,
-                        "title": title,
-                        "tracker_404": tracker_404,
-                    },
-                ),
-            )
+            try:
+                extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+                cached_title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
+                cached_title = cached_title if isinstance(cached_title, str) else ""
+                title = ticket.short_description or cached_title
+                # ``tracker_404`` is the last-observed-404 marker the tracker
+                # client persists on the ticket extras; the renderer drops the
+                # URL when set so dead permalinks don't surface (#1163, #1156).
+                tracker_404 = bool(extra.get("tracker_404", False)) if isinstance(extra, dict) else False
+                issue_url = "" if tracker_404 else ticket.issue_url
+                if not ticket.short_description and cached_title:
+                    _enqueue_short_describe(ticket)
+                signals.append(
+                    ScanSignal(
+                        kind="ticket.active",
+                        summary=f"#{ticket.ticket_number} {ticket.state}",
+                        payload={
+                            "ticket_id": ticket.pk,
+                            "ticket_number": ticket.ticket_number,
+                            "state": ticket.state,
+                            "issue_url": issue_url,
+                            "title": title,
+                            "tracker_404": tracker_404,
+                        },
+                    ),
+                )
+            except Exception:
+                logger.exception("ActiveTicketsScanner failed on ticket %s", ticket.pk)
+                continue
         return signals
 
 
