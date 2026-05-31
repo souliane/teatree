@@ -66,10 +66,14 @@ class TodoSweepScanner:
         signals: list[ScanSignal] = []
         now = timezone.now()
         for task in self._candidate_tasks(now):
-            if not self._claim_for_sweep(task_id=task.pk, now=now):
-                # Another concurrent tick won the atomic stamp — skip this task.
+            try:
+                if not self._claim_for_sweep(task_id=task.pk, now=now):
+                    # Another concurrent tick won the atomic stamp — skip this task.
+                    continue
+                signal = self._verify(task)
+            except Exception:
+                logger.exception("TodoSweepScanner failed on task %s", task.pk)
                 continue
-            signal = self._verify(task)
             if signal is not None:
                 signals.append(signal)
         return signals
