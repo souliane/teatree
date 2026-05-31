@@ -2429,6 +2429,46 @@ def handle_block_ai_signature(data: dict) -> bool:
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────
 
 
+def _mcp_privacy_gate_enabled() -> bool:
+    """Whether the Slack-MCP arm of the publish-privacy gates is enabled (default True).
+
+    Canary off-switch for the newly-reachable Slack-MCP arm of the #1213
+    quote-scanner and #1218 bare-reference gates (#171): until the Slack
+    matcher was added to ``hooks.json`` these handlers never fired on a
+    Slack MCP write, so this flag lets the operator disable that arm alone
+    without a code edit if the now-live gate misfires. Mirrors
+    :func:`_orchestrator_bash_gate_enabled`'s toml-read shape — fails OPEN
+    to enabled on a missing/broken config (the arm is the same risk class
+    as the already-live Bash arm of the same gate), an explicit ``false``
+    disables it. The Bash arm of both gates is unaffected by this flag.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("mcp_privacy_gate_enabled") is not False
+
+
+def _is_slack_mcp_tool(tool_name: str) -> bool:
+    """Whether *tool_name* is a Slack MCP tool (``mcp__*slack*``).
+
+    The kill-switch governs ONLY the Slack-MCP arm of the publish-privacy
+    gates; the Bash arm stays live regardless. This mirrors the matcher
+    ``mcp__.*[Ss]lack.*`` so the canary off-switch scopes to exactly the
+    newly-reachable arm.
+    """
+    return tool_name.startswith("mcp__") and "slack" in tool_name.lower()
+
+
 def handle_quote_scanner_pretool(data: dict) -> bool:
     """Refuse a publish whose body carries a verbatim user-quote pattern.
 
@@ -2455,7 +2495,13 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
     session shell with no guarantee that ``teatree`` is already
     importable, #1314) and swallows any exception, returning ``False``
     so the tool use proceeds unchanged.
+
+    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
+    matcher, #171) is governed by the ``[teatree]
+    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
     """
+    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
+        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
@@ -2645,6 +2691,132 @@ def _run_dispatch_quote_scanner(data: dict) -> bool:
     return False
 
 
+# ── TaskCreated: pre-dispatch quote-scanner gate (#171, fan-out arm) ─
+
+
+def _dispatch_quote_gate_on_task_create_enabled() -> bool:
+    """Whether the TaskCreated dispatch-quote gate is enabled (default OFF, opt-in).
+
+    The PreToolUse dispatch-quote gate (:func:`handle_dispatch_prompt_quote_scanner`)
+    keys on ``Agent``/``Task``, but the harness Workflow/Task fan-out — where
+    dispatch prompts are actually created — BYPASSES ``PreToolUse``, so that
+    gate never fires on the real dispatch path. This ``TaskCreated`` counterpart
+    closes that bypass. It ships default-OFF because it is a #1640-class fan-out
+    gate whose live behavior is unvalidated: an unvalidated gate stays inert
+    (never wedges the loop) until the operator deliberately enables it with
+    ``[teatree] dispatch_quote_gate_on_task_create_enabled = true``.
+
+    Mirrors :func:`_agent_plan_gate_on_task_create_enabled` exactly — it fails
+    CLOSED to disabled (missing config → False, broken → False) and returns True
+    only on an explicit ``true``. This deliberately DIFFERS from
+    :func:`_mcp_privacy_gate_enabled` (which fails OPEN to enabled): the Slack-MCP
+    arm is the same risk class as an already-live gate, whereas this fan-out
+    gate's enforcement semantics are not yet validated.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return False
+    return teatree.get("dispatch_quote_gate_on_task_create_enabled") is True
+
+
+def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
+    """Deny a fanned-out ``Task`` whose subject/description carries a HIGH verbatim quote.
+
+    Closes the fan-out loophole in :func:`handle_dispatch_prompt_quote_scanner`:
+    the ``PreToolUse`` Agent/Task dispatch-quote gate is skipped on the
+    Workflow/Task fan-out path (only ``TaskCreated`` reaches it), so a verbatim
+    user-voice/PII fragment pasted into a fan-out brief as "context" would reach
+    the sub-agent and could later be echoed into a published output — defeating
+    the #1213 publish gate. This handler scans the ``task_subject`` +
+    ``task_description`` through the SAME ``quote_scanner.scan_text`` detector
+    (HIGH-severity deny only, mirroring the PreToolUse handler) before the
+    sub-agent is spawned.
+
+    NEVER-LOCKOUT (parity with :func:`handle_enforce_plan_gate_on_task_create`):
+    this does NOT route through ``_fail_open_or_deny`` / ``_is_self_rescue``
+    (those are PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
+    command). The gate ships default-OFF (opt-in via ``[teatree]
+    dispatch_quote_gate_on_task_create_enabled = true``) — a #1640-class fan-out
+    gate whose live behavior is unvalidated stays inert by default. When enabled,
+    the off-ramps that keep the operator from being locked out are: the opt-in
+    flag itself (unset/``false`` to disable), the ``[quote-ok: <reason>]`` token
+    in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
+    a missing ``session_id`` (fail-open), a broken ``~/.teatree.toml``
+    (fail-disabled), and ``main``'s per-handler exception swallow. The master
+    ``gate_fail_open`` switch still protects the operator because rescue commands
+    run as ``Bash``, never as fanned-out ``Task``s.
+    """
+    session_id = data.get("session_id", "")
+    if not session_id or not _dispatch_quote_gate_on_task_create_enabled():
+        return False
+
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_dispatch_quote_scanner_on_task_create(data)
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
+    """TaskCreated dispatch-quote inner body — assumes ``teatree`` is importable.
+
+    Split out of :func:`handle_dispatch_prompt_quote_scanner_on_task_create` so
+    the outer wrapper owns the ``sys.path`` bootstrap + fail-open handler
+    (mirrors the #1213/#1401 split). A HIGH match emits the ``TaskCreated``
+    teammate-stop deny envelope (NOT the PreToolUse ``hookSpecificOutput`` deny).
+    """
+    from teatree.hooks import quote_scanner  # noqa: PLC0415
+
+    subject = data.get("task_subject", "") or ""
+    description = data.get("task_description", "") or ""
+    payload = f"{subject}\n{description}"
+
+    if quote_scanner.dispatch_quote_ok_reason(payload):
+        quote_scanner.log_decision(
+            tool_name="TaskCreated:dispatch",
+            decision="allow-override",
+            result=quote_scanner.scan_text(payload),
+            override=True,
+        )
+        return False
+
+    result = quote_scanner.scan_text(payload)
+    if result.has_high:
+        quote_scanner.log_decision(
+            tool_name="TaskCreated:dispatch",
+            decision="deny",
+            result=result,
+            override=False,
+        )
+        return emit_task_create_deny(quote_scanner.format_dispatch_block_message(result))
+
+    quote_scanner.log_decision(
+        tool_name="TaskCreated:dispatch",
+        decision="allow",
+        result=result,
+        override=False,
+    )
+    return False
+
+
 # ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
 
 
@@ -2742,7 +2914,13 @@ def handle_bare_reference_pretool(data: dict) -> bool:
     scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
     the sibling ``src/`` directory (#1314) and swallows any exception,
     returning ``False`` so the tool use proceeds unchanged.
+
+    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
+    matcher, #171) is governed by the ``[teatree]
+    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
     """
+    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
+        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
@@ -6792,7 +6970,11 @@ _HANDLERS: dict[str, list] = {
         handle_track_plan_skill_timestamp,
         handle_track_workspace_source_read,
     ],
-    "TaskCreated": [handle_enforce_skill_loading_on_task_create, handle_enforce_plan_gate_on_task_create],
+    "TaskCreated": [
+        handle_enforce_skill_loading_on_task_create,
+        handle_enforce_plan_gate_on_task_create,
+        handle_dispatch_prompt_quote_scanner_on_task_create,
+    ],
     "InstructionsLoaded": [handle_track_skill_usage],
     "SessionStart": [handle_session_start_bootstrap],
     "PreCompact": [handle_pre_compact],
