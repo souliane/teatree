@@ -22,6 +22,7 @@ JSON document; a reader tolerating a read race re-resolves cleanly to ``None``
 and the window falls back to the default lookback.
 """
 
+import fcntl
 import json
 import os
 import tempfile
@@ -112,13 +113,25 @@ def advance_checkpoint_monotonic(now: datetime, path: Path | None = None) -> Pat
     or ahead of *now* (a future/skewed marker, or a clock that went backward),
     the existing marker is kept untouched. A normal forward-moving *now* writes
     as usual. Returns the marker path either way.
+
+    The read-compare-write is wrapped in an exclusive ``fcntl.flock`` on a
+    sibling lock file so two concurrent ``checking show`` invocations are
+    serialised: the loser re-reads the marker (now advanced by the winner)
+    and skips the write instead of overwriting the winner's newer timestamp.
     """
     target = path or checkpoint_path()
-    stored = load_checkpoint(target)
     now_utc = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
-    if stored is not None and stored >= now_utc:
-        return target
-    return advance_checkpoint(now_utc, target)
+    lock_path = target.with_suffix(".lock")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            stored = load_checkpoint(target)
+            if stored is not None and stored >= now_utc:
+                return target
+            return advance_checkpoint(now_utc, target)
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
 
 
 def resolve_window_start(*, since: str = "", now: datetime, path: Path | None = None) -> datetime:
