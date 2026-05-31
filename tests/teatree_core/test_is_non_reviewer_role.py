@@ -77,7 +77,7 @@ class TestIsNonReviewerRoleUnit(TestCase):
         assert is_non_reviewer_role("reviewer:codex-cli") is False
 
     def test_human_reviewer_is_allowed(self) -> None:
-        assert is_non_reviewer_role("reviewer:human-jeroen") is False
+        assert is_non_reviewer_role("reviewer:human-alice") is False
 
     def test_empty_string_is_allowed(self) -> None:
         assert is_non_reviewer_role("") is False
