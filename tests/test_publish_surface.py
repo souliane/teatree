@@ -184,6 +184,51 @@ class TestIsGhGlabPostingCommand:
         assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is False
 
 
+class TestExtractRepoFlag:
+    """``_extract_repo_flag`` must mirror gh/glab's LAST-WINS resolution.
+
+    gh/glab resolve a repeated ``--repo``/``-R`` flag by taking the LAST
+    value, exactly like the ``-X GET -X POST`` method case. Reading the
+    FIRST match would let a crafted command claim a private slug while gh
+    actually posts to the trailing public one -- a leak.
+    """
+
+    def test_single_long_flag(self) -> None:
+        assert publish_surface._extract_repo_flag(["--repo", "owner/name"]) == "owner/name"
+
+    def test_single_equals_form(self) -> None:
+        assert publish_surface._extract_repo_flag(["--repo=owner/name"]) == "owner/name"
+
+    def test_single_short_flag(self) -> None:
+        assert publish_surface._extract_repo_flag(["-R", "owner/name"]) == "owner/name"
+
+    def test_short_equals_form(self) -> None:
+        assert publish_surface._extract_repo_flag(["-R=owner/name"]) == "owner/name"
+
+    def test_absent_flag_returns_empty(self) -> None:
+        assert publish_surface._extract_repo_flag(["gh", "pr", "create", "--title", "x"]) == ""
+
+    def test_repeated_long_flags_last_wins(self) -> None:
+        words = ["--repo", "first/private", "--repo", "second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_repeated_equals_form_last_wins(self) -> None:
+        words = ["--repo=first/private", "--repo=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_mixed_long_then_short_last_wins(self) -> None:
+        words = ["--repo=first/public", "-R", "second/private"]
+        assert publish_surface._extract_repo_flag(words) == "second/private"
+
+    def test_mixed_short_then_long_last_wins(self) -> None:
+        words = ["-R", "first/private", "--repo=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_short_equals_form_last_wins(self) -> None:
+        words = ["-R=first/private", "-R=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+
 class TestPrivateRepoAllowlist:
     def test_namespace_substring_matches_repo_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
@@ -492,3 +537,82 @@ class TestCarveOutApplies:
             "Write", "git commit", "acmewidget", private_repo, config_path=private_cfg
         )
         assert verdict is False
+
+    # SAFETY TEST (the spoof): a crafted command that lists a private repo
+    # FIRST and a PUBLIC repo LAST resolves (last-wins, like gh/glab) to the
+    # PUBLIC repo, so the carve-out MUST NOT apply -- it stays hard-blocked.
+    # Reading the first flag would leak the banned term to public teatree.
+    def test_repeated_repo_private_then_public_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> the trailing public slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo acmecorp-engineering/acmecorp-product --repo souliane/teatree --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_repeated_repo_public_then_private_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reverse of the spoof: public FIRST, private LAST -> effective target
+        # is the private repo (last-wins) -> downgrade. Proves last-wins both ways.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo souliane/teatree --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_mixed_forms_public_equals_then_private_short_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``--repo=souliane/teatree -R acmecorp-engineering/...`` -> the short
+        # ``-R`` private slug is LAST -> wins -> downgrade.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo=souliane/teatree -R acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_mixed_forms_private_short_then_public_equals_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``-R acmecorp-engineering/... --repo=souliane/teatree`` -> the public
+        # ``--repo=`` slug is LAST -> wins -> stays hard-blocked.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create -R acmecorp-engineering/acmecorp-product --repo=souliane/teatree --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )

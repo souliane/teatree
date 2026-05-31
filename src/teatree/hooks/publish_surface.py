@@ -359,21 +359,32 @@ def commit_targets_private_repo(cwd: Path | None, *, config_path: Path | None = 
 
 
 def _extract_repo_flag(words: list[str]) -> str:
-    """Extract ``--repo``/``-R`` value from a word list, or return ``""``.
+    """Extract the EFFECTIVE ``--repo``/``-R`` value, or return ``""``.
 
-    Handles both ``--repo owner/name`` and ``--repo=owner/name`` forms,
-    and the short ``-R owner/name`` alias used by both ``gh`` and ``glab``.
-    Returns the first match; ``""`` when the flag is absent.
+    ``gh`` and ``glab`` resolve a repeated ``--repo``/``-R`` flag LAST-WINS
+    (the same effective-resolution rule as ``-X GET -X POST`` for the HTTP
+    method). Reading the FIRST match would let a crafted command claim a
+    private slug while the tool actually posts to a trailing PUBLIC slug --
+    a leak that defeats the carve-out's load-bearing safety property. So
+    this scans the WHOLE word list and keeps the LAST occurrence.
+
+    All four forms are recognised and the last one anywhere wins regardless
+    of form: ``--repo X``, ``--repo=X``, ``-R X``, ``-R=X``.
     """
+    found = ""
     i = 0
     while i < len(words):
         w = words[i]
         if w in {"--repo", "-R"} and i + 1 < len(words):
-            return words[i + 1]
+            found = words[i + 1]
+            i += 2
+            continue
         if w.startswith("--repo="):
-            return w[len("--repo=") :]
+            found = w[len("--repo=") :]
+        elif w.startswith("-R="):
+            found = w[len("-R=") :]
         i += 1
-    return ""
+    return found
 
 
 def posting_command_targets_private_repo(
