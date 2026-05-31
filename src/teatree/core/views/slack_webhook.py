@@ -45,7 +45,7 @@ class SlackWebhookView(View):
             logger.warning("Slack webhook throttled — per-source rate limit exceeded")
             return HttpResponse(status=429)
 
-        self._persist(payload)
+        self._persist(payload, body=request.body)
         return HttpResponse(status=200)
 
     def _authenticated(self, request: HttpRequest, *, secret: str) -> bool:
@@ -63,10 +63,10 @@ class SlackWebhookView(View):
         digest = hmac.new(secret.encode(), basestring, hashlib.sha256).hexdigest()
         return hmac.compare_digest(f"v0={digest}", signature)
 
-    def _persist(self, payload: dict) -> None:
+    def _persist(self, payload: dict, *, body: bytes) -> None:
         event = payload.get("event") or {}
         event_id = payload.get("event_id") or ""
-        idempotency_key = f"slack:{event_id}" if event_id else f"slack:{int(time.time() * 1000)}"
+        idempotency_key = f"slack:{event_id}" if event_id else f"slack:{hashlib.sha256(body).hexdigest()[:16]}"
         persist_incoming_event(
             IngestionRecord(
                 source=IncomingEvent.Source.SLACK,
