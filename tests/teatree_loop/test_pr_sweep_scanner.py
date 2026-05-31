@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
+from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.pr_sweep import CheckResult, NullMergeNotifier, PrSummary, PrSweepScanner
 
 pytestmark = pytest.mark.django_db
@@ -462,3 +463,53 @@ class TestErrorIsolation:
 
         assert signals == []
         assert api.calls == 1
+
+    def test_evaluate_failure_on_one_pr_does_not_prevent_sibling_from_merging(self) -> None:
+        """A runtime error in _evaluate for PR A must not skip PR B (#1596)."""
+        clear_b = _issue_clear(pr_id=7777)
+        pr_a = _open_pr(pr_id=6230)
+        pr_b = _open_pr(pr_id=7777)
+
+        @dataclass(slots=True)
+        class _BoomFirstKeystone:
+            calls: list[int] = field(default_factory=list)
+
+            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+                self.calls.append(clear_id)
+                if not self.calls or (self.calls == [clear_id] and len(self.calls) == 1):
+                    # First call: inject a fault to simulate a merge conflict / DB error
+                    msg = "simulated keystone failure"
+                    raise RuntimeError(msg)
+                return True, MAIN_SHA, ""  # pragma: no cover
+
+        # Issue a CLEAR for both PRs so _evaluate reaches _merge for each.
+        _issue_clear(pr_id=6230)
+        keystone = _BoomFirstKeystone()
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr_a, pr_b]})
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        # PR A failed — its signal must be absent; PR B succeeded.
+        assert len(signals) == 1
+        assert signals[0].payload["pr_id"] == int(clear_b.pr_id)
+        assert signals[0].kind == "pr_sweep.merged"
+
+    def test_scanner_error_from_evaluate_propagates_out_of_scan(self) -> None:
+        """A ScannerError raised inside _evaluate must not be swallowed (#1596)."""
+        _issue_clear()
+
+        @dataclass(slots=True)
+        class _AuthErrorKeystone:
+            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+                raise ScannerError(
+                    scanner="pr_sweep",
+                    error_class=ScannerErrorClass.AUTH,
+                    detail="token revoked",
+                )
+
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(api=api, keystone=_AuthErrorKeystone())
+
+        with pytest.raises(ScannerError):
+            scanner.scan()
