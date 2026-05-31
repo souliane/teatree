@@ -4773,7 +4773,7 @@ def _is_raw_merge_api_write(command: str) -> bool:
         return False
     if not _MERGE_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for m in _REVIEW_POST_METHOD_RE.findall(command)]
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
         is_read = methods[-1] == "GET"
     elif _REVIEW_POST_BODY_FLAG_RE.search(command):
@@ -4911,8 +4911,16 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 _REVIEW_POST_ENDPOINT_RE = re.compile(
     r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
 )
+# Two captured forms of the gh/glab HTTP-method flag, both empirically valid
+# against gh (2.87.3) / glab (1.80.4): the spaced/``=`` form (``-X PUT``,
+# ``--method=POST``) and the pflag NO-SPACE shorthand (``-XPUT``). The
+# no-space form is a real method override (``gh api -XGET /rate_limit`` returns
+# 200), so omitting it let ``-XPUT`` evade classification → ``is_read=True`` →
+# the merge/review write slipped through. Consumers flatten the two capture
+# groups and keep last-wins effective-method semantics.
 _REVIEW_POST_METHOD_RE = re.compile(
-    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b",
+    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b"
+    r"|(?<=-X)([A-Za-z]+)\b",
 )
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
@@ -4942,7 +4950,7 @@ def _is_raw_review_write(command: str) -> bool:
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for m in _REVIEW_POST_METHOD_RE.findall(command)]
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
         is_read = methods[-1] == "GET"
     elif _REVIEW_POST_BODY_FLAG_RE.search(command):

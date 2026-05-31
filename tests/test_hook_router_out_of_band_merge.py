@@ -177,6 +177,14 @@ class TestBlocksApiMergeEndpointOnManagedRepo:
             "gh api repos/example-org/private-repo/pulls/12/merge --method PATCH",
             # Last-wins: earlier GET overridden by trailing PUT → write.
             "gh api repos/example-org/private-repo/pulls/12/merge -X GET -X PUT",
+            # pflag NO-SPACE shorthand — the bypass the cold-review flagged:
+            # `-XPUT` is a real method override that the spaced-only regex
+            # missed, so the merge slipped through. Must be DENIED.
+            "gh api repos/example-org/private-repo/pulls/12/merge -XPUT",
+            "gh api repos/example-org/private-repo/pulls/12/merge -XPOST",
+            "gh api repos/example-org/private-repo/pulls/12/merge -XPATCH",
+            # No-space last-wins: earlier GET overridden by trailing PUT → write.
+            "gh api repos/example-org/private-repo/pulls/12/merge -XGET -XPUT",
         ],
     )
     def test_api_merge_write_is_denied_on_managed_repo(
@@ -208,6 +216,8 @@ class TestAllowsApiMergeEndpointReadsAndUnrelated:
             "gh api repos/example-org/private-repo/pulls/12/merge",
             # Explicit GET — also a read.
             "gh api repos/example-org/private-repo/pulls/12/merge -X GET",
+            # No-space explicit GET — also a read (must not over-block).
+            "gh api repos/example-org/private-repo/pulls/12/merge -XGET",
             # Last-wins: trailing GET overrides earlier PUT → read.
             "gh api repos/example-org/private-repo/pulls/12/merge -X PUT -X GET",
             # Unrelated endpoint — PR metadata, not the merge sub-resource.
