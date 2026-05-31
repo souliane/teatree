@@ -16,6 +16,7 @@ ticks do work; GREEN after: exactly one ran). Modeled on
 harness in ``test_on_behalf_approval_concurrent.py``.
 """
 
+import os
 import uuid
 from collections.abc import Iterator
 from datetime import timedelta
@@ -221,6 +222,7 @@ def _make_alias(tmp_path: Path) -> str:
                 name VARCHAR(128) NOT NULL UNIQUE,
                 owner VARCHAR(255) NOT NULL,
                 session_id VARCHAR(255) NOT NULL DEFAULT '',
+                owner_pid INTEGER NULL,
                 acquired_at DATETIME NULL,
                 lease_expires_at DATETIME NULL
             )
@@ -323,3 +325,66 @@ class TestCrossSessionLoopHijackOnSqlite:
             assert row.session_id in {"sess-0", "sess-1"}
         finally:
             _teardown_alias(alias)
+
+
+class TestEvictStaleOwner(TestCase):
+    """``LoopLeaseQuerySet.evict_stale_owner`` decision table (#1604).
+
+    Verifies INV1 (never evict a live foreign lease), INV4 (null pid →
+    KEEP), and the safe eviction paths: expired, dead pid, same-process
+    post-compaction.
+    """
+
+    def test_expired_lease_is_evicted(self) -> None:
+        LoopLease.objects.claim_ownership("loop-owner", session_id="old", ttl_seconds=1)
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+
+        evicted = LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id="new", current_pid=None)
+        assert evicted == 1
+        assert LoopLease.objects.get(name="loop-owner").session_id == ""
+
+    def test_live_foreign_alive_pid_is_kept(self) -> None:
+        """INV1: live + alive pid of a different process → KEEP."""
+        # Use the current process's own pid: it is alive, and is different
+        # from keep_session_id's hypothetical pid only via the session-id
+        # check. We set current_pid to a value that does NOT match stored pid.
+        LoopLease.objects.claim_ownership("loop-owner", session_id="foreign", ttl_seconds=1800, owner_pid=os.getpid())
+
+        evicted = LoopLease.objects.evict_stale_owner(
+            "loop-owner",
+            keep_session_id="new",
+            current_pid=os.getpid() + 1,  # different from stored pid → foreign
+        )
+        assert evicted == 0
+        assert LoopLease.objects.get(name="loop-owner").session_id == "foreign"
+
+    def test_live_null_pid_is_kept(self) -> None:
+        """INV4: null stored pid + live lease → KEEP (unknown → bias preserve)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="foreign", ttl_seconds=1800, owner_pid=None)
+
+        evicted = LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id="new", current_pid=None)
+        assert evicted == 0
+        assert LoopLease.objects.get(name="loop-owner").session_id == "foreign"
+
+    def test_live_same_pid_is_evicted(self) -> None:
+        """Post-compaction self-reclaim: live + same pid → EVICT."""
+        current_pid = os.getpid()
+        LoopLease.objects.claim_ownership(
+            "loop-owner", session_id="old-rotated", ttl_seconds=1800, owner_pid=current_pid
+        )
+
+        evicted = LoopLease.objects.evict_stale_owner(
+            "loop-owner", keep_session_id="new-rotated", current_pid=current_pid
+        )
+        assert evicted == 1
+        assert LoopLease.objects.get(name="loop-owner").session_id == ""
+
+    def test_live_dead_pid_is_evicted(self) -> None:
+        """Live lease whose owner process is dead → EVICT."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+
+        evicted = LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id="new", current_pid=None)
+        assert evicted == 1
+        assert LoopLease.objects.get(name="loop-owner").session_id == ""
