@@ -89,12 +89,32 @@ def test_gitlab_code_host_list_pr_comments() -> None:
 
     mock_client = MagicMock()
     mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
-    mock_client.get_json.return_value = [{"id": 1, "body": "note"}]
+    mock_client.get_json_paginated.return_value = [{"id": 1, "body": "note"}]
 
     host = gitlab.GitLabCodeHost(client=mock_client)
     result = host.list_pr_comments(repo="org/repo", pr_iid=5)
 
     assert len(result) == 1
+    mock_client.get_json_paginated.assert_called_once()
+    mock_client.get_json.assert_not_called()
+
+
+def test_gitlab_code_host_list_pr_comments_paginates_beyond_first_page() -> None:
+    # A busy MR accumulates >100 notes; without pagination the ``## Test Plan``
+    # note on page 2 is invisible and the evidence-poster re-posts a duplicate.
+    page_one = [{"id": i, "body": f"note {i}"} for i in range(100)]
+    page_two = [{"id": 100, "body": "## Test Plan"}]
+
+    mock_client = MagicMock()
+    mock_client.resolve_project.return_value = MagicMock(project_id=42, default_branch="main")
+    mock_client.get_json_paginated.return_value = [*page_one, *page_two]
+
+    host = gitlab.GitLabCodeHost(client=mock_client)
+    result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+
+    assert len(result) == 101
+    assert {"id": 100, "body": "## Test Plan"} in result
+    mock_client.get_json_paginated.assert_called_once()
 
 
 def test_gitlab_code_host_list_pr_comments_no_project() -> None:
