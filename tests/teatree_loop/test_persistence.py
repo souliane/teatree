@@ -210,6 +210,71 @@ class TestPersistReviewer(TestCase):
         assert len(created) == 1
         assert created[0].phase == "reviewing"
 
+    def test_changes_requested_disposition_stops_infinite_requeue_at_same_head(self) -> None:
+        """#1606 liveness: a changes-requested review is not re-dispatched at head.
+
+        A reviewer requests changes on a PR. The scanner keeps emitting the
+        same ``t3:reviewer`` action every tick. With the fix, the reviewer
+        records the terminal disposition via ``mark_review_changes_requested``
+        (``last_review_state = CHANGES_REQUESTED``, NEVER ``APPROVED``), the
+        reviewing Task is consumed, and a subsequent ``_handle_reviewer`` at
+        the SAME head SHA returns None (no re-dispatch).
+
+        Anti-vacuity: without the fix there is no
+        ``mark_review_changes_requested`` transition and ``CHANGES_REQUESTED``
+        is absent from the ``_already_reviewed_at_head`` terminal set, so the
+        disposition cannot be recorded / does not suppress and the second call
+        re-creates a reviewing Task — RED.
+        """
+        url = "https://gitlab/x/-/merge_requests/1606a"
+        first = persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        assert len(first) == 1
+
+        ticket = Ticket.objects.get(issue_url=url)
+        ticket.mark_review_changes_requested()
+        ticket.save()
+        ticket.refresh_from_db()
+
+        assert ticket.extra["last_review_state"] == ReviewState.CHANGES_REQUESTED.value
+        assert ticket.extra["last_review_state"] != ReviewState.APPROVED.value
+        assert not Task.objects.filter(
+            ticket=ticket,
+            phase="reviewing",
+            status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
+        ).exists()
+
+        # Same url + same head SHA on the next tick -> NO re-dispatch.
+        second = persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        assert second == []
+        assert (
+            Task.objects.filter(
+                ticket=ticket,
+                phase="reviewing",
+                status__in=(Task.Status.PENDING, Task.Status.CLAIMED),
+            ).count()
+            == 0
+        )
+
+    def test_changes_requested_disposition_re_dispatches_on_new_head(self) -> None:
+        """#1606 no-lost-obligation: a head-SHA move re-schedules the review.
+
+        After a changes-requested disposition at SHA1, the author pushes SHA2
+        addressing the feedback. The recorded ``changes_requested`` belonged
+        to SHA1 -- the new revision MUST be reviewed again (the #959 SHA-move
+        reset drops the stale state), so ``_handle_reviewer``
+        re-``schedule_external_review``.
+        """
+        url = "https://gitlab/x/-/merge_requests/1606b"
+        persist_agent_actions([self._action(url=url, head_sha="sha1")])
+        ticket = Ticket.objects.get(issue_url=url)
+        ticket.mark_review_changes_requested()
+        ticket.save()
+
+        created = persist_agent_actions([self._action(url=url, head_sha="sha2")])
+
+        assert len(created) == 1
+        assert created[0].phase == "reviewing"
+
 
 class TestPersistOrchestrator(TestCase):
     def _action(

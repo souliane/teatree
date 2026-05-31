@@ -524,6 +524,50 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.REVIEWED_NO_ACTION.value})
         self._consume_pending_phase_tasks("reviewing")
 
+    @transition(
+        field=state,
+        source=[
+            State.NOT_STARTED,
+            State.SCOPED,
+            State.STARTED,
+            State.CODED,
+            State.TESTED,
+            State.REVIEWED,
+        ],
+        target=State.DELIVERED,
+        conditions=[lambda t: t.role == Ticket.Role.REVIEWER],
+    )
+    def mark_review_changes_requested(self) -> None:
+        """Reviewer-role terminal disposition for a changes-requested review.
+
+        Sibling of :meth:`mark_review_no_action` for the case the reviewer
+        posts review feedback requesting changes. Like the no-action case,
+        ``CHANGES_REQUESTED`` had no FSM transition: the only terminal path
+        was ``Task.complete()`` -> ``mark_reviewed_externally`` (APPROVED),
+        so ``ReviewState.CHANGES_REQUESTED`` was never recorded and was
+        absent from the ``_already_reviewed_at_head`` dedup set. The
+        reviewing Task therefore re-dispatched the same changes-requested
+        PR every Stop-hook pump forever (the #1077-class loop, for the
+        changes-requested outcome -- #1606).
+
+        Driven directly via ``t3 ticket transition <id>
+        mark_review_changes_requested`` while the reviewing task is still
+        PENDING, so it consumes that task itself. It records
+        ``last_review_state = CHANGES_REQUESTED`` (NEVER APPROVED): the
+        disposition is honest -- the review is *not* an approval -- yet
+        ``_already_reviewed_at_head`` treats a changes-requested observation
+        at the current head SHA as "already handled" so the task is not
+        re-queued while the author has not addressed the feedback. A head-SHA
+        move drops ``last_review_state`` (the existing #959 reset) so the
+        revised PR is reviewed again -- no lost obligation.
+        """
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        sha = str(self._extra().get("reviewed_sha", ""))
+        if self.issue_url and sha:
+            self.merge_extra(set_keys={"reviewed_sha": sha, "last_review_state": ReviewState.CHANGES_REQUESTED.value})
+        self._consume_pending_phase_tasks("reviewing")
+
     @transition(field=state, source=[State.REVIEWED, State.SHIPPED], target=State.SHIPPED)
     def ship(self) -> None:
         """Schedule push + PR creation.

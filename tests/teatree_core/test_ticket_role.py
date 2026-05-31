@@ -144,3 +144,100 @@ class TestMarkReviewNoAction(TestCase):
         assert ticket.state == Ticket.State.DELIVERED
         assert task.status == Task.Status.COMPLETED
         assert "last_review_state" not in (ticket.extra or {})
+
+
+class TestMarkReviewChangesRequested(TestCase):
+    """#1606: terminal disposition for a changes-requested external review."""
+
+    def test_consumes_pending_task_and_records_changes_requested_state(self) -> None:
+        """The PENDING reviewing task is terminated and the real outcome stamped.
+
+        Anti-vacuity anchor: without the fix there is no
+        ``mark_review_changes_requested`` transition, so this test cannot even
+        resolve the attribute -- RED by ``AttributeError``. With the fix:
+        ticket -> DELIVERED, the reviewing Task is COMPLETED (no longer
+        PENDING -- the infinite re-queue stops), and ``last_review_state`` is
+        ``changes_requested`` (NEVER ``approved``, so a later approving review
+        at a new SHA is not suppressed).
+        """
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab/x/-/merge_requests/1606",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha1"},
+        )
+        task = schedule_external_review(ticket)
+        assert task.status == Task.Status.PENDING
+
+        ticket.mark_review_changes_requested()
+        ticket.save()
+
+        ticket.refresh_from_db()
+        task.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert task.status == Task.Status.COMPLETED
+        assert ticket.extra["last_review_state"] == ReviewState.CHANGES_REQUESTED.value
+        assert ticket.extra["last_review_state"] != ReviewState.APPROVED.value
+        assert ticket.extra["reviewed_sha"] == "sha1"
+
+    def test_refuses_author_role_ticket(self) -> None:
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/8",
+            extra={"reviewed_sha": "sha1"},
+        )
+        with pytest.raises(TransitionNotAllowed):
+            ticket.mark_review_changes_requested()
+
+    def test_no_extra_write_when_url_or_sha_missing(self) -> None:
+        """Body's ``if self.issue_url and sha`` guard -- still terminal, no stamp."""
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab/x/-/merge_requests/1607",
+            role=Ticket.Role.REVIEWER,
+        )
+        task = schedule_external_review(ticket)
+
+        ticket.mark_review_changes_requested()
+        ticket.save()
+
+        ticket.refresh_from_db()
+        task.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert task.status == Task.Status.COMPLETED
+        assert "last_review_state" not in (ticket.extra or {})
+
+    def test_task_completion_does_not_overwrite_changes_requested_with_approved(self) -> None:
+        """A completed reviewing task must not stamp APPROVED over a changes-requested disposition.
+
+        The task-completion auto-approve path (``Task._apply_phase_transition``)
+        fires ``mark_reviewed_externally`` (-> APPROVED) for a reviewing task on
+        a ticket still in a pre-DELIVERED source state. ``mark_review_changes_requested``
+        moves the ticket to DELIVERED (out of that source set) and consumes the
+        pending task, so a later orphan-sweep completion must NOT resurrect an
+        APPROVED stamp on top of the honest ``changes_requested`` outcome.
+        """
+        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://gitlab/x/-/merge_requests/1608",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "sha1"},
+        )
+        task = schedule_external_review(ticket)
+
+        ticket.mark_review_changes_requested()
+        ticket.save()
+
+        # A stray completion of the (already consumed) reviewing task must not
+        # overwrite the recorded disposition.
+        task.complete()
+
+        ticket.refresh_from_db()
+        assert ticket.extra["last_review_state"] == ReviewState.CHANGES_REQUESTED.value
+        assert ticket.extra["last_review_state"] != ReviewState.APPROVED.value

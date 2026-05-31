@@ -88,6 +88,9 @@ _ALLOWED_TRANSITIONS = {
     # #1077: reviewer concludes an external review with no postable/
     # approvable action — terminal disposition for the reviewing task.
     "mark_review_no_action",
+    # #1606: reviewer requests changes — terminal disposition for the
+    # reviewing task so the scanner stops re-dispatching at a fixed head SHA.
+    "mark_review_changes_requested",
     # #1118: phase-driven catch-up to REVIEWED. The FSM exposes it via
     # ``get_available_FIELD_transitions`` from every non-terminal state
     # (#808); the CLI must mirror the FSM-table surface so a ticket
@@ -104,7 +107,7 @@ class Command(TyperCommand):
 
         Accepts any of the allowed transition names: scope, start, code, test,
         review, ship, request_review, mark_merged, retrospect, mark_delivered,
-        rework, mark_review_no_action.
+        rework, mark_review_no_action, mark_review_changes_requested.
         """
         if transition_name not in _ALLOWED_TRANSITIONS:
             return {"error": f"Unknown transition: {transition_name}"}
