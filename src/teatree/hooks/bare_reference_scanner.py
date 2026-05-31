@@ -22,12 +22,24 @@ deliberately conservative to stay clear of the lockout direction: only
 numbers (``5 PRs``, ``100GB``, ``line 42``, ``v1.2.3``) and hex shas are
 never flagged.
 
-The one exemption is the conventional trailing ``(#NNNN)`` / ``(!NNNN)``
-parenthetical at the END of a PR/MR title or a git-commit subject (#1544):
-the forge auto-links the ref there, it is the universal conventional-commit
-and MR-title convention, and it is required by the MR-title-convention gate.
-The exemption is narrow — a bare ref anywhere else (description bodies,
-slack-send, t3-notify, mid-title text) stays flagged.
+Two exemptions apply:
+
+Exemption 1 — trailing title suffix: the conventional trailing
+``(#NNNN)`` / ``(!NNNN)`` parenthetical at the END of a PR/MR title or
+a git-commit subject (#1544). The forge auto-links the ref there; it is
+the universal conventional-commit and MR-title convention and is required
+by the MR-title-convention gate. The exemption is narrow — a bare ref
+anywhere else (description bodies, slack-send, t3-notify, mid-title
+text) stays flagged.
+
+Exemption 2 — body close trailers: a line that STARTS with a recognised
+close/relates keyword (``Closes``, ``Fixes``, ``Resolves``, ``Refs``,
+``Relates-to``, and their variants) followed by ``#N`` or ``!N`` is the
+canonical AGENTS.md convention for auto-closing issues on merge (#1619).
+The platform auto-links these keywords natively; requiring a markdown
+link defeats the auto-close mechanism. The exemption is anchored to
+``^`` (MULTILINE) + the keyword so a mid-sentence bare ref cannot be
+smuggled past the gate by prefixing prose with a close keyword.
 
 Fail-closed on an unparsable body via the shared
 ``FAIL_CLOSED_SENTINEL`` (same contract as the quote-scanner).
@@ -78,14 +90,43 @@ _SLACK_MCP_WRITE_FIELDS: Final[tuple[str, ...]] = ("text", "message", "document_
 _TRAILING_CONVENTIONAL_REF_RE: Final[re.Pattern[str]] = re.compile(r"(\s*\([#!]\d+\)\s*)+$")
 
 
+# Leading auto-close / relates trailers in body content (#1619). A line
+# that starts with a recognised close/relates keyword followed by ``#N``
+# or ``!N`` is the AGENTS.md canonical auto-close convention; the platform
+# natively auto-links these trailers and requiring a markdown link defeats
+# the mechanism. The match is anchored to ``^`` (MULTILINE) so only a
+# genuine line-start trailer is exempt — a mid-sentence bare ref cannot
+# be smuggled past the gate by prefixing prose with a close keyword.
+#
+# Keyword set extends ``teatree.core.close_trailer_scanner.CLOSE_TRAILER_RE``
+# with ``refs?`` and ``relates?(?:\s*-\s*to|\s+to)?`` and adds ``!N``
+# (MR reference) beside the existing ``#N`` / URL forms.
+_BODY_CLOSE_TRAILER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|relates?(?:\s*-\s*to|\s+to)?)(?:\s+part\s+of)?"
+    r"(?::\s*|\s+)"
+    r"(?:(?:[\w./-]+)?[#!]\d+|https?://\S+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
 def _strip_linked_spans(text: str) -> str:
     return _ANGLE_LINK_RE.sub(" ", _MARKDOWN_LINK_RE.sub(" ", text))
+
+
+def _strip_body_close_trailers(text: str) -> str:
+    """Excise leading auto-close / relates trailer lines before bare-ref matching.
+
+    Replaces each matching line with a space so character offsets stay
+    stable and adjacent tokens cannot accidentally merge into a new pattern.
+    """
+    return _BODY_CLOSE_TRAILER_RE.sub(" ", text)
 
 
 def find_bare_references(text: str) -> list[str]:
     if not text:
         return []
     unlinked = _strip_linked_spans(text)
+    unlinked = _strip_body_close_trailers(unlinked)
     refs: list[str] = []
     seen: set[str] = set()
     for pattern in (_BARE_URL_RE, _BARE_ISSUE_RE, _BARE_SLACK_TS_RE):
