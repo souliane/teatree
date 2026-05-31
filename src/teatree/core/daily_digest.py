@@ -109,12 +109,18 @@ class DailyDigest:
         # loop process; same accepted at-least-once shape as
         # reply_transport._send.
         channel = self._backend.open_dm(self._user_id)
+        if not channel:
+            msg = f"open_dm returned empty channel for user {self._user_id!r} — will retry next tick"
+            raise RuntimeError(msg)
         opener = self._backend.post_message(
             channel=channel,
             text=f"🌳 teatree daily digest — {today:%Y-%m-%d}",
             thread_ts="",
         )
         root_ts = str(opener.get("ts", "")) if isinstance(opener, dict) else ""
+        if not root_ts:
+            msg = f"post_message did not return a ts for digest root on {today} — will retry next tick"
+            raise RuntimeError(msg)
         try:
             with transaction.atomic():
                 return DailyDigestThread.objects.create(
