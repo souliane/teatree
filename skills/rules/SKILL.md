@@ -504,7 +504,13 @@ This rule does NOT override `User Instructions Are Priority 1` — explicit corr
 
 ## Always Use AskUserQuestion for Questions
 
-**Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output. One question at a time; wait for the answer before asking the next.
+**Never ask questions inline in text responses.** Always use the `AskUserQuestion` tool — it gives the user a structured UI to respond and prevents questions from being buried in output.
+
+**One decision per question.** Every user-facing decision is one `AskUserQuestion` call per item, never a multi-item batch. A prompt like "approve A1, B3, C4, Z40?" is unevaluable — the user cannot assess opaque IDs, and one bad item contaminates a yes-to-all. Ask about one thing at a time; wait for the answer before asking the next.
+
+**Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
+
+**Don't abandon an in-progress one-by-one walk-through.** If you have started taking the user through items one at a time, finish the sequence. Do not switch to autonomous work mid-walk-through and leave the remaining items dangling.
 
 **Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
 
