@@ -16,6 +16,7 @@ Both rows are written through the same ``transaction.atomic()`` path that gets
 ``BEGIN IMMEDIATE`` write-serialization on the production SQLite engine (§4.3).
 """
 
+import re
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -30,6 +31,12 @@ from teatree.core.models.ticket import Ticket
 # `reviewing`-attestation guard (lifecycle command) share this single list so
 # they cannot drift apart. It lives on the model because the model owns the
 # CLEAR contract (§17.4.2); the command layer imports it from here.
+#
+# Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched as
+# leading prefixes. Bare role words ("maker", "coding", "loop") are matched
+# when they appear as a delimited component (split on "-", ":", "_"), so the
+# executor's canonical identity "merge-loop" is caught even though it does not
+# *start* with "loop".
 NON_REVIEWER_AGENT_PREFIXES = ("maker:", "maker-", "coding-agent", "coding", "loop")
 
 _SHA_ALPHABET = frozenset("0123456789abcdef")
@@ -41,10 +48,24 @@ _SHA_ALPHABET = frozenset("0123456789abcdef")
 SHA_FULL_LEN = 40
 
 
+_COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
+
+
 def is_non_reviewer_role(identity: str) -> bool:
-    """True iff ``identity`` is a maker/coding-agent/loop role (§17.8 clause 3)."""
+    """True iff ``identity`` is a maker/coding-agent/loop role (§17.8 clause 3).
+
+    Punctuated-prefix tokens ("maker:", "maker-", "coding-agent") are matched
+    as leading prefixes. Bare role words ("maker", "coding", "loop") are also
+    matched when they appear as any delimited component of the identity, so the
+    executor's canonical identity "merge-loop" is blocked even though it does
+    not start with "loop". Incidental substrings (e.g. "decoding") are not
+    matched because the split honours delimiters only.
+    """
     lowered = identity.strip().lower()
-    return any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES)
+    if any(lowered == prefix or lowered.startswith(prefix) for prefix in NON_REVIEWER_AGENT_PREFIXES):
+        return True
+    parts = frozenset(re.split(r"[-:_]", lowered))
+    return bool(parts & _COMPONENT_ROLE_WORDS)
 
 
 def is_commit_sha(value: str) -> bool:
