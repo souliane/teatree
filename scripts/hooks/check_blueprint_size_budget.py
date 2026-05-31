@@ -67,11 +67,17 @@ _BUDGET_TOP_LEVEL_BYTES = 81_800
 # (gate-liveness #168 + transcript-replay #169, the local-only privacy-safe
 # real-run conformance eval) is the same class of load-bearing safety fact, and
 # the appendix corpus was at capacity after the #1636 bump.
+# Reviewed bump (#171): the `mcp_privacy_gate_enabled` and
+# `dispatch_quote_gate_on_task_create_enabled` config-key rows document the
+# kill-switch / opt-in for the now-reachable Slack-MCP publish-privacy arm and
+# the TaskCreated dispatch-quote fan-out gate — load-bearing config facts; on
+# top of the #169 base the merged appendix corpus is 107,249 B, so the budget is
+# raised to the next ~1 KB step (~751 B headroom) to admit the rows.
 # Reviewed bump (#166): the anti-pattern-catalog SSOT paragraph (the structured
 # source feeding the three review tiers + the catalog↔linter/eval reachability
 # ledger) is a load-bearing architectural fact; the top-level corpus was at
 # capacity, so the top-level + total budgets are raised one minimal step.
-_BUDGET_APPENDICES_BYTES = 106_400
+_BUDGET_APPENDICES_BYTES = 108_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -79,9 +85,9 @@ _BUDGET_APPENDICES_BYTES = 106_400
 # `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
 # Reviewed bump (#169): tracks the top-level + appendix bumps for the
 # two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
-# Reviewed bump (#166): tracks the top-level bump for the anti-pattern-catalog
-# SSOT paragraph.
-_BUDGET_TOTAL_BYTES = 188_000
+# Reviewed bump (#171+#166 merge): post-merge total corpus is 188,987 B
+# (top-level 81,738 + appendices 107,249); raised to 189,500 (~513 B headroom).
+_BUDGET_TOTAL_BYTES = 189_500
 
 
 def _repo_root() -> pathlib.Path:

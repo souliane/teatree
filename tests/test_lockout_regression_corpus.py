@@ -25,7 +25,9 @@ from hooks.scripts.hook_router import (
     _deny_match,
     _extract_bash_ai_sig_payload,
     handle_block_out_of_band_merge,
+    handle_dispatch_prompt_quote_scanner_on_task_create,
     handle_enforce_skill_loading,
+    handle_quote_scanner_pretool,
 )
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -406,6 +408,55 @@ class TestMustDenyMerge:
         )
         assert deny is not None
         assert "ticket merge" in deny["permissionDecisionReason"]
+
+
+class TestPublishPrivacyGatesDoNotOverBlock:
+    """The newly-reachable privacy gates (#171) must not lock out clean traffic.
+
+    PR A made the Slack-MCP arm of the #1213 quote-scanner gate reachable (the
+    ``mcp__.*[Ss]lack.*`` matcher) and added a TaskCreated dispatch-quote arm.
+    Symmetric to the bypass corpus: a regression that DENIES a clean Slack send
+    or a clean fan-out task is an OVER-BLOCK lockout. The loop's own user-DMs go
+    through the ``t3 ... notify`` CLI / webhook, NOT a ``mcp__*slack*`` write
+    tool, so the loop is unaffected; this guards that an ordinary clean
+    Slack-MCP send and a clean fan-out brief still pass.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+        self._home_dir = home
+
+    def _write_toml(self, body: str) -> None:
+        (self._home_dir / ".teatree.toml").write_text(body, encoding="utf-8")
+
+    def test_clean_slack_mcp_send_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Default-ON Slack-MCP arm + a clean body (no verbatim quote) must pass.
+        self._write_toml("[teatree]\nmcp_privacy_gate_enabled = true\n")
+        data = {
+            "session_id": "sess-corpus",
+            "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+            "tool_input": {"text": "Routine status update; the sweep is green."},
+        }
+        verdict = handle_quote_scanner_pretool(data)
+        assert verdict is not True, "LOCKOUT regression — clean Slack-MCP send was blocked by the publish-privacy gate."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_clean_fanout_task_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Flag enabled + a clean fan-out brief (no verbatim quote) must pass.
+        self._write_toml("[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n")
+        data = {
+            "session_id": "sess-corpus",
+            "task_subject": "implement the export endpoint",
+            "task_description": "Wire the export endpoint to the dashboard per the spec.",
+        }
+        verdict = handle_dispatch_prompt_quote_scanner_on_task_create(data)
+        assert verdict is not True, "LOCKOUT regression — clean fan-out task was blocked by the dispatch-quote gate."
+        assert capsys.readouterr().out.strip() == ""
 
 
 class TestCircuitBreakerNeverOpensSafetyGate:
