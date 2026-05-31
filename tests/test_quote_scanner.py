@@ -21,7 +21,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
-from teatree.hooks import quote_scanner
+from teatree.hooks import publish_surface, quote_scanner
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
 from teatree.hooks.quote_scanner import Finding, ScanResult, extract_publish_payload, has_quote_ok_override, scan_text
 
@@ -1017,16 +1017,38 @@ class TestPrivateRepoCarveOut:
         assert "WARNING" in captured.err
         assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
 
-    def test_public_surface_from_private_repo_still_denies(
+    def test_private_repo_posting_command_with_cwd_target_downgrades(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
-        # gh issue create is a PUBLIC surface even from inside a private repo.
+        # gh issue create (no --repo) from a private CWD resolves the target
+        # from the CWD origin and applies the carve-out.
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": 'gh issue create --title t --body "the user said: ship it now"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_quote_scanner_pretool(data)
+        assert blocked is False  # downgraded, not denied
+        captured = capsys.readouterr()
+        assert captured.out == ""  # no deny JSON
+        assert "WARNING" in captured.err
+
+    def test_explicit_public_repo_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        # An explicit --repo pointing at a public repo must never be carved out.
+        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": 'gh pr create --repo souliane/teatree --title t --body "the user said: ship it now"'
+            },
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
