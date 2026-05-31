@@ -202,7 +202,13 @@ class PrSweepScanner:
         signals: list[ScanSignal] = []
         for slug in self.repos:
             for pr in self._safe_list(slug):
-                attempt = self._evaluate(pr)
+                try:
+                    attempt = self._evaluate(pr)
+                except ScannerError:
+                    raise  # auth/rate-limit escalation (#1287) — surface to the dispatcher
+                except Exception:
+                    logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
+                    continue
                 signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
                 logger.info(
                     "pr_sweep %s#%d decision=%s reason=%s merged=%s",
