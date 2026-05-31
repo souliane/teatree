@@ -15,24 +15,28 @@ Scope is deliberately narrow — it is NON-breaking by construction. Two separat
 judgments, NOT one:
 
 Outcome assertion (the trigger)
-    A note asserts an external outcome only when an outcome verb (one of
+    A note asserts an external outcome when an outcome verb (one of
     :data:`OUTCOME_CLAIM_KINDS`, plus surface synonyms in
-    :data:`_CLAIM_SYNONYMS`) CO-OCCURS with an artifact/context cue — a
+    :data:`_CLAIM_SYNONYMS`) either CO-OCCURS with an artifact/context cue — a
     branch / MR / PR / issue / commit word, a deploy target (``to prod`` /
     ``to staging`` / …), a review surface, a ``via`` claim connector, an
-    artifact-path-shaped token, or an already-resolvable pointer. A note that
-    merely CONTAINS an outcome verb while describing internal code work
+    artifact-path-shaped token, or an already-resolvable pointer — OR OPENS the
+    note as a bare verb (the canonical terse phantom shape "merged" / "it's
+    merged" / "merged to main", with no further cue). A note that merely
+    CONTAINS an outcome verb mid-prose while describing internal code work
     ("merged the two helper functions", "released the lock", "merge conflict
     resolved") does NOT assert an outcome and is never gated.
 
 Resolvable pointer (the evidence)
     Once a note asserts an outcome, it MUST also contain something an auditor
-    could actually follow: a full URL, a git SHA (≥10 hex, or a shorter hex
-    run with a commit cue like ``commit``/``sha``/``@``), an MR/PR/issue
+    could actually follow: a full URL, a git SHA carrying a commit cue
+    (``commit``/``sha``/``rev``/``@`` adjacent to the hex run), an MR/PR/issue
     reference (``!123`` / ``#123``), a forge note id (``note_xxx``), or a
     real-looking file/module path (filesystem-rooted, carrying a known file
-    extension, or a dotted module path). A bare two-word ``a/b`` and a
-    dictionary-word hex run like ``deadbeef`` do NOT count — they signal a
+    extension, or a dotted module path anchored on a known top-level package).
+    A bare two-word ``a/b``, a bare hex/digit run with no commit cue (an
+    all-digit build number or a dictionary-word hex run like ``deadbeef``), and
+    ordinary dotted prose (``the.thing.now``) do NOT count — they signal a
     claim (so the note is an assertion) without backing it (so the gate
     refuses), which is exactly the spoof the gate must catch.
 
@@ -80,6 +84,20 @@ _CLAIM_SYNONYMS: dict[str, str] = {
 _CLAIM_VERBS: list[str] = sorted(_CLAIM_SYNONYMS, key=lambda verb: -len(verb))
 _CLAIM_VERB_RE = re.compile(r"\b(" + "|".join(_CLAIM_VERBS) + r")\b", re.IGNORECASE)
 
+# A NOTE-INITIAL bare outcome verb is the canonical phantom shape: the verb is
+# essentially the WHOLE note — optionally after a leading ``it's`` / ``its`` /
+# ``it is``, and optionally trailed by a bare ``to <destination>`` — with no
+# object noun phrase reframing it as internal work ("merged", "it's merged",
+# "merged to main"). Such a note asserts an outcome on its own, with no further
+# context cue, so the terse phantom completion is gated rather than slipping
+# through ungated. A verb that LEADS a longer sentence ("shipped the feature",
+# "merged the two helper functions") carries an object and is NOT this shape.
+_NOTE_INITIAL_VERB_RE = re.compile(
+    r"^\s*(?:it(?:'s|s|\s+is)\s+)?(?:" + "|".join(_CLAIM_VERBS) + r")"
+    r"(?:\s+to\s+\w+)?\s*[.!]*\s*$",
+    re.IGNORECASE,
+)
+
 # Phrases where an outcome verb is part of an INTERNAL-work idiom, not an
 # external-outcome claim. Stripped before assertion detection so the verb in
 # "merge conflict" / "not to merge yet" never trips the trigger.
@@ -111,10 +129,10 @@ _URL_RE = re.compile(r"https?://\S+")
 _ISSUE_REF_RE = re.compile(r"[!#]\d+")
 _NOTE_ID_RE = re.compile(r"\bnote_[A-Za-z0-9]+\b")
 
-# A long hex run (≥10) is treated as a SHA on its own; a shorter run (7-9)
-# counts only when a commit cue sits adjacent, so an English hex word like
-# ``deadbeef`` (8 chars, no cue) is rejected.
-_LONG_SHA_RE = re.compile(r"\b[0-9a-f]{10,40}\b", re.IGNORECASE)
+# A SHA counts only when a commit cue sits adjacent (``commit``/``sha``/``rev``
+# or a leading ``@``). A bare hex/digit run is NOT a pointer: an all-digit
+# build/ticket number (``build 1234567890``) or an English hex word
+# (``deadbeef``) reads as a claim, not as evidence the claim can be followed.
 _CUED_SHA_RE = re.compile(
     r"(?:\b(?:commit|sha|rev|revision)\b\s+|@)([0-9a-f]{7,40})\b",
     re.IGNORECASE,
@@ -131,8 +149,16 @@ _ROOTED_PATH_RE = re.compile(
     r"(?:^|\s)(?:\.{0,2}/|(?:src|tests?|docs?|scripts?|e2e|lib|app|pkg|cmd|internal)/)[\w./-]+",
     re.IGNORECASE,
 )
-# A dotted module path of ≥3 dotted segments (``teatree.core.task``).
-_DOTTED_MODULE_RE = re.compile(r"\b[a-z_][\w]*(?:\.[a-z_][\w]*){2,}\b", re.IGNORECASE)
+# A dotted module path. A bare ≥3-segment lowercase dotted token is too loose —
+# ordinary prose (``fix the.thing.now``) matches it — so a real module path must
+# either be anchored on a recognised top-level package/module segment
+# (``teatree.`` / ``src.`` / ``tests.`` / ``docs.``) or end in a known source
+# file extension (``foo.bar.baz.py``).
+_DOTTED_MODULE_RE = re.compile(
+    r"(?<![\w.])(?:(?:teatree|src|tests?|docs?)(?:\.[a-z_]\w*)+"
+    r"|[a-z_]\w*(?:\.[a-z_]\w*)+\.(?:py|pyi))\b",
+    re.IGNORECASE,
+)
 
 
 class CompletionEvidenceError(InvalidTransitionError):
@@ -185,9 +211,12 @@ def detect_claim_kind(note: str) -> str:
 def asserts_outcome(note: str) -> bool:
     """True iff *note* CLAIMS an external outcome actually happened.
 
-    Requires an outcome verb to co-occur with an artifact/context cue (a
-    branch/MR/PR/issue/commit word, a deploy target, a review surface, a
-    ``via`` connector, a pointer token, or an artifact-path-shaped token).
+    Two paths assert an outcome. (1) An outcome verb co-occurs with an
+    artifact/context cue (a branch/MR/PR/issue/commit word, a deploy target, a
+    review surface, a ``via`` connector, a pointer token, or an
+    artifact-path-shaped token). (2) The note opens with a bare outcome verb
+    (the canonical terse phantom shape — "merged", "it's merged",
+    "merged to main"), which asserts on its own with no further cue.
     Internal-work idioms ("merge conflict", "not to merge yet") are stripped
     first, so a note describing code work that merely contains an outcome verb
     is NOT an assertion.
@@ -195,16 +224,19 @@ def asserts_outcome(note: str) -> bool:
     text = _INTERNAL_IDIOM_RE.sub(" ", note or "")
     if _CLAIM_VERB_RE.search(text) is None:
         return False
+    if _NOTE_INITIAL_VERB_RE.search(text):
+        return True
     return any(pattern.search(text) for pattern in _CLAIM_CONTEXT_RES)
 
 
 def has_resolvable_pointer(note: str) -> bool:
     """True iff *note* contains at least one auditor-followable pointer.
 
-    A full URL, an MR/PR/issue reference, a forge note id, a real git SHA
-    (≥10 hex, or a shorter run with a commit cue), or a real-looking path
-    (rooted, extensioned, or a dotted module path). A bare ``a/b`` token and a
-    dictionary-word hex run are intentionally NOT pointers.
+    A full URL, an MR/PR/issue reference, a forge note id, a cued git SHA (a
+    hex run with a ``commit``/``sha``/``rev``/``@`` cue), or a real-looking path
+    (rooted, extensioned, or an anchored dotted module path). A bare ``a/b``
+    token, a bare hex/digit run with no commit cue, and ordinary dotted prose
+    are intentionally NOT pointers.
     """
     text = note or ""
     return any(
@@ -213,7 +245,6 @@ def has_resolvable_pointer(note: str) -> bool:
             _URL_RE,
             _ISSUE_REF_RE,
             _NOTE_ID_RE,
-            _LONG_SHA_RE,
             _CUED_SHA_RE,
             _FILE_EXT_RE,
             _ROOTED_PATH_RE,
