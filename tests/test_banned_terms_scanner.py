@@ -290,14 +290,31 @@ class TestPrivateRepoCarveOut:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_public_posting_command_with_banned_term_still_blocks(
+    def test_private_repo_posting_command_with_cwd_target_downgrades(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Even from inside a private repo, gh issue create is a PUBLIC surface.
+        # gh issue create (no --repo flag) from a private CWD resolves the
+        # target from the CWD origin and applies the carve-out.
         repo = _private_repo(tmp_path)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": 'gh issue create --title t --body "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_posting_command_with_explicit_public_repo_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # An explicit --repo pointing at a PUBLIC repo must never be carved out
+        # regardless of what the CWD is. This is the load-bearing safety test.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh pr create --repo souliane/teatree --title t --body "ship to acmecorp"'},
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)

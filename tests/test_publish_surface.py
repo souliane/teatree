@@ -8,6 +8,12 @@ carrying a secret. Detection is offline-first (a ``[teatree]
 private_repos`` allowlist) with a cached ``gh``/``glab`` visibility probe
 fallback.
 
+Extended in #1594: structured ``gh``/``glab`` PR/issue create-or-comment
+commands are ALSO eligible when their RESOLVED TARGET repo is positively
+known-private (via ``--repo``/``-R`` flag, or CWD fallback). Raw REST
+(``gh api``, ``glab api``) and ``curl``/Slack remain ineligible. An
+unknown or public target stays hard-blocked.
+
 Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten
 remote URL, plus a fake ``gh`` on PATH for the probe dimension.
 """
@@ -137,6 +143,92 @@ class TestIsGitCommitCommand:
         assert publish_surface.is_git_commit_command('echo hi && git commit -m "x"') is False
 
 
+class TestIsGhGlabPostingCommand:
+    def test_gh_pr_create_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh pr create --title x") is True
+
+    def test_gh_issue_create_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh issue create --body x") is True
+
+    def test_gh_issue_comment_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh issue comment 1 --body x") is True
+
+    def test_gh_pr_comment_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh pr comment 1 --body x") is True
+
+    def test_glab_mr_create_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab mr create --title x") is True
+
+    def test_glab_issue_create_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab issue create --title x") is True
+
+    def test_glab_mr_note_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab mr note 1 --message x") is True
+
+    def test_gh_api_is_not_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh api repos/owner/repo/issues") is False
+
+    def test_glab_api_is_not_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab api projects/owner%2Frepo") is False
+
+    def test_gh_repo_view_is_not_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh repo view owner/repo") is False
+
+    def test_glab_mr_list_is_not_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab mr list") is False
+
+    def test_git_commit_is_not_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command('git commit -m "x"') is False
+
+    def test_command_after_separator_does_not_count(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is False
+
+
+class TestExtractRepoFlag:
+    """``_extract_repo_flag`` must mirror gh/glab's LAST-WINS resolution.
+
+    gh/glab resolve a repeated ``--repo``/``-R`` flag by taking the LAST
+    value, exactly like the ``-X GET -X POST`` method case. Reading the
+    FIRST match would let a crafted command claim a private slug while gh
+    actually posts to the trailing public one -- a leak.
+    """
+
+    def test_single_long_flag(self) -> None:
+        assert publish_surface._extract_repo_flag(["--repo", "owner/name"]) == "owner/name"
+
+    def test_single_equals_form(self) -> None:
+        assert publish_surface._extract_repo_flag(["--repo=owner/name"]) == "owner/name"
+
+    def test_single_short_flag(self) -> None:
+        assert publish_surface._extract_repo_flag(["-R", "owner/name"]) == "owner/name"
+
+    def test_short_equals_form(self) -> None:
+        assert publish_surface._extract_repo_flag(["-R=owner/name"]) == "owner/name"
+
+    def test_absent_flag_returns_empty(self) -> None:
+        assert publish_surface._extract_repo_flag(["gh", "pr", "create", "--title", "x"]) == ""
+
+    def test_repeated_long_flags_last_wins(self) -> None:
+        words = ["--repo", "first/private", "--repo", "second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_repeated_equals_form_last_wins(self) -> None:
+        words = ["--repo=first/private", "--repo=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_mixed_long_then_short_last_wins(self) -> None:
+        words = ["--repo=first/public", "-R", "second/private"]
+        assert publish_surface._extract_repo_flag(words) == "second/private"
+
+    def test_mixed_short_then_long_last_wins(self) -> None:
+        words = ["-R", "first/private", "--repo=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+    def test_short_equals_form_last_wins(self) -> None:
+        words = ["-R=first/private", "-R=second/public"]
+        assert publish_surface._extract_repo_flag(words) == "second/public"
+
+
 class TestPrivateRepoAllowlist:
     def test_namespace_substring_matches_repo_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
@@ -147,8 +239,8 @@ class TestPrivateRepoAllowlist:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
-        repo = _repo_with_remote(tmp_path / "r", "https://github.com/some/public.git")
-        # No allowlist hit and no probe tool on PATH → unknown → NOT private.
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:some/public-repo.git")
+        # No allowlist hit and no probe tool on PATH -> unknown -> NOT private.
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is False
 
@@ -170,8 +262,8 @@ class TestVisibilityProbeFallback:
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
     def test_private_visibility_probe_marks_repo_private(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = _config(tmp_path, [])  # empty allowlist → must use the probe
-        repo = _repo_with_remote(tmp_path / "r", "https://github.com/acme/secret.git")
+        cfg = _config(tmp_path, [])  # empty allowlist -> must use the probe
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/secret-repo.git")
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PRIVATE")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -181,7 +273,7 @@ class TestVisibilityProbeFallback:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         cfg = _config(tmp_path, [])
-        repo = _repo_with_remote(tmp_path / "r", "https://github.com/acme/open.git")
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/open-repo.git")
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PUBLIC")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -189,12 +281,12 @@ class TestVisibilityProbeFallback:
 
     def test_probe_verdict_is_cached(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, [])
-        repo = _repo_with_remote(tmp_path / "r", "https://github.com/acme/cached.git")
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/cached-repo.git")
         bin_dir = tmp_path / "bin"
         _make_gh_shim(bin_dir, "PRIVATE")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
         assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
-        # Remove the shim — a fresh resolution must still answer from cache
+        # Remove the shim -- a fresh resolution must still answer from cache
         # (git stays available so the slug still resolves).
         (bin_dir / "gh").unlink()
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
@@ -203,9 +295,9 @@ class TestVisibilityProbeFallback:
     def test_gitlab_private_probe_parses_json_without_jq(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Bug 1: ``glab api`` has no ``--jq`` flag. The probe must request the
         # bare project JSON and parse ``.visibility`` in Python; passing
-        # ``--jq`` (the old code) would make glab exit 1 → None → NOT private.
+        # ``--jq`` (the old code) would make glab exit 1 -> None -> NOT private.
         cfg = _config(tmp_path, [])
-        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/secret.git")
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/secret-repo.git")
         bin_dir = tmp_path / "bin"
         _make_glab_shim(bin_dir, "private")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -213,7 +305,7 @@ class TestVisibilityProbeFallback:
 
     def test_gitlab_public_probe_parses_json_without_jq(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, [])
-        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/open.git")
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme/open-repo.git")
         bin_dir = tmp_path / "bin"
         _make_glab_shim(bin_dir, "public")
         monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
@@ -223,7 +315,7 @@ class TestVisibilityProbeFallback:
 class TestVisibilityCachePathCollision:
     """Bug 2: the cache must persist even when ``~/.teatree`` is a FILE.
 
-    The historical default rooted the cache at ``~/.teatree`` — but that
+    The historical default rooted the cache at ``~/.teatree`` -- but that
     path is the shell-sourceable config FILE, not a directory, so every
     cache write raised "Not a directory" (swallowed as OSError) and the
     verdict could never persist. The default now lives under the XDG cache
@@ -315,13 +407,105 @@ class TestCarveOutApplies:
             is True
         )
 
-    def test_public_posting_command_never_downgrades(self, private_cfg: Path, private_repo: Path) -> None:
-        # A gh issue create from inside a private repo is STILL a public surface.
+    # SAFETY TEST: This test is load-bearing. A public-repo target MUST always
+    # stay hard-blocked, regardless of CWD or allowlist.
+    def test_gh_pr_create_explicit_public_repo_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> souliane/teatree is unknown -> treated as NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         assert (
             publish_surface.carve_out_applies(
-                "Bash", 'gh issue create --body "acmewidget"', "acmewidget", private_repo, config_path=private_cfg
+                "Bash",
+                "gh pr create --repo souliane/teatree --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
             )
             is False
+        )
+
+    def test_gh_pr_create_explicit_private_repo_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # gh pr create targeting a known-private repo via --repo should downgrade.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        # CWD repo is irrelevant when --repo is explicit; use an unrelated CWD.
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        # No probe tool; acmecorp-engineering is in the allowlist -> private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_gh_pr_create_no_repo_flag_unknown_cwd_stays_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # No --repo and CWD unknown (no probe tool) -> default-deny, stays hard-blocked.
+        cfg = _config(tmp_path, [])  # empty allowlist
+        unknown_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unknown-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --title x",
+                "acmewidget fix",
+                unknown_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_gh_api_is_not_eligible_for_carve_out(self, private_cfg: Path, private_repo: Path) -> None:
+        # gh api (raw REST) is never eligible, even targeting a private repo.
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh api repos/acmecorp-engineering/acmecorp-product/issues --field body=x",
+                "acmewidget",
+                private_repo,
+                config_path=private_cfg,
+            )
+            is False
+        )
+
+    def test_glab_mr_create_explicit_private_repo_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "glab mr create --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_gh_pr_create_no_repo_cwd_private_downgrades(self, private_cfg: Path, private_repo: Path) -> None:
+        # gh pr create with no --repo falls back to CWD; private CWD -> downgrade.
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --title x",
+                "acmewidget fix",
+                private_repo,
+                config_path=private_cfg,
+            )
+            is True
         )
 
     def test_secret_in_body_blocks_carve_out(self, private_cfg: Path, private_repo: Path) -> None:
@@ -341,8 +525,8 @@ class TestCarveOutApplies:
 
     def test_public_repo_commit_does_not_downgrade(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
-        repo = _repo_with_remote(tmp_path / "r", "https://github.com/some/public.git")
-        # No probe tool resolvable → unknown → NOT private.
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:some/public-repo.git")
+        # No probe tool resolvable -> unknown -> NOT private.
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         assert (
             publish_surface.carve_out_applies("Bash", 'git commit -m "x"', "acmewidget", repo, config_path=cfg) is False
@@ -353,3 +537,184 @@ class TestCarveOutApplies:
             "Write", "git commit", "acmewidget", private_repo, config_path=private_cfg
         )
         assert verdict is False
+
+    # SAFETY TEST (the spoof): a crafted command that lists a private repo
+    # FIRST and a PUBLIC repo LAST resolves (last-wins, like gh/glab) to the
+    # PUBLIC repo, so the carve-out MUST NOT apply -- it stays hard-blocked.
+    # Reading the first flag would leak the banned term to public teatree.
+    def test_repeated_repo_private_then_public_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> the trailing public slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo acmecorp-engineering/acmecorp-product --repo souliane/teatree --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_repeated_repo_public_then_private_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Reverse of the spoof: public FIRST, private LAST -> effective target
+        # is the private repo (last-wins) -> downgrade. Proves last-wins both ways.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo souliane/teatree --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_mixed_forms_public_equals_then_private_short_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``--repo=souliane/teatree -R acmecorp-engineering/...`` -> the short
+        # ``-R`` private slug is LAST -> wins -> downgrade.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unrelated_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo=souliane/teatree -R acmecorp-engineering/acmecorp-product --title x",
+                "acmewidget fix",
+                unrelated_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_mixed_forms_private_short_then_public_equals_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``-R acmecorp-engineering/... --repo=souliane/teatree`` -> the public
+        # ``--repo=`` slug is LAST -> wins -> stays hard-blocked.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create -R acmecorp-engineering/acmecorp-product --repo=souliane/teatree --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # SAFETY TEST (the GH_REPO env leak): gh resolves its target from the
+    # GH_REPO env var when no --repo flag is given. A public GH_REPO + a
+    # flagless ``gh pr create`` from a PRIVATE CWD must NOT carve out -- gh
+    # posts to the PUBLIC GH_REPO, so the banned term would leak. The hook
+    # MUST honour GH_REPO BEFORE the CWD fallback, mirroring gh.
+    def test_gh_env_repo_public_with_private_cwd_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # No probe tool -> the public GH_REPO slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "souliane/teatree")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_gh_env_repo_private_with_unknown_cwd_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # GH_REPO points at a known-private repo, no --repo flag -> the env
+        # target wins over the CWD fallback -> downgrade.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        unknown_cwd = _repo_with_remote(tmp_path / "r", "git@github.com:some/unknown-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "acmecorp-engineering/acmecorp-product")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                unknown_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_gh_env_repo_unset_falls_back_to_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # GH_REPO unset -> behaviour is exactly the CWD fallback: a private
+        # CWD with no --repo flag downgrades, as before this fix.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    def test_explicit_repo_flag_wins_over_gh_env_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An explicit ``--repo`` always wins over GH_REPO (gh ignores the env
+        # var when the flag is present). ``--repo souliane/teatree`` (public)
+        # + GH_REPO private -> the flag's public target wins -> stays blocked.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "acmecorp-engineering/acmecorp-product")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "gh pr create --repo souliane/teatree --body x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_glab_ignores_gh_env_repo_and_falls_back_to_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # glab does NOT honour GH_REPO. A flagless ``glab mr create`` with a
+        # public GH_REPO exported must IGNORE GH_REPO and use the CWD origin.
+        # Private CWD -> downgrade (GH_REPO public is irrelevant to glab).
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_cwd = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.setenv("GH_REPO", "souliane/teatree")
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                "glab mr create --title x",
+                "acmewidget fix",
+                private_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
