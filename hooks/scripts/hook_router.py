@@ -4744,6 +4744,10 @@ def handle_block_direct_commands(data: dict) -> bool:
 # weakens the gate.
 
 _OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+# REST-API merge endpoint: ``(merge_requests|pulls)/<n>/merge``.
+# Matches both GitHub (``repos/OWNER/REPO/pulls/<n>/merge``) and
+# GitLab (``projects/<id>/merge_requests/<n>/merge``) URL shapes.
+_MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
 _OUT_OF_BAND_MERGE_REASON = (
     "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
     "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
@@ -4753,6 +4757,30 @@ _OUT_OF_BAND_MERGE_REASON = (
     "teatree-managed and the cwd could not be resolved, run the merge from inside "
     "the repo's working tree so the gate can classify it."
 )
+
+
+def _is_raw_merge_api_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a merge endpoint.
+
+    True only when the command targets a ``.../pulls/<n>/merge`` or
+    ``.../merge_requests/<n>/merge`` endpoint AND its EFFECTIVE HTTP method is
+    not GET. Reuses the gate-3 effective-method classifier: the LAST
+    ``-X``/``--method`` value wins; with no method flag the default is POST
+    when a body/field flag is present, else GET. A GET to the merge endpoint
+    reads merge status and must NOT be denied.
+    """
+    if "glab api" not in command and "gh api" not in command:
+        return False
+    if not _MERGE_ENDPOINT_RE.search(command):
+        return False
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
+    if methods:
+        is_read = methods[-1] == "GET"
+    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
+        is_read = False
+    else:
+        is_read = True
+    return not is_read
 
 
 def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
@@ -4826,7 +4854,15 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
-    """Block a raw ``gh pr merge`` / ``glab mr merge`` on a managed repo.
+    """Block a raw merge command or REST-API merge write on a managed repo.
+
+    Covers two bypass vectors. The literal subcommand form (``gh pr merge`` /
+    ``glab mr merge``) is matched by :data:`_OUT_OF_BAND_MERGE_RE`. The REST-API
+    form (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
+    .../merge_requests/<n>/merge --method POST``) is matched by
+    :func:`_is_raw_merge_api_write`, which reuses gate-3's effective-method
+    classifier (last ``-X``/``--method`` wins; default POST with a body flag, else
+    GET). A GET to the merge endpoint reads merge status and is NOT denied.
 
     Carve-out for the permanent-lockout case (#126): a merge is allowed only
     when the cwd repo is confidently NOT teatree-managed. Managed repos and
@@ -4835,7 +4871,9 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not command or not _OUT_OF_BAND_MERGE_RE.search(command):
+    if not command:
+        return False
+    if not _OUT_OF_BAND_MERGE_RE.search(command) and not _is_raw_merge_api_write(command):
         return False
     cwd = _resolve_cwd_repo(data)
     if cwd is None:
@@ -4873,8 +4911,16 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
 _REVIEW_POST_ENDPOINT_RE = re.compile(
     r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
 )
+# Two captured forms of the gh/glab HTTP-method flag, both empirically valid
+# against gh (2.87.3) / glab (1.80.4): the spaced/``=`` form (``-X PUT``,
+# ``--method=POST``) and the pflag NO-SPACE shorthand (``-XPUT``). The
+# no-space form is a real method override (``gh api -XGET /rate_limit`` returns
+# 200), so omitting it let ``-XPUT`` evade classification → ``is_read=True`` →
+# the merge/review write slipped through. Consumers flatten the two capture
+# groups and keep last-wins effective-method semantics.
 _REVIEW_POST_METHOD_RE = re.compile(
-    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b",
+    r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b"
+    r"|(?<=-X)([A-Za-z]+)\b",
 )
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
@@ -4904,7 +4950,7 @@ def _is_raw_review_write(command: str) -> bool:
         return False
     if not _REVIEW_POST_ENDPOINT_RE.search(command):
         return False
-    methods = [m.upper() for m in _REVIEW_POST_METHOD_RE.findall(command)]
+    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
     if methods:
         is_read = methods[-1] == "GET"
     elif _REVIEW_POST_BODY_FLAG_RE.search(command):
