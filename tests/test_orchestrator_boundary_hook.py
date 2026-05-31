@@ -225,6 +225,84 @@ class TestPytestSubstringFalseDenyFixed:
         assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
 
 
+class TestPytestUvxAndWrapperPrefixesAnchored:
+    r"""``uvx pytest`` and wrapper-prefixed ``pytest`` are now anchored (#1576).
+
+    The runner-prefix group previously required ``run`` after EVERY runner,
+    so ``uvx pytest`` (uvx takes no ``run``) slipped to the foreground; and
+    common command wrappers (``command``/``exec``/``time``/``nice``) were
+    absent, so ``command pytest`` etc. also slipped. Both are folded into
+    the verb anchor in the safe deny-more direction. The trailing
+    ``pytest(?![\\w-])`` keeps the match pinned to ``pytest`` — wrapper
+    prefixes never widen to other tools.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uvx pytest",
+            "uvx pytest tests/",
+            "command pytest",
+            "exec pytest",
+            "time pytest",
+            "nice pytest",
+            "command exec time nice pytest",
+            "time uvx pytest",
+            "pdm run pytest",
+            "hatch run pytest",
+        ],
+    )
+    def test_uvx_and_wrapper_prefixed_pytest_now_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "uvx ruff",
+            "uvx ruff check",
+            "command ls",
+            "exec ls -la",
+            "time git status",
+            "nice cat README.md",
+        ],
+    )
+    def test_wrapper_prefixes_do_not_widen_beyond_pytest(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    def test_uvx_pytest_fg_ok_escape_still_works(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uvx pytest [fg-ok: targeted run]")) is False
+
+    def test_uvx_pytest_run_in_background_still_allowed(self) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash("uvx pytest", run_in_background=True)) is False
+
+    @pytest.mark.parametrize("command", ["pytest_helper.py", "pytest-django setup", "x-pytest"])
+    def test_pytest_followed_by_word_or_hyphen_not_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+
+class TestHandlerCrashProofOnMissingOrNonStrCommand:
+    """The handler self-guards a missing / ``None`` / non-``str`` command (#1576).
+
+    The router's per-handler try/except already makes a ``TypeError`` net
+    fail-open, but the handler's docstring implies it is self-crash-proof.
+    The in-function ``isinstance`` guard returns the clean allow value
+    (no match) WITHOUT relying on the outer catch — no ``TypeError``.
+    """
+
+    @pytest.mark.parametrize(
+        "tool_input",
+        [
+            {"command": None},
+            {},
+            {"command": 123},
+            {"command": ["pytest"]},
+        ],
+    )
+    def test_non_str_or_missing_command_fails_open(self, tool_input: dict) -> None:
+        data = {"tool_name": "Bash", "tool_input": tool_input}
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+
 class TestMarginalSlowPatternsAdded:
     """The #1178-additive shapes the gate previously lacked are now denied.
 

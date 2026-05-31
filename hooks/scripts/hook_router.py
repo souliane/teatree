@@ -2286,15 +2286,21 @@ _ORCHESTRATION_TOOLS = {
 # x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
 # So anchor it to a command head: start-of-string OR a shell separator
 # (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
-# assignments and an optional Python runner prefix (``uv/uvx/poetry/pdm/
-# hatch run`` or ``python[3] -m``), then ``pytest`` NOT followed by a word
-# char or hyphen. The separator branch keeps the shell-grammar bypass
-# guard intact (``git status && pytest`` still denies).
+# assignments, optional (possibly-stacked) command-wrapper prefixes
+# (``command``/``exec``/``time``/``nice``), and an optional Python runner
+# prefix — note ``uvx`` runs a tool DIRECTLY with no ``run`` (``uvx
+# pytest``), while ``uv``/``poetry``/``pdm``/``hatch`` DO need ``run``, and
+# ``python[3] -m`` — then ``pytest`` NOT followed by a word char or hyphen.
+# The separator branch keeps the shell-grammar bypass guard intact (``git
+# status && pytest`` still denies); the trailing ``(?![\w-])`` keeps the
+# match pinned to ``pytest`` so wrapper prefixes never widen to other tools
+# (``uvx ruff`` / ``command ls`` stay ALLOWED).
 _PYTEST_VERB_RE = (
     r"(?:^|[;&|\n(){}])"
     r"\s*"
     r"(?:\w+=\S+\s+)*"
-    r"(?:(?:uv|uvx|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
+    r"(?:(?:command|exec|time|nice)\s+)*"
+    r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
     r"pytest(?![\w-])"
 )
 
@@ -2436,7 +2442,9 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     tool_input = data.get("tool_input", {})
     if tool_input.get("run_in_background") is True:
         return False
-    command = tool_input.get("command", "")
+    command = tool_input.get("command")
+    if not isinstance(command, str):
+        return False
     if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
         return False
     return emit_pretooluse_deny(
