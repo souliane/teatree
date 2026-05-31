@@ -1,0 +1,304 @@
+"""Golden lockout-regression corpus: must-allow and must-deny command verdicts.
+
+Two explicit corpora guard the command-prohibition gate against two failure modes.
+MUST-ALLOW: legitimate factory commands the gate must never block; a regression
+here causes a lockout.  MUST-DENY: prohibited commands the gate must always block;
+a regression here is a bypass.
+
+Each corpus entry calls the same real gate function the PreToolUse hook uses:
+``_deny_match`` (F3/F6/F8/--no-verify/blocked-tools),
+``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing), and
+``handle_block_out_of_band_merge`` (raw merge on managed repos).  No matchers are
+re-implemented in this test.
+"""
+
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+import hooks.scripts.hook_router as router
+from hooks.scripts.hook_router import _deny_match, _extract_bash_ai_sig_payload, handle_block_out_of_band_merge
+
+# ── fixtures ──────────────────────────────────────────────────────────────────
+
+
+class _FakeHomePath:
+    """Pin ``router.Path.home()`` to a tmp dir for managed-repo slug resolution."""
+
+    def __init__(self, home: Path) -> None:
+        self._home = home
+
+    def __call__(self, *args: object, **kwargs: object) -> Path:
+        return Path(*args, **kwargs)
+
+    def home(self) -> Path:
+        return self._home
+
+
+def _write_managed_config(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home.mkdir(exist_ok=True)
+    (home / ".teatree.toml").write_text(
+        '[overlays.example]\nworkspace_repos = ["example-org/repo"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+    )
+
+
+def _managed_repo(tmp_path: Path, slug: str = "example-org/repo") -> Path:
+    """Return a git repo whose remote slug is listed as teatree-managed."""
+    repo = tmp_path / "wt"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", f"git@github.com:{slug}.git")
+    return repo
+
+
+def _merge_event(command: str, cwd: Path | None) -> dict:
+    return {
+        "session_id": "sess-corpus",
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+        "cwd": str(cwd) if cwd is not None else "",
+    }
+
+
+def _parse_deny(capsys: pytest.CaptureFixture[str]) -> dict | None:
+    out = capsys.readouterr().out.strip()
+    return json.loads(out) if out else None
+
+
+# ── must-allow corpus ─────────────────────────────────────────────────────────
+#
+# These are legitimate factory commands. A gate regression that DENIES any of
+# them causes a lockout — the factory cannot operate until the bug is fixed.
+
+_MUST_ALLOW_DENY_MATCH: list[tuple[str, str]] = [
+    # self-rescue: t3 gate disable + kill-switch edit
+    ("t3 teatree gate disable", "gate disable (self-rescue)"),
+    ("t3 loop claim --take-over", "loop claim (self-rescue)"),
+    # ship path: PR/MR create
+    ('gh pr create --title "x" --body "Closes #12"', "gh pr create"),
+    ("glab mr create --title 'feat: add feature' --description 'Closes #12'", "glab mr create"),
+    # conventional commits mentioning tool names INSIDE the quoted message
+    ("git commit -m 'fix: guard pip install path'", "commit mentioning pip install in quotes"),
+    ('git commit -m "docs: document docker compose usage"', "commit mentioning docker compose in quotes"),
+    ("git commit -m 'test: cover manage.py migrate edge case'", "commit mentioning manage.py in quotes"),
+    # read pipelines that mention tool names in quoted args or patterns
+    ("cat file.txt | grep 'pip install'", "grep with pip install pattern"),
+    ('grep -r "manage.py migrate" .', "grep for manage.py migrate"),
+    ('grep -r "docker compose up" .', "grep for docker compose up"),
+    # gh/glab API reads (no body flag, no write method)
+    ("gh api repos/o/r/pulls/1", "gh api read"),
+    ("glab api projects/1/merge_requests", "glab api list read"),
+    # push variants
+    ("git push", "plain git push"),
+    ("git push -u origin branch", "git push with upstream"),
+    ("git push --force-with-lease", "git push force-with-lease"),
+    # ordinary reads
+    ("ls -la", "ls"),
+    ("cat file.txt", "cat"),
+    ("git log --oneline -10", "git log"),
+    ("t3 teatree ticket list", "t3 ticket list"),
+    ("t3 teatree worktree status", "t3 worktree status"),
+    # echo/printf are in READONLY prefix — even if they mention blocked tool names
+    ("echo 'manage.py runserver is not allowed'", "echo mentioning blocked tool"),
+    ("printf 'pip install is blocked'", "printf mentioning pip install"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    _MUST_ALLOW_DENY_MATCH,
+    ids=[label for _, label in _MUST_ALLOW_DENY_MATCH],
+)
+def test_must_allow_deny_match(command: str, label: str) -> None:
+    """Gate must not deny any legitimate factory command."""
+    reason = _deny_match(command)
+    assert reason is None, (
+        f"LOCKOUT regression — legitimate command was denied.\n"
+        f"  command : {command!r}\n"
+        f"  label   : {label}\n"
+        f"  reason  : {reason}"
+    )
+
+
+_MUST_ALLOW_AI_SIG_ROUTING: list[tuple[str, str]] = [
+    # Conventional commits with clean messages must NOT be routed to AI-sig scan
+    # (no inline body → None; but commits without -m return None — correct).
+    # A commit with a -m that has no Co-Authored-By must not route (still None).
+    ("git commit -m 'fix: guard pip install path'", "clean commit not routed to AI-sig"),
+    ('git commit -m "refactor: tidy up"', "clean commit not routed to AI-sig (dq)"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    _MUST_ALLOW_AI_SIG_ROUTING,
+    ids=[label for _, label in _MUST_ALLOW_AI_SIG_ROUTING],
+)
+def test_must_allow_ai_sig_routing_passes(command: str, label: str) -> None:
+    """Clean commits without banned trailers produce a non-None payload.
+
+    The payload extraction path must NOT classify these as non-commit commands.
+    Non-None means the message WILL be scanned; the scanner passes it because
+    there is no banned trailer.  None would skip the scan entirely — a different
+    kind of bug that this test guards against.
+    """
+    payload = _extract_bash_ai_sig_payload(command)
+    assert payload is not None, (
+        f"Clean commit should produce a scannable payload (message text), got None.\n"
+        f"  command : {command!r}\n"
+        f"  label   : {label}"
+    )
+
+
+class TestMustAllowMerge:
+    """Merge commands on unmanaged repos must not be blocked."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_managed_config(tmp_path / "home", monkeypatch)
+
+    @pytest.mark.parametrize(
+        ("command", "label"),
+        [
+            ("gh pr merge 3 --squash", "gh pr merge on unmanaged repo"),
+            ("glab mr merge 4", "glab mr merge on unmanaged repo"),
+        ],
+        ids=["gh pr merge on unmanaged repo", "glab mr merge on unmanaged repo"],
+    )
+    def test_merge_on_unmanaged_repo_is_allowed(
+        self,
+        command: str,
+        label: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repo = _managed_repo(tmp_path, slug="example-org/public-repo")
+        verdict = handle_block_out_of_band_merge(_merge_event(command, repo))
+        assert verdict is not True, (
+            f"LOCKOUT regression — merge on unmanaged repo was blocked.\n  command : {command!r}\n  label   : {label}"
+        )
+        assert capsys.readouterr().out.strip() == ""
+
+
+# ── must-deny corpus ──────────────────────────────────────────────────────────
+#
+# These are prohibited commands. A gate regression that ALLOWS any of them is a
+# bypass — the gate's invariant is violated and the protection it provides is lost.
+
+_MUST_DENY_DENY_MATCH: list[tuple[str, str]] = [
+    # F3 hooksPath — all quoting variants
+    ("git -c core.hooksPath=/dev/null commit", "F3 hooksPath unquoted"),
+    ("git -c core.hookspath=x commit", "F3 hookspath lowercase"),
+    ('git -c "core.hooksPath=x" commit', "F3 hooksPath double-quoted"),
+    ("git -c 'core.hooksPath=x' commit", "F3 hooksPath single-quoted"),
+    # F6 shell chain: read-only prefix chaining a blocked command
+    ("grep '' /dev/null; python manage.py migrate", "F6 chain: grep ; manage.py migrate"),
+    ("cat x | pip install y", "F6 chain: cat | pip install"),
+    # F8 auto-merge push option — quoted + unquoted + long form
+    ("git push -o merge_request.merge_when_pipeline_succeeds", "F8 push-option unquoted"),
+    ("git push -o 'merge_request.merge_when_pipeline_succeeds'", "F8 push-option single-quoted"),
+    ('git push -o "merge_request.merge_when_pipeline_succeeds"', "F8 push-option double-quoted"),
+    ("git push --push-option=merge_request.merge_when_pipeline_succeeds", "F8 --push-option long form"),
+    # --no-verify
+    ("git commit --no-verify -m 'skip hooks'", "--no-verify on commit"),
+    ("git push --no-verify origin main", "--no-verify on push"),
+    # blocked tools (not prefixed by readonly/t3)
+    ("pip install requests", "bare pip install"),
+    ("python manage.py migrate", "bare manage.py migrate"),
+    ("docker compose up -d", "bare docker compose up"),
+    ("npx playwright test", "bare playwright test"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    _MUST_DENY_DENY_MATCH,
+    ids=[label for _, label in _MUST_DENY_DENY_MATCH],
+)
+def test_must_deny_deny_match(command: str, label: str) -> None:
+    """Gate must deny every prohibited command."""
+    reason = _deny_match(command)
+    assert reason is not None, (
+        f"BYPASS regression — prohibited command was allowed.\n  command : {command!r}\n  label   : {label}"
+    )
+
+
+_MUST_DENY_AI_SIG_ROUTING: list[tuple[str, str]] = [
+    # F1 double-space: bypass attempt via extra whitespace — gate uses \s+ so
+    # these still route to the AI-sig scanner (non-None payload).
+    ('git  commit -m "fix: add feature\n\nCo-Authored-By: Bot <bot@example.com>"', "F1 double-space git commit"),
+    ("glab  mr  create --title 'feat' --description 'Co-Authored-By: x'", "F1 double-space glab mr create"),
+    # F2 REST-API PR/MR create write: must route to AI-sig scanner (non-None payload).
+    ("gh api repos/o/r/pulls -X POST -f title=x", "F2 gh api POST to pulls"),
+    ("glab api projects/1/merge_requests --method POST -f title=feat", "F2 glab api POST to merge_requests"),
+]
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    _MUST_DENY_AI_SIG_ROUTING,
+    ids=[label for _, label in _MUST_DENY_AI_SIG_ROUTING],
+)
+def test_must_deny_ai_sig_routes_to_scanner(command: str, label: str) -> None:
+    """Prohibited F1/F2 commands must be routed to the AI-signature scanner.
+
+    A non-None payload confirms the command is NOT exempted from the scanner.
+    The scanner itself then blocks any command whose payload contains a banned
+    trailer; this test guards only that the routing step doesn't exempt the
+    command before it reaches the scanner (which would be a bypass).
+    """
+    payload = _extract_bash_ai_sig_payload(command)
+    assert payload is not None, (
+        f"BYPASS regression — F1/F2 command was exempted from AI-sig scanner (got None payload).\n"
+        f"  command : {command!r}\n"
+        f"  label   : {label}"
+    )
+
+
+class TestMustDenyMerge:
+    """Merge commands on teatree-managed repos must be blocked."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_managed_config(tmp_path / "home", monkeypatch)
+
+    @pytest.mark.parametrize(
+        ("command", "label"),
+        [
+            ("gh pr merge 1", "gh pr merge on managed repo"),
+            ("glab mr merge 1", "glab mr merge on managed repo"),
+        ],
+        ids=["gh pr merge on managed repo", "glab mr merge on managed repo"],
+    )
+    def test_merge_on_managed_repo_is_denied(
+        self,
+        command: str,
+        label: str,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        repo = _managed_repo(tmp_path, slug="example-org/repo")
+        verdict = handle_block_out_of_band_merge(_merge_event(command, repo))
+        deny = _parse_deny(capsys)
+        assert verdict is True, (
+            f"BYPASS regression — raw merge on managed repo was not blocked.\n"
+            f"  command : {command!r}\n"
+            f"  label   : {label}"
+        )
+        assert deny is not None
+        assert "ticket merge" in deny["permissionDecisionReason"]
