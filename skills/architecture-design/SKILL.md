@@ -19,7 +19,7 @@ Generic planning methodology is delegated to `obra/superpowers/writing-plans`. T
 
 ## When the gate fires
 
-The seven checks apply when the work meets any of:
+The eight checks apply when the work meets any of:
 
 - touches `src/teatree/cli/`, `src/teatree/core/`, `src/teatree/loop/scanners/`, `src/teatree/agents/`, `OverlayBase`, scanner registration, or any `*Backend` Protocol
 - crosses an FSM phase boundary (introduces or moves a `Ticket.State` transition)
@@ -29,7 +29,7 @@ The seven checks apply when the work meets any of:
 
 Tactical fixes (typo, narrow string change, single-call-site bug) skip the gate — the implementer notes that in the PR body.
 
-## The seven checks
+## The eight checks
 
 ### 1. BLUEPRINT § alignment
 
@@ -92,6 +92,16 @@ For any external write (Slack post, GitHub PR mutation, GitLab MR update, DB row
 
 If even one is missing, the design is incomplete — adding it later is a tech-debt commitment, not a follow-up.
 
+### 8. Identity and key normalization
+
+When a logical identity has both a bare and a qualified form (namespace:name, scope/path, prefix+id, fully-qualified name), the **fully-qualified form is the canonical key**.
+
+- **One source-of-truth function** normalizes every reference UP to the fully-qualified form at every boundary — read, write, compare, dedup, cache lookup, registry lookup.
+- Stripping a qualifier to make two things match discards qualifying information and conflates genuinely distinct entities (e.g. `t3:review` vs `overlay-a:review`), creating silent collisions that produce wrong results with no error.
+- **Normalization smell to challenge at review:** any `split(":")[-1]`, `rsplit("/", 1)[-1]`, `removeprefix(...)`, or `lstrip(prefix)` whose sole purpose is to make a comparison succeed. The under-qualified side should be canonicalized UP instead. A transformation that can only ever lose information is almost always the wrong seam.
+
+_Example: skill name lookups in the registry. The registered key is `namespace:skill-name`. A lookup arriving as bare `skill-name` should be qualified to `namespace:skill-name` at the boundary, not matched by stripping the namespace off the registered key._
+
 ## ARCHITECTURE.md template
 
 The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE touching `src/`. The PR template references it; an empty or missing file is a review gap.
@@ -119,6 +129,9 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 
 ## 7. Resilience invariants
 <per external write: verify-by-re-read, fallback-transport, idempotency, heartbeat, sub-agent return contract>
+
+## 8. Identity and key normalization
+<identities with bare vs qualified forms; canonical form chosen; one normalization function at every boundary; any strip/split whose purpose is to make a comparison succeed — justify or remove>
 ```
 
 ## Workflow
@@ -136,6 +149,6 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 
 ## Scope discipline
 
-This skill ships v1 with the seven checks above. If a check is missing from the in-worktree `ARCHITECTURE.md`, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
+This skill ships v1 with the eight checks above. If a check is missing from the in-worktree `ARCHITECTURE.md`, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
 
 The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the artifact (`ARCHITECTURE.md`) was produced.
