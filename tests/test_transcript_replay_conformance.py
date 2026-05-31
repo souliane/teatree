@@ -1,0 +1,188 @@
+"""Transcript-replay behavioural-conformance eval (#169).
+
+The REAL-run companion to the gate-liveness corpus
+(``tests/test_gate_liveness_corpus.py``, #168). #168 proves a gate CAN fire on
+a synthetic must-DENY payload; this proves the behavioural invariants HOLD when
+replayed over a real on-disk session transcript — i.e. the gates DID their job
+(or weren't needed) in production.
+
+Table-driven over :data:`INVARIANT_REGISTRY`, mirroring #168's registry shape
+and the ``tests/eval/test_scenarios_anti_vacuous.py`` PASS-green / RED-surgical
+pattern:
+
+the ``all_pass`` fixture is GREEN on every invariant; each invariant ships a
+``<id>_violation`` fixture that goes RED on THAT invariant (asserting the
+offending index) and GREEN on all others (surgical — anti-vacuity); a coverage
+guard asserts every registry invariant has a RED fixture; a tier guard asserts
+only ``deterministic`` invariants ship; a privacy test asserts the report leaks
+no fixture payload and clears the publication scanner; and a mirrored-constants
+lockstep test runs against ``hooks.scripts.hook_router``.
+"""
+
+import re
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+import hooks.scripts.hook_router as router
+from teatree.core.privacy_gate import scan_for_publication
+from teatree.eval import transcript_conformance as tc
+from teatree.eval.session_transcript import parse_session_jsonl
+from teatree.eval.transcript_conformance import INVARIANT_REGISTRY, Invariant, render_report, render_report_json, replay
+
+_FIXTURES: Final[Path] = Path(__file__).parent / "fixtures" / "transcripts"
+_PASS_FIXTURE: Final[Path] = _FIXTURES / "all_pass.session.jsonl"
+_IDS: Final[list[str]] = [inv.id for inv in INVARIANT_REGISTRY]
+
+
+def _load(path: Path) -> list:
+    return parse_session_jsonl(path.read_text(encoding="utf-8"))
+
+
+def _result_for(invariant: Invariant, fixture: Path) -> tc.InvariantResult:
+    return invariant.predicate(_load(fixture))
+
+
+# ── PASS-green ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("invariant", INVARIANT_REGISTRY, ids=_IDS)
+def test_all_pass_fixture_is_green(invariant: Invariant) -> None:
+    """The clean fixture must satisfy every shipped invariant."""
+    result = _result_for(invariant, _PASS_FIXTURE)
+    assert result.ok, f"{invariant.id} flagged the all-pass fixture at event #{result.offending_index}"
+
+
+# ── RED-surgical (anti-vacuity) ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("invariant", INVARIANT_REGISTRY, ids=_IDS)
+def test_violation_fixture_is_red_on_its_own_invariant(invariant: Invariant) -> None:
+    """Each invariant's own violation fixture must go RED — with an index."""
+    fixture = _FIXTURES / f"{invariant.id}_violation.session.jsonl"
+    assert fixture.is_file(), f"missing RED fixture for {invariant.id}: {fixture}"
+    result = _result_for(invariant, fixture)
+    assert not result.ok, f"{invariant.id} stayed GREEN on its own violation fixture (vacuous)"
+    assert result.offending_index is not None, f"{invariant.id} reported a violation without an offending index"
+
+
+@pytest.mark.parametrize("invariant", INVARIANT_REGISTRY, ids=_IDS)
+def test_violation_fixture_is_green_on_other_invariants(invariant: Invariant) -> None:
+    """An invariant's violation fixture must NOT trip any OTHER invariant (surgical)."""
+    fixture = _FIXTURES / f"{invariant.id}_violation.session.jsonl"
+    events = _load(fixture)
+    for other in INVARIANT_REGISTRY:
+        if other.id == invariant.id:
+            continue
+        result = other.predicate(events)
+        assert result.ok, (
+            f"{invariant.id}'s violation fixture also tripped {other.id} at event "
+            f"#{result.offending_index} — fixture is not surgical"
+        )
+
+
+# ── coverage + tier guards ───────────────────────────────────────────────────
+
+
+def test_every_invariant_has_a_red_fixture() -> None:
+    """Coverage guard: a registry invariant without a RED fixture fails the build."""
+    missing = [inv.id for inv in INVARIANT_REGISTRY if not (_FIXTURES / f"{inv.id}_violation.session.jsonl").is_file()]
+    assert not missing, f"invariants missing a RED violation fixture: {missing}"
+
+
+def test_only_deterministic_invariants_ship() -> None:
+    """Tier guard: only ``deterministic`` (GREEN-tier) invariants are live-runnable."""
+    non_green = [(inv.id, inv.confidence) for inv in INVARIANT_REGISTRY if inv.confidence != "deterministic"]
+    assert not non_green, f"non-deterministic invariants must not ship in the live registry: {non_green}"
+
+
+# ── privacy ──────────────────────────────────────────────────────────────────
+
+
+def _fixture_payload_tokens() -> set[str]:
+    """Sensitive substrings from EVERY fixture the report must never echo."""
+    tokens: set[str] = set()
+    for fixture in _FIXTURES.glob("*.session.jsonl"):
+        events = parse_session_jsonl(fixture.read_text(encoding="utf-8"))
+        for event in events:
+            for value in (event.tool_input or {}).values():
+                if isinstance(value, str) and len(value) >= 4:
+                    tokens.add(value)
+    return tokens
+
+
+def test_report_leaks_no_fixture_payload() -> None:
+    """The text and JSON reports must contain no substring of any fixture payload."""
+    tokens = _fixture_payload_tokens()
+    assert tokens, "fixtures yielded no payload tokens — privacy test would be vacuous"
+    for fixture in _FIXTURES.glob("*.session.jsonl"):
+        results = replay(_load(fixture))
+        text = render_report(results)
+        rendered_json = render_report_json(results)
+        for token in tokens:
+            assert token not in text, f"text report leaked payload token {token!r} for {fixture.name}"
+            assert token not in rendered_json, f"json report leaked payload token {token!r} for {fixture.name}"
+
+
+def test_report_clears_publication_scanner() -> None:
+    """Every fixture's report must pass the pre-publish privacy scanner clean."""
+    for fixture in _FIXTURES.glob("*.session.jsonl"):
+        text = render_report(replay(_load(fixture)))
+        verdict = scan_for_publication(
+            text=text,
+            target_repo="souliane/teatree",
+            public_repos=["souliane/teatree"],
+        )
+        assert not verdict.refused, f"report for {fixture.name} tripped the publication scanner: {verdict.matches}"
+
+
+def test_fixtures_contain_no_redact_anchor() -> None:
+    """The fixtures themselves must carry no privacy redact-anchor pattern.
+
+    Guards against a real session log being committed as a fixture: the
+    default quote/blockquote anchors the publication gate fires on must not
+    appear in any synthetic fixture.
+    """
+    anchors = re.compile(
+        r"\b(?:verbatim|user said|User mandate)\b|^>\s+.*\b(?:I|my|me)\b",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    for fixture in _FIXTURES.glob("*.session.jsonl"):
+        body = fixture.read_text(encoding="utf-8")
+        assert not anchors.search(body), f"{fixture.name} contains a privacy redact-anchor pattern"
+
+
+# ── mirrored-constants lockstep ──────────────────────────────────────────────
+
+
+def test_mirrored_constants_match_hook_router() -> None:
+    """The command-shape regexes and plan-skill predicate stay in lockstep.
+
+    #169 MIRRORS (does not import) the hook_router gate shapes to stay
+    independent of the concurrently-evolving router and the tach module-edge
+    rules. This test imports the router values read-only (tests are tach-exempt)
+    and asserts equality, so a drift in either side trips the build.
+    """
+    assert tc._SKIP_PLAN_GATE_RE.pattern == router._SKIP_PLAN_GATE_RE.pattern
+    assert tc._OUT_OF_BAND_MERGE_RE.pattern == router._OUT_OF_BAND_MERGE_RE.pattern
+    assert tc._MERGE_ENDPOINT_RE.pattern == router._MERGE_ENDPOINT_RE.pattern
+    assert tc._REVIEW_POST_ENDPOINT_RE.pattern == router._REVIEW_POST_ENDPOINT_RE.pattern
+    assert tc._REVIEW_POST_METHOD_RE.pattern == router._REVIEW_POST_METHOD_RE.pattern
+    assert tc._REVIEW_POST_BODY_FLAG_RE.pattern == router._REVIEW_POST_BODY_FLAG_RE.pattern
+    assert tc._GLAB_GH_API_RE.pattern == router._GLAB_GH_API_RE.pattern
+
+
+def test_plan_skill_final_segment_matches_router_recognition() -> None:
+    """The mirrored plan-skill predicate recognises exactly what the router records.
+
+    The router records a plan invocation iff the skill's final segment is the
+    real plan skill; the #167 bug was a ``startswith('plan')`` test that never
+    matched ``teatree-plan``. This asserts the eval uses the final-segment
+    semantics and recognises the real invocation form ``t3:teatree-plan``.
+    """
+    assert tc._is_plan_skill("t3:teatree-plan")
+    assert tc._is_plan_skill("teatree-plan")
+    assert tc._is_plan_skill("skills/teatree-plan/SKILL.md".replace("/SKILL.md", ""))
+    assert not tc._is_plan_skill("t3:teatree-batch")
+    assert not tc._is_plan_skill("plan")

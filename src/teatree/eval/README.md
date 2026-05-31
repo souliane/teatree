@@ -128,9 +128,63 @@ Prefer Layer 1 every time it applies — code-level tests run in CI for
 free; eval scenarios require a paid Claude run. Layer 2 is for what
 Layer 1 cannot reach.
 
+## Transcript-replay conformance (the other half)
+
+The scenario harness above runs a *fresh* `claude -p` session and watches the
+**stream-json** CLI output (`transcript.py`). The transcript-replay eval
+(`session_transcript.py` + `transcript_conformance.py`, `t3 eval
+transcript-replay`) instead replays the **on-disk session JSONL** that Claude
+Code already wrote under `~/.claude/projects/<slug>/<session-id>.jsonl`, and
+asserts a set of deterministic behavioural invariants held over that real run.
+
+**Two schemas, one reader trap.** The stream-json schema and the on-disk
+session schema are NOT interchangeable — `transcript.py` parses the former,
+`session_transcript.py` the latter. The on-disk envelope carries
+parent/child uuids, a sidechain marker, cwd, git branch, and folds hook
+outcomes in as `attachment` events (`hook` / `hook_success` / `hook_*`, carrying
+`hookEvent` / `exitCode` / `command` / privacy-sensitive `stdout`/`stderr`)
+rather than as a separate stream. A `Skill` tool call carries `input.skill`
+(e.g. `t3:teatree-plan`). The parser is fail-soft: a missing field or an
+unrecognised hook discriminator yields a best-effort event rather than raising,
+because the on-disk schema drifts between Claude Code versions.
+
+It complements the gate-liveness corpus (`tests/test_gate_liveness_corpus.py`,
+[#168](https://github.com/souliane/teatree/issues/168)): #168 proves a gate
+**can** fire on a synthetic must-DENY payload; transcript-replay
+([#169](https://github.com/souliane/teatree/issues/169)) proves the invariants
+**did** hold (or weren't needed) in real runs. Only GREEN-tier
+(`confidence="deterministic"`, low false-positive) invariants ship today —
+`plan_gate_fired_or_skipped`, `no_edit_in_main_clone`,
+`no_raw_out_of_band_merge`, `no_raw_review_post`, `no_raw_slack_overlay_post`.
+
+```bash
+t3 eval transcript-replay                       # newest session for this project
+t3 eval transcript-replay --session <id>        # a specific session in scope
+t3 eval transcript-replay --file <path.jsonl>   # an explicit file
+t3 eval transcript-replay --format json         # JSON report
+```
+
+**Privacy:** local-only, stdout-only, no transport, and project-slug scoped so
+it never reads another project's logs. The report emits ONLY the invariant id,
+the offending event index, the tool name, and the fixed description — never a
+tool input, prompt text, hook stdout/stderr, file contents, or any quote. Its
+fixtures (`tests/fixtures/transcripts/`) are hand-written synthetic placeholder
+sessions; a real session log is never committed.
+
+The command-shape regexes and the plan-skill recognition predicate are MIRRORED
+from `hooks.scripts.hook_router` (not imported, to stay independent of the
+concurrently-evolving router and the tach module-edge rules); a lockstep test in
+`tests/test_transcript_replay_conformance.py` asserts they stay equal to the
+router source.
+
 ## Deferred
 
 - Negative-control scenario.
 - Final-state matcher.
 - prek manual hook integration.
 - The remaining catalog from [teatree#1160](https://github.com/souliane/teatree/issues/1160).
+- Transcript-replay AMBER/RED-tier invariants (correlative / judgement
+  confidence) and loop-signal-derived invariants — the conformance registry
+  ships GREEN-tier only for now.
+- Catalog linkage to [#166](https://github.com/souliane/teatree/issues/166): the
+  `Invariant.catalog_ref` field is wired but unset.
