@@ -476,6 +476,7 @@ graph TD
     teatree.cli --> teatree.eval
     teatree.cli --> teatree.skill_loading
     teatree.cli --> teatree.skill_schema
+    teatree.cli --> teatree.skill_ref_validator
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
@@ -536,6 +537,7 @@ graph TD
     teatree.claude_sessions
     teatree.overlay_init
     teatree.skill_schema
+    teatree.skill_ref_validator
     teatree.slack_mrkdwn
     teatree.skill_deps
     teatree.skill_map
