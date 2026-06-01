@@ -13,7 +13,7 @@ would only nag on stale state.
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from teatree.types import RawAPIDict
 
@@ -62,7 +62,13 @@ def detect_approval_dismissal(
 
 
 def _parse_iso(ts: str) -> datetime:
-    return datetime.fromisoformat(ts)
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return datetime.min.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _iter_approval_events(discussions: list[RawAPIDict]) -> list[tuple[str, str, str]]:

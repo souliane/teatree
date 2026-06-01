@@ -141,6 +141,54 @@ class TestDetectApprovalDismissal:
         ]
         assert detect_approval_dismissal(discussions, current_approval_count=0) is None
 
+    def test_empty_created_at_does_not_crash_sort(self) -> None:
+        """An event with an empty created_at must not crash the chronological sort."""
+        discussions = [
+            _disc([_system_note("approved this merge request", username="alice", created_at="")]),
+            _disc(
+                [
+                    _system_note(
+                        "removed all approvals when new commits are added to the source branch",
+                        created_at="2026-05-01T11:00:00Z",
+                    ),
+                ],
+            ),
+        ]
+        result = detect_approval_dismissal(discussions, current_approval_count=0)
+        assert result == ApprovalDismissal(at="2026-05-01T11:00:00Z", approvers=["alice"])
+
+    def test_unparseable_created_at_does_not_crash(self) -> None:
+        """A garbage created_at must not crash; it sorts first via a stable sentinel."""
+        discussions = [
+            _disc([_system_note("approved this merge request", username="alice", created_at="not-a-date")]),
+            _disc(
+                [
+                    _system_note(
+                        "removed all approvals when new commits are added to the source branch",
+                        created_at="2026-05-01T11:00:00Z",
+                    ),
+                ],
+            ),
+        ]
+        result = detect_approval_dismissal(discussions, current_approval_count=0)
+        assert result == ApprovalDismissal(at="2026-05-01T11:00:00Z", approvers=["alice"])
+
+    def test_naive_and_aware_timestamps_mix_does_not_crash(self) -> None:
+        """A naive timestamp alongside an aware one must not raise TypeError in the sort."""
+        discussions = [
+            _disc([_system_note("approved this merge request", username="alice", created_at="2026-05-01T10:00:00")]),
+            _disc(
+                [
+                    _system_note(
+                        "removed all approvals when new commits are added to the source branch",
+                        created_at="2026-05-01T11:00:00Z",
+                    ),
+                ],
+            ),
+        ]
+        result = detect_approval_dismissal(discussions, current_approval_count=0)
+        assert result == ApprovalDismissal(at="2026-05-01T11:00:00Z", approvers=["alice"])
+
     def test_mixed_offset_timestamps_sort_chronologically_not_lexically(self) -> None:
         """Mixed UTC-offset timestamps must replay in chronological, not string, order.
 
