@@ -24,7 +24,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
 @pytest.fixture
@@ -36,7 +37,10 @@ def config(tmp_path: Path) -> Path:
     """
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        '[teatree]\nbanned_terms = ["acmecorp"]\nprivate_repos = ["acmecorp-engineering"]\n',
+        "[teatree]\n"
+        'banned_terms = ["acmecorp"]\n'
+        'private_repos = ["acmecorp-engineering"]\n'
+        'internal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
         encoding="utf-8",
     )
     return cfg
@@ -91,6 +95,52 @@ class TestScanText:
 
     def test_missing_config_returns_none(self, tmp_path: Path) -> None:
         assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+
+    def test_fail_closed_sentinel_blocks(self, config: Path) -> None:
+        # An unresolvable body (the sentinel) is not a configured term, so
+        # delegating it to check-banned-terms.sh would clear it; it must BLOCK,
+        # mirroring the quote / bare-reference sibling scanners.
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=config) is not None
+
+    def test_fail_closed_sentinel_blocks_even_without_config(self, tmp_path: Path) -> None:
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
+
+
+class TestExtractSecretScanSurfaces:
+    def test_title_long_flag_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f'gh pr create -R souliane/teatree --title "{secret}"')
+        assert secret in text
+
+    def test_short_title_flag_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f'gh pr create -R souliane/teatree -t "{secret}"')
+        assert secret in text
+
+    def test_api_non_body_field_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f"gh api repos/souliane/teatree/issues -f title={secret}")
+        assert secret in text
+
+
+class TestIsPublishCommandTokenAware:
+    def test_api_after_interspersed_persistent_flag(self) -> None:
+        assert _command_parser.is_publish_command("gh --hostname github.com api repos/o/r/issues -f body=x")
+
+    def test_api_after_interspersed_method_flag(self) -> None:
+        assert _command_parser.is_publish_command("gh -X POST api repos/o/r/issues -f body=x")
+
+    def test_git_c_commit_is_detected(self) -> None:
+        assert _command_parser.is_publish_command('git -C /some/dir commit -m "msg"')
+
+    def test_git_global_dir_commit_long_message_is_detected(self) -> None:
+        assert _command_parser.is_publish_command('git --git-dir=/x/.git --work-tree=/x commit --message "msg"')
+
+    def test_flagless_git_commit_is_not_a_publish_surface(self) -> None:
+        assert not _command_parser.is_publish_command("git -C /some/dir commit")
+
+    def test_plain_non_publish_command_stays_false(self) -> None:
+        assert not _command_parser.is_publish_command("git -C /some/dir status")
 
 
 class TestExtractPublishPayload:
@@ -243,6 +293,83 @@ class TestHookChainRegistration:
         assert names.index("handle_banned_terms_pretool") < names.index("handle_enforce_skill_loading")
 
 
+class TestLeadingEnvOverride:
+    """A leading ``ALLOW_BANNED_TERM=1`` env-assignment token bypasses the gate (#1415).
+
+    The Claude Code harness forwards neither an inline ``env`` block nor a
+    ``--allow-banned-term`` flag glab/gh would accept; the one spelling that
+    reliably reaches the gate is a leading inline env-assignment on the
+    command itself.
+    """
+
+    def test_leading_env_assignment_bypasses(self) -> None:
+        cmd = 'ALLOW_BANNED_TERM=1 glab mr note 5 --message "ship to acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
+
+    def test_leading_env_assignment_zero_does_not_bypass(self) -> None:
+        cmd = 'ALLOW_BANNED_TERM=0 glab mr note 5 --message "acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    def test_env_assignment_after_command_name_does_not_bypass(self) -> None:
+        # Once the command name is reached, a later ``KEY=val``-shaped token
+        # is an argument, not an inline env assignment.
+        cmd = 'gh issue create --body "acmecorp" --field ALLOW_BANNED_TERM=1'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    def test_env_assignment_after_separator_does_not_bypass(self) -> None:
+        cmd = 'gh issue create --body "acmecorp"; ALLOW_BANNED_TERM=1 echo done'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    @pytest.mark.integration
+    def test_leading_env_assignment_bypasses_block_end_to_end(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'ALLOW_BANNED_TERM=1 gh issue create --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.integration
+class TestDestinationAwareGate:
+    """The gate scans only PUBLIC targets (#1415 destination-awareness).
+
+    FAIL-CLOSED: a banned term posted to the genuinely-public
+    ``souliane/teatree`` is still blocked; the same term posted to a
+    configured internal namespace is allowed; an unresolvable destination
+    stays blocked.
+    """
+
+    def test_banned_term_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R souliane/teatree --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_banned_term_to_internal_namespace_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R internalcorp/private-svc --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Raw-REST ``gh api`` / ``glab api`` can target any surface (custom
+        # host, method, endpoint), so the destination gate never SKIPS an
+        # api segment even when its URL path resolves to an internal
+        # project -- mirroring the carve-out, which excludes api from its
+        # eligible verbs. The over-scan is recoverable via --allow-banned-term.
+        cmd = "glab api projects/internalcorp%2Fprivate-svc/issues -f body=acmecorp"
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_banned_term_unparseable_destination_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A Slack-bound ``chat.postMessage`` curl has no resolvable repo
+        # destination → PUBLIC (fail-closed) → still blocked.
+        cmd = "curl -d text=acmecorp https://slack.com/api/chat.postMessage"
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_term_and_the_override(self) -> None:
         message = banned_terms_scanner.format_block_message("acmecorp")
@@ -290,11 +417,12 @@ class TestPrivateRepoCarveOut:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_private_repo_posting_command_with_cwd_target_downgrades(
+    def test_private_repo_posting_command_with_cwd_target_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # gh issue create (no --repo flag) from a private CWD resolves the
-        # target from the CWD origin and applies the carve-out.
+        # target from the CWD origin; the allowlisted-private destination is
+        # skipped by the destination gate (#1672) -- allowed, no deny.
         repo = _private_repo(tmp_path)
         data = {
             "tool_name": "Bash",
@@ -302,7 +430,7 @@ class TestPrivateRepoCarveOut:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is False  # downgraded to warn, not denied
+        assert blocked is False
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_posting_command_with_explicit_public_repo_still_blocks(

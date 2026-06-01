@@ -117,11 +117,13 @@ def test_banned_terms_block_emits_visibility_unknown_note_and_still_denies(
     assert "private_repos" in captured.err
 
 
-def test_banned_terms_block_no_note_when_target_resolvable_private(
+def test_banned_terms_allowed_when_target_resolvable_private(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # When the target IS allowlisted-private the carve-out downgrades (no deny,
-    # no unknown NOTE) -- the hint only fires on a genuine unknown-target block.
+    # When the target IS allowlisted-private the destination gate SKIPS the
+    # scan entirely (#1672 -- ``private_repos`` drives the destination skip),
+    # so the post is allowed with no deny and no unknown NOTE. The hint only
+    # fires on a genuine unknown-target block.
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
     (home / ".teatree.toml").write_text(
         '[teatree]\nbanned_terms = ["acmewidget"]\nprivate_repos = ["acme/secret-product"]\n',
@@ -146,5 +148,5 @@ def test_banned_terms_block_no_note_when_target_resolvable_private(
     captured = capsys.readouterr()
 
     assert blocked is False
-    assert "downgraded to warn" in captured.err
+    assert captured.out == ""  # no deny JSON
     assert "visibility unknown" not in captured.err

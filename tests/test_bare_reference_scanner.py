@@ -513,6 +513,60 @@ class TestHandlersFailOpenWithoutTeatreeImport:
         assert capsys.readouterr().out == ""
 
 
+@pytest.mark.integration
+class TestDestinationAwareGate:
+    """The gate scans only PUBLIC targets (#1530 destination-awareness).
+
+    FAIL-CLOSED: a bare ref posted to the genuinely-public
+    ``souliane/teatree`` is still blocked; the same ref posted to a
+    configured internal namespace is allowed; a Slack send (no resolvable
+    repo destination) stays blocked.
+    """
+
+    @pytest.fixture
+    def _internal_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(
+            '[teatree]\ninternal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+
+    @pytest.mark.usefixtures("_internal_config")
+    def test_bare_ref_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R souliane/teatree --title t --body "see #1500"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is True
+        assert _out(capsys)["permissionDecision"] == "deny"
+
+    @pytest.mark.usefixtures("_internal_config")
+    def test_bare_ref_to_internal_namespace_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R internalcorp/private-svc --title t --body "see #1500"'
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("_internal_config")
+    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Raw-REST ``gh api`` / ``glab api`` can target any surface, so the
+        # destination gate never SKIPS an api segment even when its URL path
+        # resolves to an internal project -- mirroring the carve-out, which
+        # excludes api from its eligible verbs.
+        cmd = "glab api projects/acme-internal%2Fapp/issues -f body='see #1500'"
+        blocked = handle_bare_reference_pretool(_bash(cmd))
+        assert blocked is True
+        assert _out(capsys)["permissionDecision"] == "deny"
+
+    @pytest.mark.usefixtures("_internal_config")
+    def test_bare_ref_in_slack_send_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Slack has no resolvable repo destination → PUBLIC → still blocked.
+        blocked = handle_bare_reference_pretool(
+            {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": "see #1500"}}
+        )
+        assert blocked is True
+        assert _out(capsys)["permissionDecision"] == "deny"
+
+
 class TestHookChainRegistration:
     def test_pretool_handler_runs_before_quote_scanner(self) -> None:
         names = [h.__name__ for h in router._HANDLERS["PreToolUse"]]
