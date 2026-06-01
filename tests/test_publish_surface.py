@@ -14,6 +14,15 @@ known-private (via ``--repo``/``-R`` flag, or CWD fallback). Raw REST
 (``gh api``, ``glab api``) and ``curl``/Slack remain ineligible. An
 unknown or public target stays hard-blocked.
 
+Reworked in #1657 to an ALLOWLIST: the posting path now decides via
+``command_is_pure_private_gh_glab_post`` -- a single positive proof that the
+WHOLE command is a pure private ``gh``/``glab`` post -- instead of an
+enumerated set of execution introducers the gate tried to DETECT. The golden
+corpus is the two-dimensional contract: a must-ALLOW set (every legit private
+post still downgrades -- the over-block guard) and a must-DENY set (any
+transport, public target, raw REST, secret, or NOVEL mechanism hard-blocks --
+the leak guard, transport-agnostically).
+
 Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten
 remote URL, plus a fake ``gh`` on PATH for the probe dimension.
 """
@@ -23,17 +32,18 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
-from teatree.hooks import publish_surface
+from teatree.hooks import _gh_glab_hiding, _repo_visibility, publish_surface
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
 class _FakeHomePath:
     """Drop-in for the module's ``Path`` that pins ``home()`` to a tmp dir.
 
-    Only ``publish_surface``'s ``Path(base)`` and ``Path.home()`` uses need
+    Only ``_repo_visibility``'s ``Path(base)`` and ``Path.home()`` uses need
     to resolve; everything else delegates to the real ``pathlib.Path``, so a
     test can relocate the cache root without globally patching
     ``pathlib.Path.home`` (which would break pytest's own tmp machinery).
@@ -185,8 +195,34 @@ class TestEffectiveRepoDir:
     def test_absent_returns_none(self) -> None:
         assert publish_surface.effective_repo_dir('git commit -m "x"') is None
 
-    def test_repeated_dash_c_last_wins(self) -> None:
+    def test_repeated_absolute_dash_c_resets(self) -> None:
+        # An absolute subsequent ``-C`` resets the accumulator (git semantics),
+        # so the last absolute value wins.
         assert publish_surface.effective_repo_dir("git -C /first -C /second commit -m x") == "/second"
+
+    def test_repeated_relative_dash_c_is_cumulative(self) -> None:
+        # git: each subsequent NON-absolute ``-C <path>`` is interpreted
+        # relative to the preceding ``-C <path>``. The commit lands in
+        # ``/pub/relpriv``, NOT the bare last segment ``relpriv``.
+        assert publish_surface.effective_repo_dir("git -C /pub -C relpriv commit -m x") == "/pub/relpriv"
+
+    def test_absolute_dash_c_after_relative_resets(self) -> None:
+        # An absolute value anywhere in the chain resets the accumulator.
+        assert publish_surface.effective_repo_dir("git -C rel -C /abs commit -m x") == "/abs"
+
+    def test_three_relative_dash_c_accumulate(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C /a -C b -C c commit -m x") == "/a/b/c"
+
+    def test_dash_c_equals_form_accumulates(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C=/pub -C=relpriv commit -m x") == "/pub/relpriv"
+
+    def test_unresolvable_dash_c_value_is_fail_closed(self) -> None:
+        # A ``-C`` value carrying a substitution marker cannot be resolved
+        # statically -> fail-closed sentinel so the carve-out never downgrades.
+        assert (
+            publish_surface.effective_repo_dir("git -C /pub -C $(echo x) commit -m x")
+            == publish_surface.UNRESOLVABLE_REPO_DIR
+        )
 
     def test_repeated_git_dir_last_wins(self) -> None:
         command = "git --git-dir=/first/.git --git-dir=/second/.git commit"
@@ -255,8 +291,34 @@ class TestIsGhGlabPostingCommand:
     def test_git_commit_is_not_eligible(self) -> None:
         assert publish_surface.is_gh_glab_posting_command('git commit -m "x"') is False
 
-    def test_command_after_separator_does_not_count(self) -> None:
-        assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is False
+    def test_command_after_separator_is_now_seen(self) -> None:
+        # INTENTIONAL CHANGE (#1657): the carve-out must SEE a posting verb
+        # behind a leading prefix segment, else it over-blocks a legitimate
+        # private-repo post (the scanner already scans the whole payload).
+        # Previously asserted False (first-segment-only).
+        assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is True
+
+    def test_prefixed_posting_segment_target_still_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Seeing the verb behind a prefix must NOT lose target resolution:
+        # the explicit ``--repo`` of the posting segment still drives privacy,
+        # and a public target behind a ``cd`` prefix stays NOT-private.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.command_is_pure_private_gh_glab_post(
+                "cd /x && gh pr create --repo acmecorp-engineering/p --title x", None, config_path=cfg
+            )
+            is True
+        )
+        assert (
+            publish_surface.command_is_pure_private_gh_glab_post(
+                "cd /x && gh pr create --repo souliane/teatree --title x", None, config_path=cfg
+            )
+            is False
+        )
 
 
 class TestExtractRepoFlag:
@@ -402,14 +464,14 @@ class TestVisibilityCachePathCollision:
         (home / ".teatree").write_text("# shell-sourceable config FILE\n", encoding="utf-8")
         monkeypatch.delenv("T3_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+        monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
 
     def test_default_cache_root_avoids_home_teatree_config_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         home = tmp_path / "home"
         self._patch_home_with_teatree_file(home, monkeypatch)
-        root = publish_surface._cache_root()
+        root = _repo_visibility._cache_root()
         assert (home / ".teatree") not in root.parents
         assert root != home / ".teatree"
 
@@ -419,9 +481,9 @@ class TestVisibilityCachePathCollision:
         home = tmp_path / "home"
         self._patch_home_with_teatree_file(home, monkeypatch)
 
-        publish_surface._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
+        _repo_visibility._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
 
-        assert publish_surface._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
+        assert _repo_visibility._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
         assert (home / ".cache" / "teatree" / "repo-visibility-cache.json").is_file()
 
     def test_cache_falls_back_when_xdg_cache_teatree_is_a_file(
@@ -432,11 +494,11 @@ class TestVisibilityCachePathCollision:
         (home / ".cache" / "teatree").write_text("not a dir\n", encoding="utf-8")
         monkeypatch.delenv("T3_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+        monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
 
-        publish_surface._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
+        _repo_visibility._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
 
-        assert publish_surface._read_visibility_cache("gitlab.com/acme/x") == "PUBLIC"
+        assert _repo_visibility._read_visibility_cache("gitlab.com/acme/x") == "PUBLIC"
         assert (home / ".teatree-data" / "repo-visibility-cache.json").is_file()
 
 
@@ -480,6 +542,34 @@ class TestCarveOutApplies:
                 "Bash", f'git commit -m "{body}"', body, private_repo, config_path=private_cfg
             )
             is True
+        )
+
+    # SAFETY TEST: This test is load-bearing. A commit whose CUMULATIVE
+    # ``-C`` landing dir is a PUBLIC repo must stay hard-blocked even when the
+    # bare last ``-C`` segment, resolved alone, would name a private repo.
+    # git resolves ``-C /pub -C relpriv`` to ``/pub/relpriv``; the body lands
+    # in the PUBLIC repo there, so the carve-out must NOT downgrade.
+    def test_cumulative_dash_c_public_landing_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        # Bare last segment ``relpriv`` (resolved vs the process cwd) is PRIVATE.
+        _repo_with_remote(tmp_path / "relpriv", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # Cumulative landing ``<pub>/relpriv`` is a PUBLIC/unknown repo.
+        pub = tmp_path / "pub"
+        _repo_with_remote(pub / "relpriv", "git@github.com:some/unrelated-public.git")
+        # No probe tool -> unknown slug stays NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.chdir(tmp_path)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {pub} -C relpriv commit -m "acmewidget fix"',
+                "acmewidget fix",
+                None,
+                config_path=cfg,
+            )
+            is False
         )
 
     # SAFETY TEST: This test is load-bearing. A public-repo target MUST always
@@ -975,3 +1065,800 @@ class TestCarveOutApplies:
             )
             is True
         )
+
+
+# Slugs used across the golden corpus: the PRIVATE namespace is injected into
+# the tmp allowlist; the PUBLIC slug is this repo, deliberately NOT allowlisted.
+_PRIV_NS = "acmecorp-engineering"
+_PRIV_SLUG = f"{_PRIV_NS}/acmecorp-product"
+_PUBLIC_SLUG = "souliane/teatree"
+_PRIV_REMOTE = f"git@gitlab.com:{_PRIV_SLUG}.git"
+_UNKNOWN_REMOTE = "git@github.com:some/unknown-repo.git"
+_TERM = "acmewidget"
+_FAKE_SECRET = "ghp_" + "a" * 36
+
+
+class _CorpusRow(NamedTuple):
+    """One golden-corpus case: command + body and the CWD remote.
+
+    The expected verdict is implicit in which tuple the row lives in
+    (``_MUST_ALLOW`` => downgrade, ``_MUST_DENY`` => hard-block), so there is
+    no boolean field to pass positionally.
+    """
+
+    case: str
+    command: str
+    payload: str
+    cwd_remote: str
+
+
+# must-ALLOW: a private-target post/commit PROVES pure and downgrades to warn.
+# These are the over-block dimension of the prove-pure inversion -- every legit
+# private-post shape the factory and user actually use (prefixed / env / cd-
+# prefixed posting verbs, a private READ chained after a post, a flag VALUE
+# whose prose contains the word ``gh``/``glab`` or a quoted ``sh -c`` string)
+# must still downgrade, else the allowlist over-blocks legitimate work.
+_MUST_ALLOW: tuple[_CorpusRow, ...] = (
+    _CorpusRow("A1", f'gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A2", f'cd /x && gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A3", f'ENV=1 gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A4", f'gh issue create --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A5", f"cd sub && gh pr create --repo {_PRIV_SLUG} --body x", _TERM, _PRIV_REMOTE),
+    _CorpusRow("A6", f'git commit -m "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A7", f'glab mr create --repo {_PRIV_SLUG} --description "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow(
+        "A8",
+        f'gh issue create --repo {_PRIV_SLUG} --body "see (gh issue 5) and glab notes here"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A9",
+        f'gh issue create --repo {_PRIV_SLUG} --title "refs (gh issue 5) glab note" --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh issue create --repo {_PRIV_SLUG} --body ok2",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh issue view 5 --repo {_PRIV_SLUG}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh pr comment 5 --repo {_PRIV_SLUG} --body ok2",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+)
+
+# must-DENY: the load-bearing leak guards -- anything the prove-pure proof
+# cannot prove is a pure private post stays hard-blocked. A public/unknown
+# target, a raw-REST segment, a secret, a chained public posting segment, the
+# commit-plus-public-post guard, ANY execution-transport construct (subshell,
+# process substitution, shell ``-c``, ``env -S``, here-string/here-doc,
+# ``eval``, pipe-to-shell, a ``$()`` inside a flag value), a chained non-``gh``
+# command (even a benign-looking one), and NOVEL transports never enumerated by
+# any prior cycle (``ssh``/``node -e``/``make``/``source <(...)``/...) must ALL
+# fail the proof -- transport-agnostically, by not being a recognised pure post.
+_MUST_DENY: tuple[_CorpusRow, ...] = (
+    _CorpusRow("D1", f'cd /x && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("D2", f"ENV=1 gh issue create --repo {_PUBLIC_SLUG} --body x", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D3", f"gh issue create --repo {_PUBLIC_SLUG}", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D4", f'gh issue create --body "{_TERM}"', _TERM, _UNKNOWN_REMOTE),
+    _CorpusRow("D5", f"gh api repos/{_PRIV_SLUG}/issues -f body={_TERM}", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D6", "glab api projects/x -X POST", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D7", 'git commit -m "x"', f"body has {_FAKE_SECRET} embedded", _PRIV_REMOTE),
+    _CorpusRow("D8", f'gh issue create --repo {_PRIV_SLUG} --body "{_FAKE_SECRET}"', _FAKE_SECRET, _PRIV_REMOTE),
+    _CorpusRow(
+        "D9",
+        f"gh issue create --repo {_PRIV_SLUG} --body x && gh issue create --repo {_PUBLIC_SLUG} --body x",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D10",
+        f"gh issue create --repo {_PRIV_SLUG} && gh api repos/x/issues -f body=x",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow("D11", f"gh issue create --repo {_PRIV_SLUG} --repo {_PUBLIC_SLUG}", _TERM, _PRIV_REMOTE),
+    _CorpusRow(
+        "D12",
+        f'git commit -m "{_TERM}" && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D13",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && (gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D14",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& echo $(gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D15",
+        f"cd /tmp && gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& (gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D16",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && echo `gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}`",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D17",
+        f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D18",
+        f"glab issue create --repo {_PRIV_SLUG} --description ok "
+        f"&& (glab issue create --repo {_PUBLIC_SLUG} --description {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # L1-L13: a PUBLIC-targeting post wrapped in a subshell / process
+    # substitution / brace group / wrapper word. Under the prove-pure inversion
+    # the wrapping segment's ``words[0]`` is the opener or wrapper word, not an
+    # EXACT ``gh``/``glab``, so the segment is not a recognised pure post and the
+    # whole command fails the proof -- no enumeration of the wrapper needed.
+    _CorpusRow(
+        "L1",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && ( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && (  gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && (\tgh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && $( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& echo $( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L6",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && {{ gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}; }}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L7",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && cat <(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L8",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && tee >(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L9",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && cat =(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && eval gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok | xargs gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& env FOO=x gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L13",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& command gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # S1-S4: a public ``gh`` post buried in a quoted shell ``-c`` argument.
+    # Under the prove-pure inversion the ``sh``/``bash``/``zsh`` segment's
+    # ``words[0]`` is the shell, not an EXACT ``gh``/``glab``, so the segment is
+    # not a recognised pure post and the proof fails closed -- the inner verb is
+    # never inspected and no shell needs to be enumerated.
+    _CorpusRow(
+        "S1",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& zsh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& sh -lc "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # S5-S11: a wrapper word (``timeout``/``nice``/``xargs``/...), a path-form
+    # shell (``/bin/sh``, ``/usr/bin/env bash``), the ``find -exec sh -c ... \;``
+    # form, and a nested ``sh -c "sh -c 'gh ...'"`` all chain a shell whose
+    # ``words[0]`` is not an EXACT ``gh``/``glab``. The prove-pure proof rejects
+    # each for not being a recognised pure post -- no shell-basename scan, no
+    # ``-c``-argument recursion, no enumeration.
+    _CorpusRow(
+        "S5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& timeout 5 sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S6",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& nice sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S7",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& /bin/sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S8",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& /usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S9",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'| xargs sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}" \\;',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # S12-S15: ``env -S`` / ``env --split-string``, a here-string ``<shell>
+    # <<<``, and ``eval`` each chain a segment whose ``words[0]`` is the
+    # introducer command (``env``/``bash``/``eval``), not an EXACT
+    # ``gh``/``glab``. The prove-pure proof rejects each for not being a
+    # recognised pure post -- no per-introducer operand extractor, no registry,
+    # no recursion.
+    _CorpusRow(
+        "S12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& env -S \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S13",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& env -S "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S13b",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& env --split-string="gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S14",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& bash <<< "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S15",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& eval \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # S16: a here-doc whose literal body is a public ``gh`` invocation. The lexer
+    # splits the body at its newlines into its OWN segment, so the public-target
+    # post becomes a recognised posting segment whose target check fails closed.
+    _CorpusRow(
+        "S16",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& bash << EOF\ngh issue create --repo {_PUBLIC_SLUG} --body {_TERM}\nEOF",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # P1-P3: under the prove-pure inversion a private post CHAINED with any
+    # non-``gh`` command -- even a benign-looking ``sh -c "date"``, an ``eval``
+    # with an inert string, or a bare ``echo`` -- hard-blocks. Proving the
+    # chained command inert requires inspecting the shell-string, which is the
+    # very denylist the inversion retires; so the proof fails closed. This is
+    # the safe, recoverable price (split into a plain post), and it makes the
+    # previously-"accepted runtime residual" A13 a correct hard-block.
+    _CorpusRow(
+        "P1",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "date"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "P2",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo done"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "P3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && echo done",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # N1-N6: NOVEL transports never enumerated by any prior cycle. The inversion
+    # is transport-agnostic -- each is rejected for not being part of a
+    # recognised pure ``gh``/``glab`` post, not because it was added to a list.
+    _CorpusRow(
+        "N1",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && ssh localhost "gh issue create --repo {_PUBLIC_SLUG}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& node -e \"require('child_process').execSync('gh issue create --repo {_PUBLIC_SLUG}')\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && make publish-public-post",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && source <(echo gh issue create --repo {_PUBLIC_SLUG})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& python3 -c \"import os; os.system('gh issue create --repo {_PUBLIC_SLUG}')\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N6",
+        f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+)
+
+
+class TestCarveOutGoldenCorpus:
+    """HERMETIC golden must-ALLOW / must-DENY corpus for the prove-pure carve-out.
+
+    The binding durable artifact for the two dimensions of the inversion: the
+    must-ALLOW set is the OVER-BLOCK guard (every legit private-post shape still
+    downgrades) and the must-DENY set is the LEAK guard (anything not provably a
+    pure private post -- any transport, public target, raw REST, secret, novel
+    mechanism -- hard-blocks). Fully offline: ``gh``/``glab`` are ABSENT from
+    PATH and ``_PROBE_PATH_EXTRA`` is emptied, so any non-allowlisted slug
+    resolves NOT-private deterministically (no network). The PRIVATE namespace
+    is injected into the tmp allowlist; the PUBLIC slug is never allowlisted.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No gh/glab on PATH and no augmented-path fallback -> the probe finds
+        # no tool -> any non-allowlisted slug is NOT private (deterministic).
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def _verdict(self, row: _CorpusRow, tmp_path: Path) -> bool:
+        cfg = _config(tmp_path, [_PRIV_NS])
+        cwd = _repo_with_remote(tmp_path / "cwd", row.cwd_remote)
+        return publish_surface.carve_out_applies("Bash", row.command, row.payload, cwd, config_path=cfg)
+
+    @pytest.mark.parametrize("row", _MUST_ALLOW, ids=lambda r: r.case)
+    def test_must_allow_downgrades(self, row: _CorpusRow, tmp_path: Path) -> None:
+        assert self._verdict(row, tmp_path) is True, f"{row.case}: expected downgrade (carve-out applies)"
+
+    @pytest.mark.parametrize("row", _MUST_DENY, ids=lambda r: r.case)
+    def test_must_deny_stays_hard_blocked(self, row: _CorpusRow, tmp_path: Path) -> None:
+        assert self._verdict(row, tmp_path) is False, f"{row.case}: expected hard-block (carve-out must NOT apply)"
+
+
+def _proves_pure(command: str, tmp_path: Path) -> bool:
+    """Run ``command_is_pure_private_gh_glab_post`` against a hermetic offline env.
+
+    The PRIVATE namespace is allowlisted; the PUBLIC slug never is, and no
+    probe tool is reachable, so any non-allowlisted slug resolves NOT-private
+    deterministically. The CWD origin is the PRIVATE remote, so a flagless
+    private post still downgrades via the CWD fallback.
+    """
+    cfg = _config(tmp_path, [_PRIV_NS])
+    cwd = _repo_with_remote(tmp_path / "cwd", _PRIV_REMOTE)
+    return publish_surface.command_is_pure_private_gh_glab_post(command, cwd, config_path=cfg)
+
+
+class TestPurityProofBlocksTransportLeaks:
+    """The transport leaks the OLD denylist enumerated now fail the purity proof.
+
+    Each scenario chains a real public post behind a transport construct
+    (shell ``-c``, ``env -S``, here-string, ``eval``, wrapper word, path-form
+    shell, ``find -exec``, pipe-to-shell, nesting). Under the inversion the
+    proof does not try to DETECT the hidden public post -- the segment carrying
+    the transport is simply not a recognised pure ``gh``/``glab`` post, so the
+    whole command fails the proof and the hard-block stands. The proof is
+    transport-agnostic: it never enumerates ``sh``/``bash``/``eval``/...; it
+    rejects them for not being part of a recognised post.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "dash", "ksh", "ash"])
+    @pytest.mark.parametrize("flag", ["-c", "-lc", "-ic", "-xc"])
+    def test_shell_c_transport_blocks(self, shell: str, flag: str, tmp_path: Path) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && {shell} {flag} "gh issue create --repo {_PUBLIC_SLUG}"'
+        assert _proves_pure(cmd, tmp_path) is False
+
+    @pytest.mark.parametrize(
+        "introducer",
+        [
+            f'env -S "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'env --split-string="gh issue create --repo {_PUBLIC_SLUG}"',
+            f'bash <<< "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'eval "gh issue create --repo {_PUBLIC_SLUG}"',
+            f"eval gh issue create --repo {_PUBLIC_SLUG}",
+            f'timeout 5 sh -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'/bin/sh -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'/usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG}" \\;',
+            f"sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
+        ],
+    )
+    def test_introducer_transport_blocks(self, introducer: str, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
+        assert _proves_pure(cmd, tmp_path) is False
+
+    def test_pipe_to_shell_transport_blocks(self, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok | xargs gh issue create --repo {_PUBLIC_SLUG}"
+        assert _proves_pure(cmd, tmp_path) is False
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            f"( gh issue create --repo {_PUBLIC_SLUG} )",
+            f"$( gh issue create --repo {_PUBLIC_SLUG} )",
+            f"{{ gh issue create --repo {_PUBLIC_SLUG}; }}",
+            f"env FOO=x gh issue create --repo {_PUBLIC_SLUG}",
+            f"command gh issue create --repo {_PUBLIC_SLUG}",
+        ],
+    )
+    def test_wrapper_word_or_group_blocks(self, wrapper: str, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {wrapper}"
+        assert _proves_pure(cmd, tmp_path) is False
+
+    def test_substitution_in_body_value_blocks(self, tmp_path: Path) -> None:
+        # ``--body "$(gh ... PUBLIC ...)"`` -- a command substitution inside a
+        # flag value runs a second post at runtime, so the value is not provably
+        # inert: the proof rejects any token carrying a ``$(`` marker.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG})"'
+        assert _proves_pure(cmd, tmp_path) is False
+
+
+class TestPurityProofBlocksNovelTransports:
+    """Transports NEVER enumerated by any prior cycle still block.
+
+    The inversion is transport-agnostic: ``ssh``, ``node -e``, ``make``, a
+    ``source <(...)`` process substitution -- none were ever in a denylist, yet
+    each is rejected for not being part of a recognised pure ``gh``/``glab``
+    post. This is the load-bearing proof that the model closed the
+    whack-a-mole rather than adding three more entries to it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    @pytest.mark.parametrize(
+        "transport",
+        [
+            f'ssh localhost "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+            f"node -e \"require('child_process').execSync('gh issue create --repo {_PUBLIC_SLUG}')\"",
+            f"python3 -c \"import os; os.system('gh issue create --repo {_PUBLIC_SLUG}')\"",
+            "make publish-public-post",
+            f"source <(echo gh issue create --repo {_PUBLIC_SLUG})",
+            f'perl -e "system(q{{gh issue create --repo {_PUBLIC_SLUG}}})"',
+        ],
+    )
+    def test_novel_transport_blocks(self, transport: str, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {transport}"
+        assert _proves_pure(cmd, tmp_path) is False
+
+
+class TestPurityProofAllowsPrivatePosts:
+    """Legit private-post shapes still PROVE pure -- the over-block dimension.
+
+    The inverted proof MUST keep downgrading every private-post shape the
+    factory and user actually use, else it over-blocks legitimate work. A flag
+    VALUE containing the word ``gh``/``glab`` or a quoted ``sh -c ...`` STRING
+    is opaque prose, not a second command, so it stays pure and downgrades.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh issue create --repo {_PRIV_SLUG} --body x",
+            f"gh pr create --repo {_PRIV_SLUG} --title x --body y --label bug",
+            f"gh issue comment 5 --repo {_PRIV_SLUG} --body x",
+            f"glab mr create --repo {_PRIV_SLUG} --title x --description y",
+            f"glab issue create --repo {_PRIV_SLUG} --title x",
+            f"cd /some/worktree && gh issue create --repo {_PRIV_SLUG} --body x",
+            f"GH_TOKEN=x gh issue create --repo {_PRIV_SLUG} --body x",
+            f"gh issue create --repo {_PRIV_SLUG} --body x && gh pr comment 5 --repo {_PRIV_SLUG} --body y",
+            f'gh issue create --repo {_PRIV_SLUG} --body "run gh issue list later for glab notes"',
+            f'gh issue create --repo {_PRIV_SLUG} --body "see (gh issue 5) and glab notes here"',
+            f"""gh issue create --repo {_PRIV_SLUG} --body "later run sh -c 'date' for the build\"""",
+        ],
+    )
+    def test_legit_private_post_proves_pure(self, command: str, tmp_path: Path) -> None:
+        assert _proves_pure(command, tmp_path) is True
+
+    def test_flagless_private_cwd_proves_pure(self, tmp_path: Path) -> None:
+        assert _proves_pure(f"gh issue create --body {_TERM}", tmp_path) is True
+
+
+class TestPurityProofStructuralPrimitives:
+    """The visibility-independent token classifier in ``_gh_glab_hiding``."""
+
+    def test_plain_private_post_is_structurally_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "x"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_cd_and_env_prefix_is_stripped(self) -> None:
+        words = ["cd", "/x", "gh", "pr", "create", "--repo", _PRIV_SLUG, "--title", "x"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_substitution_marker_in_value_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", f"$(gh issue create --repo {_PUBLIC_SLUG})"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_backtick_marker_in_value_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "`gh issue create`"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_prose_paren_in_value_stays_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "see (gh issue 5)"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_redirection_token_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, ">/tmp/out"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_group_opener_token_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "{"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_non_gh_words0_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(["sh", "-c", "gh issue create"]) is False
+
+    def test_path_form_gh_is_not_pure(self) -> None:
+        words = ["/usr/bin/gh", "issue", "create", "--repo", _PRIV_SLUG]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_too_short_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(["gh", "pr"]) is False
+
+    def test_malformed_cd_prefix_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.strip_benign_prefix(["cd"]) is None
+
+    def test_publish_inert_segment_for_commit_chain(self) -> None:
+        assert publish_surface._segment_is_publish_inert(["git", "push", "origin", "main"]) is True
+        assert publish_surface._segment_is_publish_inert(["echo", "done"]) is True
+
+    def test_forge_or_transport_segment_is_not_publish_inert(self) -> None:
+        assert publish_surface._segment_is_publish_inert(["sh", "-c", "gh issue create"]) is False
+        assert publish_surface._segment_is_publish_inert(["gh", "issue", "create"]) is False
+        assert publish_surface._segment_is_publish_inert(["echo", "$(gh issue create)"]) is False
+
+
+class TestPurityProofIsTheDecisionPath:
+    """Meta-test: the carve-out decides via the prove-pure ALLOWLIST predicate.
+
+    The durable anti-whack-a-mole contract. The carve-out's posting-path
+    decision is ``command_is_pure_private_gh_glab_post`` -- a single positive
+    proof that the WHOLE command is good -- NOT an enumerated set of execution
+    introducers (``_EXEC_INTRODUCERS``) the gate tries to DETECT. The six prior
+    cycles all failed by growing that enumeration; this test pins that the
+    enumeration is gone and the decision path is the allowlist.
+    """
+
+    def test_no_exec_introducer_enumeration_remains(self) -> None:
+        # The denylist registry that leaked on every un-enumerated transport is
+        # retired; its absence is the structural signal the model inverted.
+        assert not hasattr(_gh_glab_hiding, "_EXEC_INTRODUCERS")
+        assert not hasattr(_gh_glab_hiding, "_EXEC_INTRODUCER_EXTRACTORS")
+        assert not hasattr(_gh_glab_hiding, "command_hides_gh_glab")
+
+    def test_carve_out_posting_path_is_the_purity_proof(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``carve_out_applies`` (non-commit branch) routes through the purity
+        # proof: patching the proof to a constant flips the verdict, proving it
+        # is the decision path and not a separate detector.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        cwd = _repo_with_remote(tmp_path / "cwd", _PRIV_REMOTE)
+        monkeypatch.setattr(publish_surface, "command_is_pure_private_gh_glab_post", lambda *a, **k: False)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash", f"gh issue create --repo {_PRIV_SLUG} --body {_TERM}", _TERM, cwd, config_path=cfg
+            )
+            is False
+        )
+        monkeypatch.setattr(publish_surface, "command_is_pure_private_gh_glab_post", lambda *a, **k: True)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash", f"gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}", _TERM, cwd, config_path=cfg
+            )
+            is True
+        )
+
+
+class TestProbeEnvResolution:
+    """G2 — the probe resolves its tool against the augmented PATH.
+
+    The PreToolUse subprocess inherits a restricted PATH; a bare ``gh`` may not
+    resolve even though it is installed under a homebrew/local bin. The probe
+    augments PATH with ``_PROBE_PATH_EXTRA`` before ``shutil.which``, so a tool
+    absent from PATH but present in an extra dir still resolves PRIVATE.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_probe_resolves_tool_from_extra_path_not_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [])  # empty allowlist -> must use the probe
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/secret-repo.git")
+        # gh shim lives in an EXTRA dir, NOT on PATH (only git is on PATH).
+        extra_bin = tmp_path / "extra"
+        _make_gh_shim(extra_bin, "PRIVATE")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        # The extra dir holds the gh shim; the standard dirs let the shim's
+        # ``#!/usr/bin/env bash`` shebang resolve from the augmented probe env.
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", (str(extra_bin), "/usr/bin", "/bin"))
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
+
+    def test_visibility_unknown_returns_slug_when_probe_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [])  # not allowlisted
+        repo = _repo_with_remote(tmp_path / "r", _PRIV_REMOTE)
+        # No probe tool anywhere -> visibility is unknown in-hook.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        slug = publish_surface.visibility_unknown_for_block(
+            f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
+        )
+        assert slug == _PRIV_SLUG
+
+    def test_visibility_unknown_returns_none_when_allowlisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [_PRIV_NS])  # allowlisted -> known private -> not "unknown"
+        repo = _repo_with_remote(tmp_path / "r", _PRIV_REMOTE)
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        slug = publish_surface.visibility_unknown_for_block(
+            f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
+        )
+        assert slug is None
+
+    def test_visibility_unknown_returns_none_when_genuinely_public(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A genuinely PUBLIC target (probe resolves PUBLIC) is correctly
+        # blocked, not "unknown" -- emitting the add-to-allowlist hint there
+        # would be misleading, so no slug is returned.
+        cfg = _config(tmp_path, [])
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/open-repo.git")
+        extra_bin = tmp_path / "extra"
+        _make_gh_shim(extra_bin, "PUBLIC")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", (str(extra_bin), "/usr/bin", "/bin"))
+        slug = publish_surface.visibility_unknown_for_block(
+            "gh issue create --repo acme/open-repo --body x", repo, config_path=cfg
+        )
+        assert slug is None
