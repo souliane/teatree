@@ -131,11 +131,14 @@ class TestBuildHeadlessQueue(TestCase):
     def test_includes_session_and_phase(self) -> None:
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="claude-headless")
+        # A free-form phase with no registered agent stays genuinely HEADLESS
+        # (a loop-dispatched phase like ``testing`` is routed to INTERACTIVE by
+        # the Task.save invariant and would not appear in the headless queue).
         task = Task.objects.create(
             ticket=ticket,
             session=session,
             execution_target=Task.ExecutionTarget.HEADLESS,
-            phase="testing",
+            phase="architectural_review",
         )
 
         queue = build_headless_queue()
@@ -143,7 +146,7 @@ class TestBuildHeadlessQueue(TestCase):
         assert len(queue) == 1
         assert queue[0].task_id == task.pk
         assert queue[0].session_agent_id == "claude-headless"
-        assert queue[0].phase == "testing"
+        assert queue[0].phase == "architectural_review"
 
     def test_includes_ticket_issue_url(self) -> None:
         ticket = Ticket.objects.create(

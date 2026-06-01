@@ -128,7 +128,9 @@ class TestBuildActiveSessions(TestCase):
         assert result[0].name == "my-session"
         assert result[0].task_id == task.pk
         assert result[0].ticket_id == ticket.pk
-        assert result[0].kind == "headless"
+        # ``coding`` is loop-dispatched, so the Task.save() invariant routes it
+        # to INTERACTIVE — the selector renders that as its kind.
+        assert result[0].kind == "interactive"
         assert result[0].phase == "coding"
 
     def test_handles_invalid_json(self) -> None:

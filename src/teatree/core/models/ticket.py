@@ -423,16 +423,23 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         )
 
     def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a shipping task. Headless under auto mode; interactive otherwise."""
+        """Create an INTERACTIVE shipping task; approval gating rides the reason.
+
+        Shipping is a loop-dispatched phase (``(author, shipping)`` →
+        ``t3:shipper``), so it runs as an in-session sub-agent
+        (subscription-covered), never a metered ``claude -p`` — regardless of
+        auto mode. Auto mode no longer changes the execution *target*; it only
+        changes the *approval posture* the in-session shipper reads from
+        ``execution_reason`` (auto = push without waiting; otherwise = gate for
+        user approval first).
+        """
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         session = Session.objects.create(ticket=self, agent_id="shipping")
         if _auto_ship_enabled():
-            target = Task.ExecutionTarget.HEADLESS
-            reason = "Auto-scheduled shipping — auto mode, push will proceed headlessly"
+            reason = "Auto-scheduled shipping — auto mode, push will proceed without waiting for approval"
         else:
-            target = Task.ExecutionTarget.INTERACTIVE
             reason = (
                 "Auto-scheduled shipping — gated for user approval "
                 '(set teatree.mode = "auto" or T3_AUTO_SHIP=true to skip)'
@@ -441,7 +448,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             ticket=self,
             session=session,
             phase="shipping",
-            execution_target=target,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason=reason,
             parent_task=parent_task,
         )

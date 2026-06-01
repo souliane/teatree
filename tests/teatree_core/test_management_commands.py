@@ -535,19 +535,33 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
-    def test_create_headless_defaults(self) -> None:
+    def test_create_headless_defaults_for_free_form_phase(self) -> None:
+        # ``scoping`` has no registered author phase agent, so it is genuinely
+        # headless and the default sticks. (A loop-dispatched phase like
+        # ``coding`` is routed to INTERACTIVE by the Task.save invariant — see
+        # test_create_loop_dispatched_phase_is_interactive.)
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X."),
+        )
+        assert result["phase"] == "scoping"
+        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Decide X."
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.session.ticket_id == ticket.pk
+
+    def test_create_loop_dispatched_phase_is_interactive(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
         )
-        assert result["phase"] == "coding"
-        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
+        assert result["execution_target"] == Task.ExecutionTarget.INTERACTIVE
         task = Task.objects.get(pk=result["task_id"])
-        assert task.ticket_id == ticket.pk
-        assert task.execution_reason == "Implement X."
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
-        assert task.session.ticket_id == ticket.pk
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
 
     def test_create_reuses_latest_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test")

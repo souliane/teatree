@@ -25,7 +25,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents.model_tiering import resolve_phase_model
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
@@ -300,39 +300,28 @@ def _run_with_heartbeat(
 
 
 def _record_success(task: Task, envelope: dict[str, str], *, phase: str = "") -> TaskAttempt:
+    """Record a ``claude -p`` envelope via the shared recorder.
+
+    The schema-key check, the #1284 phase-evidence gate, and the
+    complete/fail decision live once in ``attempt_recorder`` so the headless
+    subprocess path and the in-session ``record-attempt`` path can never
+    drift on the result-envelope contract.
+    """
+    from teatree.agents.attempt_recorder import AttemptUsage, record_result_envelope  # noqa: PLC0415
+
     agent_text = envelope.get("agent_text", "")
     result = _parse_result(agent_text)
     if not result:
         result = {"summary": agent_text[:1000]}
 
-    schema_error = _validate_result(result)
-    if schema_error:
-        return _record_failure(task, exit_code=0, error=schema_error)
-
-    # #1284 (codex #1282-6): a sub-agent claiming success must back the
-    # claim with at least one phase-specific evidence field — otherwise a
-    # one-line summary advances the FSM with no proof (the "DM sent
-    # successfully but didn't deliver" false-positive class). Bypassed for
-    # ``needs_user_input`` handoffs (the agent is *not* claiming the phase
-    # is done) by ``check_evidence`` itself.
-    evidence_error = check_evidence(result, phase or task.phase)
-    if evidence_error:
-        return _record_failure(task, exit_code=0, error=evidence_error)
-
-    attempt = TaskAttempt.objects.create(
-        task=task,
-        execution_target=task.execution_target,
-        ended_at=timezone.now(),
-        exit_code=0,
-        result=result,
+    usage = AttemptUsage(
         agent_session_id=envelope.get("session_id", ""),
         input_tokens=_safe_int(envelope.get("input_tokens")),
         output_tokens=_safe_int(envelope.get("output_tokens")),
         cost_usd=_safe_float(envelope.get("cost_usd")),
         num_turns=_safe_int(envelope.get("num_turns")),
     )
-    task.complete(result_artifact_path="")
-    return attempt
+    return record_result_envelope(task, result, phase=phase, usage=usage)
 
 
 def _build_headless_command(
@@ -413,15 +402,13 @@ def _parse_result(agent_text: str) -> dict[str, object]:
 def _validate_result(result: dict[str, object]) -> str:
     """Check that *result* only contains keys declared in the schema.
 
-    Returns an error message if validation fails, or an empty string on success.
-    Full JSON Schema validation is intentionally avoided to keep the dependency
-    footprint minimal — we only enforce the ``additionalProperties: false`` rule.
+    Delegates to the shared :func:`~teatree.agents.attempt_recorder.validate_result_keys`
+    so the headless and ``record-attempt`` paths enforce the identical
+    ``additionalProperties: false`` rule.
     """
-    allowed = set(RESULT_JSON_SCHEMA.get("properties", {}).keys())  # type: ignore[union-attr]
-    unexpected = set(result) - allowed
-    if unexpected:
-        return f"Agent result contains unexpected keys: {', '.join(sorted(unexpected))}"
-    return ""
+    from teatree.agents.attempt_recorder import validate_result_keys  # noqa: PLC0415
+
+    return validate_result_keys(result)
 
 
 def _record_failure(task: Task, *, exit_code: int = 1, error: str = "") -> TaskAttempt:

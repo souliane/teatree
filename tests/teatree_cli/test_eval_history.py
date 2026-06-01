@@ -63,7 +63,7 @@ class TestRunPersists(TestCase):
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _stub_runner(outcomes)),
+            patch("teatree.eval.backends.ClaudePRunner", _stub_runner(outcomes)),
         ):
             result = CliRunner().invoke(app, ["eval", "run", *args])
         assert "Traceback" not in result.output, result.output
