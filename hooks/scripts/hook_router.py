@@ -3269,6 +3269,46 @@ def _orchestrator_bash_gate_enabled() -> bool:
     return teatree.get("orchestrator_bash_gate_enabled") is not False
 
 
+def _orchestrator_boundary_agent_gate_enabled() -> bool:
+    """Whether the foreground-Agent-dispatch deny is enabled (default OFF, opt-in).
+
+    The ``Agent`` arm of the orchestrator-boundary gate (#1442) is currently a
+    dead deny gate because no ``Agent`` matcher is wired in ``hooks.json`` (the
+    registered ``PreToolUse`` matchers are ``Bash|Edit|Write``,
+    ``AskUserQuestion``, ``mcp__.*[Ss]lack.*``). The ``Agent`` TOOL itself DOES
+    reach ``PreToolUse`` — a foreground Agent dispatch fires it with
+    ``run_in_background`` in the tool_input — so adding an ``Agent`` matcher
+    would make this deny genuinely live. That is why the deny ships behind an
+    explicit opt-in even before the matcher exists: enabling it on the
+    orchestrator's own foreground Agent-dispatch hot path is a lockout risk
+    (it would block the loop's own foreground builder/reviewer/resolver
+    dispatches), so it must be validated attended (#1646) before default-ON.
+    The flag also makes it lockout-safe the moment a matcher is added.
+
+    (Distinct from the SEPARATE ``Task``/``Workflow`` fan-out vehicle, which
+    genuinely bypasses ``PreToolUse`` and fires ``TaskCreated`` — no
+    ``run_in_background`` in that schema, so this gate's foreground/background
+    signal exists only on the Agent-matcher path, not the TaskCreated one.)
+
+    Fails CLOSED to disabled (missing/broken config → False; only an explicit
+    ``true`` enables), mirroring :func:`_agent_plan_gate_on_task_create_enabled`.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return False
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return False
+    return teatree.get("orchestrator_boundary_agent_gate_enabled") is True
+
+
 def _deny_foreground_agent_dispatch(data: dict) -> bool:
     """#1442: deny a main-agent foreground ``Agent`` dispatch.
 
@@ -3277,14 +3317,29 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
     ``feedback_always_run_in_background_for_sub_agent_dispatch``). Only
     the main agent is governed; a sub-agent dispatching its own ``Agent``
     may pick foreground.
+
+    Ships default-OFF behind :func:`_orchestrator_boundary_agent_gate_enabled`
+    (a previously-dead deny gate whose live behavior is unvalidated and which
+    could wedge the loop's own foreground dispatches). Even once enabled the
+    off-ramps are: the opt-in flag, a sub-agent context, ``run_in_background:
+    true``, and a per-call ``[fg-ok: <reason>]`` token in the prompt (mirroring
+    the heavy-Bash arm's escape).
     """
+    if not _orchestrator_boundary_agent_gate_enabled():
+        return False
     if _call_is_from_subagent(data) or data.get("tool_input", {}).get("run_in_background") is True:
+        return False
+    prompt = data.get("tool_input", {}).get("prompt", "")
+    if isinstance(prompt, str) and _FG_OK_RE.search(prompt[:512]):
         return False
     return emit_pretooluse_deny(
         "[main-agent-orchestration-guard] Foreground Agent dispatch "
         "DENIED in main agent context.\n"
         "Pass `run_in_background: true` to every Agent invocation "
-        "from the main agent.\n"
+        "from the main agent, add an explicit `[fg-ok: <reason>]` marker to the "
+        "prompt if you truly need a foreground dispatch, or disable this opt-in "
+        "gate by removing/clearing "
+        "`[teatree] orchestrator_boundary_agent_gate_enabled` in `~/.teatree.toml`.\n"
         "Memory rule: "
         "feedback_always_run_in_background_for_sub_agent_dispatch "
         "(RED CARD recurrence)."

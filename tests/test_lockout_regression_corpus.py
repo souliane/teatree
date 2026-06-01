@@ -26,8 +26,10 @@ from hooks.scripts.hook_router import (
     _extract_bash_ai_sig_payload,
     handle_block_out_of_band_merge,
     handle_dispatch_prompt_quote_scanner_on_task_create,
+    handle_enforce_orchestrator_boundary,
     handle_enforce_skill_loading,
     handle_quote_scanner_pretool,
+    handle_validate_mr_metadata,
 )
 
 # ── fixtures ──────────────────────────────────────────────────────────────────
@@ -490,3 +492,117 @@ class TestCircuitBreakerNeverOpensSafetyGate:
         # it is still a deny, never an allow.
         assert "CIRCUIT BREAKER" in decisions[-1].reason
         assert "LOOPING" in decisions[-1].reason
+
+
+class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
+    """The orchestrator-boundary Agent arm (#171 PR B) must not wedge the loop.
+
+    The loop dispatches builder/reviewer/resolver sub-agents via the ``Agent``
+    tool — sometimes foreground, often background. The foreground-Agent deny
+    (#1442) ships default-OFF behind ``orchestrator_boundary_agent_gate_enabled``
+    precisely so an unattended run can never be locked out of its own dispatches.
+    These rows guard the four safe paths (flag OFF, background, sub-agent context,
+    ``[fg-ok: <reason>]`` token) and the one genuine deny (flag ON + bare
+    foreground main-agent dispatch with no escape).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+        monkeypatch.setenv("HOME", str(home))
+        self._home_dir = home
+
+    def _enable(self) -> None:
+        (self._home_dir / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
+        )
+
+    def _agent(self, *, run_in_background: bool = False, prompt: str = "implement", agent_id: str = "") -> dict:
+        data: dict = {
+            "session_id": "sess-corpus",
+            "tool_name": "Agent",
+            "tool_input": {"prompt": prompt, "run_in_background": run_in_background},
+        }
+        if agent_id:
+            data["agent_id"] = agent_id
+        return data
+
+    def test_foreground_agent_passes_when_flag_off(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Default-OFF: no config file at all → gate inert, foreground dispatch allowed.
+        verdict = handle_enforce_orchestrator_boundary(self._agent(run_in_background=False))
+        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch denied while gate default-OFF."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_background_agent_passes_with_flag_on(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._enable()
+        verdict = handle_enforce_orchestrator_boundary(self._agent(run_in_background=True))
+        assert verdict is not True, "LOCKOUT regression — background Agent dispatch denied even with the flag ON."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_foreground_agent_passes_with_fg_ok_token(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._enable()
+        verdict = handle_enforce_orchestrator_boundary(
+            self._agent(run_in_background=False, prompt="[fg-ok: attended-debug] implement")
+        )
+        assert verdict is not True, "LOCKOUT regression — foreground Agent dispatch with a valid [fg-ok:] token denied."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_subagent_context_dispatch_is_exempt(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._enable()
+        verdict = handle_enforce_orchestrator_boundary(self._agent(run_in_background=False, agent_id="a-1234"))
+        assert verdict is not True, "LOCKOUT regression — a sub-agent's own foreground Agent dispatch was denied."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_bare_foreground_main_agent_dispatch_is_denied_when_on(self, capsys: pytest.CaptureFixture[str]) -> None:
+        self._enable()
+        verdict = handle_enforce_orchestrator_boundary(self._agent(run_in_background=False))
+        out = capsys.readouterr().out.strip()
+        assert verdict is True, (
+            "BYPASS regression — bare foreground main-agent Agent dispatch was allowed with the gate ON."
+        )
+        assert out, "an enabled deny must emit a hookSpecificOutput payload"
+        assert "[fg-ok:" in out
+        assert "run_in_background" in out
+
+
+class TestValidateMrMetadataMcpArm:
+    """Gate 3 (#171 PR B): the glab-MR MCP arm validates the same as the Bash arm.
+
+    Reuses the already-live Bash-arm validator on the ``mcp__glab__glab_mr_*``
+    path. A clean title/description must pass (must-ALLOW, no lockout); a
+    malformed one must be denied (must-DENY, the validation the matcher unlocks).
+    The validator subprocess is pinned so the test never shells a real ``t3``.
+    """
+
+    def _pin_validator(self, monkeypatch: pytest.MonkeyPatch, returncode: int, stderr: str = "") -> None:
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        result = subprocess.CompletedProcess(args=[], returncode=returncode, stdout="", stderr=stderr)
+        monkeypatch.setattr(router.subprocess, "run", lambda *a, **k: result)
+
+    def test_clean_mcp_mr_create_passes(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._pin_validator(monkeypatch, returncode=0)
+        data = {
+            "session_id": "sess-corpus",
+            "tool_name": "mcp__glab__glab_mr_create",
+            "tool_input": {"title": "feat: add export endpoint", "description": "Closes #4242"},
+        }
+        verdict = handle_validate_mr_metadata(data)
+        assert verdict is not True, "LOCKOUT regression — clean glab-MR MCP create denied by the metadata gate."
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_malformed_mcp_mr_create_is_denied(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._pin_validator(monkeypatch, returncode=1, stderr="title must follow the conventional-commit format")
+        data = {
+            "session_id": "sess-corpus",
+            "tool_name": "mcp__glab__glab_mr_create",
+            "tool_input": {"title": "", "description": ""},
+        }
+        verdict = handle_validate_mr_metadata(data)
+        assert verdict is True, "BYPASS regression — malformed glab-MR MCP metadata was allowed."
+        assert capsys.readouterr().out.strip(), "a deny must emit a hookSpecificOutput payload"
