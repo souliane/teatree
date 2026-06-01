@@ -116,6 +116,21 @@ def _collect_repo_freshness() -> dict[str, dict[str, int | str]]:
     }
 
 
+def _cost_chip() -> str:
+    """The SDK-equivalent cost chip for the sidecar, or ``""`` when silent.
+
+    The statusline header (``hooks/scripts/statusline.sh``) reads this from
+    ``tick-meta.json`` and renders it in the usage group right after the
+    weekly (``7d=``) rate-limit segment. Computing it here (Python) and
+    handing the rendered string to the shell keeps the dollar figure in one
+    place. Fails open to ``""`` so a broken cost read never blanks the line.
+    """
+    from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415
+
+    lines = cost_chip_lines()
+    return lines[0] if lines else ""
+
+
 def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> None:
     from teatree.config import cadence_seconds  # noqa: PLC0415
     from teatree.loop.statusline import default_path  # noqa: PLC0415
@@ -132,6 +147,7 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) -> 
     next_epoch = int(started_at.timestamp()) + cadence
     freshness = _collect_repo_freshness()
     meta_path.write_text(
-        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness}) + "\n",
+        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness, "cost_chip": _cost_chip()})
+        + "\n",
         encoding="utf-8",
     )

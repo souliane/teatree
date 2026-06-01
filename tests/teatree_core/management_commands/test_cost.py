@@ -49,7 +49,7 @@ class TestCostCommand:
         assert payload["cycle_to_date_usd"] == pytest.approx(4.4)
         assert payload["attempts"] == 2
         assert payload["credit_usd"] == pytest.approx(200.0)
-        assert payload["chip"] == "SDK ≈$4/$200"
+        assert payload["chip"] == "SDK mtd ≈$4/$200"
 
     def test_excludes_interactive_attempts(self) -> None:
         now = timezone.now()
