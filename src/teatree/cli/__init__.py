@@ -26,6 +26,9 @@ from teatree.cli import (
     enforcement_tools as _enforcement_tools,  # noqa: F401  (side-effect: registers §17.6 gate commands onto tool_app)
 )
 from teatree.cli import (
+    skill_ref_tools as _skill_ref_tools,  # noqa: F401  (side-effect: registers validate-skill-refs onto tool_app)
+)
+from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
 )
 from teatree.cli.assess import assess_app
