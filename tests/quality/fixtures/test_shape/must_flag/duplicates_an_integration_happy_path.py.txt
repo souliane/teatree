@@ -1,0 +1,11 @@
+def test_login_redirects_to_dashboard(client):
+    response = client.post("/login", data={"user": "a", "pw": "b"})
+    assert response.status_code == 302
+
+def test_login_redirects_to_home(client):
+    response = client.post("/login", data={"user": "c", "pw": "d"})
+    assert response.status_code == 302
+
+def test_login_redirects_to_profile(client):
+    response = client.post("/login", data={"user": "e", "pw": "f"})
+    assert response.status_code == 302

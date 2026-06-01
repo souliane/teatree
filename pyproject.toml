@@ -280,6 +280,21 @@ per_module_floors = [
   { path = "src/teatree/loop/pr_ticket_index.py", floor = 80 },
 ]
 
+# Conservative test-shape check — read by ``t3 tool test-shape`` (see
+# ``src/teatree/quality/test_shape.py``). ``mode`` defaults to "warn"
+# (non-blocking report); set "block" to fail CI on a regression. The
+# baseline is the committed test:source ratio snapshot — a finding fires
+# ONLY when the live ratio drops below it past ``tolerance`` (ratchet, never
+# an absolute threshold). Re-baseline with ``t3 tool test-shape
+# --update-baseline`` when a drop is intentional and reviewed.
+
+[tool.teatree.test_shape]
+mode = "warn"
+min_cluster = 3
+test_lines = 117490
+source_lines = 64500
+tolerance = 0.05
+
 [tool.uv.build-backend]
 module-name = [ "teatree", "t3_bootstrap" ]
 
