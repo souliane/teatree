@@ -38,6 +38,20 @@ reactive-Slack-answer loop (#1063/#1069) reuses it via
 different live pid → KEEP) from a post-compaction same-session restart
 (same pid → safe to evict). A null ``owner_pid`` is treated conservatively
 as "owner process unknown → KEEP" (INV4: bias toward preservation).
+
+Loop-owner liveness is PID-ANCHORED, not TTL-anchored. An owner that is
+alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
+re-claims and the lease TTL-lapses while the owner process is still alive.
+``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
+is alive as a LIVE owner — protected past its TTL against any non-
+``take_over`` claim — so the loop stays with the existing session and
+transfers ONLY on that session's process termination or an explicit
+``t3 loop claim --take-over``. The TTL is the FALLBACK release, used only
+when ``owner_pid`` is null or dead. An anonymous caller (``session_id ==
+""``, e.g. a Bash-tool tick that never sees the id, #1107) never persists
+ownership: it runs the tick when unowned but can never write the phantom
+"owned by nobody but not expired" row that previously enabled a fresh
+session to hijack the loop.
 """
 
 from django.db import models
