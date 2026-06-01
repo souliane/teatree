@@ -157,7 +157,11 @@ def resolve_window_start(*, since: str = "", now: datetime, path: Path | None = 
     """
     explicit = since.strip()
     if explicit:
-        parsed = datetime.fromisoformat(explicit)
+        try:
+            parsed = datetime.fromisoformat(explicit)
+        except ValueError as exc:
+            msg = f"--since must be an ISO-8601 timestamp (e.g. 2026-05-19T18:00:00+02:00), got {since!r}: {exc}"
+            raise ValueError(msg) from exc
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return _clamp_future_start(parsed, now=now)

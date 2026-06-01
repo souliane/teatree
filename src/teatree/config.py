@@ -600,14 +600,30 @@ class TeaTreeConfig:
     raw: dict = field(default_factory=dict)
 
 
+def _load_toml(path: Path) -> dict:
+    """Parse ``path`` as TOML, re-raising a syntax error as a named config error.
+
+    A raw ``tomllib.TOMLDecodeError`` would propagate a parser traceback
+    through ``main()`` on every ``t3`` command (even ``--help``); instead it
+    becomes a typed, message-bearing ``ValueError`` naming the file and the
+    parser's position — the same error shape the intentional invalid-``mode``
+    path raises.
+    """
+    with path.open("rb") as f:
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            msg = f"Malformed TOML in config file {path}: {exc}"
+            raise ValueError(msg) from exc
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = CONFIG_PATH
     if not path.is_file():
         return TeaTreeConfig()
 
-    with path.open("rb") as f:
-        raw = tomllib.load(f)
+    raw = _load_toml(path)
 
     teatree = raw.get("teatree", {})
     workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
