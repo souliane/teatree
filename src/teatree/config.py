@@ -49,50 +49,22 @@ class Mode(StrEnum):
 
 
 class Autonomy(StrEnum):
-    """The single per-overlay trust switch governing the USER-approval surface (#1668).
+    """The single per-overlay trust switch collapsing the three user-approval gates.
 
-    One coherent value collapses the three otherwise-scattered
-    user-in-the-loop approval gates — ``on_behalf_post_mode``,
-    ``require_human_approval_to_merge``, ``require_human_approval_to_answer`` —
-    so an overlay's whole approval posture is set in one place rather than
-    three independent flags drifting apart.
+    Tiers (``FULL`` > ``NOTIFY`` > ``BABYSIT``, default ``BABYSIT``):
 
-    Three tiers, ordered :attr:`FULL` > :attr:`NOTIFY` > :attr:`BABYSIT`
-    (default :attr:`BABYSIT`, the conservative posture):
+    *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
+        stays in the loop on merges, answers, and colleague-visible posts.
+    *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
+        (derived ``notify_on_behalf``) and the user's MR merges only after a
+        colleague approval (per-diff CLEAR, never self-approve).
+    *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
+        ``solo_overlay`` merge bypass is reachable here only.
 
-    *   :attr:`BABYSIT` (default) — the conservative posture: each gate keeps
-        its own default/explicit value, the user stays in the loop on merges,
-        answers, and colleague-visible posts.
-    *   :attr:`NOTIFY` — autonomous on colleague-facing actions (post
-        comments, approve a colleague's MR, resolve discussions, react) and on
-        merging the user's own MRs, with two guarantees that distinguish it
-        from :attr:`FULL`: (a) every on-behalf action emits an automatic
-        bot→user Slack DM (the derived ``notify_on_behalf`` field, wired
-        through the canonical :func:`teatree.core.notify.notify_user` egress),
-        and (b) the agent NEVER self-approves its own MR and merges the user's
-        MR ONLY after a colleague approval — the loop keeps the per-diff CLEAR
-        path (an independent cold reviewer is mandatory) rather than the
-        single-author ``solo_overlay`` bypass. The same three gates collapse
-        to their autonomous value as under :attr:`FULL`.
-    *   :attr:`FULL` — full autonomy on a single-author surface: the agent
-        approves, merges, answers, and publishes colleague-facing posts
-        WITHOUT per-action user approval and WITHOUT an after-the-fact DM. The
-        three gates resolve to their autonomous value in
-        :func:`get_effective_settings` (and ``mode`` is pinned to ``auto`` so
-        the merge-autonomy path is actually reachable); the loop's
-        single-author ``solo_overlay`` merge bypass is reachable here only.
-
-    Autonomy governs ONLY those three USER-approval gates (plus the derived
-    ``notify_on_behalf`` egress for :attr:`NOTIFY` and the ``mode = auto`` pin).
-    The safety/quality floor is out of scope by construction and never
-    touched: the privacy / banned-terms / public-repo leak gate, the
-    independent cold-review requirement (reviewer != maker), CI-green-before-
-    merge, the never-lockout self-rescue posture, and the substrate
-    ``--human-authorize`` keystone all remain in force under every tier.
-
-    An explicit per-gate override always wins over the collapse — autonomy
-    fills only the gates the user left unpinned, so a deliberate opinion is
-    never silently overridden.
+    Both autonomous tiers collapse the three gates and pin ``mode = auto`` (see
+    :func:`_apply_autonomy`). An explicit per-gate value always wins. The
+    safety floor (privacy/leak gate, cold-review, CI-green, never-lockout,
+    substrate keystone) is out of scope and never touched.
     """
 
     BABYSIT = "babysit"
@@ -375,14 +347,6 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
-    # The single per-overlay trust switch (#1668). ``babysit`` (default) keeps
-    # every approval gate at its own value; ``full`` collapses the three
-    # user-in-the-loop gates (``on_behalf_post_mode``,
-    # ``require_human_approval_to_merge``, ``require_human_approval_to_answer``)
-    # to their autonomous value in ``get_effective_settings`` and pins ``mode``
-    # to ``auto`` so merge autonomy is reachable. An explicit per-gate override
-    # still wins. The safety floor (privacy/leak gate, cold-review, CI-green,
-    # never-lockout, substrate ``--human-authorize``) is never touched.
     autonomy: Autonomy = Autonomy.BABYSIT
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
@@ -466,17 +430,7 @@ class UserSettings:
     # Out of scope: internal orchestration writes (bot→user DMs, the
     # loop's own bookkeeping) — only colleague-visible on-behalf posts.
     notify_on_post_on_behalf: bool = True
-    # Derived, autonomy-driven companion to ``notify_on_post_on_behalf``
-    # (#1668). Not a directly user-set toml key: ``_apply_autonomy`` sets it
-    # True under ``autonomy = "notify"`` and False under ``full`` / ``babysit``.
-    # When true it FORCES the after-receipt visibility DM on for the active
-    # overlay regardless of the user-facing ``notify_on_post_on_behalf``
-    # toggle — the ``notify`` tier's contract is "act autonomously but DM me
-    # on every on-behalf action". The after-receipt notifier
-    # (``teatree.core.on_behalf_post_receipt``) fires when EITHER this OR
-    # ``notify_on_post_on_behalf`` is true, so it reuses the one canonical
-    # ``notify_user`` egress and never adds a parallel notifier. Safe default
-    # False: a misread leaves the existing #949 behaviour untouched.
+    # Derived (not a user toml key): set by ``_apply_autonomy`` under the ``notify`` tier; ORed with the field above.
     notify_on_behalf: bool = False
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
@@ -830,7 +784,7 @@ def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceC
 
 
 def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:
-    """Resolve the global ``autonomy`` switch from a ``[teatree]`` toml table (#1668).
+    """Resolve the global ``autonomy`` switch from a ``[teatree]`` toml table.
 
     Absent → the conservative :attr:`Autonomy.BABYSIT`; a typo raises via
     :meth:`Autonomy.parse` (never a silent grant of full autonomy). The
@@ -927,7 +881,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     per-overlay ``[overlays.<name>]`` overrides and the autonomy collapse run
     identically. This is the single resolver both paths share, so the loop's
     auto-merge / codex consumers see the SAME ``autonomy`` posture the active
-    path exposes (#1668).
+    path exposes.
 
     To make an additional setting overridable, add it to
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or
@@ -935,7 +889,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     via ``dataclasses.replace`` — no per-setting getter glue required.
     Callers read the effective value with ``get_effective_settings().X``.
 
-    As a final step, the single ``autonomy`` switch (#1668) is applied: when
+    As a final step, the single ``autonomy`` switch is applied: when
     the effective autonomy resolves to :attr:`Autonomy.FULL` or
     :attr:`Autonomy.NOTIFY`, the three user-in-the-loop approval gates
     collapse to their autonomous value and ``mode`` is pinned to ``auto`` —
@@ -970,18 +924,14 @@ def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
     return {}
 
 
-# The user-in-the-loop approval gates the single ``autonomy`` switch governs,
-# mapped to the value each takes under ``autonomy = "full"`` / ``"notify"``
-# (#1668). Each is a USER-approval gate, not a safety-floor control — the
-# floor (privacy/leak gate, cold-review, CI-green, never-lockout, substrate
-# keystone) is out of scope by construction and never appears here.
+# User-approval gates only (never the safety floor), and the value each collapses to under an autonomous tier.
 _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
     "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
     "require_human_approval_to_merge": False,
     "require_human_approval_to_answer": False,
 }
 
-# The tiers that collapse the gates. ``babysit`` (absent here) is a no-op.
+# ``babysit`` is absent: it collapses nothing.
 _AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
 
 
@@ -1021,8 +971,8 @@ def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pin
     *   For ``mode`` only, a global ``[teatree] mode`` does NOT win (it is a
         workspace default, not an opinion about this overlay); only a
         ``hard_pinned`` per-overlay/env ``mode`` keeps the user's value. This
-        is the over-pin fix (#1668): a common global ``mode = "interactive"``
-        no longer leaves an autonomous overlay half-collapsed.
+        is the over-pin fix: a common global ``mode = "interactive"`` no longer
+        leaves an autonomous overlay half-collapsed.
 
     The safety floor is untouched: only the keys in
     :data:`_AUTONOMY_COLLAPSED_GATE_VALUES` (plus ``mode`` and the derived

@@ -96,7 +96,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
-| `autonomy` | Single trust switch (#1668), tiers `full > notify > babysit` (default `babysit`). `full` and `notify` both collapse the three approval gates + pin `mode = auto`; `full` = single-author (enables the `solo_overlay` merge bypass), `notify` = collaborative (derives `notify_on_behalf = true`, keeps the CLEAR merge path — colleague approval mandatory, no bypass). Explicit per-gate value wins; a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
@@ -108,7 +108,6 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `on_behalf_post_mode` | Tri-state pre-gate (#960): `draft_or_ask` / `ask` / `immediate`, scoped per overlay so a client overlay can stay `ask` while a personal one runs `immediate` |
 | `notify_user_via_bot` | Whether the bot→operator `notify_user(...)` channel (#963) DMs the user via the overlay's Slack bot (out of scope for the on-behalf gates — see config.py for the boundary) |
 | `notify_on_post_on_behalf` | DM the user after every on-behalf post (#949) — per-overlay because noise tolerance differs |
-| `notify_on_behalf` | Derived, NOT user-set (#1668): `autonomy = "notify"` sets it `true`, forcing the after-receipt DM on regardless of `notify_on_post_on_behalf` (one shared `notify_user` egress) |
 | `user_identity_aliases` | Per-overlay handles (e.g. different GitHub login on a client overlay), consumed by §5.6 scanners (#975/#976) |
 | `architectural_review_disabled` | Escape hatch for the periodic architectural-review scanner on a given overlay |
 | `architectural_review_skill` | Override which skill the scanner dispatches (default `/ac-reviewing-codebase`) |
@@ -126,6 +125,9 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `orchestrator_boundary_agent_gate_enabled` | #171: opt-in switch (default `false`) for the `Agent` arm of the §17.6.4 gate 2 (`handle_enforce_orchestrator_boundary` → `_deny_foreground_agent_dispatch`, #1442), which denies a main-agent FOREGROUND `Agent` dispatch. Currently dead because no `Agent` matcher is wired in `hooks.json` (the `Agent` tool itself DOES reach `PreToolUse` with `run_in_background` in its tool_input, so adding the matcher would make it live). Ships default-OFF because the deny sits on the orchestrator's own foreground Agent-dispatch hot path: enabling it would block the loop's own foreground builder/reviewer/resolver dispatches, a lockout risk to be validated attended ([#1646](https://github.com/souliane/teatree/issues/1646)) before default-ON; the flag also makes it lockout-safe the moment a matcher is added. (The foreground signal exists only on this Agent-matcher path — the separate `Task`/`Workflow` fan-out bypasses `PreToolUse` and its `TaskCreated` schema has no `run_in_background`, so there is no TaskCreated counterpart for it.) Fails CLOSED to disabled (missing/broken config → off; explicit `true` enables). Even when enabled the off-ramps are: a sub-agent context, `run_in_background: true`, and a per-call `[fg-ok: <reason>]` token in the prompt. The `Bash` arm (`orchestrator_bash_gate_enabled`) is unaffected. |
 | `gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. See BLUEPRINT §17 invariant 10. |
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
+
+`notify_on_behalf` is NOT in this registry — it is derived (read-only),
+set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into
