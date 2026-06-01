@@ -96,7 +96,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
-| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates (colleague auto-approve via `on_behalf_post_mode`, auto-merge, auto-answer) and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
 | `speed` | Throughput dial `slow < medium < full < boost` (default `medium`): how many threads run at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> speed set`; `T3_SPEED` env. |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
