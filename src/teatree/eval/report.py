@@ -46,6 +46,12 @@ class ScenarioResult:
             return False
         return self.judge is None or self.judge.skipped or self.judge.passed
 
+    @property
+    def verdict(self) -> str:
+        if self.skipped:
+            return "skip"
+        return "pass" if self.passed else "fail"
+
 
 def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None) -> ScenarioResult:
     """Apply the matchers (and, when configured, the LLM judge) to a run.

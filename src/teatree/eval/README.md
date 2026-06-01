@@ -17,19 +17,25 @@ operate on plain captured tool calls.
 
 ```bash
 t3 eval list                                # show available scenarios
-t3 eval run                                 # run all
+t3 eval run                                 # run all (persists to run-history)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
-t3 eval run --trials 3                       # pass@k: 3 trials, pass if any passes
-t3 eval run --trials 3 --require all         # pass^k: regression gate, all must pass
-t3 eval run --record                         # persist this run to the run-store
-t3 eval run --record --baseline              # record + flag regressions vs the last recorded run
-t3 eval run --models opus,sonnet,haiku       # model-regression matrix (per-model columns)
-t3 eval run --judge                          # also grade judge-opted scenarios with an LLM judge
-t3 eval history                              # list past recorded runs (newest first)
-t3 eval history --model opus --format json   # filter + JSON
-t3 eval trigger-qa                           # deterministic skill-activation eval (no claude run)
+t3 eval run --no-persist                     # run without recording to the ledger
+t3 eval run --trials 3                        # pass@k: 3 trials, pass if any passes
+t3 eval run --trials 3 --require all          # pass^k: regression gate, all must pass
+t3 eval run --models opus,sonnet,haiku        # model-regression matrix (per-model columns)
+t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge
+t3 eval run --baseline                        # persist + mark this run as its model's baseline
+t3 eval run --gate-regressions               # persist + fail on a drop vs each model's baseline
+t3 eval history                               # list past recorded runs (newest first)
+t3 eval history --baseline                    # show the current baseline run(s)
+t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
+t3 eval history --model opus --format json    # filter + JSON
+t3 eval run --backend subscription            # grade subscription-produced transcripts
+t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
+t3 eval transcript-replay                     # replay a real session against invariants
+t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
 ```
 
 Each scenario invocation shells out to `claude -p` in `--output-format
@@ -46,24 +52,34 @@ compliance is itself a failure. The aggregation lives in `pass_at_k.py`.
 
 ### Run-store and history (#1160)
 
-`--record` persists every scenario verdict to the durable `EvalRunRecord`
-ledger (one row per `(run_id, scenario, model)`), capturing pass/fail, the
-pass-rate `score`, the model, the trial count, the `git_sha`, and a timestamp.
-`t3 eval history` lists past runs (grouped by `run_id`, newest first).
-`--baseline` (which requires `--record`) compares the just-recorded run against
-each model's most recent *prior* recorded run and prints
-`REGRESSED`/`IMPROVED`/`NEW` lines; a scenario whose score fell exits non-zero.
-The store is a Django model so history survives across machines that share the
-control DB, and the per-model baseline is what the model matrix compares
-against.
+Every `t3 eval run` persists to the durable `EvalRunRecord` +
+`EvalScenarioResult` ledger (`src/teatree/core/models/eval_run.py`) unless
+`--no-persist` is given. One run row carries the model id, the `git_sha`, and a
+UTC timestamp; one scenario-result row carries the verdict (pass/fail/skip),
+the per-result model, the pass-rate `score` and trial count, the *trajectory*
+signal (captured tool calls), the *side-effect* signal (terminal reason + error
+flag), the per-matcher detail, and any LLM-judge rationale — so a historical run
+is reconstructable without re-invoking the model. `t3 eval history` lists past
+runs (newest first) with each scenario's pass-rate.
+
+`--baseline` marks the persisted run as the baseline for its model (demoting the
+prior baseline). `--gate-regressions` diffs the just-persisted run against each
+model's current baseline and prints `REGRESSED`/`IMPROVED` lines; a scenario
+whose score fell exits non-zero. Aggregation and the diff live on the model
+(`EvalRunRecord.pass_rates()` / `EvalRunRecord.regression_diff(baseline=…,
+candidate=…)`), and the per-model baseline is what the model matrix compares
+against. The store is a Django model so history survives across machines that
+share the control DB.
 
 ### Model matrix
 
 `--models opus,sonnet,haiku` runs the suite once per model and renders a
 scenario-by-model table (`pass` / `FAIL` per cell, or the pass-rate under
-`--trials`), followed by a per-model tally. Combined with `--record --baseline`
-it records each model's column and flags per-model drops. `--format json` emits
-a `{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
+`--trials`), followed by a per-model tally. It persists one scenario-result row
+per `(scenario, model)` cell (unless `--no-persist`); combined with
+`--gate-regressions` it flags per-model drops against each model's baseline.
+`--format json` emits a
+`{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
 
 ### LLM-judge (opt-in, per scenario)
 
@@ -110,6 +126,21 @@ editing the corpus.
   (order-independent, re-run safe). The rule is wired in `.gitlab-ci.yml`
   (`eval-gate` → `eval-weekly`) and mirrored in `.github/workflows/ci.yml`
   (`eval-weekly` job).
+
+## Run history and baselines
+
+```bash
+t3 eval history                             # recent runs + per-scenario pass-rate
+t3 eval history --model haiku               # scope to one model
+t3 eval history --baseline                  # show the current baseline run(s)
+t3 eval history --mark-baseline <run-id>    # promote a run to baseline
+t3 eval history --format json               # JSON for tooling
+```
+
+The aggregation and diff live on the model — `EvalRunRecord.pass_rates()` and
+`EvalRunRecord.regression_diff(baseline=…, candidate=…)` — and are surfaced
+through `t3 eval history` and `t3 eval run --gate-regressions`. See the
+"Run-store and history" section above for the persisted shape.
 
 ## Scenario shape
 

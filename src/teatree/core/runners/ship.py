@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.backends.protocols import PullRequestSpec
 from teatree.config import load_config
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.branch_currency import branch_behind_target
+from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.base import RunnerBase, RunnerResult
@@ -163,7 +163,8 @@ class ShipExecutor(RunnerBase):
         # pushing. The `pr create` gate already auto-merged the target,
         # but ``execute_ship`` may run in an async worker after a
         # window where ``origin/<target>`` advanced again. Abort with a
-        # durable backlog entry rather than push a stale base.
+        # durable backlog entry only when the branch now *conflicts*
+        # with target — a behind-but-mergeable branch pushes fine.
         currency_error = self._check_branch_currency(ticket, extra, repo_path, branch)
         if currency_error is not None:
             return RunnerResult(ok=False, detail=currency_error)
@@ -256,14 +257,17 @@ class ShipExecutor(RunnerBase):
         repo_path: str,
         branch: str,
     ) -> str | None:
-        """#940 defense-in-depth: refuse to push when target advanced again.
+        """#940 defense-in-depth: refuse to push only on a real conflict.
 
         The ``pr create`` gate ran auto-merge before the async-worker
-        window opened. If ``origin/<target>`` has advanced again since,
-        the loop must escalate via a durable backlog entry (the worker
-        cannot re-derive consent to mutate the working tree) rather
-        than push a stale base. ``branch_behind_target`` only reports —
-        it never merges — so this stays a non-mutating defense gate.
+        window opened. If ``origin/<target>`` advanced again since AND
+        the branch now *conflicts* with it, the loop escalates via a
+        durable backlog entry (the worker cannot re-derive consent to
+        mutate the working tree to resolve conflicts). A branch that is
+        merely behind but conflict-free pushes fine — being behind is
+        not a push blocker. ``sha_conflicts_with_target`` predicts the
+        merge via ``git merge-tree`` without mutating the worktree, so
+        this stays a non-mutating defense gate.
         """
         explicit = str(extra.get("target_branch") or "").strip()
         if explicit:
@@ -273,8 +277,8 @@ class ShipExecutor(RunnerBase):
                 target = f"origin/{git.default_branch(repo=repo_path)}"
             except (RuntimeError, ValueError):
                 return None
-        staleness = branch_behind_target(repo_path, branch, target)
-        if staleness is None:
+        conflict = sha_conflicts_with_target(repo_path, branch, target)
+        if conflict is None:
             return None
         # Record on the ticket so the orchestrator's backlog scanner
         # can pick this up — durable signal, not an ephemeral log.
@@ -283,13 +287,15 @@ class ShipExecutor(RunnerBase):
                 "ship_branch_currency_blocker": {
                     "branch": branch,
                     "target": target,
-                    "behind": staleness.behind_count,
+                    "behind": conflict.behind_count,
+                    "conflicting_paths": list(conflict.conflicting_paths),
                 }
             },
         )
+        paths_str = ", ".join(conflict.conflicting_paths) if conflict.conflicting_paths else "(see git status)"
         return (
-            f"refusing to push: {branch!r} is {staleness.behind_count} commit(s) behind "
-            f"{target} — re-run `pr create` after merging target into the branch."
+            f"refusing to push: {branch!r} conflicts with {target} in: {paths_str} — "
+            f"merge {target} into the branch, resolve the conflicts, then re-run `pr create`."
         )
 
     @staticmethod

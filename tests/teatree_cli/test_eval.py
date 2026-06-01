@@ -73,9 +73,9 @@ class TestEvalRun:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
@@ -92,9 +92,9 @@ class TestEvalRun:
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.find_spec", return_value=specs[0]),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "alpha"])
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--no-persist"])
         assert result.exit_code == 0
         assert "alpha" in result.output
         assert "PASS beta" not in result.output
@@ -145,7 +145,7 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--format", "yaml"])
         assert result.exit_code == 2
@@ -162,9 +162,9 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "run", "--format", "json", "--no-persist"])
         assert result.exit_code == 0
         # Other pytest plugins (e.g. inline-snapshot) can write banners to
         # stdout during the test session; isolate the JSON document by
@@ -187,9 +187,9 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 1
         assert "FAIL alpha" in result.output
 
@@ -206,9 +206,9 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9"])
+            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9", "--no-persist"])
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
 
@@ -227,7 +227,7 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3"])
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha (3/3 trials" in result.output
 
@@ -246,14 +246,14 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "all"])
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "all", "--no-persist"])
         assert result.exit_code == 1
         assert "FAIL alpha (1/2 trials" in result.output
 
     def test_bad_require_exits_code_2(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "most"])
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "most", "--no-persist"])
         assert result.exit_code == 2
         assert "unknown --require" in result.output
 
@@ -270,7 +270,7 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--format", "json", "--no-persist"])
         assert result.exit_code == 0, result.output
         output = result.output
         payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
@@ -290,7 +290,7 @@ class TestEvalPassAtK:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2"])
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
         assert result.exit_code == 0
         assert "SKIP alpha" in result.output
 
@@ -333,16 +333,40 @@ class _PassRunner:
         return _run(spec.name, tool_calls=_PASSING_CALL)
 
 
+class TestEvalBackend:
+    def test_unknown_backend_exits_with_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "magic", "--no-persist"])
+        assert result.exit_code == 2
+        assert "unknown eval backend" in result.output
+
+    def test_subscription_backend_grades_a_saved_transcript(self, tmp_path: Path) -> None:
+        specs = [_spec("worktree_first")]
+        transcript = (Path(__file__).parents[1] / "eval" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
+        (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
+
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                ["eval", "run", "--backend", "subscription", "--transcript-dir", str(tmp_path), "--no-persist"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "PASS worktree_first" in result.output
+
+
 @pytest.mark.django_db
-class TestEvalRecordAndHistory:
-    def test_record_persists_and_history_lists_it(self) -> None:
+class TestEvalPersistAndHistory:
+    def test_persists_and_history_lists_it(self) -> None:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
-            patch("teatree.eval.run_store.current_git_sha", return_value="sha123"),
+            patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value="sha123"),
         ):
-            run_result = CliRunner().invoke(app, ["eval", "run", "--record"])
+            run_result = CliRunner().invoke(app, ["eval", "run"])
             assert run_result.exit_code == 0, run_result.output
             history_result = CliRunner().invoke(app, ["eval", "history"])
         assert history_result.exit_code == 0, history_result.output
@@ -351,37 +375,41 @@ class TestEvalRecordAndHistory:
     def test_history_empty_when_nothing_recorded(self) -> None:
         result = CliRunner().invoke(app, ["eval", "history"])
         assert result.exit_code == 0
-        assert "(no recorded runs)" in result.output
+        assert "(no eval runs recorded)" in result.output
 
     def test_history_json_shape(self) -> None:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
-            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+            patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--record"])
+            CliRunner().invoke(app, ["eval", "run"])
             result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
-        payload = json.loads(result.output[result.output.index("[") : result.output.rindex("]") + 1])
-        assert payload[0]["passed"] == 1
-        assert payload[0]["models"] == ["haiku"]
+        payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
+        assert payload["runs"][0]["passed"] == 1
+        assert payload["runs"][0]["model"] == "haiku"
 
-    def test_baseline_requires_record(self) -> None:
+    def test_mark_baseline_promotes_run(self) -> None:
         specs = [_spec("alpha")]
-        with patch("teatree.cli.eval.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--baseline"])
-        assert result.exit_code == 2
-        assert "--baseline requires --record" in result.output
-
-    def test_baseline_flags_regression_across_runs(self) -> None:
-        specs = [_spec("alpha")]
-
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
-            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+            patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            first = CliRunner().invoke(app, ["eval", "run", "--record"])
+            CliRunner().invoke(app, ["eval", "run", "--baseline"])
+            result = CliRunner().invoke(app, ["eval", "history", "--baseline"])
+        assert result.exit_code == 0, result.output
+        assert "[baseline]" in result.output
+
+    def test_gate_regressions_flags_drop_against_baseline(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
+        ):
+            first = CliRunner().invoke(app, ["eval", "run", "--baseline"])
             assert first.exit_code == 0, first.output
 
         class _FailRunner:
@@ -392,10 +420,10 @@ class TestEvalRecordAndHistory:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _FailRunner),
-            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+            patch("teatree.eval.backends.ClaudePRunner", _FailRunner),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            second = CliRunner().invoke(app, ["eval", "run", "--record", "--baseline"])
+            second = CliRunner().invoke(app, ["eval", "run", "--gate-regressions"])
 
         assert second.exit_code == 1, second.output
         assert "REGRESSED alpha" in second.output
@@ -409,7 +437,7 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "opus" in result.output
         assert "haiku" in result.output
@@ -422,7 +450,9 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--format", "json"])
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--models", "opus,haiku", "--format", "json", "--no-persist"]
+            )
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["models"] == ["opus", "haiku"]
         assert payload["scenarios"][0]["results"]["opus"]["passed"] is True
@@ -440,7 +470,7 @@ class TestEvalModelMatrix:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _FailOnHaiku),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code == 1, result.output
         assert "opus: 1 passed" in result.output
         assert "haiku: 0 passed, 1 failed" in result.output
@@ -448,18 +478,44 @@ class TestEvalModelMatrix:
     def test_empty_models_exits_code_2(self) -> None:
         specs = [_spec("alpha")]
         with patch("teatree.cli.eval.discover_specs", return_value=specs):
-            result = CliRunner().invoke(app, ["eval", "run", "--models", " , "])
+            result = CliRunner().invoke(app, ["eval", "run", "--models", " , ", "--no-persist"])
         assert result.exit_code == 2
         assert "--models was empty" in result.output
 
-    def test_matrix_records_when_record_flag_set(self) -> None:
+    def test_matrix_persists_each_model(self) -> None:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
-            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+            patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--record"])
+            CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
             history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
-        payload = json.loads(history.output[history.output.index("[") : history.output.rindex("]") + 1])
-        assert sorted(payload[0]["models"]) == ["haiku", "opus"]
+        payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
+        assert payload["runs"][0]["model"] == "opus,haiku"
+
+
+class TestPrepareSubscription:
+    def test_emits_prompt_and_transcript_path(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "prepare-subscription", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "alpha" in result.output
+        assert str(tmp_path / "alpha.jsonl") in result.output
+
+    def test_json_format_lists_manifest(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                ["eval", "prepare-subscription", "--format", "json", "--transcript-dir", str(tmp_path)],
+            )
+        assert result.exit_code == 0, result.output
+        # An update banner ("[update] …") can precede stdout; isolate the JSON
+        # array by its indented-object opener rather than the first '['.
+        start = result.output.index("[\n")
+        end = result.output.rindex("]") + 1
+        manifest = json.loads(result.output[start:end])
+        assert manifest[0]["scenario"] == "alpha"
+        assert manifest[0]["transcript_path"] == str(tmp_path / "alpha.jsonl")

@@ -9,7 +9,15 @@ merge-time gate refuses it independently of the issue-time gate.
 import factory
 from factory.django import DjangoModelFactory
 
-from teatree.core.models import EvalRunRecord, ImplementedIssueMarker, MergeClear, Ticket
+from teatree.core.models import (
+    EvalRunRecord,
+    EvalScenarioResult,
+    EvalVerdict,
+    ImplementedIssueMarker,
+    MergeClear,
+    ReviewVerdict,
+    Ticket,
+)
 
 _FORTY_HEX = "c" * 40
 
@@ -41,6 +49,27 @@ class MergeClearFactory(DjangoModelFactory[MergeClear]):
         docs = factory.Trait(blast_class=MergeClear.BlastClass.DOCS)
 
 
+class ReviewVerdictFactory(DjangoModelFactory[ReviewVerdict]):
+    class Meta:
+        model = ReviewVerdict
+
+    ticket = factory.SubFactory(TicketFactory)
+    pr_id = factory.Sequence(lambda n: 900 + n)
+    slug = "souliane/teatree"
+    reviewed_sha = _FORTY_HEX
+    verdict = ReviewVerdict.Verdict.MERGE_SAFE
+    reviewer_identity = "cold-reviewer"
+    blast_class = MergeClear.BlastClass.LOGIC
+    gh_verify_result = MergeClear.VerifyResult.GREEN
+    findings = factory.LazyFunction(list)
+
+    class Params:
+        hold = factory.Trait(
+            verdict=ReviewVerdict.Verdict.HOLD,
+            gh_verify_result=MergeClear.VerifyResult.FAILED,
+        )
+
+
 class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):
     class Meta:
         model = ImplementedIssueMarker
@@ -59,14 +88,24 @@ class EvalRunRecordFactory(DjangoModelFactory[EvalRunRecord]):
     class Meta:
         model = EvalRunRecord
 
-    run_id = factory.Sequence(lambda n: f"run{n:032x}")
-    scenario = factory.Sequence(lambda n: f"scenario_{n}")
     model = "haiku"
-    passed = True
-    score = 1.0
-    trials = 1
     git_sha = _FORTY_HEX
 
     class Params:
-        failing = factory.Trait(passed=False, score=0.0)
-        was_skipped = factory.Trait(skipped=True, passed=False, score=0.0)
+        baseline = factory.Trait(is_baseline=True)
+
+
+class EvalScenarioResultFactory(DjangoModelFactory[EvalScenarioResult]):
+    class Meta:
+        model = EvalScenarioResult
+
+    run = factory.SubFactory(EvalRunRecordFactory)
+    scenario_name = factory.Sequence(lambda n: f"scenario_{n}")
+    model = "haiku"
+    verdict = EvalVerdict.PASS
+    score = 1.0
+    trials = 1
+
+    class Params:
+        failing = factory.Trait(verdict=EvalVerdict.FAIL, score=0.0)
+        was_skipped = factory.Trait(verdict=EvalVerdict.SKIP, score=0.0)

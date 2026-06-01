@@ -1129,15 +1129,17 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list               List discovered eval scenarios.                           │
-│ run                Run one scenario by name, or all scenarios when no name   │
-│                    is given.                                                 │
-│ history            List past recorded eval runs (newest first) from the      │
-│                    run-store.                                                │
-│ trigger-qa         Validate every skill's trigger keywords against the       │
-│                    must-fire/must-not-fire corpus.                           │
-│ transcript-replay  Replay a real session transcript against teatree          │
-│                    behavioural invariants.                                   │
+│ list                  List discovered eval scenarios.                        │
+│ run                   Run one scenario by name, or all scenarios when no     │
+│                       name is given.                                         │
+│ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
+│                       eval run.                                              │
+│ history               Show recent eval runs and per-scenario pass-rate over  │
+│                       time.                                                  │
+│ trigger-qa            Validate every skill's trigger keywords against the    │
+│                       must-fire/must-not-fire corpus.                        │
+│ transcript-replay     Replay a real session transcript against teatree       │
+│                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1161,46 +1163,99 @@ Usage: t3 eval run [OPTIONS] [NAME]
  Run one scenario by name, or all scenarios when no name is given.
 
  With ``--trials k`` each scenario runs ``k`` times and the verdict is
- aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). A single
- trial (the default) is the legacy behavior. ``--models`` runs the suite once
- per model and renders a comparison matrix. ``--record`` persists the verdicts
- and ``--baseline`` flags scenarios that regressed versus the recorded
- history.
+ aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
+ runs the suite once per model and renders a comparison matrix. A single trial
+ against the default backend is the legacy behavior.
+
+ Each run is recorded into the run-history ledger (``t3 eval history``) unless
+ ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
+ baseline for its model — the reference ``--gate-regressions`` compares a
+ later candidate run against (a regression exits non-zero).
+
+ ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the CI
+ job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+ transcripts produced on the subscription via an in-session sub-agent (run
+ ``t3 eval prepare-subscription`` first for the prompts + expected paths).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                           TEXT     Report format: text or json.     │
-│                                             [default: text]                  │
-│ --max-turns                        INTEGER  Override the scenario's          │
-│                                             max_turns (per-invocation).      │
-│ --trials                           INTEGER  Re-run each scenario this many   │
-│                                             times (pass@k).                  │
-│                                             [default: 1]                     │
-│ --require                          TEXT     With --trials > 1: 'any'         │
-│                                             (pass@k) or 'all' (pass^k        │
-│                                             regression gate).                │
-│                                             [default: any]                   │
-│ --models                           TEXT     Comma-separated model matrix     │
-│                                             (e.g. opus,sonnet,haiku); runs   │
-│                                             the suite per model.             │
-│ --record          --no-record               Persist this run to the eval     │
-│                                             run-store (required for          │
-│                                             history/baseline).               │
-│                                             [default: no-record]             │
-│ --baseline        --no-baseline             After recording, diff this run   │
-│                                             against each model's preceding   │
-│                                             run; regressions exit non-zero.  │
-│                                             [default: no-baseline]           │
-│ --judge           --no-judge                Grade scenarios that opt in (a   │
-│                                             `judge:` block) with an LLM      │
-│                                             judge in addition to matchers.   │
-│                                             [default: no-judge]              │
-│ --judge-budget                     INTEGER  Max number of LLM-judge calls    │
-│                                             per run (cost cap).              │
-│                                             [default: 20]                    │
-│ --help                                      Show this message and exit.      │
+│ --format                              TEXT     Report format: text or json.  │
+│                                                [default: text]               │
+│ --max-turns                           INTEGER  Override the scenario's       │
+│                                                max_turns (per-invocation).   │
+│ --trials                              INTEGER  Re-run each scenario this     │
+│                                                many times (pass@k).          │
+│                                                [default: 1]                  │
+│ --require                             TEXT     With --trials > 1: 'any'      │
+│                                                (pass@k) or 'all' (pass^k     │
+│                                                regression gate).             │
+│                                                [default: any]                │
+│ --models                              TEXT     Comma-separated model matrix  │
+│                                                (e.g. opus,sonnet,haiku);     │
+│                                                runs the suite once per       │
+│                                                model.                        │
+│ --persist             --no-persist             Persist this run into the     │
+│                                                run-history ledger (read back │
+│                                                via `t3 eval history`).       │
+│                                                [default: persist]            │
+│ --baseline                                     Mark the persisted run as the │
+│                                                baseline for its model.       │
+│ --gate-regressions                             Diff this run against each    │
+│                                                model's current baseline; any │
+│                                                regression exits non-zero.    │
+│ --judge               --no-judge               Grade scenarios that opt in   │
+│                                                (a `judge:` block) with an    │
+│                                                LLM judge in addition to      │
+│                                                matchers.                     │
+│                                                [default: no-judge]           │
+│ --judge-budget                        INTEGER  Max number of LLM-judge calls │
+│                                                per run (cost cap).           │
+│                                                [default: 20]                 │
+│ --backend                             TEXT     Execution backend for a       │
+│                                                single-trial run: 'sdk'       │
+│                                                (metered claude -p, reserved  │
+│                                                for CI with                   │
+│                                                ANTHROPIC_API_KEY) or         │
+│                                                'subscription' (grade         │
+│                                                subscription-produced         │
+│                                                transcripts; see `t3 eval     │
+│                                                prepare-subscription`).       │
+│                                                --trials and --models always  │
+│                                                use the sdk runner.           │
+│                                                [default: sdk]                │
+│ --transcript-dir                      PATH     Directory of <scenario>.jsonl │
+│                                                transcripts for the           │
+│                                                'subscription' backend        │
+│                                                (default: cwd).               │
+│ --help                                         Show this message and exit.   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval prepare-subscription`
+
+```
+Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
+
+ Emit the per-scenario prompts for a LOCAL subscription eval run.
+
+ The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+ cannot itself drive a subscription-covered turn. This command prints, per
+ scenario, the agent definition, prompt, and the transcript path the
+ ``subscription`` backend will read — so an operator (or an in-session
+ ``/loop`` driver) runs each prompt via an in-session sub-agent with
+ ``--output-format stream-json``, saves it to that path, then grades with
+ ``t3 eval run --backend subscription``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH  Where the operator will save each              │
+│                               <scenario>.jsonl transcript (default: cwd).    │
+│ --format                TEXT  Manifest format: text or json. [default: text] │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1209,17 +1264,22 @@ Usage: t3 eval run [OPTIONS] [NAME]
 ```
 Usage: t3 eval history [OPTIONS]
 
- List past recorded eval runs (newest first) from the run-store.
+ Show recent eval runs and per-scenario pass-rate over time.
 
- Reads the durable :class:`EvalRunRecord` ledger written by ``t3 eval run
- --record``. Each line is one run: its id, timestamp, the models it touched,
- and the pass/fail/skip tally.
+ The data substrate the model-regression diff reads. ``--baseline`` shows the
+ current reference run per model; ``--mark-baseline <id>`` promotes a run to
+ baseline (demoting the prior baseline for that model).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --model         TEXT     Filter to runs that touched this model.             │
-│ --limit         INTEGER  Maximum number of past runs to list. [default: 20]  │
-│ --format        TEXT     Report format: text or json. [default: text]        │
-│ --help                   Show this message and exit.                         │
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2570,6 +2630,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ db            Database operations.                                           │
 │ pr            Pull request helpers.                                          │
 │ tasks         Async task queue.                                              │
+│ queue         Background-task DB queue (inspect, expire stale jobs).         │
 │ followup      Follow-up snapshots.                                           │
 │ standup       Auto-generated daily update (read-only).                       │
 │ checking      Terse 'what did I miss' report since the last check            │
@@ -2577,6 +2638,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
+│ review        Persist + look up cold-review verdicts per MR.                 │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
@@ -3886,7 +3948,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ complete              Mark a claimed task COMPLETED for work finished        │
 │                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
-│ list                  List tasks with optional filters.                      │
+│ list                  List tasks with optional filters; --session scopes to  │
+│                       the current Claude session's todos.                    │
 │ start                 Claim and run the next interactive task in the current │
 │                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
@@ -3985,10 +4048,16 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 ```
 Usage: t3 teatree tasks list [OPTIONS]
 
+ List the teatree tasks queue (not your Claude TODO list).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                  TEXT  Filter by status                             │
-│ --execution-target        TEXT  Filter by execution target                   │
-│ --help                          Show this message and exit.                  │
+│ --status                              TEXT  Filter by status                 │
+│ --execution-target                    TEXT  Filter by execution target       │
+│ --session             --no-session          Scope to the current Claude      │
+│                                             session and group pending /      │
+│                                             claimed / done.                  │
+│                                             [default: no-session]            │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4028,6 +4097,59 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 Usage: t3 teatree tasks work-next-user-input [OPTIONS]
 
  Claim and execute a user input task.
+```
+
+#### `t3 teatree queue`
+
+```
+Usage: t3 teatree queue [OPTIONS] COMMAND [ARGS]...
+
+ Background-task DB queue (inspect, expire stale jobs).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status        Print the queue breakdown by status and READY jobs by task     │
+│               name (read-only).                                              │
+│ expire-stale  Retire READY jobs older than the threshold to FAILED so a      │
+│               drainer never runs them.                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue status`
+
+```
+Usage: t3 teatree queue status [OPTIONS]
+
+ Print the queue breakdown by status, and READY jobs by task name.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue expire-stale`
+
+```
+Usage: t3 teatree queue expire-stale [OPTIONS]
+
+ Retire stale READY jobs to FAILED so a drainer never runs them.
+
+ Conservative: only READY jobs older than the threshold are touched.
+ FAILED is reversible — the row and its args are preserved — so an
+ operator can re-enqueue a wrongly-retired job.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --hours                      INTEGER  Expire READY jobs enqueued more than   │
+│                                       this many hours ago (default:          │
+│                                       T3_QUEUE_STALE_HOURS).                 │
+│                                       [default: 0]                           │
+│ --dry-run    --no-dry-run             Report what would be expired without   │
+│                                       mutating any rows.                     │
+│                                       [default: no-dry-run]                  │
+│ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 #### `t3 teatree followup`
@@ -4681,6 +4803,83 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree review`
+
+```
+Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
+
+ Persist + look up cold-review verdicts per MR.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record  Persist a cold-review verdict for a PR at an exact reviewed SHA.     │
+│ status  Report whether an MR is safe to approve at its current head          │
+│         (read-only).                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review record`
+
+```
+Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
+
+ Persist a cold-review verdict for a PR at an exact reviewed SHA.
+
+ The durable sibling of ``ticket clear``: where a CLEAR authorises one
+ merge, this records the *judgment* so ``review status`` can answer
+ "safe to approve at the current head?" without a fresh cold review.
+ Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
+ verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
+│                                     reviewed tree.                           │
+│ --verdict                  TEXT     merge_safe / hold. [default: merge_safe] │
+│ --reviewer-identity        TEXT     Identity of the reviewer who reached     │
+│                                     this verdict.                            │
+│ --gh-verify-result         TEXT     Checks snapshot at review time: green /  │
+│                                     pending / failed.                        │
+│                                     [default: green]                         │
+│ --blast-class              TEXT     Reviewer judgment: substrate / logic /   │
+│                                     docs.                                    │
+│                                     [default: logic]                         │
+│ --findings-json            TEXT     JSON array of                            │
+│                                     {"severity","summary","file","line"}     │
+│                                     findings.                                │
+│ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
+│                                     is for.                                  │
+│                                     [default: 0]                             │
+│ --help                              Show this message and exit.              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review status`
+
+```
+Usage: t3 teatree review status [OPTIONS] MR_URL
+
+ Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
+
+ Parses the PR/MR URL, fetches the live head SHA, looks up the latest
+ recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+ (head moved — re-review needed), or ``no recorded verdict``. The point
+ is to avoid re-deriving a full cold review when a fresh verdict already
+ vouches for the current tree.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

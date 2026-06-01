@@ -1,6 +1,5 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
-import dataclasses
 import json
 import os
 import sys
@@ -9,19 +8,28 @@ from pathlib import Path
 import typer
 
 from teatree.claude_sessions import list_sessions
+from teatree.cli.eval_run_modes import (
+    gate_run_regressions,
+    make_grader,
+    persist_matrix_run,
+    persist_pass_at_k_run,
+    persist_single,
+    with_model,
+)
+from teatree.eval.backends import SDK_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs, find_spec
-from teatree.eval.judge import ClaudeJudge, JudgeBudget
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
-from teatree.eval.models import EvalRun, EvalSpec
-from teatree.eval.pass_at_k import PassAtKResult, run_pass_at_k
-from teatree.eval.report import JudgeOutcome, ScenarioResult, evaluate, render_json, render_text
-from teatree.eval.run_store import ScenarioOutcome, diff_against_baseline, new_run_id, record_run
+from teatree.eval.models import EvalSpec
+from teatree.eval.pass_at_k import run_pass_at_k
+from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.runner import ClaudePRunner
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_conformance import render_report, render_report_json, replay
 from teatree.eval.trigger_qa import run_trigger_qa
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
+
+_VALID_FORMATS = ("text", "json")
 
 
 def _bootstrap_django() -> None:
@@ -55,7 +63,7 @@ def list_scenarios() -> None:
 
 
 @eval_app.command("run")
-def run(  # noqa: PLR0913, PLR0917 — typer command: every param maps 1:1 to a public `eval run` CLI flag (name/format/max-turns/trials/require/models/record/baseline/judge/judge-budget). The arg list IS the CLI contract.
+def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval run`` flag. The arg list IS the CLI contract.
     name: str | None = typer.Argument(None, help="Scenario name to run (omit to run all)."),
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
     max_turns: int | None = typer.Option(
@@ -72,19 +80,24 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: every param maps 1:1 to a 
     models: str | None = typer.Option(
         None,
         "--models",
-        help="Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite per model.",
+        help="Comma-separated model matrix (e.g. opus,sonnet,haiku); runs the suite once per model.",
     ),
-    record: bool = typer.Option(  # noqa: FBT001 — typer boolean flag.
+    persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        True,
+        "--persist/--no-persist",
+        help="Persist this run into the run-history ledger (read back via `t3 eval history`).",
+    ),
+    baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
-        "--record/--no-record",
-        help="Persist this run to the eval run-store (required for history/baseline).",
+        "--baseline",
+        help="Mark the persisted run as the baseline for its model.",
     ),
-    baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag.
+    gate_regressions: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
-        "--baseline/--no-baseline",
-        help="After recording, diff this run against each model's preceding run; regressions exit non-zero.",
+        "--gate-regressions",
+        help="Diff this run against each model's current baseline; any regression exits non-zero.",
     ),
-    judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag.
+    judge: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
         False,
         "--judge/--no-judge",
         help="Grade scenarios that opt in (a `judge:` block) with an LLM judge in addition to matchers.",
@@ -94,25 +107,44 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: every param maps 1:1 to a 
         "--judge-budget",
         help="Max number of LLM-judge calls per run (cost cap).",
     ),
+    backend: str = typer.Option(
+        SDK_BACKEND,
+        "--backend",
+        help=(
+            "Execution backend for a single-trial run: 'sdk' (metered claude -p, reserved for CI with "
+            "ANTHROPIC_API_KEY) or 'subscription' (grade subscription-produced transcripts; see "
+            "`t3 eval prepare-subscription`). --trials and --models always use the sdk runner."
+        ),
+    ),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Directory of <scenario>.jsonl transcripts for the 'subscription' backend (default: cwd).",
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
     With ``--trials k`` each scenario runs ``k`` times and the verdict is
-    aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). A single
-    trial (the default) is the legacy behavior. ``--models`` runs the suite once
-    per model and renders a comparison matrix. ``--record`` persists the verdicts
-    and ``--baseline`` flags scenarios that regressed versus the recorded
-    history.
+    aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
+    runs the suite once per model and renders a comparison matrix. A single trial
+    against the default backend is the legacy behavior.
+
+    Each run is recorded into the run-history ledger (``t3 eval history``) unless
+    ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
+    baseline for its model — the reference ``--gate-regressions`` compares a
+    later candidate run against (a regression exits non-zero).
+
+    ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the CI
+    job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+    transcripts produced on the subscription via an in-session sub-agent (run
+    ``t3 eval prepare-subscription`` first for the prompts + expected paths).
     """
     _bootstrap_django()
-    specs = discover_specs() if name is None else [_require_spec(name)]
-    if output_format not in {"text", "json"}:
+    if output_format not in _VALID_FORMATS:
         typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
         raise typer.Exit(code=2)
-    if baseline and not record:
-        typer.echo("--baseline requires --record (a run must be persisted to diff it)", err=True)
-        raise typer.Exit(code=2)
-    grader = _make_grader(enabled=judge, judge_budget=judge_budget)
+    specs = discover_specs() if name is None else [_require_spec(name)]
+    grader = make_grader(enabled=judge, judge_budget=judge_budget)
     if models is not None:
         _run_model_matrix(
             specs,
@@ -121,8 +153,9 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: every param maps 1:1 to a 
             trials=trials,
             require=require,
             output_format=output_format,
-            record=record,
+            persist=persist,
             baseline=baseline,
+            gate_regressions=gate_regressions,
             grader=grader,
         )
         return
@@ -133,21 +166,23 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: every param maps 1:1 to a 
             trials=trials,
             require=require,
             output_format=output_format,
-            record=record,
+            persist=persist,
             baseline=baseline,
+            gate_regressions=gate_regressions,
             grader=grader,
         )
         return
-    runner = ClaudePRunner(max_turns_override=max_turns)
-    results: list[ScenarioResult] = []
-    for spec in specs:
-        run_result = runner.run(spec)
-        results.append(evaluate(spec, run_result, judge=grader))
+    try:
+        runner = make_runner(backend, max_turns_override=max_turns, transcript_dir=transcript_dir)
+    except UnknownBackendError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    results = [evaluate(spec, runner.run(spec), judge=grader) for spec in specs]
     typer.echo(render_json(results) if output_format == "json" else render_text(results))
     regressed = False
-    if record:
-        run_id = record_run([_outcome_from_result(r) for r in results])
-        regressed = _maybe_report_baseline(run_id, enabled=baseline)
+    if persist:
+        record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
+        regressed = gate_run_regressions(record, enabled=gate_regressions)
     if any(not r.passed for r in results) or regressed:
         sys.exit(1)
 
@@ -159,8 +194,9 @@ def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI f
     trials: int,
     require: str,
     output_format: str,
-    record: bool = False,
+    persist: bool = False,
     baseline: bool = False,
+    gate_regressions: bool = False,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> bool:
@@ -173,7 +209,7 @@ def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI f
     def _trial(spec: EvalSpec) -> ScenarioResult:
         return evaluate(spec, runner.run(spec), judge=grader)
 
-    effective_specs = [_with_model(spec, model_override) for spec in specs] if model_override else specs
+    effective_specs = [with_model(spec, model_override) for spec in specs] if model_override else specs
     results = [run_pass_at_k(spec, _trial, k=trials, require=require) for spec in effective_specs]
     if output_format == "json":
         typer.echo(
@@ -203,76 +239,14 @@ def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI f
             status = "PASS" if r.ok else "FAIL"
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
     regressed = False
-    if record:
+    if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
-        outcomes = [_outcome_from_pass_at_k(r, model_name) for r in results]
-        run_id = record_run(outcomes)
-        regressed = _maybe_report_baseline(run_id, enabled=baseline)
+        record = persist_pass_at_k_run(results, model=model_name, max_turns=max_turns, baseline=baseline)
+        regressed = gate_run_regressions(record, enabled=gate_regressions)
     failed = any(not r.ok for r in results) or regressed
     if failed and model_override is None:
         sys.exit(1)
     return failed
-
-
-def _with_model(spec: EvalSpec, model: str) -> EvalSpec:
-    return dataclasses.replace(spec, model=model)
-
-
-def _make_grader(*, enabled: bool, judge_budget: int):  # noqa: ANN202 — returns JudgeGrader | None, kept local.
-    """Return an LLM-judge grader closure when ``--judge`` is set, else ``None``."""
-    if not enabled:
-        return None
-    claude_judge = ClaudeJudge(budget=JudgeBudget(max_calls=judge_budget))
-
-    def _grade(spec: EvalSpec, run: EvalRun) -> JudgeOutcome:
-        verdict = claude_judge.grade(spec, run)
-        return JudgeOutcome(passed=verdict.passed, skipped=verdict.skipped, rationale=verdict.rationale)
-
-    return _grade
-
-
-def _outcome_from_result(result: ScenarioResult) -> ScenarioOutcome:
-    return ScenarioOutcome(
-        scenario=result.spec.name,
-        model=result.spec.model,
-        passed=result.passed and not result.skipped,
-        score=0.0 if result.skipped else (1.0 if result.passed else 0.0),
-        trials=1,
-        skipped=result.skipped,
-    )
-
-
-def _outcome_from_pass_at_k(result: PassAtKResult, model: str) -> ScenarioOutcome:
-    return ScenarioOutcome(
-        scenario=result.spec_name,
-        model=model,
-        passed=result.ok and not result.skipped,
-        score=0.0 if result.skipped else result.pass_rate,
-        trials=result.trials,
-        skipped=result.skipped,
-    )
-
-
-def _maybe_report_baseline(run_id: str, *, enabled: bool) -> bool:
-    """Render the baseline diff for *run_id*; return ``True`` if anything regressed."""
-    if not enabled:
-        return False
-    report = diff_against_baseline(run_id)
-    if not report.entries and not report.new_scenarios:
-        typer.echo("baseline: no prior runs recorded — nothing to compare")
-        return False
-    for entry in report.regressions:
-        typer.echo(
-            f"REGRESSED {entry.scenario} [{entry.model}]: {entry.baseline_score:.2f} -> {entry.current_score:.2f}"
-        )
-    for entry in report.improvements:
-        typer.echo(
-            f"IMPROVED {entry.scenario} [{entry.model}]: {entry.baseline_score:.2f} -> {entry.current_score:.2f}"
-        )
-    for scenario in report.new_scenarios:
-        typer.echo(f"NEW {scenario} (no baseline)")
-    typer.echo(f"\nbaseline: {len(report.regressions)} regressed, {len(report.improvements)} improved")
-    return not report.ok
 
 
 def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the matrix path.
@@ -283,8 +257,9 @@ def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CL
     trials: int,
     require: str,
     output_format: str,
-    record: bool,
+    persist: bool,
     baseline: bool,
+    gate_regressions: bool,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
 ) -> None:
     """Run the suite once per model and render a per-model comparison."""
@@ -294,31 +269,18 @@ def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CL
         raise typer.Exit(code=2)
     runner = ClaudePRunner(max_turns_override=max_turns)
     rows: list[MatrixRow] = []
-    run_id = new_run_id() if record else None
     for model in model_list:
         for spec in specs:
-            scoped = _with_model(spec, model)
-            outcome = _matrix_trial(runner, scoped, trials=trials, require=require, grader=grader)
-            rows.append(outcome)
+            scoped = with_model(spec, model)
+            rows.append(_matrix_trial(runner, scoped, trials=trials, require=require, grader=grader))
     if output_format == "json":
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
         typer.echo(render_matrix_text(rows, model_list, specs))
     regressed = False
-    if record and run_id is not None:
-        outcomes = [
-            ScenarioOutcome(
-                scenario=row.scenario,
-                model=row.model,
-                passed=row.passed,
-                score=row.score,
-                trials=row.trials,
-                skipped=row.skipped,
-            )
-            for row in rows
-        ]
-        record_run(outcomes, run_id=run_id)
-        regressed = _maybe_report_baseline(run_id, enabled=baseline)
+    if persist:
+        record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
+        regressed = gate_run_regressions(record, enabled=gate_regressions)
     if any(not row.passed and not row.skipped for row in rows) or regressed:
         sys.exit(1)
 
@@ -352,50 +314,93 @@ def _matrix_trial(
     )
 
 
-@eval_app.command("history")
-def history(
-    model: str | None = typer.Option(None, "--model", help="Filter to runs that touched this model."),
-    limit: int = typer.Option(20, "--limit", help="Maximum number of past runs to list."),
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+@eval_app.command("prepare-subscription")
+def prepare_subscription(
+    name: str | None = typer.Argument(None, help="Scenario name to prepare (omit to prepare all)."),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Where the operator will save each <scenario>.jsonl transcript (default: cwd).",
+    ),
+    output_format: str = typer.Option("text", "--format", help="Manifest format: text or json."),
 ) -> None:
-    """List past recorded eval runs (newest first) from the run-store.
+    """Emit the per-scenario prompts for a LOCAL subscription eval run.
 
-    Reads the durable :class:`EvalRunRecord` ledger written by ``t3 eval run
-    --record``. Each line is one run: its id, timestamp, the models it touched,
-    and the pass/fail/skip tally.
+    The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+    cannot itself drive a subscription-covered turn. This command prints, per
+    scenario, the agent definition, prompt, and the transcript path the
+    ``subscription`` backend will read — so an operator (or an in-session
+    ``/loop`` driver) runs each prompt via an in-session sub-agent with
+    ``--output-format stream-json``, saves it to that path, then grades with
+    ``t3 eval run --backend subscription``.
     """
     _bootstrap_django()
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    specs = discover_specs() if name is None else [_require_spec(name)]
+    target_dir = transcript_dir or Path.cwd()
+    manifest = [
+        {
+            "scenario": spec.name,
+            "agent_path": spec.agent_path,
+            "model": spec.model,
+            "prompt": spec.prompt,
+            "transcript_path": str(target_dir / f"{spec.name}.jsonl"),
+        }
+        for spec in specs
+    ]
+    if output_format == "json":
+        typer.echo(json.dumps(manifest, indent=2))
+        return
+    for entry in manifest:
+        typer.echo(f"scenario: {entry['scenario']}  (model {entry['model']})")
+        typer.echo(f"  agent:      {entry['agent_path']}")
+        typer.echo(f"  save to:    {entry['transcript_path']}")
+        typer.echo(f"  prompt:     {entry['prompt']}")
+        typer.echo("")
+
+
+@eval_app.command("history")
+def history(
+    limit: int = typer.Option(20, "--limit", help="Maximum number of recent runs to show."),
+    model: str | None = typer.Option(None, "--model", help="Filter to one model's runs."),
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    show_baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--baseline",
+        help="Show only the current baseline run(s) and their per-scenario pass-rate.",
+    ),
+    mark_baseline: int | None = typer.Option(
+        None,
+        "--mark-baseline",
+        help="Mark the run with this id as the baseline for its model, then show history.",
+    ),
+) -> None:
+    """Show recent eval runs and per-scenario pass-rate over time.
+
+    The data substrate the model-regression diff reads. ``--baseline`` shows the
+    current reference run per model; ``--mark-baseline <id>`` promotes a run to
+    baseline (demoting the prior baseline for that model).
+    """
+    _bootstrap_django()
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415
 
-    summaries = EvalRunRecord.objects.runs(model=model, limit=limit)
-    if output_format == "json":
-        typer.echo(
-            json.dumps(
-                [
-                    {
-                        "run_id": s.run_id,
-                        "recorded_at": s.recorded_at.isoformat(),
-                        "models": sorted(s.models),
-                        "total": s.total,
-                        "passed": s.passed,
-                        "failed": s.failed,
-                        "skipped": s.skipped,
-                    }
-                    for s in summaries
-                ],
-                indent=2,
-            )
-        )
-        return
-    if not summaries:
-        typer.echo("(no recorded runs)")
-        return
-    for s in summaries:
-        models_str = ",".join(sorted(s.models))
-        typer.echo(
-            f"{s.run_id[:12]}  {s.recorded_at.isoformat(timespec='seconds')}  "
-            f"[{models_str}]  {s.passed} passed, {s.failed} failed, {s.skipped} skipped"
-        )
+    if mark_baseline is not None and not mark_run_baseline(mark_baseline):
+        typer.echo(f"unknown run id: {mark_baseline}", err=True)
+        raise typer.Exit(code=2)
+    runs = EvalRunRecord.objects.all()
+    if model is not None:
+        runs = runs.for_model(model)
+    if show_baseline:
+        runs = runs.baselines()
+    runs = list(runs[:limit])
+    renderer = render_history_json if output_format == "json" else render_history_text
+    typer.echo(renderer(runs))
 
 
 @eval_app.command("trigger-qa")

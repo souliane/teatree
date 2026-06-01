@@ -5,7 +5,15 @@ from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThre
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
-from teatree.core.models.eval_run_record import EvalRunRecord, EvalRunRecordManager, RunSummary
+from teatree.core.models.eval_run import (
+    EvalRunRecord,
+    EvalScenarioResult,
+    EvalVerdict,
+    MatcherDetail,
+    ScenarioPassRate,
+    ScenarioRegression,
+    TrajectoryToolCall,
+)
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
@@ -30,6 +38,7 @@ from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
+from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -60,7 +69,9 @@ __all__ = [
     "DeferredQuestionError",
     "DirtyWorktreeError",
     "EvalRunRecord",
-    "EvalRunRecordManager",
+    "EvalScenarioResult",
+    "EvalVerdict",
+    "Finding",
     "ImplementedIssueMarker",
     "IncomingEvent",
     "IntentClassification",
@@ -68,6 +79,7 @@ __all__ = [
     "LivePostApproval",
     "LivePostApprovalError",
     "LoopLease",
+    "MatcherDetail",
     "MergeAudit",
     "MergeClear",
     "MiniLoopMarker",
@@ -89,17 +101,22 @@ __all__ = [
     "ReviewAssignment",
     "ReviewIntent",
     "ReviewRequestPost",
-    "RunSummary",
+    "ReviewVerdict",
+    "ReviewVerdictError",
     "ScannedBroadcast",
     "ScannedFailedE2E",
+    "ScenarioPassRate",
+    "ScenarioRegression",
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
+    "Severity",
     "Task",
     "TaskAttempt",
     "Ticket",
     "TicketExtra",
     "TicketTransition",
+    "TrajectoryToolCall",
     "Worktree",
     "WorktreeEnvOverride",
     "WorktreeExtra",
