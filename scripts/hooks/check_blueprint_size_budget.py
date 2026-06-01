@@ -29,7 +29,7 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 82_000
+_BUDGET_TOP_LEVEL_BYTES = 83_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -93,6 +93,11 @@ _BUDGET_TOP_LEVEL_BYTES = 82_000
 # corpus is 110,045 B, so the budget is raised one minimal step (~455 B
 # headroom) to admit the row.
 _BUDGET_APPENDICES_BYTES = 110_500
+# Reviewed bump (#1689): the anti-pattern-catalog paragraph now documents the
+# sibling `teatree.quality.test_shape` check (`t3 tool test-shape` — the
+# baseline-ratchet test-shape report + its `[tool.teatree.test_shape]` config
+# key), a load-bearing architectural fact; the top-level corpus was at capacity
+# (81,738 B), so the top-level + total budgets are raised one minimal step.
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -111,7 +116,11 @@ _BUDGET_APPENDICES_BYTES = 110_500
 # Reviewed bump (#1668): tracks the appendix bump for the `autonomy` config-key
 # row; post-trim total corpus is 191,937 B, raised to 192,500 (~563 B
 # headroom). Invariant holds: 192,500 - 82,000 = 110,500 <= 110,500.
-_BUDGET_TOTAL_BYTES = 192_500
+# Reviewed bump (#1689): the test-shape paragraph addition pushes the top-level
+# corpus to 82,525 B (total 192,675 B); top-level raised to 83,000 and total to
+# 193,500 (~475 B / ~825 B headroom). Invariant still holds: total minus
+# top-level (110,500) stays within the appendices budget (110,500).
+_BUDGET_TOTAL_BYTES = 193_500
 
 
 def _repo_root() -> pathlib.Path:

@@ -108,6 +108,27 @@ jobs:
       # missing nav target fails CI instead of shipping a broken site.
       - run: uv run mkdocs build --strict
 
+  test-shape:
+    # Conservative, report-first test-shape check (near-duplicate test
+    # functions + test:source ratio regression vs the committed baseline in
+    # [tool.teatree.test_shape]). Default mode is "warn" — the command exits
+    # 0 and the job is advisory. Flipping mode to "block" in pyproject.toml
+    # makes the same command exit non-zero, promoting this job to a gate
+    # without any workflow change. Never a PreToolUse gate; it can never lock
+    # the agent's tools.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Test-shape report
+        run: uv run t3 tool test-shape --root .
+
   banned-terms-tree:
     # Full-tree banned-brand backstop (souliane/teatree#1570). The
     # diff/payload banned-terms gate only ever sees a *change*; a brand

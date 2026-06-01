@@ -1,0 +1,14 @@
+from unittest_parametrize import parametrize
+
+
+class TestRatio:
+    @parametrize(
+        ("test_lines", "source_lines", "expected"),
+        [
+            (10, 10, 1.0),
+            (20, 10, 2.0),
+            (5, 10, 0.5),
+        ],
+    )
+    def test_ratio(self, test_lines, source_lines, expected):
+        assert measure(test_lines, source_lines) == expected
