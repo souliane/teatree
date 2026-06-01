@@ -382,7 +382,7 @@ _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
 # when looped. Conservative allow-list: a deny whose reason does not start with
 # one of these is treated as a SAFETY gate and NEVER auto-opens. The
 # skill-loading gate is the documented minimum.
-_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = ("SKILL LOADING ENFORCEMENT",)
+_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = ("SKILL LOADING ENFORCEMENT", "LOOP REGISTRATION")
 
 # Volatile substrings stripped from a deny reason before fingerprinting so "the
 # same denial" matches across retries even when the reason embeds a changing
@@ -959,14 +959,77 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     )
 
 
+def _loop_registration_gate_enabled() -> bool:
+    """Whether the loop-registration PreToolUse gate is enabled (default True).
+
+    Best-effort read of ``[teatree] loop_registration_gate_enabled`` from
+    ``~/.teatree.toml`` (mirrors :func:`_deny_circuit_breaker_enabled`'s shape).
+    Fails OPEN to enabled on a missing/broken config; an explicit ``false`` is
+    the one-line durable kill-switch — never a code edit (NEVER-LOCKOUT).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("loop_registration_gate_enabled") is not False
+
+
+_LOOP_REGISTRATION_EXEMPT_TOOLS = frozenset(
+    {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}
+)
+
+
+def _loop_registration_exempt(data: dict) -> bool:
+    """True when this call must NOT be nudge-blocked for loop registration.
+
+    Groups the side-effect-free NEVER-LOCKOUT exemptions so the handler stays a
+    single decision. A call is exempt when any of these holds:
+
+    - the tool is a cron-management / skill tool the agent uses to register the
+        loop (no point blocking the very tools that satisfy the gate);
+    - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
+        no ``CronCreate`` tool, so a deny is an *unrecoverable* lockout that
+        killed every spawned coder/reviewer in the incident;
+    - the durable kill-switch ``[teatree] loop_registration_gate_enabled =
+        false`` is set (disable without a code edit);
+    - there is no ``session_id`` (no per-session marker to key on).
+    """
+    if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
+        return True
+    if _call_is_from_subagent(data):
+        return True
+    if not _loop_registration_gate_enabled():
+        return True
+    return not data.get("session_id")
+
+
 def handle_enforce_loop_registration(data: dict) -> bool:
-    """Block Bash/Edit/Write until the background loop cron is registered."""
-    tool_name = data.get("tool_name", "")
-    if tool_name in {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}:
+    """Nudge-block Bash/Edit/Write until the background loop cron is registered.
+
+    NEVER-LOCKOUT: this is the loop-bootstrap NUDGE, not a safety gate, so it
+    must never be able to wedge a session (it hard-locked the factory several
+    times — the worst recurring incident). The exemptions in
+    :func:`_loop_registration_exempt` (cron tools, sub-agents, kill-switch,
+    no-session) cover the first two layers; the deny itself adds two more:
+
+    - it routes through :func:`_fail_open_or_deny`, so the always-allowed
+        self-rescue commands and the master ``gate_fail_open`` switch relax it;
+    - the reason carries the ``LOOP REGISTRATION`` UX-gate prefix, so the
+        repeated-denial circuit breaker auto-relaxes it after K consecutive
+        denials instead of blocking forever.
+    """
+    if _loop_registration_exempt(data):
         return False
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return False
+    session_id = data["session_id"]
     pending = _state_file(session_id, "loop-pending")
     if not pending.is_file():
         return False
@@ -976,11 +1039,12 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     cadence = _loop_cadence_seconds()
     minutes = max(1, cadence // 60)
     reason = (
-        f"The teatree background loop is not registered yet. "
-        f"Please call CronCreate with "
-        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
+        f"LOOP REGISTRATION: the teatree background loop is not registered yet. "
+        f"Register it with CronCreate "
+        f'(cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true). '
+        f"To run without the loop, set [teatree] loop_registration_gate_enabled = false."
     )
-    return emit_pretooluse_deny(reason)
+    return _fail_open_or_deny(data, reason)
 
 
 # ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
