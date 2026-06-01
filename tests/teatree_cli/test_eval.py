@@ -117,6 +117,21 @@ class TestEvalRun:
         assert result.exit_code == 2
         assert "available scenarios: (none)" in result.output
 
+
+class TestTranscriptReplay:
+    def test_non_utf8_transcript_does_not_crash(self, tmp_path: Path) -> None:
+        # #1652: a session JSONL carrying non-UTF-8 bytes must replay what it
+        # can (errors="replace") instead of raising UnicodeDecodeError. The
+        # valid lines from the all_pass fixture still parse green.
+        fixture = Path(__file__).parents[1] / "fixtures" / "transcripts" / "all_pass.session.jsonl"
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_bytes(fixture.read_bytes() + b'\n{"type":"user","message":"\xff\xfe bad bytes"}\n')
+
+        result = CliRunner().invoke(app, ["eval", "transcript-replay", "--file", str(transcript)])
+
+        assert "UnicodeDecodeError" not in result.output
+        assert result.exit_code == 0, result.output
+
     def test_unknown_format_exits_with_code_2(self) -> None:
         specs = [_spec("alpha")]
 

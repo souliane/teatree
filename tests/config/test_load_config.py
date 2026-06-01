@@ -10,6 +10,7 @@ Integration-first per the Test-Writing Doctrine: real TOML fixtures
 under ``tmp_path`` with ``teatree.config.CONFIG_PATH`` monkeypatched.
 """
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -342,6 +343,17 @@ class TestMode:
 
         with pytest.raises(ValueError, match="Invalid t3 mode"):
             load_config(config_path)
+
+    def test_load_config_malformed_toml_raises_named_error(self, tmp_path: Path) -> None:
+        # #1652: a TOML syntax error surfaces as a typed, message-bearing
+        # config error naming the file, never a raw TOMLDecodeError traceback.
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nworkspace_dir = \n")
+
+        with pytest.raises(ValueError, match="Malformed TOML") as exc_info:
+            load_config(config_path)
+        assert str(config_path) in str(exc_info.value)
+        assert not isinstance(exc_info.value, tomllib.TOMLDecodeError)
 
     def test_get_mode_reflects_loaded_config(
         self,

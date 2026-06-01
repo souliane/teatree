@@ -103,6 +103,48 @@ class TestVisitPhaseLoudFailure(TestCase):
         assert "not_started" in result
 
 
+class TestVisitPhaseDodRefusalIsGraceful(TestCase):
+    """A transition body that raises ``InvalidTransitionError`` (#1652).
+
+    The dirty-worktree / missing-local-E2E DoD refusals are
+    ``InvalidTransitionError`` subclasses — a disjoint hierarchy from
+    ``TransitionNotAllowed``. The ``visit-phase`` wrapper must handle them
+    exactly like ``TransitionNotAllowed``: log the refusal (with its reason),
+    leave the FSM put (the gate keeps blocking), and never dump a traceback.
+    """
+
+    def _assert_graceful(self, exc: Exception) -> None:
+        from teatree.core.models import Ticket as TicketModel  # noqa: PLC0415
+
+        ticket = _ticket(state=Ticket.State.REVIEWED)
+        with (
+            patch.object(TicketModel, "ship", side_effect=exc),
+            self.assertLogs("teatree.core.management.commands.lifecycle", level="WARNING") as cm,
+        ):
+            result = cast("str", call_command("lifecycle", "visit-phase", str(ticket.pk), "ship"))
+
+        ticket.refresh_from_db()
+        # FSM did NOT advance — the DoD gate keeps blocking.
+        assert ticket.state == Ticket.State.REVIEWED
+        # The phase is still recorded (single source of truth).
+        session = ticket.sessions.first()
+        assert "shipping" in session.visited_phases
+        # The refusal reason is surfaced in the warning, not a raw traceback.
+        joined = "\n".join(cm.output)
+        assert str(exc) in joined
+        assert "reviewed" in result
+
+    def test_dirty_worktree_refusal_is_logged_no_op(self) -> None:
+        from teatree.core.models.errors import DirtyWorktreeError  # noqa: PLC0415
+
+        self._assert_graceful(DirtyWorktreeError("worktree has uncommitted changes"))
+
+    def test_missing_local_e2e_refusal_is_logged_no_op(self) -> None:
+        from teatree.core.dod_gate import DodLocalE2EError  # noqa: PLC0415
+
+        self._assert_graceful(DodLocalE2EError("UI-visible ticket has no local-stack E2E"))
+
+
 class TestShippingGateReconciliation(TestCase):
     def test_gate_auto_walks_fsm_to_reviewed_when_phases_present(self) -> None:
         # The loop path advanced phases but the FSM is still STARTED

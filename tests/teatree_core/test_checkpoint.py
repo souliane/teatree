@@ -13,6 +13,8 @@ the tests stay hermetic — no real DATA_DIR, no network, no git.
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from teatree.core.checkpoint import (
     DEFAULT_LOOKBACK,
     advance_checkpoint,
@@ -102,6 +104,16 @@ class TestResolveWindowStart:
         now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
         start = resolve_window_start(since="2026-05-29T08:00:00", now=now, path=tmp_path / "cp.json")
         assert start == datetime(2026, 5, 29, 8, 0, tzinfo=UTC)
+
+    def test_unparseable_since_raises_friendly_value_error(self, tmp_path: Path) -> None:
+        # #1652: a non-ISO --since (e.g. "yesterday") raises a typed,
+        # message-bearing ValueError naming the expected format — not a raw
+        # datetime.fromisoformat ValueError the command would dump as a
+        # traceback.
+        now = datetime(2026, 5, 30, 18, 0, tzinfo=UTC)
+        with pytest.raises(ValueError, match="ISO-8601") as exc_info:
+            resolve_window_start(since="yesterday", now=now, path=tmp_path / "cp.json")
+        assert "yesterday" in str(exc_info.value)
 
     def test_checkpoint_used_when_no_since(self, tmp_path: Path) -> None:
         path = tmp_path / "cp.json"

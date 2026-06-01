@@ -465,6 +465,24 @@ class TestTicketCommand(TestCase):
         )
         assert "not allowed" in str(result["error"])
 
+    def test_transition_dod_refusal_returns_error_not_traceback(self) -> None:
+        # #1652: a ship transition whose body raises DodLocalE2EError
+        # (an InvalidTransitionError, disjoint from TransitionNotAllowed)
+        # returns a refusal error carrying the reason; the FSM stays put.
+        from teatree.core.dod_gate import DodLocalE2EError  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
+        reason = "UI-visible ticket has no local-stack E2E"
+        with patch.object(Ticket, "ship", side_effect=DodLocalE2EError(reason)):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "transition", ticket.pk, "ship"),
+            )
+        assert "refused" in str(result["error"])
+        assert reason in str(result["error"])
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.REVIEWED
+
     def test_transition_mark_review_no_action_delivers_reviewer_ticket(self) -> None:
         """#1077: the no-action disposition is reachable via the CLI transition."""
         from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
