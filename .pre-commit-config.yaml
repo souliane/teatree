@@ -166,6 +166,12 @@ repos:
         entry: uv run python -m teatree.skill_schema
         files: 'SKILL\.md$'
         types: [markdown]
+      - id: validate-skill-refs
+        name: Validate agent skill references resolve
+        language: system
+        entry: uv run python -m teatree.skill_ref_validator
+        pass_filenames: false
+        files: '^(agents/.*\.md|skills/.*/SKILL\.md)$'
       - id: update-readme-skills
         name: Update README skills catalogue
         language: system

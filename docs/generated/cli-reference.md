@@ -1246,30 +1246,33 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ privacy-scan     Scan text for privacy-sensitive patterns (emails, keys,     │
-│                  IPs).                                                       │
-│ validate-mr      Validate MR/PR title+description against the active         │
-│                  overlay's rules.                                            │
-│ repo-mode        Report whether the repo is solo (fix proactively) or        │
-│                  collaborative (flag, don't fix).                            │
-│ analyze-video    Decompose video into frames for AI analysis.                │
-│ bump-deps        Bump pyproject.toml dependencies from uv.lock.              │
-│ sonar-check      Run local SonarQube analysis via Docker.                    │
-│ claude-handover  Show Claude handover telemetry and runtime recommendations. │
-│ audit-memory     Scan Claude memory files for entries that should be         │
-│                  promoted to skills.                                         │
-│ to-markdown      Convert a binary attachment to Markdown for agent           │
-│                  ingestion.                                                  │
-│ notion-download  Download a Notion file attachment using the Brave browser   │
-│                  session.                                                    │
-│ ai-sig-scan      Refuse a PR body / commit message carrying an AI-signature  │
-│                  trailer.                                                    │
-│ diff-coverage    Per-diff coverage + mutation/revert gate (BLUEPRINT §17.6   │
-│                  gate 12, #836).                                             │
-│ label-issues     Suggest labels for unlabeled open issues by                 │
-│                  keyword-matching title and body.                            │
-│ find-duplicates  Flag pairs of open issues with near-identical titles.       │
-│ triage-issues    Scan for resolved-but-open and stale issues.                │
+│ privacy-scan         Scan text for privacy-sensitive patterns (emails, keys, │
+│                      IPs).                                                   │
+│ validate-mr          Validate MR/PR title+description against the active     │
+│                      overlay's rules.                                        │
+│ repo-mode            Report whether the repo is solo (fix proactively) or    │
+│                      collaborative (flag, don't fix).                        │
+│ analyze-video        Decompose video into frames for AI analysis.            │
+│ bump-deps            Bump pyproject.toml dependencies from uv.lock.          │
+│ sonar-check          Run local SonarQube analysis via Docker.                │
+│ claude-handover      Show Claude handover telemetry and runtime              │
+│                      recommendations.                                        │
+│ audit-memory         Scan Claude memory files for entries that should be     │
+│                      promoted to skills.                                     │
+│ to-markdown          Convert a binary attachment to Markdown for agent       │
+│                      ingestion.                                              │
+│ notion-download      Download a Notion file attachment using the Brave       │
+│                      browser session.                                        │
+│ ai-sig-scan          Refuse a PR body / commit message carrying an           │
+│                      AI-signature trailer.                                   │
+│ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
+│                      §17.6 gate 12, #836).                                   │
+│ validate-skill-refs  Assert every skill reference resolves to a real skill   │
+│                      in the canonical set.                                   │
+│ label-issues         Suggest labels for unlabeled open issues by             │
+│                      keyword-matching title and body.                        │
+│ find-duplicates      Flag pairs of open issues with near-identical titles.   │
+│ triage-issues        Scan for resolved-but-open and stale issues.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1515,6 +1518,34 @@ Usage: t3 tool diff-coverage [OPTIONS]
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool validate-skill-refs`
+
+```
+Usage: t3 tool validate-skill-refs [OPTIONS]
+
+ Assert every skill reference resolves to a real skill in the canonical set.
+
+ Enumerates the canonical skill set from the actual installed/remote skills
+ (the same search dirs the skill-loading hook reads — ``~/.claude/skills/*``
+ symlinks plus this plugin's ``skills/`` tree), then checks every reference
+ site: the ``~/.teatree-skills.yml`` keyword->skill routing config and the
+ ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills:`` lists. A
+ dangling name (e.g. the real ``ac-reviewing-skills`` ->
+ ``ac-reviewing-codebase``
+ incident) exits non-zero with file:line + the bad name + nearest matches.
+ A missing optional config is not a failure (fail-open).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --config            PATH  Path to the keyword->skill routing config          │
+│                           (default: $T3_SUPPLEMENTARY_SKILLS or              │
+│                           ~/.teatree-skills.yml).                            │
+│ --agents-dir        PATH  Directory of agent *.md files to scan (default:    │
+│                           this plugin's agents/).                            │
+│ --json                    Emit machine-readable JSON.                        │
+│ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4664,10 +4695,13 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ record   Record a deferred question (used by the PreToolUse away-mode hook). │
-│ list     List pending deferred questions, oldest first.                      │
-│ answer   Resolve a pending question with a user answer.                      │
-│ dismiss  Dismiss a pending question without answering it.                    │
+│ record     Record a deferred question (used by the PreToolUse away-mode      │
+│            hook).                                                            │
+│ list       List pending deferred questions, oldest first.                    │
+│ answer     Resolve a pending question with a user answer.                    │
+│ dismiss    Dismiss a pending question without answering it.                  │
+│ resurface  Re-post the pending backlog to the user's Slack DM (away→present  │
+│            drain).                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4735,6 +4769,28 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions resurface`
+
+```
+Usage: t3 teatree questions resurface [OPTIONS]
+
+ Re-post the pending backlog to the user's Slack DM (away→present drain).
+
+ Idempotent per question (the ``BotPing`` ledger dedupes the
+ per-question idempotency key), so re-running on every present-mode
+ tick never double-posts. Fails open: a delivery failure for one
+ question is recorded on its ``BotPing`` row and never aborts the
+ drain or the surrounding loop.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user-id        TEXT  Slack user id to DM (defaults to the configured       │
+│                        user).                                                │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay bot     │
+│                        routing).                                             │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

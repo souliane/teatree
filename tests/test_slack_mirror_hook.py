@@ -11,7 +11,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import hooks.scripts.hook_router as router
+
+pytestmark = pytest.mark.django_db
 
 
 class TestRouterRegistration:
@@ -76,6 +80,33 @@ class TestMirrorHandler:
         ):
             router.handle_mirror_question_to_slack(self._question_payload())
         mock_post.assert_not_called()
+
+
+class TestPresentModeMirrorsButDoesNotDeny:
+    """Present-mode AskUserQuestion mirrors to Slack and is NOT denied (#182).
+
+    In present mode the question still renders in the client; the mirror
+    only ADDS a Slack DM so the user sees it on their phone too. The
+    handler must never deny — denying would suppress the in-client prompt.
+    """
+
+    def _payload(self) -> dict:
+        return {
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}]}]},
+        }
+
+    def test_present_mode_posts_and_returns_false(self) -> None:
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            away_verdict = router.handle_route_away_mode_question(self._payload())
+            mirror_verdict = router.handle_mirror_question_to_slack(self._payload())
+        assert away_verdict is False
+        assert mirror_verdict is False
+        mock_post.assert_called_once()
 
 
 class TestDmChannelCache:

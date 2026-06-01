@@ -29,7 +29,7 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 81_800
+_BUDGET_TOP_LEVEL_BYTES = 82_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -82,6 +82,11 @@ _BUDGET_TOP_LEVEL_BYTES = 81_800
 # foreground-Agent deny) and the gate-2 production-phantom note are load-bearing
 # safety/config facts; the appendix corpus was at capacity (108,746 B), so the
 # budget is raised to the next ~1 KB step (~754 B headroom) to admit them.
+# Reviewed bump (skill-ref-validator): the two mandatory tach dependency-graph
+# edges for the new `teatree.skill_ref_validator` leaf module
+# (`cli --> skill_ref_validator` + the module node) are an architectural fact;
+# the top-level corpus was at capacity, so the top-level + total budgets are
+# raised one minimal step.
 _BUDGET_APPENDICES_BYTES = 109_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
@@ -95,7 +100,10 @@ _BUDGET_APPENDICES_BYTES = 109_500
 # Reviewed bump (#1644 PR B): total corpus is 190,484 B (top-level 81,738 +
 # appendices 108,746); raised to 191,000 (~516 B headroom). Invariant holds:
 # 191,000 - 81,800 = 109,200 <= 109,500.
-_BUDGET_TOTAL_BYTES = 191_000
+# Reviewed bump (skill-ref-validator): the new module's two dependency-graph
+# edges push the total to 191,057 B; raised to 191,500 (~443 B headroom).
+# Invariant holds: 191,500 - 82,000 = 109,500 <= 109,500.
+_BUDGET_TOTAL_BYTES = 191_500
 
 
 def _repo_root() -> pathlib.Path:
