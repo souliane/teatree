@@ -209,6 +209,23 @@ class TestPreToolUseHardGate:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh api user",
+            "gh api repos/o/r/commits/main",
+            "gh api repos/o/r/issues --method GET",
+            "gh pr view 12",
+            "gh pr list",
+            "gh pr diff 12",
+            "gh repo view o/r",
+        ],
+    )
+    def test_read_only_api_is_not_over_blocked(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash(command))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
 
 class TestExtractTitleFragments:
     @pytest.mark.parametrize(
