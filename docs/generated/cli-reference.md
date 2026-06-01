@@ -3895,7 +3895,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ complete              Mark a claimed task COMPLETED for work finished        │
 │                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
-│ list                  List tasks with optional filters.                      │
+│ list                  List tasks with optional filters; --session scopes to  │
+│                       the current Claude session's todos.                    │
 │ start                 Claim and run the next interactive task in the current │
 │                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
@@ -3995,9 +3996,13 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 Usage: t3 teatree tasks list [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                  TEXT  Filter by status                             │
-│ --execution-target        TEXT  Filter by execution target                   │
-│ --help                          Show this message and exit.                  │
+│ --status                              TEXT  Filter by status                 │
+│ --execution-target                    TEXT  Filter by execution target       │
+│ --session             --no-session          Scope to the current Claude      │
+│                                             session and group pending /      │
+│                                             claimed / done.                  │
+│                                             [default: no-session]            │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
