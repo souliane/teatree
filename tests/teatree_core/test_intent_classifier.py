@@ -119,6 +119,52 @@ class TestClassifyEvent(TestCase):
         assert IntentClassification.objects.filter(event=event).count() == 1
 
 
+class TestMalformedWebhookSubObjects(TestCase):
+    """A truthy non-dict webhook sub-object must not raise; it is treated as absent."""
+
+    def test_gitlab_object_attributes_as_list_does_not_raise(self) -> None:
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.GITLAB,
+            actor="U_GL",
+            channel_ref="org/repo",
+            body="",
+            payload_json={"object_kind": "merge_request", "object_attributes": ["approved"]},
+            idempotency_key="gitlab:malformed-attrs",
+        )
+
+        classification = classify_event(event)
+
+        assert classification.intent == IntentClassification.Intent.NOISE
+
+    def test_github_review_as_string_does_not_raise(self) -> None:
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.GITHUB,
+            actor="U_GH",
+            channel_ref="org/repo",
+            body="",
+            payload_json={"review": "approved"},
+            idempotency_key="github:malformed-review",
+        )
+
+        classification = classify_event(event)
+
+        assert classification.intent == IntentClassification.Intent.NOISE
+
+    def test_slack_event_as_list_does_not_raise(self) -> None:
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="U02ABC",
+            channel_ref="C0LIST",
+            body="",
+            payload_json={"event": ["app_mention"]},
+            idempotency_key="slack:malformed-event",
+        )
+
+        classification = classify_event(event)
+
+        assert classification.intent == IntentClassification.Intent.NOISE
+
+
 class TestIntentClassificationModel(TestCase):
     def test_intent_choices_match_issue_spec(self) -> None:
         names = {choice for choice, _label in IntentClassification.Intent.choices}
