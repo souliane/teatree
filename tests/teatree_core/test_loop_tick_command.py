@@ -64,6 +64,21 @@ class TestLoopTickCommand(TestCase):
         assert "1 signal(s)" in output
         assert "statusline" in output
 
+    def test_installs_then_resets_mini_loop_schedules_reader(self) -> None:
+        from unittest.mock import call  # noqa: PLC0415
+
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
+
+        report = _build_report(statusline_path=Path("/tmp/sl.txt"))
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+            patch("teatree.loop.statusline.set_mini_loop_schedules_reader") as seam,
+        ):
+            call_command("loop_tick", stdout=StringIO())
+        # Installed for the tick, then reset so the process-global never leaks.
+        assert seam.call_args_list == [call(mini_loop_schedules), call(None)]
+
     def test_text_output_includes_scanner_errors(self) -> None:
         report = _build_report(errors={"my_prs": "RuntimeError: x"})
         stdout = StringIO()
