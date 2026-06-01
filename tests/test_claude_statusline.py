@@ -102,6 +102,44 @@ class TestStatuslineHook:
         assert "5h=42%" in plain
         assert "7d=85%" in plain
 
+    def test_renders_sdk_cost_chip_next_to_weekly_segment(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("loop running · tick 5m\n", encoding="utf-8")
+        (tmp_path / "tick-meta.json").write_text(
+            json.dumps({"cost_chip": "SDK mtd ≈$48/$200"}),
+            encoding="utf-8",
+        )
+
+        result = _run(
+            {
+                "session_id": "s-cost",
+                "model": {"display_name": "Claude Opus"},
+                "rate_limits": {"seven_day": {"used_percentage": 85}},
+            },
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "SDK mtd ≈$48/$200" in plain, plain
+        # The cost chip sits immediately after the weekly (7d) usage segment.
+        assert plain.index("7d=85%") < plain.index("SDK mtd"), plain
+
+    def test_omits_sdk_cost_chip_when_meta_absent(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {"session_id": "s-no-cost", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "SDK mtd" not in _strip_ansi(result.stdout)
+
     def test_renders_model_and_context_window_from_stdin(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
         state_dir.mkdir()

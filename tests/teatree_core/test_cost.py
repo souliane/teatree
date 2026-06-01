@@ -144,11 +144,11 @@ class TestCostReport:
             today=date(2026, 6, 10),
         )
 
-    def test_chip_is_compact_whole_dollars(self) -> None:
-        assert self._report(48.4).chip() == "SDK ≈$48/$200"
+    def test_chip_is_compact_whole_dollars_with_period_label(self) -> None:
+        assert self._report(48.4).chip() == "SDK mtd ≈$48/$200"
 
     def test_chip_stays_tiny_at_high_spend(self) -> None:
-        assert self._report(1234.0).chip() == "SDK ≈$1234/$200"
+        assert self._report(1234.0).chip() == "SDK mtd ≈$1234/$200"
 
     def test_render_lines_show_credit_and_projection(self) -> None:
         lines = "\n".join(self._report(50.0).render_lines())
