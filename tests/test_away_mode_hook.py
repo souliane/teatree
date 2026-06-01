@@ -166,6 +166,30 @@ class TestAwayModeMirrorsToSlack:
         assert out["permissionDecision"] == "deny"
         assert DeferredQuestion.objects.count() == 1
 
+    def test_mirror_posts_only_the_recorded_question_for_multi_question_payload(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        payload = {
+            "tool_name": "AskUserQuestion",
+            "tool_input": {
+                "questions": [
+                    {"question": "Answerable?", "options": []},
+                    {"question": "Unrecorded?", "options": []},
+                ]
+            },
+            "session_id": "s-1",
+        }
+        with (
+            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            handle_route_away_mode_question(payload)
+        capsys.readouterr()
+        _slack_cfg, questions = mock_post.call_args.args
+        assert [q["question"] for q in questions] == ["Answerable?"]
+        assert DeferredQuestion.objects.count() == 1
+
 
 class TestSection807InteropGate:
     """The load-bearing §807 interop test.

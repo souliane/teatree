@@ -4654,9 +4654,17 @@ Usage: t3 teatree availability present [OPTIONS]
 
  Force present-mode (interactive questions) until *until* — or forever.
 
+ Coming back from away auto-drains the deferred-question backlog to
+ the user's Slack DM (handled in :func:`write_override`), so the user
+ is re-asked everything they missed without any manual step.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --until        TEXT  ISO8601 timestamp when the override expires.            │
-│ --help               Show this message and exit.                             │
+│ --until          TEXT  ISO8601 timestamp when the override expires.          │
+│ --user-id        TEXT  Slack user id for the away→present backlog drain      │
+│                        (defaults to config).                                 │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the drain (per-overlay bot    │
+│                        routing).                                             │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4779,11 +4787,10 @@ Usage: t3 teatree questions resurface [OPTIONS]
 
  Re-post the pending backlog to the user's Slack DM (away→present drain).
 
- Idempotent per question (the ``BotPing`` ledger dedupes the
- per-question idempotency key), so re-running on every present-mode
- tick never double-posts. Fails open: a delivery failure for one
- question is recorded on its ``BotPing`` row and never aborts the
- drain or the surrounding loop.
+ Manual / idempotent entry point to the same
+ :func:`teatree.core.notify.drain_deferred_questions` egress the
+ ``write_override(MODE_PRESENT)`` away→present transition auto-fires,
+ so a re-run never double-posts (the ``BotPing`` ledger dedupes).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --user-id        TEXT  Slack user id to DM (defaults to the configured       │

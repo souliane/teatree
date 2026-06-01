@@ -96,6 +96,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
@@ -127,6 +128,9 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `private_repos` | Offline slug-SUBSTRING allowlist of known-private repos. Drives the #126/#1657 carve-out and (unioned with `internal_publish_namespaces`, #1672) the destination skip, so a user with only this set needs no second list. `teatree.hooks._repo_visibility`. |
 | `internal_publish_namespaces` | Destination allowlist (default empty `[]`) making the #1415/#1530 publish gates destination-aware: a publish whose target prefix-matches is internal and skipped. #1672 unions it with `private_repos` and decides the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
 
+`notify_on_behalf` is NOT in this registry — it is derived (read-only),
+set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
+
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into
 `load_config().user` directly. Adding a new overridable key is a
@@ -139,10 +143,13 @@ mode = "interactive"         # global default
 branch_prefix = "ac"
 
 [overlays.t3-teatree]
-mode = "auto"                # auto-mode for the t3-teatree dogfooding overlay
+autonomy = "full"            # single-author dogfooding: one switch collapses the gates + pins mode = auto
+
+[overlays.t3-client]
+autonomy = "notify"          # collaborative: autonomous + DM per on-behalf action, keeps CLEAR merge gate
 
 [overlays.client-project]
-mode = "interactive"         # stay gated on client code
+mode = "interactive"         # stay gated on client code (autonomy defaults to babysit)
 privacy = "strict"
 ```
 

@@ -4645,13 +4645,18 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
         import datetime  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
 
         row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
         owner_session = (row or {}).get("session_id") or ""
         is_foreign_session = bool(owner_session) and owner_session != session_id
         expires_at = (row or {}).get("lease_expires_at")
-        is_live = expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)
         stored_pid = (row or {}).get("owner_pid")
+        # Liveness is pid-anchored: an alive owner_pid is a live owner past
+        # its tick TTL (the busy-owner hijack the TTL-only check missed).
+        is_live = (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
+            stored_pid is not None and pid_alive(stored_pid)
+        )
         pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
     except Exception:  # noqa: BLE001
         return ""
@@ -5038,9 +5043,15 @@ def _loop_self_pump(data: dict) -> bool | None:
         return None
 
     marker.write_text("1", encoding="utf-8")
+    # Tag the tick with the owner session id so its re-claim heartbeat
+    # always lands under the real session (and records its pid) instead of
+    # resolving to "" in the Bash-tool subprocess (#1107). The id IS the
+    # owner session here (the self-pump only fires for the owner), so the
+    # pid-anchored claim keeps the lease anchored to this session (#1073).
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
-        "without waiting for an external prompt. Run `t3 loop tick`, then "
+        f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
+        "t3 loop tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
         "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
@@ -6208,34 +6219,41 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 _AWAY_MIRROR_SUFFIX = "away-question-mirror"
 
 
-def _away_mirror_key(questions: list[dict], session_id: str) -> str:
-    """Stable hash of the question payload + session — the idempotency key."""
-    blob = json.dumps([questions, session_id], sort_keys=True, ensure_ascii=False)
+def _away_mirror_key(question: dict) -> str:
+    """Stable hash of the recorded question — the idempotency key.
+
+    The marker file is already namespaced by ``session_id`` (it is the
+    ``_state_file`` name), so the hash need not repeat the session.
+    """
+    blob = json.dumps(question, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _mirror_away_question_to_slack(questions: list[dict], session_id: str) -> None:
-    """Post an away-mode question to the user's Slack DM, exactly once.
+def _mirror_away_question_to_slack(question: dict, session_id: str) -> None:
+    """Post the recorded away-mode question to the user's Slack DM, exactly once.
 
     The away-mode handler runs FIRST and denies, short-circuiting the
     PreToolUse chain before ``handle_mirror_question_to_slack`` would
     run — so without this the away-mode question never reaches Slack
-    (the user reads Slack, not ``t3 questions list``). Idempotent by a
-    stable hash of the question payload + session recorded in a STATE_DIR
-    marker file, so a harness retry of the same tool call does not
-    double-post. Fail-open: any Slack/IO error is swallowed so the deny
-    is never blocked and the loop never wedges.
+    (the user reads Slack, not ``t3 questions list``). Mirrors only the
+    single recorded question (the one ``_record_deferred_question`` stored
+    and the user can answer), not the full payload — so the DM never shows
+    more rows than are answerable. Idempotent by a stable hash of that
+    question recorded in a session-namespaced STATE_DIR marker file, so a
+    harness retry of the same tool call does not double-post. Fail-open:
+    any Slack/IO error is swallowed so the deny is never blocked and the
+    loop never wedges.
     """
-    if not questions:
+    if not question:
         return
     slack_cfg = _slack_config_from_toml()
     if slack_cfg is None:
         return
-    key = _away_mirror_key(questions, session_id)
+    key = _away_mirror_key(question)
     marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
     if key in _read_lines(marker):
         return
-    _perform_slack_post(slack_cfg, questions)
+    _perform_slack_post(slack_cfg, [question])
     with contextlib.suppress(OSError):
         _ensure_state_dir()
         _append_line(marker, key)
@@ -6334,7 +6352,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # by a hook crash. The standard interactive flow then runs.
         return False
     with contextlib.suppress(Exception):
-        _mirror_away_question_to_slack(questions, str(data.get("session_id", "")))
+        _mirror_away_question_to_slack(first, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
         f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "
