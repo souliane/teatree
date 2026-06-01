@@ -11,9 +11,9 @@ current count means someone has re-approved after any dismissal, so consumers
 would only nag on stale state.
 """
 
-import operator
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from teatree.types import RawAPIDict
 
@@ -41,7 +41,7 @@ def detect_approval_dismissal(
     if current_approval_count > 0:
         return None
 
-    events = sorted(_iter_approval_events(discussions), key=operator.itemgetter(0))
+    events = sorted(_iter_approval_events(discussions), key=lambda event: _parse_iso(event[0]))
     if not events:
         return None
 
@@ -59,6 +59,10 @@ def detect_approval_dismissal(
                 last_dismissal = ApprovalDismissal(at=created_at, approvers=list(approvers))
             approvers = []
     return last_dismissal
+
+
+def _parse_iso(ts: str) -> datetime:
+    return datetime.fromisoformat(ts)
 
 
 def _iter_approval_events(discussions: list[RawAPIDict]) -> list[tuple[str, str, str]]:

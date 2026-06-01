@@ -140,3 +140,33 @@ class TestDetectApprovalDismissal:
             ),
         ]
         assert detect_approval_dismissal(discussions, current_approval_count=0) is None
+
+    def test_mixed_offset_timestamps_sort_chronologically_not_lexically(self) -> None:
+        """Mixed UTC-offset timestamps must replay in chronological, not string, order.
+
+        The approval (10:00+02:00 == 08:00Z) chronologically precedes the dismissal
+        (09:00Z), so the dismissal captures alice. Lexicographically the dismissal
+        string sorts first ("...09:00:00Z" < "...10:00:00+02:00"), which would replay
+        the dismissal before any approver is registered and yield None.
+        """
+        discussions = [
+            _disc(
+                [
+                    _system_note(
+                        "approved this merge request",
+                        username="alice",
+                        created_at="2026-05-01T10:00:00+02:00",
+                    ),
+                ],
+            ),
+            _disc(
+                [
+                    _system_note(
+                        "removed all approvals when new commits are added to the source branch",
+                        created_at="2026-05-01T09:00:00Z",
+                    ),
+                ],
+            ),
+        ]
+        result = detect_approval_dismissal(discussions, current_approval_count=0)
+        assert result == ApprovalDismissal(at="2026-05-01T09:00:00Z", approvers=["alice"])
