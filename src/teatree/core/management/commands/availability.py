@@ -66,9 +66,22 @@ class Command(TyperCommand):
             str,
             typer.Option(help="ISO8601 timestamp when the override expires."),
         ] = "",
+        user_id: Annotated[
+            str,
+            typer.Option("--user-id", help="Slack user id for the away→present backlog drain (defaults to config)."),
+        ] = "",
+        overlay: Annotated[
+            str,
+            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the drain (per-overlay bot routing)."),
+        ] = "",
     ) -> str:
-        """Force present-mode (interactive questions) until *until* — or forever."""
-        write_override(MODE_PRESENT, until=_parse_until(until))
+        """Force present-mode (interactive questions) until *until* — or forever.
+
+        Coming back from away auto-drains the deferred-question backlog to
+        the user's Slack DM (handled in :func:`write_override`), so the user
+        is re-asked everything they missed without any manual step.
+        """
+        write_override(MODE_PRESENT, until=_parse_until(until), user_id=user_id, overlay=overlay)
         return _render(prefix="set present. ")
 
     @command()
