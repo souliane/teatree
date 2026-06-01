@@ -430,7 +430,7 @@ class UserSettings:
     # Out of scope: internal orchestration writes (bot→user DMs, the
     # loop's own bookkeeping) — only colleague-visible on-behalf posts.
     notify_on_post_on_behalf: bool = True
-    # Derived (not a user toml key): set by ``_apply_autonomy`` under the ``notify`` tier; ORed with the field above.
+    # Derived under the ``notify`` tier by ``_apply_autonomy``; ORed with the field above.
     notify_on_behalf: bool = False
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
@@ -924,7 +924,7 @@ def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
     return {}
 
 
-# User-approval gates only (never the safety floor), and the value each collapses to under an autonomous tier.
+# User-approval gates only (never the safety floor); value each collapses to under an autonomous tier.
 _AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
     "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
     "require_human_approval_to_merge": False,
