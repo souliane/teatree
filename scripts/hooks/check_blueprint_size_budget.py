@@ -160,13 +160,7 @@ _BUDGET_APPENDICES_BYTES = 113_000
 # 201,500 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
 # Raised one minimal step to 202,000 to restore the >=4 KB headroom (~4,249 B).
 # Coupling invariant holds: 202,000 - 90,000 = 112,000 <= 113,000.
-# Headroom-restore bump: the cost/billing prose added to the top-level left the
-# live total corpus only ~3.6 KB under the 202,000 budget, below the 4 KB
-# `TestRealCorpusFitsWithHeadroom` guard. After trimming prose-of-code from the
-# §5.6 deep-mechanics sentence the total corpus is 198,155 B; raised one minimal
-# step to 203,000 to restore the >=4 KB total headroom (~4,845 B). Coupling
-# invariant stays tight: 203,000 - 90,000 = 113,000 <= 113,000.
-_BUDGET_TOTAL_BYTES = 203_000
+_BUDGET_TOTAL_BYTES = 202_000
 
 
 def _repo_root() -> pathlib.Path:
