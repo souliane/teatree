@@ -11,6 +11,7 @@ hosts the loop (a Claude Code ``/loop`` slot) reads the action list and
 spawns agents with the standard tool. This keeps unit tests deterministic.
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -18,6 +19,8 @@ from typing import Any, Literal
 from teatree.config import get_effective_settings
 from teatree.core.phases import normalize_phase
 from teatree.loop.scanners.base import ScanSignal
+
+logger = logging.getLogger(__name__)
 
 ActionKind = Literal["statusline", "agent", "webhook", "mechanical"]
 type ActionPayload = dict[str, Any]
@@ -443,5 +446,8 @@ def dispatch(signals: list[ScanSignal]) -> list[DispatchAction]:
     """
     actions: list[DispatchAction] = []
     for signal in signals:
-        actions.extend(_dispatch_one(signal))
+        try:
+            actions.extend(_dispatch_one(signal))
+        except Exception:
+            logger.exception("Signal %s raised during dispatch", signal.kind)
     return actions

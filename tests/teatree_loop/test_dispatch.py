@@ -1,10 +1,13 @@
 """Tests for ``teatree.loop.dispatch`` — signal → action routing."""
 
+import logging
+
 import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.loop.dispatch import dispatch
+from teatree.loop import dispatch as dispatch_module
+from teatree.loop.dispatch import DispatchAction, dispatch
 from teatree.loop.scanners.base import ScanSignal
 
 
@@ -473,3 +476,34 @@ def test_codex_review_dispatch_adversarial_variant_routes_to_hardened_agent() ->
     agent_actions = [a for a in actions if a.kind == "agent"]
     assert len(agent_actions) == 1
     assert agent_actions[0].zone == "codex:adversarial-review"
+
+
+def test_one_raising_signal_does_not_abort_the_others(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signal whose routing raises is skipped + logged; the rest still route (#1649)."""
+    real_dispatch_one = dispatch_module._dispatch_one
+
+    def _flaky(signal: ScanSignal) -> list[DispatchAction]:
+        if signal.kind == "boom":
+            msg = "routing exploded"
+            raise RuntimeError(msg)
+        return real_dispatch_one(signal)
+
+    monkeypatch.setattr(dispatch_module, "_dispatch_one", _flaky)
+
+    with caplog.at_level(logging.ERROR, logger="teatree.loop.dispatch"):
+        actions = dispatch(
+            [
+                ScanSignal(kind="my_pr.open", summary="PR #1 open"),
+                ScanSignal(kind="boom", summary="signal that blows up"),
+                ScanSignal(kind="reviewer_pr.new_sha", summary="MR x"),
+            ],
+        )
+
+    zones = [(a.kind, a.zone) for a in actions]
+    assert ("statusline", "in_flight") in zones
+    assert ("agent", "t3:reviewer") in zones
+    assert all(a.kind != "agent" or a.zone != "boom" for a in actions)
+    assert any("boom" in r.message for r in caplog.records)
