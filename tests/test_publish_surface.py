@@ -27,7 +27,7 @@ from typing import NamedTuple
 
 import pytest
 
-from teatree.hooks import _repo_visibility, publish_surface
+from teatree.hooks import _gh_glab_hiding, _repo_visibility, publish_surface
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
@@ -1068,6 +1068,61 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    # S12-S15: the remaining STATIC inline-string execution introducers the
+    # ``-c``/count paths missed. ``env -S`` / ``env --split-string`` statically
+    # word-split a literal string and exec it; a here-string ``<shell> <<<``
+    # feeds a literal string to a shell on STDIN; ``eval`` concatenates its
+    # literal args and runs them. Each hands a literal operand to execution with
+    # NO runtime variable/command resolution, so each is a recursion entry point.
+    # The inner ``gh`` lives wholly inside the quoted operand token (T not raised)
+    # and the segment's words[0] is the introducer command, not gh/glab (R not
+    # raised), so the count invariant alone passes them. Consolidating every
+    # introducer's operand extraction into one registry and recursing fails closed.
+    _CorpusRow(
+        "S12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& env -S \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S13",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& env -S "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S13b",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& env --split-string="gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S14",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& bash <<< "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S15",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& eval \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # S16: a here-doc whose literal body is a public ``gh`` invocation. The lexer
+    # splits the body at its newlines into its OWN segment, so the public-target
+    # post becomes a recognised posting segment whose target check fails closed.
+    _CorpusRow(
+        "S16",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& bash << EOF\ngh issue create --repo {_PUBLIC_SLUG} --body {_TERM}\nEOF",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 
@@ -1198,8 +1253,158 @@ class TestShellCStringHidesGhGlab:
             f'gh issue create --repo {_PRIV_SLUG} --body ok && G=gh; "$G" issue create --repo {_PUBLIC_SLUG}'
         )
         subst_verb = f"gh issue create --repo {_PRIV_SLUG} --body ok && $(echo gh) issue create --repo {_PUBLIC_SLUG}"
+        subst_verb_backtick = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok && `echo gh` issue create --repo {_PUBLIC_SLUG}"
+        )
         assert publish_surface._command_hides_gh_glab(var_indirection) is False
         assert publish_surface._command_hides_gh_glab(subst_verb) is False
+        assert publish_surface._command_hides_gh_glab(subst_verb_backtick) is False
+
+
+class TestEnvSplitStringIntroducer:
+    """``env -S`` / ``env --split-string`` statically word-splits + execs a string."""
+
+    @pytest.mark.parametrize(
+        "introducer",
+        [
+            f'env -S "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'env -S"gh issue create --repo {_PUBLIC_SLUG}"',
+            f'env --split-string "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'env --split-string="gh issue create --repo {_PUBLIC_SLUG}"',
+            f"env -S \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
+            f'timeout 5 env -S "gh issue create --repo {_PUBLIC_SLUG}"',
+        ],
+    )
+    def test_inner_gh_in_env_split_string_fails_closed(self, introducer: str) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_benign_env_split_string_does_not_over_block(self) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && env -S "echo done"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_env_name_inside_body_prose_does_not_over_block(self) -> None:
+        # ``--body "env -S 'gh issue list'"`` -- the env-name is one quoted token
+        # of a real private post, NOT an execution introducer (no word-splitting).
+        cmd = f"""gh issue create --repo {_PRIV_SLUG} --body "env -S 'gh issue list'\""""
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_env_split_flag_with_no_following_operand_is_none(self) -> None:
+        # A trailing ``env -S`` with nothing after the flag has no operand.
+        assert _gh_glab_hiding._env_split_string_operand(["env", "-S"]) is None
+
+    def test_env_non_flag_arg_stops_the_scan(self) -> None:
+        # ``env VAR=x gh ...`` -- the first non-flag word after ``env`` ends the
+        # flag scan (env's own assignment/command argument), so no split operand
+        # is extracted from this segment (a real ``gh`` there is caught elsewhere).
+        assert _gh_glab_hiding._env_split_string_operand(["env", "VAR=x", "gh", "issue", "create"]) is None
+
+    def test_env_other_dash_flags_then_exhaust_is_none(self) -> None:
+        # ``env -i -u VAR`` -- only non-split dash flags follow, exhausting the
+        # word list with no ``-S``/``--split-string`` operand found.
+        assert _gh_glab_hiding._env_split_string_operand(["env", "-i", "-u"]) is None
+
+
+class TestHereStringIntroducer:
+    """``<shell> <<< "str"`` feeds a literal string to a shell on STDIN."""
+
+    @pytest.mark.parametrize(
+        "introducer",
+        [
+            f'bash <<< "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'bash <<<"gh issue create --repo {_PUBLIC_SLUG}"',
+            f'sh <<< "glab mr create --repo {_PUBLIC_SLUG}"',
+            f'/bin/zsh <<< "gh issue create --repo {_PUBLIC_SLUG}"',
+        ],
+    )
+    def test_inner_gh_in_shell_here_string_fails_closed(self, introducer: str) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_benign_here_string_does_not_over_block(self) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash <<< "echo done"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_non_shell_here_string_consumer_does_not_over_block(self) -> None:
+        # ``cat <<< "gh ..."`` only PRINTS the string -- ``cat`` is not a shell,
+        # so the string is never executed and the here-string is not an
+        # execution introducer for it.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && cat <<< "gh issue create --repo {_PUBLIC_SLUG}"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+
+class TestEvalIntroducer:
+    """``eval`` concatenates its literal args and runs them as a command."""
+
+    @pytest.mark.parametrize(
+        "introducer",
+        [
+            f'eval "gh issue create --repo {_PUBLIC_SLUG}"',
+            f"eval \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
+            f"eval gh issue create --repo {_PUBLIC_SLUG}",
+            f'eval "glab mr create --repo {_PUBLIC_SLUG}"',
+            f'command eval "gh issue create --repo {_PUBLIC_SLUG}"',
+        ],
+    )
+    def test_inner_gh_in_eval_fails_closed(self, introducer: str) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_benign_eval_does_not_over_block(self) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo done"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_subst_marker_inside_introducer_operand_fails_closed(self) -> None:
+        # An introducer operand whose body carries a ``$(gh ...)`` substitution
+        # marker fails closed via the marker path inside the recursive analyser.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo $(gh issue create --repo {_PUBLIC_SLUG})"'
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+
+class TestChildShellStringAnalyser:
+    """The self-contained recursive analyser for one introducer operand string.
+
+    Its contract is "does THIS literal command-string run gh/glab", independent
+    of the top-level ``_command_hides_gh_glab`` short-circuits, via three paths:
+    a ``$(gh`` substitution marker, a bare ``gh``/``glab`` word, or a nested
+    introducer operand that itself runs gh/glab.
+    """
+
+    def test_substitution_marker_in_operand_runs_gh(self) -> None:
+        operand = f"echo $(gh issue create --repo {_PUBLIC_SLUG})"
+        assert _gh_glab_hiding._child_shell_string_runs_gh_glab(operand) is True
+
+    def test_bare_gh_word_in_operand_runs_gh(self) -> None:
+        assert _gh_glab_hiding._child_shell_string_runs_gh_glab(f"gh issue create --repo {_PUBLIC_SLUG}") is True
+
+    def test_nested_introducer_operand_runs_gh(self) -> None:
+        assert (
+            _gh_glab_hiding._child_shell_string_runs_gh_glab(f'env -S "gh issue create --repo {_PUBLIC_SLUG}"') is True
+        )
+
+    def test_benign_operand_runs_nothing(self) -> None:
+        assert _gh_glab_hiding._child_shell_string_runs_gh_glab("echo done") is False
+
+
+class TestExecIntroducerRegistry:
+    """Meta-test pinning the closed set of static inline-string execution introducers.
+
+    The recognised set is the anti-whack-a-mole contract: a scanner that
+    enumerates execution mechanisms by RECALL leaks on every un-enumerated
+    introducer (this fix's 5th rework). Pinning ``_EXEC_INTRODUCERS`` to the
+    documented tuple AND requiring an extractor for each means adding or removing
+    a construct trips this test, forcing the docstring enumeration + corpus to
+    move with the code rather than drifting silently.
+    """
+
+    def test_recognised_introducer_set_is_pinned(self) -> None:
+        assert _gh_glab_hiding._EXEC_INTRODUCERS == ("shell_c", "env_split_string", "here_string", "eval")
+
+    def test_every_introducer_has_an_extractor(self) -> None:
+        assert tuple(_gh_glab_hiding._EXEC_INTRODUCER_EXTRACTORS) == _gh_glab_hiding._EXEC_INTRODUCERS
+
+    def test_no_extra_extractor_without_a_registry_entry(self) -> None:
+        assert set(_gh_glab_hiding._EXEC_INTRODUCER_EXTRACTORS) == set(_gh_glab_hiding._EXEC_INTRODUCERS)
 
 
 class TestProbeEnvResolution:

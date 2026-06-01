@@ -39,19 +39,17 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _repo_visibility
+from teatree.hooks import _gh_glab_hiding, _repo_visibility
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._shell_lexer import TokenKind, split_commands, tokenize
 
-# Repo-visibility / privacy resolution lives in ``_repo_visibility`` (split
-# out for module-health LOC). Re-exported here so existing callers and tests
-# keep using the ``publish_surface`` names.
+# Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
+# hidden-``gh``/``glab``-invocation detection lives in ``_gh_glab_hiding``
+# (both split out for module-health LOC). Re-exported / re-imported here so
+# existing callers and tests keep using the ``publish_surface`` names.
 slug_for_cwd = _repo_visibility.slug_for_cwd
-
-# A leading ``KEY=value`` token is an inline env assignment, not the
-# command name -- bash applies it to the command's environment. Skipped
-# so ``FOO=1 git commit`` is still classified as a ``git commit``.
-_ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+_command_segments = _gh_glab_hiding.command_segments
+_command_hides_gh_glab = _gh_glab_hiding.command_hides_gh_glab
+_ENV_ASSIGNMENT_RE = _gh_glab_hiding.ENV_ASSIGNMENT_RE
 
 # ``git commit`` is the first command name + verb (after any env prefix).
 _COMMIT_WORD_COUNT: Final[int] = 2
@@ -83,34 +81,6 @@ _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
     }
 )
 
-# Two-char group/subshell/process-substitution openers a ``gh``/``glab``
-# command word can hide behind. The lexer treats ``(``/``)``/``{`` as ordinary
-# word chars, so ``$(gh``/``<(gh``/``>(gh``/``=(gh`` arrive as one WORD token
-# with the opener attached. Stripped LONGEST-MATCH-FIRST so ``$(`` is consumed
-# as a unit, not as a stray ``$`` leaving ``(gh``.
-_MULTICHAR_OPENERS: Final[tuple[str, ...]] = ("$(", "<(", ">(", "=(")
-
-# Single-char group/subshell/backtick openers. A bare ``(gh``, ``{gh``, or
-# ``\`gh`` token strips down to ``gh``.
-_SINGLECHAR_OPENERS: Final[frozenset[str]] = frozenset({"(", "{", "`"})
-
-# Command words counted as a top-level ``gh``/``glab`` invocation.
-_GH_GLAB_WORDS: Final[frozenset[str]] = frozenset({"gh", "glab"})
-
-# Substitution markers that introduce a ``gh``/``glab`` command word inside a
-# command substitution ``$(gh ...)`` / ``echo $(glab ...)`` or a backtick
-# ``\`gh ...\``. These can appear anywhere in a token (incl. wholly inside one
-# quoted token, ``--body "$(gh ...)"``) where the count invariant alone misses
-# them (the whole substitution is one token), so the whole token value is
-# scanned for both ``gh`` and ``glab`` and both the ``$(`` and backtick forms.
-_SUBST_MARKERS: Final[tuple[str, ...]] = ("$(gh", "$(glab", "`gh", "`glab")
-
-# Shell interpreters whose ``-c`` argument is a command STRING bash hands to a
-# child shell. A ``gh``/``glab`` invocation inside that quoted string is one
-# WORD token that does not strip to ``gh``/``glab`` (the count invariant misses
-# it) and the segment's own ``words[0]`` is the shell, not gh/glab.
-_SHELL_WORDS: Final[frozenset[str]] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash"})
-
 
 def is_git_commit_command(command: str) -> bool:
     """Return True iff the first command segment is a ``git commit``.
@@ -122,29 +92,6 @@ def is_git_commit_command(command: str) -> bool:
     while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
         words = words[1:]
     return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
-
-
-def _command_segments(command: str) -> list[list[str]]:
-    """Return the WORD-value lists of every ``&&``/``;``/``|``/newline segment.
-
-    Each segment's leading inline env assignments (``FOO=1 gh ...``) are
-    stripped, mirroring :func:`is_git_commit_command`, so a posting verb
-    behind an env prefix is still seen. Empty segments are dropped.
-
-    The banned-terms SCANNER inspects the WHOLE payload (it finds a term in
-    any segment), so the carve-out must inspect every segment too -- a
-    posting verb behind a leading ``cd ... &&`` / env-assignment prefix is
-    a true command, not noise, and ignoring it over-blocks a legitimate
-    private-repo post.
-    """
-    segments: list[list[str]] = []
-    for segment in split_commands(tokenize(command)):
-        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
-        while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
-            words = words[1:]
-        if words:
-            segments.append(words)
-    return segments
 
 
 def _segment_is_posting_verb(words: list[str]) -> bool:
@@ -172,177 +119,6 @@ def _segment_is_raw_rest(words: list[str]) -> bool:
     fail closed on the whole command.
     """
     return words[0] in {"gh", "glab"} and len(words) >= _RAW_REST_WORD_COUNT and words[1] == "api"
-
-
-def _strip_leading_openers(value: str) -> str:
-    r"""Strip a leading run of group/subshell/procsub openers from a WORD token.
-
-    The two-char openers (``$(``, ``<(``, ``>(``, ``=(``) are matched before the
-    single-char ones (``(``, ``{``, backtick) so ``$(`` is consumed as a unit,
-    not as a stray ``$`` that would leave ``(gh`` un-stripped. The run is
-    stripped repeatedly so a doubly-wrapped ``$((gh`` still reduces to ``gh``.
-
-    A bare ``gh`` strips nothing and is returned unchanged; ``(gh``, ``$(gh``,
-    ``<(gh``, ``{gh``, ``\`gh`` all reduce to ``gh``.
-    """
-    while value:
-        for opener in _MULTICHAR_OPENERS:
-            if value.startswith(opener):
-                value = value[len(opener) :]
-                break
-        else:
-            if value[0] in _SINGLECHAR_OPENERS:
-                value = value[1:]
-                continue
-            break
-    return value
-
-
-def _count_top_level_gh_glab_segments(command: str) -> int:
-    """Count segments whose ``words[0]`` is EXACTLY ``gh``/``glab`` (no stripping).
-
-    These are the invocations the segment parser recognises and the existing
-    ``all(target_private)`` check already evaluates. Leading inline env
-    assignments are stripped (mirroring :func:`_command_segments`), but NO
-    wrapper/env-command word is: ``env FOO=x gh ...``, ``eval gh ...``, and a
-    ``( gh ...)`` segment whose ``words[0]`` is the opener do NOT count -- that
-    asymmetry is what makes the count invariant fire on a hidden invocation.
-    """
-    return sum(1 for words in _command_segments(command) if words[0] in _GH_GLAB_WORDS)
-
-
-def _shell_c_string_hides_gh_glab(words: list[str]) -> bool:
-    r"""Return True iff a shell ``-c`` command-string in ``words`` runs ``gh``/``glab``.
-
-    A shell token -- one whose ``Path(word).name`` basename is in ``_SHELL_WORDS``
-    (``sh``/``bash``/``zsh``/``dash``/``ksh``/``ash``, so path-forms ``/bin/sh``
-    and ``/usr/bin/env bash`` match) -- found ANYWHERE in the segment and followed
-    by a ``-c``-style flag (any flag token containing ``c`` -- ``-c``, ``-lc``,
-    ``-ic``, ``-cx``, ...) hands the next argument as a STATIC command-string to a
-    child shell. That argument is analysed by :func:`_child_shell_string_runs_gh_glab`,
-    which is itself recursive -- so a nested ``sh -c "sh -c 'gh ...'"`` fails closed
-    by recursion, and an inner ``gh``/``glab`` command-word means a real invocation
-    is hidden behind the shell wrapper.
-
-    Scanning for the shell token ANYWHERE in the segment (not only at ``words[0]``)
-    subsumes wrapper words (``timeout``/``nice``/``xargs``/``env``/``command``) and
-    the ``find . -exec sh -c "..." \\;`` form (the ``\\;`` terminator lexes as a
-    literal argument, keeping the inner ``sh -c`` in the same segment) without
-    enumerating them.
-
-    Scoped STRICTLY to the argument immediately following a ``-c`` flag -- a prose
-    ``--body "... gh ..."`` token elsewhere in a posting segment is NOT
-    re-tokenized, so an ordinary private post mentioning the word ``gh`` is not
-    over-blocked.
-    """
-    for i, word in enumerate(words[:-1]):
-        if Path(word).name not in _SHELL_WORDS:
-            continue
-        for j in range(i + 1, len(words) - 1):
-            flag = words[j]
-            if flag.startswith("-") and "c" in flag:
-                if _child_shell_string_runs_gh_glab(words[j + 1]):
-                    return True
-                break
-            if not flag.startswith("-"):
-                break
-    return False
-
-
-def _child_shell_string_runs_gh_glab(command_string: str) -> bool:
-    r"""Return True iff a child-shell ``-c`` ``command_string`` runs ``gh``/``glab``.
-
-    The string is the full command bash hands to a child shell, so EVERY
-    ``gh``/``glab`` command-word inside it targets an unverifiable surface (the
-    parent gate cannot resolve the child's ``--repo``) -- ANY such word is a
-    hidden invocation, not just a surplus one. So this fails closed when:
-
-    - any WORD token strips (:func:`_strip_leading_openers`) to ``gh``/``glab``;
-    - a substitution marker (``$(gh``/backtick ``gh``) appears in any token; or
-    - a nested shell ``-c`` command-string itself runs ``gh``/``glab`` -- via
-        :func:`_shell_c_string_hides_gh_glab` per re-tokenized segment -- so
-        ``sh -c "sh -c 'gh ...'"`` fails closed by recursion.
-
-    Unlike :func:`_command_hides_gh_glab`'s top-level ``T > R`` count invariant --
-    which subtracts the recognised top-level segments whose target the gate DID
-    verify -- inside an opaque child-shell string no target is verifiable, so the
-    threshold is ``T >= 1``, not ``T > R``.
-    """
-    tokens = [token for token in tokenize(command_string) if token.kind is TokenKind.WORD]
-    if any(marker in token.value for token in tokens for marker in _SUBST_MARKERS):
-        return True
-    if any(_strip_leading_openers(token.value) in _GH_GLAB_WORDS for token in tokens):
-        return True
-    return any(_shell_c_string_hides_gh_glab(words) for words in _command_segments(command_string))
-
-
-def _command_hides_gh_glab(command: str) -> bool:
-    r"""Return True iff a ``gh``/``glab`` invocation is hidden from the segment scan.
-
-    The carve-out's ``all(target_private)`` check only evaluates ``gh``/``glab``
-    invocations the segment parser recognises as top-level segments. An
-    invocation reached through a subshell ``( gh ...)`` / ``$( gh ...)``, a brace
-    group ``{ gh ...}``, a process substitution ``<(gh ...)`` / ``>(gh ...)`` /
-    ``=(gh ...)``, a command substitution ``$(gh ...)`` / ``\`gh ...\```, or a
-    wrapper word (``eval gh ...``, ``xargs gh ...``, ``env FOO=x gh ...``,
-    ``command gh ...``) is NOT a recognised segment, so a PUBLIC-targeting post
-    can hide behind a private one. This detects that hiding so the carve-out
-    fails closed (caller returns False => hard-block, no downgrade).
-
-    Three structurally-complete checks; any firing means a hidden invocation:
-
-    - **Substring marker:** any WORD token containing ``$(gh``/``$(glab`` or a
-        backtick immediately followed by ``gh``/``glab``. This catches the
-        in-ONE-token quoted substitution ``--body "$(gh ... PUB ...)"`` that the
-        count check alone misses (the whole substitution is one token).
-    - **Shell ``-c`` command-string:** a ``sh``/``bash``/``zsh``/``dash``/``ksh``/
-        ``ash`` segment whose ``-c``-style flag is followed by a command-string
-        argument that, when re-tokenized, runs ``gh``/``glab``
-        (:func:`_shell_c_string_hides_gh_glab`). The inner verb lives wholly
-        inside the quoted ``-c`` argument -- one WORD token that does not strip to
-        ``gh``/``glab`` (T not raised) inside a ``sh`` segment (R not raised) --
-        so the count invariant alone misses ``... && sh -c "gh ... --repo PUBLIC
-        ..."``. Re-tokenization is scoped STRICTLY to the ``-c`` argument, never
-        an arbitrary token, so an ordinary private post whose ``--body`` prose
-        contains the word ``gh`` is not over-blocked.
-    - **Count invariant:** ``T > R`` where ``T`` is the number of WORD tokens
-        that, after stripping a leading run of opener prefixes
-        (:func:`_strip_leading_openers`), equal exactly ``gh``/``glab`` -- every
-        ``gh``/``glab`` command-word however it is wrapped -- and ``R`` is the
-        number of recognised top-level ``gh``/``glab`` segments
-        (:func:`_count_top_level_gh_glab_segments`). More command-words than
-        recognised segments means at least one is hidden in a
-        wrapper/procsub/quoted-subst the segment parser cannot resolve.
-
-    A single bare private post (``gh issue create --repo PRIV --body "see (gh
-    issue 5) and glab notes, cost $5"``) has ``T==R==1`` and no ``$(gh``/backtick
-    marker, so it is NOT over-blocked: the quoted prose is one token that strips
-    to neither ``gh`` nor ``glab``. A chained READ ``gh`` (``... && gh issue view
-    5``) is a recognised segment, so it counts toward both ``T`` and ``R`` and
-    does not trip the invariant.
-
-    Accepts a rare exotic over-block where ``gh`` is an option VALUE
-    (``--assignee gh`` => ``T==2, R==1`` => fail-closed). Over-block is the SAFE
-    failure for a privacy gate; fragile option-value parsing to avoid it is not
-    worth the bypass surface it would add.
-
-    Accepted static-analysis limitations -- these resolve the gh/glab verb at
-    RUNTIME, so a static gate that cannot execute the shell cannot see them, and
-    fragile heuristics for them are deliberately NOT attempted:
-
-    - **Variable indirection:** ``G=gh; "$G" issue create --repo PUBLIC ...`` --
-        the command word is a parameter expansion resolved when the shell runs.
-    - **Substitution producing the verb:** ``$(echo gh) issue create ...`` or the
-        backtick ``\`echo gh\` issue create ...`` -- the verb is the OUTPUT of an
-        inner command, not a static token.
-    """
-    tokens = [token for token in tokenize(command) if token.kind is TokenKind.WORD]
-    if any(marker in token.value for token in tokens for marker in _SUBST_MARKERS):
-        return True
-    if any(_shell_c_string_hides_gh_glab(words) for words in _command_segments(command)):
-        return True
-    total = sum(1 for token in tokens if _strip_leading_openers(token.value) in _GH_GLAB_WORDS)
-    return total > _count_top_level_gh_glab_segments(command)
 
 
 def is_gh_glab_posting_command(command: str) -> bool:
