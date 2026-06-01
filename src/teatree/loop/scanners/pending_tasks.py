@@ -34,12 +34,21 @@ class PendingTasksScanner:
 
     def scan(self) -> list[ScanSignal]:
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
-        pending = task_model.objects.filter(status=task_model.Status.PENDING).order_by("id")[: self.limit]
+        pending = (
+            task_model.objects.filter(status=task_model.Status.PENDING)
+            .select_related("ticket")
+            .order_by("id")[: self.limit]
+        )
         return [
             ScanSignal(
                 kind="pending_task",
                 summary=f"Task {task.id} ({task.phase}) pending",
-                payload={"task_id": task.id, "phase": task.phase, "ticket_id": task.ticket_id},
+                payload={
+                    "task_id": task.id,
+                    "phase": task.phase,
+                    "ticket_id": task.ticket_id,
+                    "ticket_role": task.ticket.role,
+                },
             )
             for task in pending
         ]

@@ -15,43 +15,34 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
-from teatree.core.models import Task, Ticket
+from teatree.core.models import Task
+from teatree.core.phases import SUBAGENT_BY_PHASE, phase_spellings, subagent_for_phase
 
-# Maps ticket role + task phase → the sub-agent the slot should Agent().
-# Reviewer-role + reviewing → t3:reviewer; author-role + coding →
-# t3:orchestrator (it chains coder → tester → reviewer → shipper);
-# author-role + answering → t3:answerer (the reactive Slack-answer loop's
-# NEEDS_WORK delegation path, #1014 — the loop has no Agent tool, so it
-# enqueues a Task here and the fat loop's atomic `claim-next` spawns the
-# bounded answerer sub-agent; no new spawn path, no double-dispatch).
-_SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
-    (Ticket.Role.REVIEWER, "reviewing"): "t3:reviewer",
-    (Ticket.Role.AUTHOR, "coding"): "t3:orchestrator",
-    (Ticket.Role.AUTHOR, "answering"): "t3:answerer",
-    # #1191 scanning-news scanner queues author+scanning_news tasks; the
-    # dispatcher routes them to the t3:scanning-news skill subagent. The
-    # sibling architectural_review phase is intentionally NOT registered
-    # here — it ships its own headless executor — but scanning-news has
-    # no dedicated executor and uses the standard pending-task pipeline.
-    (Ticket.Role.AUTHOR, "scanning_news"): "t3:scanning-news",
-}
+# The phase → sub-agent authority is the single canonical map in
+# ``teatree.core.phases``. Each author phase dispatches to its OWN agent
+# (coding → t3:coder, testing → t3:tester, reviewing → t3:reviewer,
+# shipping → t3:shipper); the reviewer-role reviewing entry stays. The
+# loop is the per-phase dispatcher, never a single orchestrator that
+# chains the phases inline (BLUEPRINT §5.2 / §17.8 invariant 10).
+_SUBAGENT_BY_PHASE = SUBAGENT_BY_PHASE
 
 
 def _subagent_for(task: Task) -> str:
-    ticket = task.ticket
-    return _SUBAGENT_BY_PHASE.get((ticket.role, task.phase), "")
+    return subagent_for_phase(task.ticket.role, task.phase)
 
 
 def _dispatchable_q() -> Q:
     """DB-side mirror of ``_subagent_for`` for the atomic claim filter.
 
-    ``Q`` matching exactly the (ticket.role, task.phase) pairs that have a
+    ``Q`` matching the (ticket.role, task.phase) pairs that have a
     registered subagent, so the atomic claim restricts to dispatchable
-    tasks (one source of truth).
+    tasks (one source of truth). Phase is matched across every accepted
+    spelling (``phase_spellings``) so a short-verb ``code``/``review`` task
+    resolves the same as the canonical token ``_subagent_for`` normalizes.
     """
     q = Q(pk__in=[])  # matches nothing; OR-folded below
     for role, phase in _SUBAGENT_BY_PHASE:
-        q |= Q(ticket__role=role, phase=phase)
+        q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
     return q
 
 
