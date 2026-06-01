@@ -57,12 +57,9 @@ def zones_for(
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
-    # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400),
-    # so live-loops is populated first; the away-mode availability anchor and
-    # the configured-overlays summary follow it.
+    # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400);
+    # the live availability segment rides on that line (#1676).
     _populate_live_loops_anchor(zones)
-    _populate_availability_anchor(zones)
-    _populate_overlays_anchor(zones)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -93,36 +90,6 @@ def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, Statusli
         overflow = len(entries) - _MAX_PER_STATE
         if overflow > 0:
             zone_list.append(f"(+{overflow} more)")
-
-
-def _populate_availability_anchor(zones: StatuslineZones) -> None:
-    """Append the ``mode=away · N queued`` anchor when availability=away (#58).
-
-    Fails open: any import or query error degrades to a no-op so a broken
-    availability config can never blank the statusline.
-    """
-    try:
-        from teatree.core.availability import pending_questions_count, resolve_mode  # noqa: PLC0415
-        from teatree.loop.statusline import availability_anchor  # noqa: PLC0415
-
-        resolution = resolve_mode()
-        queued = pending_questions_count() if resolution.mode == "away" else 0
-        line = availability_anchor(resolution.mode, queued)
-    except Exception:  # noqa: BLE001
-        return
-    if line:
-        zones.anchors.append(line)
-
-
-def _populate_overlays_anchor(zones: StatuslineZones) -> None:
-    """Append the ``overlays: a · b · c`` configured-overlays summary line.
-
-    :func:`~teatree.loop.statusline.overlays_anchor` is itself fail-open, so
-    this wrapper exists only to do the append.
-    """
-    from teatree.loop.statusline import overlays_anchor  # noqa: PLC0415
-
-    zones.anchors.extend(overlays_anchor())
 
 
 def _populate_live_loops_anchor(zones: StatuslineZones) -> None:
