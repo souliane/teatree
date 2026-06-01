@@ -7,6 +7,9 @@ from teatree.core.models import Task, Ticket
 from teatree.skill_loading import DEFAULT_SKILLS_DIR
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
+# The #1135 default ``pr_review_companion``. A headless reviewer must always
+# see the project review-quality bar in full, not the demoted summary.
+_REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
 
 
 def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
@@ -36,24 +39,48 @@ def _is_primary(name: str, primary_skills: set[str]) -> bool:
     return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
 
 
+def _explicit_load_name(name: str) -> str:
+    """Return the bare ``/skill`` reference for an explicit-load instruction."""
+    return Path(name).parent.name if "/" in name else name
+
+
 def _read_skill_contents_scoped(
     skills: list[str],
     *,
     primary_skills: set[str],
+    explicit_load_skills: set[str] | None = None,
     skills_dir: Path | None = None,
 ) -> str:
-    """Read skills with scoping: primary skills get full content, others get a summary line."""
+    """Read skills with scoping.
+
+    Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
+    phase — the overlay's primary review skills) get full content. Skills in
+    *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
+    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
+    "available — load if needed" summary. Everything else gets the generic
+    summary.
+    """
     sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+    explicit = explicit_load_skills or set()
     sections: list[str] = []
     companion_names: list[str] = []
+    explicit_names: list[str] = []
     for name in skills:
         if _is_primary(name, primary_skills):
             skill_md = _find_skill_md(name, sd)
             if skill_md is not None:
                 content = skill_md.read_text(encoding="utf-8")
                 sections.append(f"--- SKILL: {name} ---\n{content}")
+        elif name in explicit or _explicit_load_name(name) in explicit:
+            explicit_names.append(name)
         else:
             companion_names.append(name)
+    if explicit_names:
+        block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
+        block += "\n".join(
+            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
+        )
+        sections.append(block)
     if companion_names:
         summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
         summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
@@ -138,11 +165,40 @@ def build_task_prompt(task: Task) -> str:
     return "\n".join(lines)
 
 
+def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
+    """Return ``(primary_review_skills, explicit_load_skills)`` for the reviewing phase.
+
+    A ``claude -p`` headless reviewer does not auto-call the Skill tool, so the
+    overlay's review conventions must reach it inline. The active overlay's
+    review-skill set (``[pr_review_companion, *companion_skills]``) is split per
+    the token budget: the PRIMARY review skill (first entry) plus ``code-review``
+    embed IN FULL; any additional review companions get a verbatim
+    "Load /<skill> via the Skill tool BEFORE reviewing" instruction rather than
+    being demoted to the generic, ignorable "available — load if needed" summary.
+    Only the review skills actually present in *skills* are scoped, so a
+    companion that failed to resolve is not surfaced as required.
+    """
+    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+
+    review_skills = [s for s in active_overlay_review_skills() if s in skills]
+    primary: set[str] = set(_REVIEW_PHASE_ALWAYS_FULL)
+    explicit: set[str] = set()
+    if review_skills:
+        primary.add(review_skills[0])
+        explicit.update(review_skills[1:])
+    explicit -= primary
+    return primary, explicit
+
+
 def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
     """Build the system context for headless (SDK) execution.
 
     When *lifecycle_skill* is provided, only the lifecycle skill and rules
-    are embedded in full; companion skills get a one-line summary to save tokens.
+    are embedded in full; companion skills get a one-line summary to save
+    tokens. On the reviewing phase the active overlay's primary review skill
+    and ``code-review`` are additionally embedded in full, and any remaining
+    overlay review companions get a verbatim "load before reviewing"
+    instruction, so a headless reviewer reviews WITH the overlay's conventions.
     """
     lines = ["You are a TeaTree headless agent executing a task."]
     lines.extend((f"Task ID: {task.pk}", f"Ticket: {task.ticket.ticket_number}"))
@@ -155,7 +211,16 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
 
     if skills:
         if lifecycle_skill:
-            skill_content = _read_skill_contents_scoped(skills, primary_skills={lifecycle_skill})
+            primary_skills = {lifecycle_skill}
+            explicit_load_skills: set[str] | None = None
+            if task.phase == "reviewing":
+                review_primary, explicit_load_skills = _review_phase_scoping(skills)
+                primary_skills |= review_primary
+            skill_content = _read_skill_contents_scoped(
+                skills,
+                primary_skills=primary_skills,
+                explicit_load_skills=explicit_load_skills,
+            )
         else:
             skill_content = _read_skill_contents(skills)
         if skill_content:
