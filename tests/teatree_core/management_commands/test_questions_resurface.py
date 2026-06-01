@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 
-from teatree.core.management.commands.questions import _resurface_text
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.notify import _resurface_text
 
 pytestmark = pytest.mark.django_db
 

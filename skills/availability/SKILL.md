@@ -42,7 +42,8 @@ t3 teatree availability show
 t3 teatree availability away --until 2026-05-18T22:00:00+02:00
 t3 teatree availability away
 
-# Force present-mode (rare — typical use is to cancel an `away` override).
+# Force present-mode (cancel an `away` override). On an away→present
+# transition this auto-drains the deferred backlog to the user's Slack DM.
 t3 teatree availability present
 
 # Drop the override; let the cron schedule decide.
@@ -56,7 +57,8 @@ t3 teatree questions list --all    # include answered/dismissed
 t3 teatree questions answer 42 "yes, ship it"
 t3 teatree questions dismiss 42 --reason "stale"
 
-# Re-post the pending backlog to the user's Slack DM (away→present drain).
+# Manually re-post the pending backlog (idempotent; the away→present
+# transition already auto-fires this same drain).
 t3 teatree questions resurface
 ```
 
@@ -84,9 +86,13 @@ The agent then proceeds with any work that does not depend on the answer. The us
 
 In **present** mode the question still renders in the client; the separate `handle_mirror_question_to_slack` PreToolUse handler only ADDS the Slack DM (it never denies), so the user sees it on their phone too.
 
-## Returning from away — the drain
+## Returning from away — the drain (auto-fires)
 
-Returning from away must never silently swallow questions. `t3 teatree questions resurface` re-posts every pending `DeferredQuestion` to the user's Slack DM via the canonical `notify_user` egress — idempotent per question (the `BotPing` ledger dedupes), routed through the per-overlay bot, and fail-open (a delivery failure for one question is recorded on its `BotPing` row and never aborts the drain). Run it on the away→present transition (or on the first present-mode tick) so the backlog surfaces where the user reads it.
+Returning from away must never silently swallow questions, and it must not depend on the agent remembering to run a command. The away→present transition therefore **auto-drains** the backlog: `write_override(MODE_PRESENT)` — the function behind `t3 teatree availability present` — reads the prior effective mode before flipping, and when it was `away` it re-posts every pending `DeferredQuestion` to the user's Slack DM. The drain only fires on a real transition (setting present while already present is a no-op, so no spurious re-asks) and is fully fail-open (a Slack failure is swallowed and never blocks the availability flip).
+
+`t3 teatree questions resurface` is the manual / idempotent entry point to the **same** `teatree.core.notify.drain_deferred_questions` egress — idempotent per question (the `BotPing` ledger dedupes the `resurface-deferred-question-<pk>` key), routed through the per-overlay bot, fail-open. Because both paths share one code path, running it after the auto-drain never double-posts.
+
+**Known gap:** the auto-drain hooks `write_override`, so it covers the explicit `t3 teatree availability present` flip. A transition that happens *without* writing an override — a timed `away --until` override lapsing, or a cron window opening — does not auto-drain; surface the backlog with a manual `resurface` (or its idempotent re-run on a present-mode tick) in those cases. A durable cross-tick transition detector (drain whenever the effective mode is present and the last-seen mode was away) would close this, but it is net-new persistent state, not a cheap add-on, so it is deferred.
 
 ## Statusline
 
