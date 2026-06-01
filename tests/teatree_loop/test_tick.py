@@ -1285,7 +1285,7 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
             ),
         ):
             sl = Path(d) / "sl.txt"
-            # Must not raise — fail-open like _populate_availability_anchor.
+            # Must not raise — fail-open like the availability segment.
             run_tick(TickRequest(scanners=[]), statusline_path=sl)
             assert sl.exists()
 
