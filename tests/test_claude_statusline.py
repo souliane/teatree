@@ -61,9 +61,8 @@ class TestStatuslineHook:
         )
 
         assert result.returncode == 0, result.stderr
-        # Skill tokens are space-separated now (previously `|`) — the colored
-        # magenta names provide enough visual separation on their own.
-        assert "skills: t3:code t3:debug" in _strip_ansi(result.stdout)
+        # Skills sharing a ``<ns>:`` prefix collapse to one ``ns:{a,b}`` token.
+        assert "skills: t3:{code,debug}" in _strip_ansi(result.stdout)
 
     def test_omits_skills_when_session_file_absent(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -243,6 +242,51 @@ class TestStatuslineHook:
         assert "rogue" not in plain
 
 
+class TestSkillsNamespaceGrouping:
+    """Skills sharing a ``<ns>:`` prefix collapse into ``ns:{a,b,c}`` to save width."""
+
+    def test_groups_shared_namespace_into_brace_form(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "s-grp.skills").write_text(
+            "t3:code\nt3:ship\nt3:review\nac-django\nupdate-translations\n",
+            encoding="utf-8",
+        )
+
+        result = _run(
+            {"session_id": "s-grp", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # The three t3:* skills collapse to a single braced token; un-namespaced
+        # skills stay verbatim.
+        assert "t3:{code,ship,review}" in plain, plain
+        assert "ac-django" in plain, plain
+        assert "update-translations" in plain, plain
+        # The expanded per-skill tokens must not also appear.
+        assert "t3:code " not in plain, plain
+        assert "t3:ship" not in plain.replace("t3:{code,ship,review}", ""), plain
+
+    def test_single_member_namespace_stays_verbatim(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "s-one.skills").write_text("t3:code\nac-django\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-one", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # A lone member of a namespace is not worth braces — render as-is.
+        assert "t3:code" in plain, plain
+        assert "t3:{code}" not in plain, plain
+        assert "ac-django" in plain, plain
+
+
 class TestFreshnessInlineRefresh:
     """statusline.sh recomputes ``behind`` inline when FETCH_HEAD is newer than the tick."""
 
@@ -376,11 +420,71 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "loop-owner: you ✓" in plain, plain
-        # Confirm it is in the header (first line).
+        # The badge belongs on the loop-specific line, NOT the context header.
         header = plain.splitlines()[0]
-        assert "loop-owner: you ✓" in header, header
+        assert "loop-owner:" not in header, header
         # Green SGR present in the raw (non-stripped) output.
         assert "\033[1;32m" in result.stdout, "expected green SGR for owner=you"
+
+    def test_badge_renders_on_loop_line_not_header(self, tmp_path: Path) -> None:
+        """The per-session loop-owner badge sits on the loop line region, not g_context."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="sess-loop", pid=7)
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("loop running · tick 5m\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "sess-loop", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        lines = plain.splitlines()
+        # The header (line 1) carries model/ctx but not the loop-owner badge.
+        assert "model=Claude Opus" in lines[0], lines[0]
+        assert "loop-owner:" not in lines[0], lines[0]
+        # The badge rides the loop line.
+        loop_line = next(line for line in lines if "loop running" in line)
+        assert "loop-owner: you ✓" in loop_line, loop_line
+
+    def test_badge_rides_colorized_production_loop_line(self, tmp_path: Path) -> None:
+        r"""The badge must ride the loop line even when it is ANSI-colorized.
+
+        ``loop.statusline.render`` wraps each anchor as
+        ``\033[38;5;244m{text}\033[0m`` when ``colorize`` is on (the
+        production default), so the real zones-file loop line starts with the
+        CSI escape, not ``l``. The matcher must tolerate that prefix and keep
+        the badge on the same visible line — a separate trailing badge line
+        means loop state lost its single home.
+        """
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="sess-color", pid=9)
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("\033[38;5;244mloop running · tick 5m\033[0m\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "sess-color", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        lines = plain.splitlines()
+        loop_line = next(line for line in lines if "loop running" in line)
+        assert "loop-owner: you ✓" in loop_line, loop_line
+        # The badge shares the loop line — never spilled onto its own trailing line.
+        assert sum(1 for line in lines if "loop-owner:" in line) == 1, plain
+        badge_line = next(line for line in lines if "loop-owner:" in line)
+        assert "loop running" in badge_line, plain
 
     def test_foreign_owner_badge_shows_short_sid_and_pid(self, tmp_path: Path) -> None:
         """Different session owns the loop → yellow ``abcdef01·pid4242``."""
