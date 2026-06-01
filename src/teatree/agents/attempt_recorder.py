@@ -32,8 +32,11 @@ class AttemptUsage:
     """
 
     agent_session_id: str = ""
+    model: str = ""
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     cost_usd: float | None = None
     num_turns: int | None = None
 
@@ -109,8 +112,11 @@ def record_result_envelope(
         exit_code=0,
         result=result,
         agent_session_id=usage.agent_session_id,
+        model=usage.model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
         cost_usd=usage.cost_usd,
         num_turns=usage.num_turns,
     )

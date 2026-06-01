@@ -314,14 +314,46 @@ def _record_success(task: Task, envelope: dict[str, str], *, phase: str = "") ->
     if not result:
         result = {"summary": agent_text[:1000]}
 
+    model = envelope.get("model", "")
     usage = AttemptUsage(
         agent_session_id=envelope.get("session_id", ""),
+        model=model,
         input_tokens=_safe_int(envelope.get("input_tokens")),
         output_tokens=_safe_int(envelope.get("output_tokens")),
-        cost_usd=_safe_float(envelope.get("cost_usd")),
+        cache_read_tokens=_safe_int(envelope.get("cache_read_tokens")),
+        cache_write_tokens=_safe_int(envelope.get("cache_write_tokens")),
+        cost_usd=_resolve_cost_usd(envelope, model=model),
         num_turns=_safe_int(envelope.get("num_turns")),
     )
     return record_result_envelope(task, result, phase=phase, usage=usage)
+
+
+def _resolve_cost_usd(envelope: dict[str, str], *, model: str) -> float | None:
+    """Persist the CLI-reported cost when present, else the price-table estimate.
+
+    Persisting an estimate at capture time means a row's ``cost_usd`` is never
+    NULL once any token count was captured — the ``t3 cost`` report and the
+    watchdog both read a real number rather than re-deriving it each query.
+    Returns ``None`` only when nothing at all was captured.
+    """
+    reported = _safe_float(envelope.get("cost_usd"))
+    if reported is not None:
+        return reported
+    token_keys = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    if all(envelope.get(key) is None for key in token_keys):
+        return None
+    from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415
+
+    return price_table_cost_usd(
+        AttemptUsage(
+            model=model or None,
+            reported_cost_usd=None,
+            input_tokens=_safe_int(envelope.get("input_tokens")) or 0,
+            output_tokens=_safe_int(envelope.get("output_tokens")) or 0,
+            cache_read_tokens=_safe_int(envelope.get("cache_read_tokens")) or 0,
+            cache_write_tokens=_safe_int(envelope.get("cache_write_tokens")) or 0,
+        ),
+    )
 
 
 def _build_headless_command(
@@ -362,25 +394,57 @@ def _get_resume_session_id(task: Task) -> str:
 def _parse_cli_envelope(stdout: str) -> dict[str, str]:
     """Parse the Claude CLI JSON envelope to extract session_id, text, and usage.
 
-    When ``--output-format json`` is used, stdout is a single JSON object
-    with ``session_id`` and ``result`` (the agent's text output) at the top level.
-    Usage stats (``cost_usd``, ``num_turns``, ``input_tokens``, ``output_tokens``)
-    are extracted when present.  Falls back gracefully if stdout is not a CLI envelope.
+    With ``--output-format json`` stdout is a single JSON object. ``session_id``
+    and ``result`` (the agent's text output) and ``num_turns`` sit at the top
+    level; the per-run cost is ``total_cost_usd`` (top level) and the token
+    counts live in the nested ``usage`` object as ``input_tokens`` /
+    ``output_tokens`` / ``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens``. The model the run billed against is read from
+    the single key of ``modelUsage`` (e.g. ``claude-opus-4-8[1m]``).
+
+    Pre-2.x envelopes that put cost/tokens at the top level (``cost_usd`` and
+    flat ``input_tokens``) are still honoured as a fallback so older transcripts
+    parse. Falls back gracefully if stdout is not a CLI envelope.
     """
     try:
         envelope = json.loads(stdout)
-        if isinstance(envelope, dict) and "session_id" in envelope:
-            parsed: dict[str, str] = {
-                "session_id": str(envelope.get("session_id", "")),
-                "agent_text": str(envelope.get("result", "")),
-            }
-            for key in ("cost_usd", "num_turns", "input_tokens", "output_tokens"):
-                if key in envelope:
-                    parsed[key] = str(envelope[key])
-            return parsed
     except (json.JSONDecodeError, ValueError):
-        pass
-    return {"agent_text": stdout, "session_id": ""}
+        return {"agent_text": stdout, "session_id": ""}
+    if not (isinstance(envelope, dict) and "session_id" in envelope):
+        return {"agent_text": stdout, "session_id": ""}
+
+    parsed: dict[str, str] = {
+        "session_id": str(envelope.get("session_id", "")),
+        "agent_text": str(envelope.get("result", "")),
+    }
+    if "num_turns" in envelope:
+        parsed["num_turns"] = str(envelope["num_turns"])
+
+    cost = envelope.get("total_cost_usd", envelope.get("cost_usd"))
+    if cost is not None:
+        parsed["cost_usd"] = str(cost)
+
+    raw_usage = envelope.get("usage")
+    usage = raw_usage if isinstance(raw_usage, dict) else {}
+    token_keys = {
+        "input_tokens": "input_tokens",
+        "output_tokens": "output_tokens",
+        "cache_read_tokens": "cache_read_input_tokens",
+        "cache_write_tokens": "cache_creation_input_tokens",
+    }
+    for out_key, source in token_keys.items():
+        if source in usage:
+            parsed[out_key] = str(usage[source])
+        elif source in envelope:  # pre-2.x flat fallback
+            parsed[out_key] = str(envelope[source])
+
+    # ``modelUsage`` is keyed by the billed model id (``claude-opus-4-8[1m]``);
+    # a single-model run has one key. Absent on older envelopes — the attempt's
+    # model stays unset and cost falls back to the reasoning tier.
+    model_usage = envelope.get("modelUsage")
+    if isinstance(model_usage, dict) and model_usage:
+        parsed["model"] = str(next(iter(model_usage)))
+    return parsed
 
 
 def _parse_result(agent_text: str) -> dict[str, object]:

@@ -16,6 +16,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
+│ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
+│                 credit.                                                      │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
@@ -126,6 +128,19 @@ Usage: t3 sessions [OPTIONS]
 │ --limit    -n      INTEGER  Max sessions to show [default: 20]               │
 │ --all      -a               Show sessions from all projects                  │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 cost`
+
+```
+Usage: t3 cost [OPTIONS]
+
+ Show cycle-to-date SDK-equivalent spend vs the monthly credit.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the structured report as JSON.                          │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
