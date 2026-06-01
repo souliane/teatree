@@ -173,6 +173,7 @@ def run_tick(
     if not jobs:
         empty_zones = StatuslineZones()
         _populate_live_loops_in_anchors(empty_zones)
+        _populate_overlays_in_anchors(empty_zones)
         _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
@@ -199,6 +200,25 @@ def run_tick(
     _populate_loop_owner_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _populate_overlays_in_anchors(zones: StatuslineZones) -> None:
+    """Append the configured-overlays summary line on the empty-jobs path.
+
+    The non-empty path goes through
+    :func:`teatree.loop.rendering._populate_overlays_anchor` via
+    :func:`teatree.loop.rendering.zones_for` and must not double-populate.
+
+    Fails open: any import/query error degrades to a no-op.
+    """
+    try:
+        from teatree.loop.statusline import overlays_anchor  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        zones.anchors.extend(overlays_anchor())
+    except Exception:  # noqa: BLE001
+        return
 
 
 def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
