@@ -3,7 +3,7 @@
 import subprocess
 from importlib.metadata import entry_points
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
@@ -50,6 +50,24 @@ class TestTeatreeOverlayIsValid:
         ):
             overlay = get_overlay()
             assert isinstance(overlay, TeatreeOverlay)
+
+
+class TestIdentityAliases:
+    def test_canonical_group_leads_with_public_login(self) -> None:
+        overlay = TeatreeOverlay()
+        groups = overlay.config.identity_aliases
+        assert groups, groups
+        assert groups[0][0] == "souliane"
+
+    def test_toml_override_adds_private_handles(self) -> None:
+        config = OverlayConfig()
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {"t3-teatree": {"identity_aliases": [["souliane", "alt-login", "alt.handle"]]}},
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config.apply_toml_overrides("t3-teatree")
+        assert config.identity_aliases == [["souliane", "alt-login", "alt.handle"]]
 
 
 class TestGetRepos:
