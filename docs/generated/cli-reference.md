@@ -1646,11 +1646,16 @@ Usage: t3 tool test-shape [OPTIONS]
  report check, never a PreToolUse gate — it can never lock the agent's tools.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --root                   PATH  Repo root to analyse (default: cwd)           │
-│ --json                         Emit machine-readable JSON.                   │
-│ --update-baseline              Rewrite the committed test:source baseline to │
-│                                the current measurement.                      │
-│ --help                         Show this message and exit.                   │
+│ --root                    PATH  Repo root to analyse (default: cwd)          │
+│ --json                          Emit machine-readable JSON.                  │
+│ --update-baseline               Rewrite the committed test:source baseline   │
+│                                 to the current measurement.                  │
+│ --allow-regression              With --update-baseline, permit writing a     │
+│                                 WORSE ratio than the committed baseline (an  │
+│                                 intentional, reviewed drop). Refused by      │
+│                                 default so the ratchet cannot silently       │
+│                                 loosen.                                      │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4018,6 +4023,8 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 
 ```
 Usage: t3 teatree tasks list [OPTIONS]
+
+ List the teatree tasks queue (not your Claude TODO list).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --status                              TEXT  Filter by status                 │

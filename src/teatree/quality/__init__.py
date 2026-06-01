@@ -30,6 +30,7 @@ from teatree.quality.test_shape import (
     detect_ratio_regression,
     find_duplicate_clusters,
     load_config,
+    loosens_baseline,
     measure_ratio,
 )
 
@@ -52,5 +53,6 @@ __all__ = [
     "find_duplicate_clusters",
     "load_catalog",
     "load_config",
+    "loosens_baseline",
     "measure_ratio",
 ]

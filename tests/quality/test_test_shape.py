@@ -31,6 +31,7 @@ from teatree.quality.test_shape import (
     detect_ratio_regression,
     find_duplicate_clusters,
     load_config,
+    loosens_baseline,
     measure_ratio,
 )
 
@@ -102,6 +103,27 @@ class TestRatioRegression:
     def test_empty_baseline_never_regresses(self) -> None:
         baseline = Baseline(test_lines=0, source_lines=0)
         assert detect_ratio_regression(RatioMeasurement(0, 100), baseline) is None
+
+    @pytest.mark.parametrize(
+        ("measured_test", "measured_source", "expect_loosens"),
+        [
+            (150, 100, True),
+            (200, 100, False),
+            (250, 100, False),
+            (199, 100, True),
+        ],
+        ids=["worse_ratio", "same_ratio", "better_ratio", "one_line_worse"],
+    )
+    def test_loosens_only_when_strictly_below_committed(
+        self, measured_test: int, measured_source: int, *, expect_loosens: bool
+    ) -> None:
+        baseline = Baseline(test_lines=200, source_lines=100, tolerance=0.05)
+        measured = RatioMeasurement(test_lines=measured_test, source_lines=measured_source)
+        assert loosens_baseline(measured, baseline) is expect_loosens
+
+    def test_first_ever_baseline_loosens_nothing(self) -> None:
+        empty = Baseline(test_lines=0, source_lines=0)
+        assert loosens_baseline(RatioMeasurement(1, 100), empty) is False
 
     def test_measure_ratio_counts_significant_lines(self, tmp_path: Path) -> None:
         test_file = tmp_path / "t.py"
@@ -226,6 +248,61 @@ class TestCli:
         assert config.baseline is not None
         assert config.baseline.source_lines == 1
         assert config.mode is Mode.WARN
+
+
+def _repo_with_committed_baseline(tmp_path: Path, *, test_lines: int, source_lines: int) -> Path:
+    """A repo with a fixed live ratio and a configurable committed baseline.
+
+    The test module has 2 significant lines and the source module 1, so the LIVE
+    ratio is 2.0. A committed baseline above 2.0 makes a `--update-baseline` a
+    loosening (the live ratio is worse than committed); below 2.0 makes it a
+    tightening.
+    """
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_one():\n    assert True\n", encoding="utf-8")
+    (tmp_path / "src" / "teatree").mkdir(parents=True)
+    (tmp_path / "src" / "teatree" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.teatree.test_shape]\nmode = "warn"\nmin_cluster = 3\n'
+        f"test_lines = {test_lines}\nsource_lines = {source_lines}\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+class TestUpdateBaselineRatchet:
+    def test_refuses_to_loosen_a_committed_baseline(self, tmp_path: Path) -> None:
+        repo = _repo_with_committed_baseline(tmp_path, test_lines=5, source_lines=1)
+        result = runner.invoke(app, ["tool", "test-shape", "--root", str(repo), "--update-baseline"])
+        assert result.exit_code == 1
+        assert "refusing to loosen" in result.output.lower()
+        committed = load_config(repo / "pyproject.toml").baseline
+        assert committed == Baseline(test_lines=5, source_lines=1)
+
+    def test_allow_regression_overrides_the_refusal(self, tmp_path: Path) -> None:
+        repo = _repo_with_committed_baseline(tmp_path, test_lines=5, source_lines=1)
+        result = runner.invoke(
+            app, ["tool", "test-shape", "--root", str(repo), "--update-baseline", "--allow-regression"]
+        )
+        assert result.exit_code == 0
+        assert "loosened" in result.output.lower()
+        committed = load_config(repo / "pyproject.toml").baseline
+        assert committed == Baseline(test_lines=2, source_lines=1)
+
+    def test_tightening_update_always_allowed(self, tmp_path: Path) -> None:
+        repo = _repo_with_committed_baseline(tmp_path, test_lines=1, source_lines=5)
+        result = runner.invoke(app, ["tool", "test-shape", "--root", str(repo), "--update-baseline"])
+        assert result.exit_code == 0
+        assert "ratcheted" in result.output.lower()
+        committed = load_config(repo / "pyproject.toml").baseline
+        assert committed == Baseline(test_lines=2, source_lines=1)
+
+    def test_first_ever_baseline_writes_without_a_committed_value(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path, mode="warn", flaggable=False)
+        assert load_config(repo / "pyproject.toml").baseline is None
+        result = runner.invoke(app, ["tool", "test-shape", "--root", str(repo), "--update-baseline"])
+        assert result.exit_code == 0
+        assert load_config(repo / "pyproject.toml").baseline is not None
 
 
 class TestRobustness:

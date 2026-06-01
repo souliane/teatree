@@ -238,6 +238,21 @@ def detect_ratio_regression(measured: RatioMeasurement, baseline: Baseline) -> R
     return None
 
 
+def loosens_baseline(measured: RatioMeasurement, baseline: Baseline) -> bool:
+    """True when rebasing to ``measured`` would write a WORSE ratio than ``baseline``.
+
+    The ratchet is only allowed to move in the improving direction. An update
+    that lowers the committed ratio is a silent loosening that makes the check
+    vacuous (a regression "fixed" by re-baselining to the regressed value), so
+    the CLI refuses it unless the drop is explicitly authorised. An update at or
+    above the committed ratio tightens (or holds) the ratchet and is always
+    allowed. The first-ever baseline (no committed source lines) loosens nothing.
+    """
+    if baseline.source_lines <= 0:
+        return False
+    return measured.ratio < baseline.ratio
+
+
 @dataclasses.dataclass(frozen=True)
 class TestShapeConfig:
     __test__: ClassVar[bool] = False
