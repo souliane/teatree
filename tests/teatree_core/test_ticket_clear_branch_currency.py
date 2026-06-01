@@ -1,12 +1,13 @@
-"""``ticket clear`` refuses a CLEAR for a stale ``reviewed_sha`` (#940).
+"""``ticket clear`` refuses a CLEAR only on a real merge conflict (#940).
 
-The CLEAR is the cold reviewer's attestation; binding it to a SHA
-whose merge-base trails the target branch means the release pipeline
-later certifies a tree missing target-branch fixes. The pre-flight
-runs BEFORE :meth:`MergeClear.issue` so the orchestrator's
-``reviewed_sha`` always points at the post-merge SHA. Real ``git
-init`` under ``tmp_path`` exercises the actual ``rev-list`` check —
-no mocks on the git layer.
+Branch-currency is **conflict-only**: a ``reviewed_sha`` that merely
+trails the target branch still clears (GitHub re-applies its diff onto
+the live target at squash-merge time, and the merge-time SHA + live-CI
+re-checks still guard correctness). The CLEAR is refused only when the
+reviewed SHA both trails the target AND the merge produces conflicts an
+automatic squash-merge could not resolve. The pre-flight runs BEFORE
+:meth:`MergeClear.issue`. Real ``git init`` under ``tmp_path`` exercises
+the actual ``merge-tree`` prediction — no mocks on the git layer.
 """
 
 import subprocess
@@ -31,14 +32,8 @@ def _git(cwd: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _make_clone_with_stale_sha(tmp_path: Path) -> tuple[Path, str, str]:
-    """Set up a clone where ``feature`` SHA trails ``origin/main``.
-
-    Returns ``(clone, feature_sha, current_sha)``: ``feature_sha`` is
-    the SHA the orchestrator might (wrongly) pass as ``reviewed_sha``,
-    ``current_sha`` is the post-merge SHA the cold reviewer should
-    actually attest.
-    """
+def _seed_remote(tmp_path: Path) -> Path:
+    """Bare remote with one commit on ``main`` containing ``a.txt``."""
     seed = tmp_path / "seed"
     seed.mkdir()
     _git(seed, "init", "-b", "main")
@@ -49,7 +44,28 @@ def _make_clone_with_stale_sha(tmp_path: Path) -> tuple[Path, str, str]:
     _git(seed, "commit", "-m", "initial")
     bare = tmp_path / "remote.git"
     _git(tmp_path, "clone", "--bare", str(seed), str(bare))
+    return bare
 
+
+def _advance_remote(tmp_path: Path, bare: Path, *, filename: str, content: str) -> None:
+    work = tmp_path / f"advance-{filename}"
+    _git(tmp_path, "clone", str(bare), str(work))
+    _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow
+    _git(work, "config", "user.name", "Tester")
+    (work / filename).write_text(content)
+    _git(work, "add", filename)
+    _git(work, "commit", "-m", f"remote: add {filename}")
+    _git(work, "push", "origin", "main")
+
+
+def _make_behind_clean_sha(tmp_path: Path) -> tuple[Path, str]:
+    """Clone whose ``feature-branch`` SHA trails ``origin/main`` but merges clean.
+
+    The feature touches ``b.txt``; the target advances with ``c.txt`` —
+    no overlap, so the merge is conflict-free. Returns ``(clone,
+    feature_sha)``.
+    """
+    bare = _seed_remote(tmp_path)
     clone = tmp_path / "clone"
     _git(tmp_path, "clone", str(bare), str(clone))
     _git(clone, "config", "user.email", "t@e.st")  # privacy-scan:allow
@@ -60,39 +76,64 @@ def _make_clone_with_stale_sha(tmp_path: Path) -> tuple[Path, str, str]:
     _git(clone, "commit", "-m", "feature")
     feature_sha = _git(clone, "rev-parse", "HEAD")
 
-    # Advance origin/main.
-    advance = tmp_path / "advance"
-    _git(tmp_path, "clone", str(bare), str(advance))
-    _git(advance, "config", "user.email", "t@e.st")  # privacy-scan:allow
-    _git(advance, "config", "user.name", "Tester")
-    (advance / "c.txt").write_text("remote-add\n")
-    _git(advance, "add", "c.txt")
-    _git(advance, "commit", "-m", "remote: c.txt")
-    _git(advance, "push", "origin", "main")
-
-    # Force a fetch so the clone sees the new origin/main.
+    _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
     _git(clone, "fetch", "origin")
-    current_sha = _git(clone, "rev-parse", "origin/main")
-    return clone, feature_sha, current_sha
+    return clone, feature_sha
+
+
+def _make_behind_conflicting_sha(tmp_path: Path) -> tuple[Path, str]:
+    """Clone whose ``feature-branch`` SHA trails AND conflicts with target.
+
+    Both the feature and the target edit ``a.txt`` — the merge cannot be
+    resolved automatically. Returns ``(clone, feature_sha)``.
+    """
+    bare = _seed_remote(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", str(bare), str(clone))
+    _git(clone, "config", "user.email", "t@e.st")  # privacy-scan:allow
+    _git(clone, "config", "user.name", "Tester")
+    _git(clone, "checkout", "-b", "feature-branch")
+    (clone / "a.txt").write_text("feature-change\n")
+    _git(clone, "add", "a.txt")
+    _git(clone, "commit", "-m", "feature: change a.txt")
+    feature_sha = _git(clone, "rev-parse", "HEAD")
+
+    # Target edits the same file → conflict.
+    work = tmp_path / "advance-overlap"
+    _git(tmp_path, "clone", str(bare), str(work))
+    _git(work, "config", "user.email", "t@e.st")  # privacy-scan:allow
+    _git(work, "config", "user.name", "Tester")
+    (work / "a.txt").write_text("remote-change\n")
+    _git(work, "add", "a.txt")
+    _git(work, "commit", "-m", "remote: change a.txt")
+    _git(work, "push", "origin", "main")
+
+    _git(clone, "fetch", "origin")
+    return clone, feature_sha
 
 
 class TestTicketClearBranchCurrency(TestCase):
-    """`ticket clear` refuses a stale ``reviewed_sha`` (#940)."""
+    """`ticket clear` refuses a CLEAR only on a real merge conflict (#940)."""
 
     @pytest.fixture(autouse=True)
     def _inject_tmp(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
 
-    def test_refuses_clear_for_sha_behind_target(self) -> None:
-        clone, stale_sha, _current = _make_clone_with_stale_sha(self.tmp_path)
+    def _attach_ticket(self, clone: Path, branch: str) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
         Worktree.objects.create(
             ticket=ticket,
             overlay="test",
             repo_path=str(clone),
-            branch="feature-branch",
+            branch=branch,
             extra={"worktree_path": str(clone)},
         )
+        return ticket
+
+    def test_allows_clear_for_behind_but_mergeable_sha(self) -> None:
+        """The core requirement: behind-but-conflict-free SHA clears without rebase."""
+        clone, behind_sha = _make_behind_clean_sha(self.tmp_path)
+        ticket = self._attach_ticket(clone, "feature-branch")
 
         result = cast(
             "dict[str, object]",
@@ -101,7 +142,28 @@ class TestTicketClearBranchCurrency(TestCase):
                 "clear",
                 "999",
                 "souliane/teatree",
-                reviewed_sha=stale_sha,
+                reviewed_sha=behind_sha,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="logic",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+
+        assert result.get("issued") is True, f"behind-but-clean CLEAR refused: {result}"
+
+    def test_refuses_clear_for_conflicting_sha(self) -> None:
+        clone, conflicting_sha = _make_behind_conflicting_sha(self.tmp_path)
+        ticket = self._attach_ticket(clone, "feature-branch")
+
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "998",
+                "souliane/teatree",
+                reviewed_sha=conflicting_sha,
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="green",
                 blast_class="logic",
@@ -111,41 +173,8 @@ class TestTicketClearBranchCurrency(TestCase):
 
         assert result.get("issued") is False
         error = str(result.get("error", ""))
-        assert "behind" in error.lower()
-        assert "origin/main" in error or "merge target" in error.lower()
-
-    def test_allows_clear_for_current_sha(self) -> None:
-        """A CLEAR for a SHA reachable from target must be allowed."""
-        clone, _stale, current_sha = _make_clone_with_stale_sha(self.tmp_path)
-        # Fast-forward the working clone so HEAD == origin/main.
-        _git(clone, "checkout", "main")
-        _git(clone, "pull", "--ff-only", "origin", "main")
-
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path=str(clone),
-            branch="main",
-            extra={"worktree_path": str(clone)},
-        )
-
-        result = cast(
-            "dict[str, object]",
-            call_command(
-                "ticket",
-                "clear",
-                "888",
-                "souliane/teatree",
-                reviewed_sha=current_sha,
-                reviewer_identity="cold-reviewer",
-                gh_verify_result="green",
-                blast_class="logic",
-                ticket_id=int(ticket.pk),
-            ),
-        )
-
-        assert result.get("issued") is True, f"current-SHA CLEAR refused unexpectedly: {result}"
+        assert "conflict" in error.lower()
+        assert "a.txt" in error
 
     def test_no_worktree_skips_currency_check(self) -> None:
         """Without a worktree to verify against, the check is skipped (do-not-block)."""
@@ -167,8 +196,7 @@ class TestTicketClearBranchCurrency(TestCase):
             ),
         )
 
-        # Either the CLEAR is issued (skip the check) or the underlying
-        # MergeClear.issue refuses on its own grounds — what we PIN here
-        # is that the branch-currency check itself did not block.
+        # What we PIN here is that the branch-currency check itself did
+        # not block on conflict grounds.
         error = str(result.get("error", ""))
-        assert "behind" not in error.lower()
+        assert "conflict" not in error.lower()
