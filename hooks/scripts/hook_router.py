@@ -1612,17 +1612,17 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     if not demanded:
         return False
 
+    # A demanded skill that does not resolve (a stale/renamed keyword→skill
+    # mapping in ``~/.teatree-skills.yml``, e.g. one pointing at a skill name
+    # the registry no longer carries) is dropped from the demand — never
+    # blocked on. The drop is SILENT: the harness treats ANY ``TaskCreated``
+    # hook stderr as an error and aborts task creation, so a fail-open skip
+    # must emit nothing. (#1488 originally warned here, which made every task
+    # whose text mapped to an unresolvable skill fail to be created.) The
+    # ``PreToolUse`` counterpart still warns — there stderr is the documented
+    # logging channel and does not abort the tool call.
     search_dirs = _skill_search_dirs()
     enforceable = [s for s in demanded if _skill_resolves(s, search_dirs)]
-    stale = [s for s in demanded if s not in enforceable]
-
-    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
-    for name in stale:
-        sys.stderr.write(
-            f"WARNING: skill-loading-on-task gate skipped unresolvable skill '{name}' "
-            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
-        )
-
     if not enforceable:
         return False
 

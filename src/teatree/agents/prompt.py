@@ -190,6 +190,48 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     return primary, explicit
 
 
+_REVIEWER_LIFECYCLE_SKILL = "t3:review"
+
+
+def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: list[str] | None = None) -> str:
+    """Build a review sub-agent's dispatch prompt with the overlay review skills required up front.
+
+    A review sub-agent dispatched through the Agent tool, a dynamic workflow,
+    or a headless reviewer does not auto-load the active overlay's review
+    conventions. ``build_system_context`` embeds them for the headless path,
+    but an orchestrator-built dispatch prompt previously relied on the
+    orchestrator remembering to list the skills. This shared builder prepends a
+    REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
+    review skill plus the active overlay's review skills (deduped, order
+    preserved) — so the overlay conventions reach every reviewer structurally,
+    which is also what ``hook_router._companions_for_task_text`` enforces.
+
+    *review_skills* overrides the overlay resolution when supplied (e.g. a
+    caller that already resolved the bundle); otherwise the active overlay's
+    :func:`active_overlay_review_skills` are used.
+    """
+    from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+
+    resolved = review_skills if review_skills is not None else active_overlay_review_skills()
+    ordered: list[str] = []
+    for name in (_REVIEWER_LIFECYCLE_SKILL, *resolved):
+        load_name = _explicit_load_name(name)
+        if load_name not in ordered:
+            ordered.append(load_name)
+
+    lines = ["REQUIRED: Before reviewing anything, call the Skill tool for EACH of these skills:"]
+    lines.extend(f"  - /{name}" for name in ordered)
+    lines.extend(
+        (
+            "Do this FIRST — these carry the project and overlay review conventions.",
+            "Reviewing without them produces false positives and misses overlay-specific rules.",
+            "",
+            review_instruction,
+        )
+    )
+    return "\n".join(lines)
+
+
 def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str = "") -> str:
     """Build the system context for headless (SDK) execution.
 
@@ -237,13 +279,18 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
         )
 
     if task.phase == "shipping":
+        reviewer_dispatch = build_reviewer_dispatch_prompt(
+            review_instruction="Review the diff on this ticket's branch and report findings."
+        )
         lines.extend(
             (
                 "",
                 "PHASE: shipping — auto-review gate",
                 "Before creating the PR, check quality gates: `t3 <overlay> pr check-gates <ticket_id>`.",
                 "If the result shows `reviewing` in the `missing` list:",
-                "1. Spawn a sub-agent to review the diff (run the code-review skill against the branch).",
+                "1. Spawn a sub-agent to review the diff. Use this exact dispatch prompt so the",
+                "   reviewer loads the overlay review conventions (do NOT abbreviate the skill block):",
+                reviewer_dispatch,
                 (
                     "2. After the sub-agent completes, mark reviewing as visited:"
                     " `t3 <overlay> lifecycle visit-phase <ticket_id> reviewing`."

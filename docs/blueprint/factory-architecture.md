@@ -76,6 +76,8 @@ No partial CLEAR is actionable. A `MergeClear` row missing any field is treated 
 
 **The issuance seam.** A CLEAR is created exclusively through the guarded factory `MergeClear.issue(ClearRequest)`, exposed as `t3 <overlay> ticket clear <pr_id> <slug> --reviewed-sha <sha> --reviewer-identity <id> --blast-class <substrate|logic|docs> [--ticket-id N] [--human-authorize <id>]`. This is the orchestrator's *only* merge output (§17.8 clause 3). The factory enforces the contract before any row is written and refuses (raising `ClearIssuanceError`, no partial row) when: `blast_class`/`gh_verify_result` is unknown; `reviewer_identity` is empty, equals the executing-loop identity, or is a maker/coding-agent/loop role (the author cannot self-attest its own review); `reviewed_sha` is not a hex commit id (a branch ref would not bind to the reviewed tree); or `--human-authorize` is given for a non-substrate `blast_class`. The maker/loop-role predicate is shared single-source with the `reviewing`-attestation guard (§17.6 candidate 13) so the two cannot drift.
 
+A CLEAR records a `merge_safe` `ReviewVerdict` (keyed by `(slug, pr_id, reviewed_sha)`) as a by-product so the judgment is stored once, not re-derived; `review record`/`review status` are the standalone record + safe-to-approve-at-live-head lookup.
+
 #### 17.4.3 Loop validation before merge
 
 Before executing any merge the loop **must** perform all of the following checks in order:
