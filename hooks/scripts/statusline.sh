@@ -246,7 +246,38 @@ if [ -n "$_df_out" ]; then
     fi
 fi
 
+# CPU load (macOS/Linux). A single non-delayed read of the 1-minute load
+# average — never a multi-second sampler like `top -l 2`, so the hook stays
+# fast. The load is normalized by core count and rendered as a percent so it
+# reads alongside the RAM/disk indicators under the same color thresholds;
+# above 100% means more runnable work than cores, which color_pct paints red.
+_cpu_segment=""
+_loadavg_raw=""
+if [ -n "${TEATREE_STATUSLINE_LOADAVG_FILE:-}" ]; then
+    [ -r "$TEATREE_STATUSLINE_LOADAVG_FILE" ] && _loadavg_raw=$(awk 'NR==1{print $1}' "$TEATREE_STATUSLINE_LOADAVG_FILE" 2>/dev/null)
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    _loadavg_raw=$(sysctl -n vm.loadavg 2>/dev/null | awk '{gsub(/[{}]/,""); print $1}')
+elif [ -r /proc/loadavg ]; then
+    _loadavg_raw=$(awk 'NR==1{print $1}' /proc/loadavg 2>/dev/null)
+fi
+_ncpu="${TEATREE_STATUSLINE_NCPU:-}"
+if [ -z "$_ncpu" ]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        _ncpu=$(sysctl -n hw.ncpu 2>/dev/null)
+    else
+        _ncpu=$(nproc 2>/dev/null)
+    fi
+fi
+if [[ "$_loadavg_raw" =~ ^[0-9]+\.?[0-9]*$ ]] && [[ "$_ncpu" =~ ^[0-9]+$ ]] && [ "$_ncpu" -gt 0 ]; then
+    _cpu_pct=$(awk "BEGIN{printf \"%.0f\", $_loadavg_raw * 100 / $_ncpu}")
+    _cpu_segment="${_LBL}cpu=${_RST}$(color_pct "$_cpu_pct")"
+fi
+
 g_resource="$_ram_segment"
+if [ -n "$_cpu_segment" ]; then
+    [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
+    g_resource="${g_resource}${_cpu_segment}"
+fi
 if [ -n "$_disk_segment" ]; then
     [ -n "$g_resource" ] && g_resource="${g_resource}${isep}"
     g_resource="${g_resource}${_disk_segment}"
