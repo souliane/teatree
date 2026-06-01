@@ -356,14 +356,35 @@ fi
 # on its own trailing line so per-session ownership context is never lost.
 _zones_body=""
 [[ -r "$target" ]] && _zones_body=$(cat "$target")
-if [ -n "$_loop_owner_badge" ] && printf '%s' "$_zones_body" | grep -q '^loop running'; then
-    printf '%s\n' "$_zones_body" | awk -v badge="${isep}${_loop_owner_badge}" '
-        /^loop running/ && !appended { printf "%s%s\n", $0, badge; appended=1; next }
+# The production zones file is colorized: each anchor is wrapped as
+# ``\033[38;5;244m{text}\033[0m``, so the loop line starts with the CSI escape,
+# not ``l``. awk owns both the match decision and the append (its
+# ``sprintf("%c", 27)`` is a literal escape byte across awk implementations,
+# unlike grep's \x1b which only some greps interpret): it appends the badge to
+# the first ``loop running`` line whether or not a leading ANSI escape prefixes
+# it, placing it BEFORE any trailing reset so the badge rides the same visible
+# line in both colorized and NO_COLOR paths, and exits non-zero when there is
+# no loop line so the shell falls back to a trailing badge line.
+if [ -n "$_loop_owner_badge" ] && [ -n "$_zones_body" ]; then
+    if ! printf '%s\n' "$_zones_body" | awk -v badge="${isep}${_loop_owner_badge}" '
+        function esc() { return sprintf("%c", 27) }
+        $0 ~ ("(^|" esc() "\\[[0-9;]*m)loop running") && !appended {
+            reset = esc() "[0m"
+            if (substr($0, length($0) - length(reset) + 1) == reset) {
+                printf "%s%s%s\n", substr($0, 1, length($0) - length(reset)), badge, reset
+            } else {
+                printf "%s%s\n", $0, badge
+            }
+            appended = 1
+            next
+        }
         { print }
-    '
+        END { exit(appended ? 0 : 1) }
+    '; then
+        printf '%s\n' "$_loop_owner_badge"
+    fi
 elif [ -n "$_zones_body" ]; then
     printf '%s\n' "$_zones_body"
-    [ -n "$_loop_owner_badge" ] && printf '%s\n' "$_loop_owner_badge"
 elif [ -n "$_loop_owner_badge" ]; then
     printf '%s\n' "$_loop_owner_badge"
 fi

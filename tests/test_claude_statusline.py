@@ -452,6 +452,40 @@ class TestLoopOwnerBadge:
         loop_line = next(line for line in lines if "loop running" in line)
         assert "loop-owner: you ✓" in loop_line, loop_line
 
+    def test_badge_rides_colorized_production_loop_line(self, tmp_path: Path) -> None:
+        r"""The badge must ride the loop line even when it is ANSI-colorized.
+
+        ``loop.statusline.render`` wraps each anchor as
+        ``\033[38;5;244m{text}\033[0m`` when ``colorize`` is on (the
+        production default), so the real zones-file loop line starts with the
+        CSI escape, not ``l``. The matcher must tolerate that prefix and keep
+        the badge on the same visible line — a separate trailing badge line
+        means loop state lost its single home.
+        """
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="sess-color", pid=9)
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("\033[38;5;244mloop running · tick 5m\033[0m\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "sess-color", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        lines = plain.splitlines()
+        loop_line = next(line for line in lines if "loop running" in line)
+        assert "loop-owner: you ✓" in loop_line, loop_line
+        # The badge shares the loop line — never spilled onto its own trailing line.
+        assert sum(1 for line in lines if "loop-owner:" in line) == 1, plain
+        badge_line = next(line for line in lines if "loop-owner:" in line)
+        assert "loop running" in badge_line, plain
+
     def test_foreign_owner_badge_shows_short_sid_and_pid(self, tmp_path: Path) -> None:
         """Different session owns the loop → yellow ``abcdef01·pid4242``."""
         state_dir = tmp_path / "state"
