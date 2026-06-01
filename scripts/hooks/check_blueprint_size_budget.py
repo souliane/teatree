@@ -77,7 +77,12 @@ _BUDGET_TOP_LEVEL_BYTES = 81_800
 # source feeding the three review tiers + the catalog↔linter/eval reachability
 # ledger) is a load-bearing architectural fact; the top-level corpus was at
 # capacity, so the top-level + total budgets are raised one minimal step.
-_BUDGET_APPENDICES_BYTES = 108_000
+# Reviewed bump (#1644 PR B): the `orchestrator_boundary_agent_gate_enabled`
+# config-key row (the default-OFF opt-in + `[fg-ok:]` escape for the #1442
+# foreground-Agent deny) and the gate-2 production-phantom note are load-bearing
+# safety/config facts; the appendix corpus was at capacity (108,746 B), so the
+# budget is raised to the next ~1 KB step (~754 B headroom) to admit them.
+_BUDGET_APPENDICES_BYTES = 109_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -87,7 +92,10 @@ _BUDGET_APPENDICES_BYTES = 108_000
 # two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
 # Reviewed bump (#171+#166 merge): post-merge total corpus is 188,987 B
 # (top-level 81,738 + appendices 107,249); raised to 189,500 (~513 B headroom).
-_BUDGET_TOTAL_BYTES = 189_500
+# Reviewed bump (#1644 PR B): total corpus is 190,484 B (top-level 81,738 +
+# appendices 108,746); raised to 191,000 (~516 B headroom). Invariant holds:
+# 191,000 - 81,800 = 109,200 <= 109,500.
+_BUDGET_TOTAL_BYTES = 191_000
 
 
 def _repo_root() -> pathlib.Path:

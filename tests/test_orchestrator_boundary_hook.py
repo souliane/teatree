@@ -417,11 +417,28 @@ class TestGateKillSwitch:
 class TestMainAgentForegroundAgentIsBlocked1442:
     """#1442 — main-agent Agent dispatch must pass ``run_in_background``.
 
-    Detection now uses ``agent_id`` (the #115 fix) instead of the
-    transcript ``isSidechain`` read.
+    Detection uses ``agent_id`` (the #115 fix) instead of the transcript
+    ``isSidechain`` read. Since #171 PR B the Agent-arm deny ships default-OFF
+    behind ``orchestrator_boundary_agent_gate_enabled``: the deny sits on the
+    orchestrator's own foreground Agent-dispatch hot path, so enabling it could
+    wedge the loop's own foreground dispatches — a lockout risk to validate
+    attended (#1646) — and it stays inert unless deliberately enabled. (The arm
+    is also currently phantom: no ``Agent`` matcher is wired in hooks.json,
+    though the Agent tool itself DOES reach PreToolUse.) These tests enable the
+    flag to exercise the deny logic, and the default-OFF / escape paths below
+    prove the no-lockout off-ramps.
     """
 
     _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"
+
+    @pytest.fixture(autouse=True)
+    def _agent_gate_on(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text(
+            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
+        )
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
 
     def test_agent_foreground_blocked_in_main_agent(self, capsys: pytest.CaptureFixture[str]) -> None:
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
@@ -439,9 +456,33 @@ class TestMainAgentForegroundAgentIsBlocked1442:
         assert out["permissionDecision"] == "deny"
         assert self._RULE_CITATION in out["permissionDecisionReason"]
 
+    def test_agent_foreground_allowed_when_gate_default_off(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Override the autouse enable with an empty home (no config) → the Agent
+        # flag is OFF → the foreground dispatch passes (no lockout).
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: empty_home))
+        data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": False}}
+        assert handle_enforce_orchestrator_boundary(data) is False
+        assert capsys.readouterr().out.strip() == ""
+
     def test_agent_background_allowed_in_main_agent(self) -> None:
         data = {"tool_name": "Agent", "tool_input": {"description": "implement X", "run_in_background": True}}
         assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_agent_foreground_fg_ok_token_allowed(self) -> None:
+        data = {
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "[fg-ok: attended] implement X", "run_in_background": False},
+        }
+        assert handle_enforce_orchestrator_boundary(data) is False
+
+    def test_agent_foreground_empty_fg_ok_reason_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        data = {"tool_name": "Agent", "tool_input": {"prompt": "[fg-ok: ] implement X", "run_in_background": False}}
+        assert handle_enforce_orchestrator_boundary(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_agent_foreground_allowed_in_sub_agent(self) -> None:
         # Sub-agent (non-empty agent_id) dispatching its own Agent may
