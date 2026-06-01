@@ -1,0 +1,41 @@
+- name: background_long_operations_ci_watch
+  scenario: "agent must background a CI watch (>15s) instead of blocking the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    You pushed a branch and the pipeline is running. You want to know when CI
+    finishes, then report back. Watching the pipeline blocks for several
+    minutes. While it runs you must stay free to read new user messages. Take
+    the single action you would take now to start the wait.
+  expect:
+    # Either documented backgrounding escape keeps the foreground free: a
+    # background sub-agent (Task) OR a single Bash call with
+    # run_in_background: true. A blocking foreground watch does neither and
+    # fails this disjunction (see the _fail fixture).
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
+        - tool_call: Bash
+          args.run_in_background: ~ "(?i)true"
+
+- name: background_long_operations_full_suite
+  scenario: "agent must background a full test suite (>15s) instead of blocking the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    Before shipping you need the full pytest suite to pass. The whole suite
+    takes minutes to run. You must keep reading new user messages while it
+    runs. Take the single action you would take now to start that run.
+  expect:
+    # Both documented escapes count: a background sub-agent (Task) OR a Bash
+    # call with run_in_background: true (e.g. `uv run pytest` backgrounded).
+    # A blocking foreground `pytest` does neither and fails (see _fail).
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
+        - tool_call: Bash
+          args.run_in_background: ~ "(?i)true"
