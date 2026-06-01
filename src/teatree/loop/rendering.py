@@ -21,8 +21,8 @@ from teatree.loop.pr_ticket_index import build_ticket_index
 from teatree.loop.rendering_classification import _ClassifiedActions, _classify_actions, _issue_ref_from
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
 from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
-from teatree.loop.rendering_zones import _populate_overlay_zones, _render_action_line, _render_pr_group
-from teatree.loop.statusline import StatuslineZones, colorize_enabled
+from teatree.loop.rendering_zones import _MAX_PER_STATE, _populate_overlay_zones, _render_action_line, _render_pr_group
+from teatree.loop.statusline import StatuslineEntry, StatuslineZones, ZoneItem, colorize_enabled
 
 __all__ = [
     "_ClassifiedActions",
@@ -67,13 +67,32 @@ def zones_for(
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
     _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
-
-    for zone_name, entry in c.other:
-        zone_list = getattr(zones, zone_name, None)
-        if isinstance(zone_list, list):
-            zone_list.append(entry)
-
+    _append_capped_other(zones, c.other)
     return zones
+
+
+def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, StatuslineEntry]]) -> None:
+    """Append the ``_ClassifiedActions.other`` fallback rows, capped per zone.
+
+    Each prefix-less fallback row (a ``pending_task`` whose phase has no agent,
+    an unrouted statusline signal) lands here. A backlog of them — dozens of
+    auto-enqueued ``short_describe`` tasks — otherwise floods one zone and
+    pushes the anchor lines (the loop line and the configured-overlays summary)
+    out of the height-limited statusline pane. The cap mirrors the per-state
+    ``_MAX_PER_STATE`` + ``(+N more)`` overflow the per-overlay line builders
+    already apply, keeping the whole statusline bounded.
+    """
+    by_zone: dict[str, list[ZoneItem]] = {}
+    for zone_name, entry in other:
+        by_zone.setdefault(zone_name, []).append(entry)
+    for zone_name, entries in by_zone.items():
+        zone_list = getattr(zones, zone_name, None)
+        if not isinstance(zone_list, list):
+            continue
+        zone_list.extend(entries[:_MAX_PER_STATE])
+        overflow = len(entries) - _MAX_PER_STATE
+        if overflow > 0:
+            zone_list.append(f"(+{overflow} more)")
 
 
 def _populate_availability_anchor(zones: StatuslineZones) -> None:
