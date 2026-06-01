@@ -140,6 +140,18 @@ class ReplyDispatchQuerySet(models.QuerySet):
 
 
 class TaskQuerySet(models.QuerySet):
+    def for_claude_session(self, claude_session_id: str) -> models.QuerySet:
+        """Tasks whose session is the given Claude session, newest first.
+
+        Scopes the task list to the work persisted under one Claude session:
+        ``Session.agent_id`` holds the Claude session UUID (set by Claude Code),
+        so the join is ``task.session.agent_id == claude_session_id``. An empty
+        id matches nothing — an anonymous caller has no session-scoped list.
+        """
+        if not claude_session_id:
+            return self.none()
+        return self.filter(session__agent_id=claude_session_id).order_by("-pk")
+
     def completed_in_phase(self, phase: str) -> models.QuerySet:
         """Completed tasks whose phase normalizes to ``phase`` (#757).
 

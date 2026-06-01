@@ -26,6 +26,7 @@ real fixture skills seeded under a temp ``T3_SKILL_SEARCH_DIRS`` whose
 companion closure resolves through the production resolver.
 """
 
+import io
 import json
 from collections.abc import Iterator
 from io import StringIO
@@ -127,6 +128,20 @@ def _run(data: dict) -> tuple[bool, dict | None]:
     if raw:
         payload = json.loads(raw)
     return blocked, payload
+
+
+def _run_capturing_stderr(data: dict) -> tuple[bool, str]:
+    """Invoke the gate, returning ``(blocked, stderr_text)``.
+
+    The harness treats any ``TaskCreated`` hook stderr as an error and aborts
+    task creation, so a fail-open skip of an unresolvable skill must stay
+    silent on stderr.
+    """
+    out = StringIO()
+    err = io.StringIO()
+    with patch("sys.stdout", out), patch("sys.stderr", err):
+        blocked = handle_enforce_skill_loading_on_task_create(data)
+    return blocked, err.getvalue()
 
 
 class TestBlocksUnloadedReviewFanout:
@@ -244,6 +259,24 @@ class TestFailOpenOnStaleName:
         blocked, payload = _run(_task(description="do some neutral work"))
         assert blocked is False
         assert payload is None
+
+    def test_stale_pending_name_is_silent_on_stderr(self, gate: Path) -> None:
+        # The harness aborts task creation on ANY TaskCreated-hook stderr, so a
+        # fail-open skip of an unresolvable skill (e.g. a keyword→skill map that
+        # points at a non-existent skill) must emit nothing on stderr — the task
+        # still gets created.
+        _write_pending("sess-task", ["ac-exporting-webhook-mapping"])
+        blocked, stderr = _run_capturing_stderr(_task(description="do some neutral work"))
+        assert blocked is False
+        assert stderr == ""
+
+    def test_unresolvable_alongside_resolvable_blocks_silently_on_the_stale_one(self, gate: Path) -> None:
+        # A resolvable demand still blocks, but the unresolvable sibling must not
+        # leak onto stderr (which would abort the very task we are blocking).
+        _write_pending("sess-task", ["review", "ac-exporting-webhook-mapping"])
+        blocked, stderr = _run_capturing_stderr(_task(description="do some neutral work"))
+        assert blocked is True
+        assert stderr == ""
 
 
 class TestKillSwitch:

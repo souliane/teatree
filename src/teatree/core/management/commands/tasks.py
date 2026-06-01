@@ -237,28 +237,55 @@ class Command(TyperCommand):
     @command(name="list")
     def list_tasks(
         self,
+        *,
         status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
         execution_target: Annotated[str | None, typer.Option(help="Filter by execution target")] = None,
+        session: Annotated[
+            bool,
+            typer.Option(help="Scope to the current Claude session and group pending / claimed / done."),
+        ] = False,
     ) -> list[TaskRow]:
         Task.objects.reap_stale_claims()
+        if session:
+            return self._list_session_todos(status=status, execution_target=execution_target)
         qs = Task.objects.all().order_by("pk")
         if status:
             qs = qs.filter(status=status)
         if execution_target:
             qs = qs.filter(execution_target=execution_target)
-        rows: list[TaskRow] = [
-            TaskRow(
-                task_id=task.pk,
-                ticket_id=task.ticket_id,
-                status=task.status,
-                execution_target=task.execution_target,
-                phase=task.phase,
-                execution_reason=task.execution_reason,
-                claimed_by=task.claimed_by,
-            )
-            for task in qs
-        ]
+        rows = [_task_row(task) for task in qs]
         _render_tasks_table(rows, stream=cast("IO[str]", self.stdout))
+        return rows
+
+    def _list_session_todos(
+        self,
+        *,
+        status: str | None,
+        execution_target: str | None,
+    ) -> list[TaskRow]:
+        """Print the current Claude session's tasks, grouped by status (#todos).
+
+        Sources from the teatree ``Task`` model scoped to the active Claude
+        session (``Session.agent_id``), then merges the harness ``TodoWrite``
+        list persisted to ``<session>.todos`` so a single view covers both the
+        durable lifecycle tasks and the in-flight harness todos.
+        """
+        from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+
+        session_id = current_session_id()
+        qs = Task.objects.for_claude_session(session_id)
+        if status:
+            qs = qs.filter(status=status)
+        if execution_target:
+            qs = qs.filter(execution_target=execution_target)
+        rows = [_task_row(task) for task in qs]
+        harness_todos = _read_harness_todos(session_id)
+        _render_session_todos(
+            rows,
+            harness_todos=harness_todos,
+            session_id=session_id,
+            stream=cast("IO[str]", self.stdout),
+        )
         return rows
 
     @command()
@@ -345,6 +372,54 @@ _STATUS_STYLES: dict[str, str] = {
     "failed": "red",
 }
 
+# Status → display group for the session-scoped ``--session`` view. ``claimed``
+# is the loop's in-flight state, surfaced as "in_progress" to match the harness
+# task-list vocabulary; ``failed`` is grouped under "completed" (terminal).
+_TODO_GROUPS: list[tuple[str, tuple[str, ...]]] = [
+    ("pending", ("pending",)),
+    ("in_progress", ("claimed",)),
+    ("completed", ("completed", "failed")),
+]
+
+
+def _task_row(task: Task) -> TaskRow:
+    return TaskRow(
+        task_id=task.pk,
+        ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
+        status=task.status,
+        execution_target=task.execution_target,
+        phase=task.phase,
+        execution_reason=task.execution_reason,
+        claimed_by=task.claimed_by,
+    )
+
+
+def _read_harness_todos(session_id: str) -> list[tuple[str, str]]:
+    """Read the harness ``TodoWrite`` list for *session_id* as ``(status, text)``.
+
+    The hook persists one ``- [status] content`` line per todo to
+    ``<state_dir>/<session>.todos``. Best-effort: a missing file or unreadable
+    state dir yields an empty list (the task model rows still render).
+    """
+    import re  # noqa: PLC0415
+
+    from teatree.agents.handover import get_claude_statusline_state_dir  # noqa: PLC0415
+
+    if not session_id:
+        return []
+    path = get_claude_statusline_state_dir() / f"{session_id}.todos"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    line_re = re.compile(r"^- \[(?P<status>[^\]]*)\]\s*(?P<text>.+)$")
+    todos: list[tuple[str, str]] = []
+    for line in raw.splitlines():
+        match = line_re.match(line.strip())
+        if match:
+            todos.append((match.group("status").strip() or "pending", match.group("text").strip()))
+    return todos
+
 
 def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -> None:
     console = Console(file=stream) if stream is not None else Console()
@@ -375,6 +450,54 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
         )
 
     console.print(table)
+
+
+def _render_session_todos(
+    rows: list[TaskRow],
+    *,
+    harness_todos: list[tuple[str, str]],
+    session_id: str,
+    stream: IO[str] | None = None,
+) -> None:
+    """Render the current session's todos grouped pending / in_progress / completed."""
+    console = Console(file=stream) if stream is not None else Console()
+    if not session_id:
+        console.print("[dim]No active Claude session — cannot scope todos to a session.[/dim]")
+        return
+    if not rows and not harness_todos:
+        console.print("[dim]No todos for this session.[/dim]")
+        return
+
+    rows_by_status: dict[str, list[TaskRow]] = {}
+    for row in rows:
+        rows_by_status.setdefault(row["status"], []).append(row)
+
+    for group, statuses in _TODO_GROUPS:
+        group_rows = [row for status in statuses for row in rows_by_status.get(status, [])]
+        group_todos = [text for status, text in harness_todos if _todo_group(status) == group]
+        if not group_rows and not group_todos:
+            continue
+        style = _STATUS_STYLES.get(statuses[0], "")
+        console.print(f"[bold {style}]{group}[/] ({len(group_rows) + len(group_todos)})" if style else group)
+        for row in group_rows:
+            phase = f" {row['phase']}" if row["phase"] else ""
+            reason = row["execution_reason"] or "-"
+            console.print(f"  task #{row['task_id']} (ticket #{row['ticket_id']}{phase}): {reason}")
+        for text in group_todos:
+            console.print(f"  [dim]todo:[/] {text}")
+
+
+def _todo_group(status: str) -> str:
+    """Map a harness todo status to a display group key.
+
+    The harness already speaks ``pending`` / ``in_progress`` / ``completed``;
+    any unknown status falls under ``pending`` so it is never silently dropped.
+    """
+    normalized = status.strip().lower()
+    for group, _statuses in _TODO_GROUPS:
+        if normalized == group:
+            return group
+    return "completed" if normalized in {"done", "complete"} else "pending"
 
 
 def _build_claude_command(task: Task) -> list[str]:
