@@ -38,11 +38,11 @@
     },
     {
       "name": "full-speed",
-      "summary": "Parallel backlog blast \u2014 classify the actionable backlog, fan out autonomous-safe work across isolated worktrees, surface the rest"
+      "summary": "Deprecated alias for `/t3:speed boost`. Parallel backlog blast \u2014 classify the actionable backlog, fan out autonomous-safe work across isolated worktrees, surface the rest"
     },
     {
       "name": "handover",
-      "summary": "Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
+      "summary": "Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
     },
     {
       "name": "next",
@@ -79,6 +79,10 @@
     {
       "name": "ship",
       "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
+    },
+    {
+      "name": "speed",
+      "summary": "The parallel-work throughput dial \u2014 slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
     },
     {
       "name": "sweeping-prs",
