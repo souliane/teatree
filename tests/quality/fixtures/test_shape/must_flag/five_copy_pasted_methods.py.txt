@@ -1,0 +1,20 @@
+class TestParser:
+    def test_parses_red(self):
+        result = parse("red")
+        assert result == Color.RED
+
+    def test_parses_green(self):
+        result = parse("green")
+        assert result == Color.GREEN
+
+    def test_parses_blue(self):
+        result = parse("blue")
+        assert result == Color.BLUE
+
+    def test_parses_yellow(self):
+        result = parse("yellow")
+        assert result == Color.YELLOW
+
+    def test_parses_purple(self):
+        result = parse("purple")
+        assert result == Color.PURPLE
