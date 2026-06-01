@@ -176,7 +176,9 @@ What the agent does *after* an independent cold-review verdict exists on a **col
 - **Nits only** → post them directly (`t3 review post-comment --live`); approve per the merge-safe rule above.
 - **A blocking finding** → post it (`t3 review post-comment --live`); do **not** approve.
 
-`notify` additionally DMs the user after each on-behalf post (derived `notify_on_behalf`); `full` posts without the after-the-fact DM. The CLI already permits these unattended under `immediate` — no `authorize` / Slack-token step is needed.
+`notify` additionally DMs the user after each on-behalf post (derived `notify_on_behalf`); `full` posts without the after-the-fact DM. The autonomy collapse relaxes exactly the three gates in `_AUTONOMY_COLLAPSED_GATE_VALUES` (`on_behalf_post_mode → immediate`, `require_human_approval_to_merge → False`, `require_human_approval_to_answer → False`), so the on-behalf pre-gate no longer refuses unattended.
+
+**Live posts still need a token, even under `full`.** The `--live` colleague-visible publish is gated by the #1207 single-use `LivePostApproval` token (`teatree.core.live_post_gate.require_live_post_approval`), which `check_live_post` enforces **orthogonally to `on_behalf_post_mode` and to `autonomy`** — it is *not* in the collapsed-gate set, so `post-comment --live` is refused with no token regardless of tier. Under an autonomous tier, mint the token in the same one step that records the on-behalf authorization — `t3 review authorize <repo>!<mr> --approver <user-id>` (#126) — then post live; or post the verdict as a **draft note** (`t3 review post-comment`, the default), which needs no token. Either path keeps the autonomous "act on the verdict, don't ask the user per-MR" posture; the token is a single-use idempotency/audit seal on the outward publish, not a per-MR user decision.
 
 **Babysit tier (`autonomy = "babysit"`, the conservative default):** keep the draft-and-ask flow — drafts publish autonomously, every live post / approval waits for the user (Step 3 below; `t3 review authorize`). This is the right setting for client / shared-team overlays.
 
