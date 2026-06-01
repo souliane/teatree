@@ -397,6 +397,8 @@ The flywheel diagram, components (C1 Retro / C2 Code-health loop / C3 Availabili
 
 **Anti-pattern catalog ([#166](https://github.com/souliane/teatree/issues/166)).** `src/teatree/quality/antipatterns.yaml` is the single source of truth for the recurring architectural anti-patterns; `teatree.quality.catalog` loads it and `scripts/hooks/generate_antipattern_catalog.py` renders [docs/generated/antipattern-catalog.md](docs/generated/antipattern-catalog.md). Each entry's `detection` tier (`greppable` vs `judgement`) feeds the three review tiers off the one catalog: design-time (`architecture-design`), per-PR deterministic (`check_antipatterns.py`, manual stage — gate promotion deferred), and periodic holistic (`ac-reviewing-codebase`). `tests/quality/test_catalog.py` is the reachability ledger — every named `linter` resolves to a real hook/tool and every `eval_invariant` to a real transcript invariant.
 
+**Behavioral eval harness ([#1160](https://github.com/souliane/teatree/issues/1160)).** `src/teatree/eval/` grades agent behaviour from a `claude -p` run: matchers, pass@k, trigger-QA, an `EvalRunRecord` run-store with baseline regression diff, a model matrix, and an opt-in LLM judge. Schema and CLI in [src/teatree/eval/README.md](src/teatree/eval/README.md).
+
 ---
 
 ## Architectural Appendices

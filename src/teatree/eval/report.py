@@ -2,6 +2,7 @@
 
 import dataclasses
 import json
+from collections.abc import Callable
 
 from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
@@ -15,11 +16,25 @@ class MatcherResult:
 
 
 @dataclasses.dataclass(frozen=True)
+class JudgeOutcome:
+    """The LLM-judge verdict folded into a scenario result."""
+
+    passed: bool
+    skipped: bool
+    rationale: str
+
+
+#: An injected judge grader: maps a spec + its captured run to a verdict.
+JudgeGrader = Callable[[EvalSpec, EvalRun], JudgeOutcome]
+
+
+@dataclasses.dataclass(frozen=True)
 class ScenarioResult:
     spec: EvalSpec
     run: EvalRun
     matcher_results: tuple[MatcherResult, ...]
     skipped: bool
+    judge: JudgeOutcome | None = None
 
     @property
     def passed(self) -> bool:
@@ -27,10 +42,19 @@ class ScenarioResult:
             return True
         if self.run.is_error:
             return False
-        return all(m.passed for m in self.matcher_results)
+        if not all(m.passed for m in self.matcher_results):
+            return False
+        return self.judge is None or self.judge.skipped or self.judge.passed
 
 
-def evaluate(spec: EvalSpec, run: EvalRun) -> ScenarioResult:
+def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None) -> ScenarioResult:
+    """Apply the matchers (and, when configured, the LLM judge) to a run.
+
+    ``judge`` is an injected grader (any callable mapping ``(spec, run)`` to a
+    :class:`JudgeOutcome`). It runs only when the spec carries a ``judge`` block,
+    so matcher-based scenarios are untouched and the subprocess judge is never a
+    hidden dependency of the default path.
+    """
     skipped = run.terminal_reason.startswith("skipped:")
     if skipped:
         return ScenarioResult(spec=spec, run=run, matcher_results=(), skipped=True)
@@ -42,7 +66,14 @@ def evaluate(spec: EvalSpec, run: EvalRun) -> ScenarioResult:
             results.append(MatcherResult(matcher=matcher, passed=False, message=str(exc)))
         else:
             results.append(MatcherResult(matcher=matcher, passed=True, message=""))
-    return ScenarioResult(spec=spec, run=run, matcher_results=tuple(results), skipped=False)
+    judge_outcome = judge(spec, run) if (judge is not None and spec.judge is not None) else None
+    return ScenarioResult(
+        spec=spec,
+        run=run,
+        matcher_results=tuple(results),
+        skipped=False,
+        judge=judge_outcome,
+    )
 
 
 def _dispatch(matcher: Matcher, run: EvalRun) -> None:
@@ -72,13 +103,16 @@ def render_text(results: list[ScenarioResult]) -> str:
             lines.append(f"SKIP {result.spec.name}: {result.run.terminal_reason}")
             continue
         status = "PASS" if result.passed else "FAIL"
-        lines.append(f"{status} {result.spec.name} ({result.run.terminal_reason})")
+        judge_tag = " [judge]" if result.judge is not None and not result.judge.skipped else ""
+        lines.append(f"{status} {result.spec.name} ({result.run.terminal_reason}){judge_tag}")
         if not result.passed:
             for matcher_result in result.matcher_results:
                 if matcher_result.passed:
                     continue
                 lines.append("  -")
                 lines.extend(f"    {body_line}" for body_line in matcher_result.message.splitlines())
+            if result.judge is not None and not result.judge.skipped and not result.judge.passed:
+                lines.append(f"  - judge: {result.judge.rationale}")
             if result.run.is_error and not any(not m.passed for m in result.matcher_results):
                 lines.append(f"  - run errored: {result.run.terminal_reason}")
                 if result.run.raw_stderr.strip():
@@ -97,6 +131,11 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "is_error": r.run.is_error,
                 "skipped": r.skipped,
                 "passed": r.passed,
+                "judge": (
+                    None
+                    if r.judge is None
+                    else {"passed": r.judge.passed, "skipped": r.judge.skipped, "rationale": r.judge.rationale}
+                ),
                 "tool_calls": [{"name": c.name, "input": c.input, "turn": c.turn} for c in r.run.tool_calls],
                 "matchers": [
                     {

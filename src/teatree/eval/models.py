@@ -22,6 +22,22 @@ class Matcher:
 
 
 @dataclasses.dataclass(frozen=True)
+class JudgeSpec:
+    """Opt-in LLM-judge grading config for a scenario.
+
+    Present only when a scenario's pass/fail is not cleanly matcher-gradeable
+    (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
+    A judge model reads the captured transcript and the ``rubric`` and returns
+    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to a cheap tier)
+    and ``max_output_tokens`` caps the judge's reply — both are cost controls.
+    """
+
+    rubric: str
+    model: str = "haiku"
+    max_output_tokens: int = 512
+
+
+@dataclasses.dataclass(frozen=True)
 class EvalSpec:
     """A single eval scenario loaded from YAML."""
 
@@ -34,6 +50,7 @@ class EvalSpec:
     model: str = "haiku"
     max_turns: int = 4
     tools: tuple[str, ...] = ("Bash",)
+    judge: JudgeSpec | None = None
 
 
 @dataclasses.dataclass(frozen=True)

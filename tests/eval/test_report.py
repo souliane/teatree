@@ -1,12 +1,13 @@
 """Evaluation and report rendering for ``ScenarioResult``."""
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
-from teatree.eval.report import MatcherResult, ScenarioResult, evaluate, render_json, render_text
+from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
+from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, evaluate, render_json, render_text
 
 
 def _spec(
@@ -206,3 +207,77 @@ class TestRenderJson:
         payload = json.loads(render_json([result]))
         assert payload["summary"]["failed"] == 1
         assert payload["scenarios"][0]["matchers"][0]["message"] == "missed"
+
+
+def _judged_spec() -> EvalSpec:
+    return dataclasses.replace(_spec(), judge=JudgeSpec(rubric="the explanation is faithful"))
+
+
+_PASS_CALL = (EvalToolCall(name="Bash", input={"command": "git worktree add ../wt HEAD"}, turn=1),)
+
+
+class TestJudgeIntegration:
+    def test_judge_not_invoked_without_judge_block(self) -> None:
+        spec = _spec()
+        calls = {"n": 0}
+
+        def _grader(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            calls["n"] += 1
+            return JudgeOutcome(passed=True, skipped=False, rationale="")
+
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
+        assert calls["n"] == 0
+        assert result.judge is None
+
+    def test_judge_failure_fails_scenario_even_when_matchers_pass(self) -> None:
+        spec = _judged_spec()
+
+        def _grader(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            return JudgeOutcome(passed=False, skipped=False, rationale="unfaithful")
+
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
+        assert result.passed is False
+        assert result.judge is not None
+        assert result.judge.passed is False
+
+    def test_judge_pass_with_matchers_pass_is_pass(self) -> None:
+        spec = _judged_spec()
+
+        def _grader(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            return JudgeOutcome(passed=True, skipped=False, rationale="faithful")
+
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
+        assert result.passed is True
+
+    def test_skipped_judge_does_not_fail_scenario(self) -> None:
+        spec = _judged_spec()
+
+        def _grader(_spec: EvalSpec, _run: EvalRun) -> JudgeOutcome:
+            return JudgeOutcome(passed=False, skipped=True, rationale="claude missing")
+
+        result = evaluate(spec, _run(tool_calls=_PASS_CALL), judge=_grader)
+        assert result.passed is True
+
+    def test_judge_rationale_in_text_report_on_failure(self) -> None:
+        spec = _judged_spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(tool_calls=_PASS_CALL),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+            judge=JudgeOutcome(passed=False, skipped=False, rationale="omitted the migration"),
+        )
+        text = render_text([result])
+        assert "judge: omitted the migration" in text
+
+    def test_judge_in_json_report(self) -> None:
+        spec = _judged_spec()
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(tool_calls=_PASS_CALL),
+            matcher_results=(MatcherResult(matcher=spec.matchers[0], passed=True, message=""),),
+            skipped=False,
+            judge=JudgeOutcome(passed=True, skipped=False, rationale="faithful"),
+        )
+        payload = json.loads(render_json([result]))
+        assert payload["scenarios"][0]["judge"] == {"passed": True, "skipped": False, "rationale": "faithful"}

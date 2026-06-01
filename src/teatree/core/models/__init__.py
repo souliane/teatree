@@ -5,6 +5,7 @@ from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThre
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
+from teatree.core.models.eval_run_record import EvalRunRecord, EvalRunRecordManager, RunSummary
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
@@ -58,6 +59,8 @@ __all__ = [
     "DeferredQuestionAudit",
     "DeferredQuestionError",
     "DirtyWorktreeError",
+    "EvalRunRecord",
+    "EvalRunRecordManager",
     "ImplementedIssueMarker",
     "IncomingEvent",
     "IntentClassification",
@@ -86,6 +89,7 @@ __all__ = [
     "ReviewAssignment",
     "ReviewIntent",
     "ReviewRequestPost",
+    "RunSummary",
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "SelfImproveFiring",
