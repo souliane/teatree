@@ -207,11 +207,19 @@ class OutboundAuditScannerTests(TestCase):
         kwargs = notify_mock.call_args.kwargs
         assert kwargs["idempotency_key"] == "outbound_drift:key-1"
 
-    def test_notifier_exception_is_swallowed_and_does_not_break_tick(self) -> None:
-        """A failing notifier never breaks the tick — drift row still flips."""
+    def test_notifier_exception_leaves_alert_unsent_and_retries_next_tick(self) -> None:
+        """A failing notifier never breaks the tick and never marks the alert sent.
+
+        ``drift_alerted_at`` is the dedupe key, so stamping it before the DM
+        lands would permanently bury an undelivered drift alert. It must stay
+        null on failure so the next tick re-attempts the notifier.
+        """
         claim = _aged_claim(kind=OutboundClaim.Kind.GITLAB_NOTE, key="notify-boom")
 
+        calls: list[str] = []
+
         def _boom(_text: str, _key: str) -> None:
+            calls.append(_key)
             msg = "slack 500"
             raise RuntimeError(msg)
 
@@ -223,8 +231,14 @@ class OutboundAuditScannerTests(TestCase):
 
         claim.refresh_from_db()
         assert claim.drift_detected is True
-        assert claim.drift_alerted_at is not None
+        assert claim.drift_alerted_at is None
         assert len(signals) == 1
+        assert len(calls) == 1
+
+        scanner.scan()
+        claim.refresh_from_db()
+        assert claim.drift_alerted_at is None
+        assert len(calls) == 2
 
     def test_limit_caps_number_of_verifications_per_tick(self) -> None:
         for i in range(5):

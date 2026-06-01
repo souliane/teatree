@@ -364,3 +364,27 @@ class TestF7PrSweepShaFetchFailureSurfaced(TestCase):
             "follow-up failed — caller has no way to distinguish 'SHA unknown' "
             "from 'merged but SHA empty'. Expected a non-empty marker."
         )
+
+
+class TestPrSweepListLimit(TestCase):
+    """``gh pr list`` must request more than the 30-PR default cap."""
+
+    def test_list_open_prs_passes_limit_at_least_100(self) -> None:
+        from teatree.loop.scanners.pr_sweep import GhPrApiClient  # noqa: PLC0415
+
+        captured: list[list[str]] = []
+
+        class _FakeClient(GhPrApiClient):
+            __slots__ = ()
+
+            def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
+                captured.append(argv)
+                return 0, "[]", ""
+
+        _FakeClient(token="").list_open_prs(slug="owner/repo")
+
+        assert captured, "list_open_prs never shelled out to gh"
+        argv = captured[0]
+        assert "--limit" in argv, f"no --limit in argv: {argv}"
+        limit = int(argv[argv.index("--limit") + 1])
+        assert limit >= 100, f"--limit {limit} below the 100 convention"

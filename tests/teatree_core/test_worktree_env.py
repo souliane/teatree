@@ -418,3 +418,33 @@ class TestOverrides(TestCase):
             wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
             with pytest.raises(ValueError, match="owned by core"):
                 set_override(wt, "WT_DB_NAME", "hack")
+
+    def test_render_includes_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND):
+                set_override(wt, "MY_KEY", "my_value")
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "MY_KEY" in spec.keys
+            assert "MY_KEY=my_value" in spec.content
+
+    def test_override_wins_over_overlay_extra(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="t", ticket_url="https://ex.com/1", db_name="wt_1")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_EXTRA_ONLY):
+                WorktreeEnvOverride.objects.create(worktree=wt, key="EXTRA_KEY", value="overridden")
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "EXTRA_KEY=overridden" in spec.content
+            assert "EXTRA_KEY=extra_value" not in spec.content
+
+    def test_override_of_secret_key_still_dropped_from_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="ts", ticket_url="https://ex.com/1", variant="acme")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_SECRET):
+                WorktreeEnvOverride.objects.create(worktree=wt, key="SECRET_PASSWORD", value="leak")
+                spec = render_env_cache(wt)
+            assert spec is not None
+            assert "SECRET_PASSWORD" not in spec.content
+            assert "leak" not in spec.content
