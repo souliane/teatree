@@ -102,7 +102,11 @@ _BUDGET_TOP_LEVEL_BYTES = 88_000
 # is a load-bearing config fact; after trimming the verbose prose the appendix
 # corpus is 110,045 B, so the budget is raised one minimal step (~455 B
 # headroom) to admit the row.
-_BUDGET_APPENDICES_BYTES = 110_500
+# Reviewed bump (speed dial): the per-overlay `speed` throughput-dial row in the
+# override table is the same class of load-bearing config fact as the `autonomy`
+# row above; after trimming verbose prose the appendix corpus is 110,696 B, so
+# the budget is raised one minimal step (~304 B headroom) to admit the row.
+_BUDGET_APPENDICES_BYTES = 111_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.

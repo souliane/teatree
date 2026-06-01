@@ -2525,6 +2525,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │               skills.                                                        │
 │ config        Overlay configuration.                                         │
 │ gate          Enforcement-gate kill-switches (self-rescue).                  │
+│ speed         Parallel-work throughput dial.                                 │
 │ worktree      Per-worktree FSM operations.                                   │
 │ workspace     Ticket-level workspace operations (every worktree in the       │
 │               ticket).                                                       │
@@ -2750,6 +2751,51 @@ Usage: t3 teatree gate skill-loading enable [OPTIONS]
 
  Re-enable the gate.
 
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree speed`
+
+```
+Usage: t3 teatree speed [OPTIONS] COMMAND [ARGS]...
+
+ Parallel-work throughput dial.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Show the effective speed (env > per-overlay > global > default).       │
+│ set   Persist the global `` speed`` dial. A typo is rejected.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree speed show`
+
+```
+Usage: t3 teatree speed show [OPTIONS]
+
+ Show the effective speed (env > per-overlay > global > default).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree speed set`
+
+```
+Usage: t3 teatree speed set [OPTIONS] LEVEL
+
+ Persist the global `` speed`` dial. A typo is rejected.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    level      TEXT  slow | medium | full | boost (aliases: low, normal,    │
+│                       high)                                                  │
+│                       [required]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯

@@ -80,7 +80,7 @@ The env var `T3_MODE` overrides the toml setting. Unknown values raise
 A subset of `[teatree]` keys can be overridden per-overlay in
 `[overlays.<name>]`. The resolution chain (first match wins):
 
-1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_ON_BEHALF_POST_MODE`, `T3_REVIEW_SKILL`).
+1. `T3_*` env var (wired one-offs in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`, `T3_REVIEW_SKILL`).
 2. Active overlay's override from `[overlays.<name>]`.
 3. Global `[teatree]` value.
 4. `UserSettings` dataclass default.
@@ -97,6 +97,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
+| `speed` | Throughput dial `slow < medium < full < boost` (default `medium`): how many threads run at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> speed set`; `T3_SPEED` env. |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
