@@ -61,7 +61,8 @@ class TestTicketLifecycle(TestCase):
         review_task = Task.objects.filter(ticket=ticket, phase="reviewing").first()
         assert review_task is not None
         assert review_task.status == "pending"
-        assert review_task.execution_target == "headless"
+        # reviewing is loop-dispatched → in-session (subscription-covered).
+        assert review_task.execution_target == "interactive"
 
     def test_from_tested_to_delivered(self) -> None:
         """Ticket flows from tested through delivery via auto-scheduled tasks."""
