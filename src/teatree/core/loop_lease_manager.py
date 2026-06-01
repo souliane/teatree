@@ -198,15 +198,19 @@ class LoopLeaseQuerySet(models.QuerySet):
         keep_session_id: str,
         current_pid: int | None,
     ) -> int:
-        """Evict the ``name`` lease iff it is safe to do so (#1604).
+        """Evict the ``name`` lease iff it is safe to do so (#1604/#1675).
 
-        Decision table (INV1 / INV4 / #786 B1 backend-agnostic CAS):
+        Decision table (INV1 / INV4 / #786 B1 backend-agnostic CAS).
+        Liveness is PID-ANCHORED via :meth:`_session_lease_is_live` — the
+        same predicate ``claim_ownership`` and ``ownership_status`` use —
+        so an owner that is alive but BUSY past its tick TTL is a LIVE
+        owner here too and is never blanked:
 
-        - Expired / null expiry: EVICT (lease is already dead).
-        - Live + same session + matching pid: EVICT (post-compaction
-            same-process self-reclaim; session rotated its id).
+        - Dead (expired TTL **and** null/dead owner_pid): EVICT (truly dead).
+        - Live (unexpired TTL **or** alive owner_pid) + same pid: EVICT
+            (post-compaction same-process self-reclaim; session rotated its
+            id — the pid match is the safety condition, regardless of TTL).
         - Live + null owner_pid: KEEP (unknown process, INV4 bias).
-        - Live + dead owner_pid: EVICT.
         - Live + alive owner_pid != current_pid: KEEP (INV1, foreign lease).
 
         The final UPDATE re-asserts the safety condition in its ``WHERE``
@@ -227,20 +231,20 @@ class LoopLeaseQuerySet(models.QuerySet):
             return 0
 
         expires_at = row["lease_expires_at"]
-        is_live = expires_at is not None and expires_at > now
+        stored_pid = row["owner_pid"]
+        is_live = self._session_lease_is_live(row["session_id"], stored_pid, expires_at, now)
 
         if not is_live:
             return candidates.filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)).update(
                 session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None
             )
 
-        stored_pid = row["owner_pid"]
         if stored_pid is None:
             return 0
 
         if current_pid is not None and stored_pid == current_pid:
             return (
-                self.filter(name=name, owner_pid=stored_pid, lease_expires_at__gt=now)
+                self.filter(name=name, owner_pid=stored_pid)
                 .exclude(session_id=keep_session_id)
                 .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
             )
