@@ -134,7 +134,7 @@ def transcript_replay(
     if transcript is None:
         typer.echo("SKIP transcript-replay: no session transcript found in scope", err=True)
         return
-    events = parse_session_jsonl(transcript.read_text(encoding="utf-8"))
+    events = parse_session_jsonl(transcript.read_text(encoding="utf-8", errors="replace"))
     results = replay(events)
     rendered = render_report_json(results) if output_format == "json" else render_report(results)
     typer.echo(rendered)

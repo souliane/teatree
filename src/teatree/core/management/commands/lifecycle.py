@@ -10,6 +10,7 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.models import Ticket
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.phases import normalize_phase, phase_transition
 from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
@@ -189,15 +190,20 @@ def _try_advance(ticket: Ticket, transition_name: str) -> None:
         with transaction.atomic():
             method()
             ticket.save()
-    except TransitionNotAllowed:
+    except (TransitionNotAllowed, InvalidTransitionError) as exc:
         # Loud, not swallowed (#694): an out-of-order / skipped transition
         # used to vanish at DEBUG and only resurface as a raw
         # TransitionNotAllowed at `pr create`. The phase visit is still
         # recorded; the shipping gate reconciles the FSM from it later.
+        # InvalidTransitionError (dirty-worktree / missing-E2E DoD refusals)
+        # is handled identically: the FSM stays put, so the gate keeps
+        # blocking, but the operator sees the refusal reason instead of a
+        # raw traceback.
         logger.warning(
             "Transition '%s' not valid from state '%s' for ticket %s — "
-            "FSM unchanged; phase visit recorded, gate will reconcile",
+            "FSM unchanged; phase visit recorded, gate will reconcile (%s)",
             transition_name,
             ticket.state,
             ticket.pk,
+            exc,
         )

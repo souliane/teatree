@@ -12,6 +12,7 @@ from django_typer.management import TyperCommand, command, group
 from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
+from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
 
 
@@ -125,6 +126,13 @@ class Command(TyperCommand):
         except TransitionNotAllowed:
             return {
                 "error": f"Transition '{transition_name}' not allowed from state '{ticket.state}'",
+            }
+        except InvalidTransitionError as exc:
+            # Dirty-worktree / missing-E2E DoD refusals: the FSM stays put
+            # (the gate keeps blocking) and the refusal reason is surfaced
+            # to the caller instead of a raw traceback.
+            return {
+                "error": f"Transition '{transition_name}' refused from state '{ticket.state}': {exc}",
             }
 
         return {"ticket_id": int(ticket.pk), "state": ticket.state}
