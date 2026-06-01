@@ -1132,6 +1132,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ list               List discovered eval scenarios.                           │
 │ run                Run one scenario by name, or all scenarios when no name   │
 │                    is given.                                                 │
+│ history            Show recent eval runs and per-scenario pass-rate over     │
+│                    time.                                                     │
 │ transcript-replay  Replay a real session transcript against teatree          │
 │                    behavioural invariants.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1156,14 +1158,49 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  Run one scenario by name, or all scenarios when no name is given.
 
+ Each run is recorded into the run-history ledger (``t3 eval history``)
+ unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
+ as the baseline for its model — the reference the later model-regression
+ diff compares a candidate against.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format           TEXT     Report format: text or json. [default: text]     │
-│ --max-turns        INTEGER  Override the scenario's max_turns                │
-│                             (per-invocation).                                │
-│ --help                      Show this message and exit.                      │
+│ --format                       TEXT     Report format: text or json.         │
+│                                         [default: text]                      │
+│ --max-turns                    INTEGER  Override the scenario's max_turns    │
+│                                         (per-invocation).                    │
+│ --persist      --no-persist             Persist this run into the            │
+│                                         run-history ledger.                  │
+│                                         [default: persist]                   │
+│ --baseline                              Mark the persisted run as the        │
+│                                         baseline for its model.              │
+│ --help                                  Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ Show recent eval runs and per-scenario pass-rate over time.
+
+ The data substrate the later model-regression diff reads. ``--baseline``
+ shows the current reference run per model; ``--mark-baseline <id>`` promotes
+ a run to baseline (demoting the prior baseline for that model).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
