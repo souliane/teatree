@@ -1,0 +1,223 @@
+"""Tests for the destination-aware gate skip (`teatree.hooks.publish_destination`).
+
+``resolve_publish_destination`` extracts the target repo/namespace of a
+publish command; ``is_public_destination`` classifies it FAIL-CLOSED
+(PUBLIC unless its namespace provably matches the config-driven
+``[teatree] internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
+allowlist); ``gate_skips_destination`` is the composed predicate the
+banned-terms (#1415) and bare-reference (#1530) gates call to scan only
+PUBLIC targets.
+
+Synthetic namespaces only (``internalcorp``, ``acme-internal``, the
+genuinely-public ``souliane/teatree``); the allowlist lives in the user's
+private config, never in the source or tests.
+"""
+
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from teatree.hooks import publish_destination
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],  # noqa: S607
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+    )
+
+
+def _repo_with_remote(path: Path, remote_url: str) -> Path:
+    path.mkdir(parents=True)
+    _git(path, "init", "-b", "main")
+    _git(path, "remote", "add", "origin", remote_url)
+    return path
+
+
+def _config(tmp_path: Path, namespaces: list[str]) -> Path:
+    cfg = tmp_path / ".teatree.toml"
+    entries = ", ".join(f'"{n}"' for n in namespaces)
+    cfg.write_text(f"[teatree]\ninternal_publish_namespaces = [{entries}]\n", encoding="utf-8")
+    return cfg
+
+
+class TestResolvePublishDestination:
+    """``resolve_publish_destination`` extracts the target repo/namespace.
+
+    Covers the explicit ``--repo``/``-R`` flag (last-wins), the raw-REST
+    ``gh api repos/...`` / ``glab api projects/...`` URL paths, the
+    ``GH_REPO`` env default, the flagless create/comment current-repo
+    fallback, and the unresolvable cases that must return ``None`` (so the
+    caller treats the destination as PUBLIC and scans).
+    """
+
+    def test_gh_repo_flag(self) -> None:
+        dest = publish_destination.resolve_publish_destination("gh pr create -R acme-internal/app --title x")
+        assert dest is not None
+        assert dest.slug == "acme-internal/app"
+        assert dest.via == "flag"
+
+    def test_glab_repo_flag(self) -> None:
+        dest = publish_destination.resolve_publish_destination("glab mr create -R internalcorp/private-svc --title x")
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+
+    def test_repeated_repo_flag_last_wins(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "gh pr create --repo internalcorp/private-svc --repo souliane/teatree --title x"
+        )
+        assert dest is not None
+        assert dest.slug == "souliane/teatree"
+
+    def test_gh_api_repos_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "gh api repos/acme-internal/app/issues -f body=x --method POST"
+        )
+        assert dest is not None
+        assert dest.slug == "acme-internal/app"
+        assert dest.via == "api"
+
+    def test_glab_api_projects_url_encoded_path(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api projects/internalcorp%2Fprivate-svc/merge_requests/1/notes -f body=x"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+
+    def test_glab_api_projects_nested_namespace(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab api projects/internalcorp%2Fteam%2Fprivate-svc/issues"
+        )
+        assert dest is not None
+        assert dest.slug == "internalcorp/team/private-svc"
+
+    def test_gh_api_non_repos_path_is_none(self) -> None:
+        assert publish_destination.resolve_publish_destination("gh api user/repos") is None
+
+    def test_gh_pr_create_no_flag_resolves_current_repo(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
+        dest = publish_destination.resolve_publish_destination("gh pr create --title x", repo)
+        assert dest is not None
+        assert dest.slug == "github.com/acme-internal/app"
+        assert dest.via == "cwd"
+
+    def test_gh_env_repo_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_REPO", "acme-internal/app")
+        dest = publish_destination.resolve_publish_destination("gh pr create --title x")
+        assert dest is not None
+        assert dest.slug == "acme-internal/app"
+        assert dest.via == "env"
+
+    def test_explicit_flag_wins_over_gh_env_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GH_REPO", "acme-internal/app")
+        dest = publish_destination.resolve_publish_destination("gh pr create --repo souliane/teatree --title x")
+        assert dest is not None
+        assert dest.slug == "souliane/teatree"
+
+    def test_non_gh_glab_command_is_none(self) -> None:
+        assert publish_destination.resolve_publish_destination("curl -d body=x https://example.com") is None
+
+    def test_flagless_create_without_cwd_is_none(self) -> None:
+        assert publish_destination.resolve_publish_destination("gh pr create --title x", None) is None
+
+    def test_command_after_separator_does_not_resolve(self) -> None:
+        assert publish_destination.resolve_publish_destination("echo hi && gh pr create -R acme-internal/app") is None
+
+    def test_non_posting_gh_verb_is_none(self) -> None:
+        # ``glab mr list`` is neither a flag/api/create target → None.
+        assert publish_destination.resolve_publish_destination("glab mr list") is None
+
+
+class TestIsPublicDestination:
+    """FAIL-CLOSED: PUBLIC unless the slug provably matches the internal allowlist."""
+
+    def test_none_destination_is_public(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert publish_destination.is_public_destination(None, config_path=cfg) is True
+
+    def test_empty_allowlist_treats_internal_looking_slug_as_public(self, tmp_path: Path) -> None:
+        # DEFAULT (key absent / empty) → behaviour unchanged, everything PUBLIC.
+        cfg = _config(tmp_path, [])
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+    def test_missing_config_treats_everything_as_public(self, tmp_path: Path) -> None:
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.toml") is True
+
+    def test_allowlisted_namespace_is_internal(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_host_prefixed_slug_matches_namespace(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["gitlab.example/internalcorp"])
+        dest = publish_destination.Destination(slug="gitlab.example/internalcorp/private-svc", via="cwd")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_genuinely_public_slug_stays_public(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(slug="souliane/teatree", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+    def test_segment_boundary_prevents_prefix_false_match(self, tmp_path: Path) -> None:
+        # ``internalcorp`` must NOT match an unrelated ``internalcorp-public``.
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(slug="internalcorp-public/app", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+    def test_env_var_namespace_is_internal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, [])
+        monkeypatch.setenv("T3_INTERNAL_PUBLISH_NAMESPACES", "internalcorp, acme-internal")
+        dest = publish_destination.Destination(slug="acme-internal/app", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_empty_slug_is_public(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        dest = publish_destination.Destination(slug="", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+    def test_exact_slug_match_is_internal(self, tmp_path: Path) -> None:
+        # A whole-slug allowlist entry matches the slug exactly.
+        cfg = _config(tmp_path, ["internalcorp/private-svc"])
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is False
+
+    def test_malformed_config_treats_everything_as_public(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("this is = not [valid toml", encoding="utf-8")
+        dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
+        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+
+
+class TestGateSkipsDestination:
+    """The composed predicate the gates call: SKIP only a provably-internal target."""
+
+    def test_internal_flag_target_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "glab mr note 5 -R internalcorp/private-svc --message x", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_public_flag_target_is_not_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination(
+                "gh pr create -R souliane/teatree --title x", None, config_path=cfg
+            )
+            is False
+        )
+
+    def test_unresolvable_destination_is_not_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        assert (
+            publish_destination.gate_skips_destination("curl -d x https://example.com", None, config_path=cfg) is False
+        )

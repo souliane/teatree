@@ -49,6 +49,12 @@ detection failure.
 
 Secrets (API keys, tokens) are blocked on EVERY surface regardless of
 the carve-out -- see :func:`contains_secret`.
+
+The companion :mod:`teatree.hooks.publish_destination` reuses the
+repo-target helpers here (``_extract_repo_flag``, ``_slug_for_cwd``,
+``_config_path``, the eligible-verb sets) to make the banned-terms /
+bare-reference gates DESTINATION-AWARE: those gates scan only PUBLIC
+targets and skip a publish whose destination is provably internal.
 """
 
 import json

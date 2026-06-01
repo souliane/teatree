@@ -36,7 +36,10 @@ def config(tmp_path: Path) -> Path:
     """
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
-        '[teatree]\nbanned_terms = ["acmecorp"]\nprivate_repos = ["acmecorp-engineering"]\n',
+        "[teatree]\n"
+        'banned_terms = ["acmecorp"]\n'
+        'private_repos = ["acmecorp-engineering"]\n'
+        'internal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
         encoding="utf-8",
     )
     return cfg
@@ -241,6 +244,78 @@ class TestHookChainRegistration:
         names = [h.__name__ for h in chain]
         assert "handle_banned_terms_pretool" in names
         assert names.index("handle_banned_terms_pretool") < names.index("handle_enforce_skill_loading")
+
+
+class TestLeadingEnvOverride:
+    """A leading ``ALLOW_BANNED_TERM=1`` env-assignment token bypasses the gate (#1415).
+
+    The Claude Code harness forwards neither an inline ``env`` block nor a
+    ``--allow-banned-term`` flag glab/gh would accept; the one spelling that
+    reliably reaches the gate is a leading inline env-assignment on the
+    command itself.
+    """
+
+    def test_leading_env_assignment_bypasses(self) -> None:
+        cmd = 'ALLOW_BANNED_TERM=1 glab mr note 5 --message "ship to acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
+
+    def test_leading_env_assignment_zero_does_not_bypass(self) -> None:
+        cmd = 'ALLOW_BANNED_TERM=0 glab mr note 5 --message "acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    def test_env_assignment_after_command_name_does_not_bypass(self) -> None:
+        # Once the command name is reached, a later ``KEY=val``-shaped token
+        # is an argument, not an inline env assignment.
+        cmd = 'gh issue create --body "acmecorp" --field ALLOW_BANNED_TERM=1'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    def test_env_assignment_after_separator_does_not_bypass(self) -> None:
+        cmd = 'gh issue create --body "acmecorp"; ALLOW_BANNED_TERM=1 echo done'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    @pytest.mark.integration
+    def test_leading_env_assignment_bypasses_block_end_to_end(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'ALLOW_BANNED_TERM=1 gh issue create --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.integration
+class TestDestinationAwareGate:
+    """The gate scans only PUBLIC targets (#1415 destination-awareness).
+
+    FAIL-CLOSED: a banned term posted to the genuinely-public
+    ``souliane/teatree`` is still blocked; the same term posted to a
+    configured internal namespace is allowed; an unresolvable destination
+    stays blocked.
+    """
+
+    def test_banned_term_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R souliane/teatree --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_banned_term_to_internal_namespace_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = 'gh pr create -R internalcorp/private-svc --title t --body "ship to acmecorp"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_banned_term_to_internal_glab_api_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "glab api projects/internalcorp%2Fprivate-svc/issues -f body=acmecorp"
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_banned_term_unparseable_destination_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A Slack-bound ``chat.postMessage`` curl has no resolvable repo
+        # destination → PUBLIC (fail-closed) → still blocked.
+        cmd = "curl -d text=acmecorp https://slack.com/api/chat.postMessage"
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
 class TestFormatBlockMessage:

@@ -18,9 +18,11 @@ The module is pure detection. The PreToolUse hook in
 ``stdout`` / ``permissionDecision`` JSON.
 
 Override via the ``--allow-banned-term`` flag in the first command
-segment, or ``ALLOW_BANNED_TERM=1`` in the tool-input env mapping —
-mirroring the quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape
-hatch.
+segment, a leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in
+the first segment (``ALLOW_BANNED_TERM=1 glab ...``), the
+``ALLOW_BANNED_TERM=1`` process env var, or ``ALLOW_BANNED_TERM=1`` in the
+tool-input env mapping — mirroring the quote-scanner's ``--quote-ok`` /
+``QUOTE_OK=1`` escape hatch.
 """
 
 import os
@@ -87,12 +89,38 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     return _extract_bash_payload(command)
 
 
+def _has_leading_env_override(command: str) -> bool:
+    """Return True iff the first segment starts with ``ALLOW_BANNED_TERM=1``.
+
+    The Claude Code harness forwards a ``Bash`` command verbatim and lets
+    NEITHER an inline ``env`` block reach the gate NOR ``glab``/``gh`` accept
+    a ``--allow-banned-term`` flag (they reject the unknown flag). The one
+    spelling the agent CAN reliably emit is a leading inline env assignment
+    on the command itself — ``ALLOW_BANNED_TERM=1 glab mr note ...`` — which
+    bash applies to the command's environment. This honours that token when
+    it leads the FIRST command segment, so a chained second command cannot
+    smuggle the override past the gate.
+    """
+    for word in _first_segment_words(command):
+        name, sep, value = word.partition("=")
+        if not sep:
+            return False  # first non-assignment token: command name reached
+        if name == _OVERRIDE_ENV:
+            return value.strip() == "1"
+    return False
+
+
 def has_override(tool_name: str, tool_input: ToolInput) -> bool:
     """Return True iff the caller explicitly opted out of the gate.
 
     The ``--allow-banned-term`` flag is honoured only when it appears as a
     token in the FIRST command segment (anything after a command-separator
-    metacharacter is a separate command and must not bypass the gate).
+    metacharacter is a separate command and must not bypass the gate). A
+    leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in the first
+    segment (``ALLOW_BANNED_TERM=1 glab ...``) is ALSO honoured: the harness
+    forwards neither an inline ``env`` block nor a ``--allow-banned-term``
+    flag glab/gh would accept, so the leading env-assignment is the spelling
+    that actually reaches the gate.
 
     ``ALLOW_BANNED_TERM=1`` is honoured from the process environment
     (``os.environ``). The Claude Code PreToolUse payload for a ``Bash``
@@ -106,6 +134,8 @@ def has_override(tool_name: str, tool_input: ToolInput) -> bool:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if _OVERRIDE_FLAG in _first_segment_words(command):
+            return True
+        if _has_leading_env_override(command):
             return True
     if os.environ.get(_OVERRIDE_ENV, "").strip() == "1":
         return True

@@ -2894,7 +2894,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_destination, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2903,18 +2903,20 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
 
     payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
-    if payload is None:
-        return False
-
-    if banned_terms_scanner.has_override(tool_name, tool_input):
+    command = tool_input.get("command", "")
+    cwd = _resolve_cwd_repo(data)
+    if (
+        payload is None
+        or banned_terms_scanner.has_override(tool_name, tool_input)
+        or (tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd))
+    ):
         return False
 
     term = banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
 
-    command = tool_input.get("command", "")
-    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+    if publish_surface.carve_out_applies(tool_name, command, payload, cwd):
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
             "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
@@ -2972,7 +2974,7 @@ def _run_bare_reference_pretool(data: dict) -> bool:
     """Bare-reference inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
+    from teatree.hooks import bare_reference_scanner, publish_destination  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2982,6 +2984,10 @@ def _run_bare_reference_pretool(data: dict) -> bool:
 
     payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
     if payload is None:
+        return False
+
+    command = tool_input.get("command", "")
+    if tool_name == "Bash" and publish_destination.gate_skips_destination(command, _resolve_cwd_repo(data)):
         return False
 
     refs = bare_reference_scanner.scan_text(payload)
