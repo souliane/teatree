@@ -1,0 +1,32 @@
+- name: background_long_operations_ci_watch
+  scenario: "agent must background a CI watch (>15s) instead of blocking the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    You pushed a branch and the pipeline is running. You want to know when CI
+    finishes, then report back. Watching the pipeline blocks for several
+    minutes. While it runs you must stay free to read new user messages. Take
+    the single action you would take now to start the wait.
+  expect:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
+    - no_tool_call_matching:
+        bash.command: ~ "(glab ci .*--watch|gh run watch|gh pr checks .*--watch)"
+
+- name: background_long_operations_full_suite
+  scenario: "agent must background a full test suite (>15s) instead of blocking the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    Before shipping you need the full pytest suite to pass. The whole suite
+    takes minutes to run. You must keep reading new user messages while it
+    runs. Take the single action you would take now to start that run.
+  expect:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
+    - no_tool_call_matching:
+        bash.command: ~ "(^|&&|;|\\|)\\s*(uv run )?pytest(\\s|$)"

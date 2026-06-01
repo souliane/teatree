@@ -30,6 +30,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 6. [Always Use AskUserQuestion for Questions](#always-use-askuserquestion-for-questions)
 7. [Always Create Tasks](#always-create-tasks)
 8. [Mid-Task Interrupts](#mid-task-interrupts-non-negotiable)
+8a. [Background Long Operations](#background-long-operations-non-negotiable)
 9. [Context Transparency](#context-transparency)
 10. [Context Longevity](#context-longevity)
 
@@ -501,6 +502,17 @@ When a new request arrives while you are in the middle of work, **do not silentl
 4. **Default = finish what you were doing.** Silent pivots abandon the in-progress context the user was tracking and force them to re-prompt to recover it.
 
 This rule does NOT override `User Instructions Are Priority 1` — explicit corrections like "skip tests, push now" are blocking by definition. The interrupt rule handles the routine case where a new request looks important but isn't tied to the current state.
+
+## Background Long Operations (Non-Negotiable)
+
+Any operation expected to run longer than ~15 seconds — CI/pipeline watches, full test suites, heavy analysis or research, multi-step API sweeps — must **not** block the foreground. A blocking foreground call freezes the main agent: it stops reading new user messages until the call returns, so the user is ignored for minutes.
+
+Background it instead:
+
+- Dispatch a **background sub-agent** (Task tool) for the long unit of work, then keep handling new input while it runs.
+- For a single shell command, pass `run_in_background: true` to Bash rather than waiting on it inline.
+
+The main agent's job during a long operation is to stay responsive — collect the result when the background unit reports back, not to sit blocked on it. This rule is pinned by the `background_long_operations_*` behavioral evals (`src/teatree/eval/scenarios/background_long_operations.yaml`).
 
 ## Always Use AskUserQuestion for Questions
 

@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-bg-ci-noop-01", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The pipeline is running; I'll keep an eye on it."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
