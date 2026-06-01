@@ -12,6 +12,7 @@ from teatree.agents.prompt import (
     _read_skill_contents,
     _read_skill_contents_scoped,
     build_interactive_context,
+    build_reviewer_dispatch_prompt,
     build_system_context,
     build_task_prompt,
 )
@@ -252,6 +253,18 @@ class TestBuildSystemContext(TestCase):
         ctx = build_system_context(task, skills=[])
         assert "PHASE: reviewing" in ctx
         assert "code review" in ctx
+
+    def test_shipping_phase_embeds_reviewer_dispatch_skill_block(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="shipping")
+
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
+            ctx = build_system_context(task, skills=[])
+        assert "PHASE: shipping" in ctx
+        assert "call the Skill tool for EACH of these skills" in ctx
+        assert "/t3:review" in ctx
+        assert "/code-review" in ctx
 
     def test_skills_with_content(self) -> None:
         """Ensure skill content is included when skills resolve to files."""
@@ -495,3 +508,53 @@ class TestParentResultSummary(TestCase):
         child = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parent)
 
         assert _parent_result_summary(child) == ""
+
+
+# --- build_reviewer_dispatch_prompt ---
+
+
+class TestBuildReviewerDispatchPrompt(TestCase):
+    """The shared reviewer dispatch-prompt builder embeds the overlay review skills.
+
+    A review sub-agent dispatched via the Agent tool / a dynamic workflow /
+    a headless reviewer structurally loads them through the REQUIRED load
+    block instead of relying on the orchestrator to remember.
+    """
+
+    def test_review_instruction_is_present(self) -> None:
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=[]):
+            out = build_reviewer_dispatch_prompt(review_instruction="Review the diff on branch foo")
+        assert "Review the diff on branch foo" in out
+
+    def test_lifecycle_review_skill_always_required(self) -> None:
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=[]):
+            out = build_reviewer_dispatch_prompt(review_instruction="x")
+        assert "/t3:review" in out
+        assert "Skill tool" in out
+
+    def test_overlay_review_skills_resolved_and_required(self) -> None:
+        with patch(
+            "teatree.agents.skill_bundle.active_overlay_review_skills",
+            return_value=["code-review", "ac-reviewing-codebase"],
+        ):
+            out = build_reviewer_dispatch_prompt(review_instruction="x")
+        assert "/code-review" in out
+        assert "/ac-reviewing-codebase" in out
+
+    def test_explicit_review_skills_override_overlay_resolution(self) -> None:
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["should-not-appear"]):
+            out = build_reviewer_dispatch_prompt(review_instruction="x", review_skills=["explicit-skill"])
+        assert "/explicit-skill" in out
+        assert "should-not-appear" not in out
+
+    def test_skills_deduped_and_lifecycle_not_duplicated(self) -> None:
+        out = build_reviewer_dispatch_prompt(
+            review_instruction="x", review_skills=["t3:review", "code-review", "code-review"]
+        )
+        assert out.count("/code-review") == 1
+        assert out.count("/t3:review") == 1
+
+    def test_load_block_precedes_instruction(self) -> None:
+        with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
+            out = build_reviewer_dispatch_prompt(review_instruction="REVIEW-BODY-MARKER")
+        assert out.index("/code-review") < out.index("REVIEW-BODY-MARKER")
