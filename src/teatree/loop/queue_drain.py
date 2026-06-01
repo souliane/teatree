@@ -1,0 +1,245 @@
+"""Tick-driven draining and stale-job expiry for the django-tasks DB queue.
+
+The DB-backed django-tasks queue (``DBTaskResult``, backend
+``django_tasks_db.DatabaseBackend``) only advances when *something* drains
+it. ``t3 <overlay> worker`` spawns ``manage.py db_worker`` subprocesses, but
+that is a manual machine-wide singleton nobody keeps alive — so enqueued
+``execute_headless_task`` / ``execute_provision`` / ``execute_ship`` jobs sit
+in ``READY`` forever (the #786 loop is tick-driven and session-bound; it
+assumes no always-on OS daemon).
+
+This module closes that gap inside the existing tick, with no new daemon:
+
+:func:`drain_ready_batch` runs a *bounded* batch of READY jobs in-process,
+mirroring ``db_worker``'s claim/run/finish semantics (lock the row, claim it so
+a concurrent drainer can't double-run it, execute, mark successful/failed). It
+idles cleanly — an empty queue returns immediately.
+
+:func:`expire_stale_ready_jobs` retires READY jobs older than a threshold by
+marking them ``FAILED`` (the queue's only terminal non-run state) with a
+descriptive traceback, so a freshly-supervised drainer never blind-fires heavy
+provision/ship/teardown jobs that have been queued for days. FAILED is
+reversible — the row, its args, and the reason are all preserved; nothing is
+hard-deleted.
+
+Both are wired into the won-owner tick via :mod:`teatree.loop.tick_piggyback`
+behind a dedicated ``LoopLease`` CAS, and the drain refuses to run while a real
+``db_worker`` holds the machine-wide ``teatree-worker`` flock singleton — so the
+two drainers never compete for the same rows.
+"""
+
+import datetime as dt
+import logging
+import os
+import uuid
+
+from django.core.exceptions import SuspiciousOperation
+from django.db.utils import OperationalError
+from django.utils import timezone
+
+logger = logging.getLogger(__name__)
+
+_STALE_THRESHOLD_DEFAULT_HOURS = 24
+_DRAIN_BATCH_DEFAULT = 5
+
+
+class StaleQueueJobError(RuntimeError):
+    """Recorded as the failure reason on a READY job retired for being stale.
+
+    Carries a terminal, non-run outcome onto the ``DBTaskResult`` row via
+    ``set_failed`` — the row, its args, and this reason survive, so the
+    expiry is auditable and reversible (re-enqueue is possible) rather than a
+    hard delete.
+    """
+
+
+def stale_threshold_hours() -> int:
+    """Stale-READY age threshold in hours (``T3_QUEUE_STALE_HOURS``, default 24, floor 1).
+
+    A blank or non-integer override degrades to the default rather than
+    crashing the tick; the 1h floor keeps a fat-fingered ``0`` from retiring
+    jobs the instant they are enqueued.
+    """
+    raw = os.environ.get("T3_QUEUE_STALE_HOURS", str(_STALE_THRESHOLD_DEFAULT_HOURS)).strip()
+    if not raw:
+        return _STALE_THRESHOLD_DEFAULT_HOURS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _STALE_THRESHOLD_DEFAULT_HOURS
+
+
+def drain_batch_size() -> int:
+    """Per-tick in-process drain batch size (``T3_QUEUE_DRAIN_BATCH``, default 5, floor 1).
+
+    Bounded so a single tick never blocks for the whole backlog: each won
+    tick drains at most this many jobs, and the next tick picks up where it
+    left off.
+    """
+    raw = os.environ.get("T3_QUEUE_DRAIN_BATCH", str(_DRAIN_BATCH_DEFAULT)).strip()
+    if not raw:
+        return _DRAIN_BATCH_DEFAULT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _DRAIN_BATCH_DEFAULT
+
+
+def a_worker_is_running() -> bool:
+    """True iff a live ``manage.py db_worker`` holds the ``teatree-worker`` flock.
+
+    ``t3 <overlay> worker`` wraps its workers in the ``teatree-worker``
+    machine-wide flock singleton. When one is alive, the in-process tick
+    drain must stand down so the two never claim the same rows. ``read_pid``
+    reports the live holder (and reaps a stale pid file) without acquiring
+    the lock, so probing here never disturbs a running worker.
+    """
+    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+
+    return read_pid(default_pid_path("teatree-worker")) is not None
+
+
+def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+    """Retire READY jobs older than the threshold, returning a count by task name.
+
+    Conservative by design: only ``READY`` jobs whose ``enqueued_at`` predates
+    ``now - threshold`` are touched; RUNNING/finished jobs and fresh READY jobs
+    are left alone. Each retired job is marked ``FAILED`` via ``set_failed`` —
+    the queue's terminal non-run state — carrying a :class:`StaleQueueJobError`
+    so the reason is recorded and the row stays inspectable/re-enqueueable. No
+    hard delete.
+    """
+    from django_tasks.base import TaskResultStatus  # noqa: PLC0415
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+
+    hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
+    cutoff = timezone.now() - dt.timedelta(hours=hours)
+    stale = DBTaskResult.objects.filter(status=TaskResultStatus.READY, enqueued_at__lt=cutoff)
+
+    retired: dict[str, int] = {}
+    for job in stale.iterator():
+        name = job.task_name
+        reason = StaleQueueJobError(
+            f"Expired READY job {job.id} ({name}): enqueued {job.enqueued_at.isoformat()}, "
+            f"older than the {hours}h stale threshold; retired without running."
+        )
+        try:
+            job.set_failed(reason)
+        except OperationalError as exc:
+            logger.warning("Could not expire stale job %s (%s): %s", job.id, name, exc)
+            continue
+        retired[name] = retired.get(name, 0) + 1
+    if retired:
+        logger.info("Expired %d stale READY job(s) older than %dh: %s", sum(retired.values()), hours, retired)
+    return retired
+
+
+def _run_one_ready_job() -> bool:
+    """Claim and run a single READY job, mirroring ``db_worker.run_task``.
+
+    Returns ``True`` if a job was claimed and executed (success OR failure —
+    both are terminal outcomes that drain the queue), ``False`` when no READY
+    job was available. The row is locked + claimed inside an exclusive
+    transaction so a concurrent drainer cannot pick the same job.
+    """
+    from django.db import close_old_connections  # noqa: PLC0415
+    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415
+    from django_tasks.signals import task_finished, task_started  # noqa: PLC0415
+    from django_tasks.utils import get_random_id  # noqa: PLC0415
+    from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
+    from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415
+
+    worker_id = f"tickdrain-{os.getpid()}-{get_random_id()}"
+    ready = DBTaskResult.objects.ready().filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
+
+    with exclusive_transaction(ready.db):
+        try:
+            job = ready.get_locked()
+        except OperationalError as exc:
+            if "is locked" in exc.args[0]:
+                return False
+            raise
+        if job is None:
+            return False
+        job.claim(worker_id)
+
+    try:
+        task = job.task
+        task_result = job.task_result
+        backend_type = task.get_backend()
+        task_started.send(sender=backend_type, task_result=task_result)
+        if task.takes_context:
+            from django_tasks.base import TaskContext  # noqa: PLC0415
+
+            return_value = task.call(TaskContext(task_result=task_result), *task_result.args, **task_result.kwargs)
+        else:
+            return_value = task.call(*task_result.args, **task_result.kwargs)
+        job.set_successful(return_value)
+        task_finished.send(sender=backend_type, task_result=job.task_result)
+    except BaseException as exc:  # noqa: BLE001 — match db_worker: any task error becomes a FAILED row, never crashes the drainer
+        job.set_failed(exc)
+        try:
+            sender = type(job.task.get_backend())
+            task_finished.send(sender=sender, task_result=job.task_result)
+        except (ImportError, SuspiciousOperation):
+            logger.exception("Drained task id=%s failed unexpectedly", job.id)
+    finally:
+        close_old_connections()
+    return True
+
+
+def drain_ready_batch(*, max_jobs: int | None = None) -> int:
+    """Drain at most ``max_jobs`` READY jobs in-process; return how many ran.
+
+    Stands down entirely when a real ``db_worker`` is alive (it owns the
+    drain — see :func:`a_worker_is_running`). Stops early the moment the queue
+    is empty, so an idle tick costs one ``ready()`` query and returns ``0``.
+    """
+    if a_worker_is_running():
+        logger.debug("Skipping in-process queue drain: a db_worker holds the teatree-worker singleton.")
+        return 0
+    limit = max_jobs if max_jobs is not None else drain_batch_size()
+    drained = 0
+    for _ in range(limit):
+        if not _run_one_ready_job():
+            break
+        drained += 1
+    if drained:
+        logger.info("Tick drained %d queued job(s) in-process.", drained)
+    return drained
+
+
+def expire_then_drain() -> dict[str, int | dict[str, int]]:
+    """Expire stale READY jobs, then drain a bounded batch of the fresh remainder.
+
+    The expiry runs *first* so a stale heavy job (a 12-day-old provision/ship/
+    teardown) is retired to ``FAILED`` before the drain can ever claim and run
+    it. Only jobs newer than the stale threshold survive to be drained.
+    """
+    retired = expire_stale_ready_jobs()
+    drained = drain_ready_batch()
+    return {"retired": retired, "drained": drained}
+
+
+def _piggyback_drain_queue() -> None:
+    """Drive one expire-then-drain pass behind the dedicated ``loop-drain-queue`` lease.
+
+    Mirrors the other tick-piggyback cycles: a per-tick-unique owner with a
+    cadence-length lease that is never released, so the lease TTL doubles as
+    the throttle — a re-tick inside the cadence window loses the CAS and skips.
+    """
+    from teatree.core.models import LoopLease  # noqa: PLC0415
+
+    owner = f"tickdrain-{os.getpid()}-{uuid.uuid4().hex}"
+    if not LoopLease.objects.acquire("loop-drain-queue", owner=owner, lease_seconds=drain_cadence_seconds()):
+        return
+    expire_then_drain()
+
+
+def drain_cadence_seconds() -> int:
+    """The ``loop-drain-queue`` throttle window (``T3_QUEUE_DRAIN_CADENCE``, default 30s, floor 10)."""
+    raw = os.environ.get("T3_QUEUE_DRAIN_CADENCE", "30").strip() or "30"
+    try:
+        return max(10, int(raw))
+    except ValueError:
+        return 30

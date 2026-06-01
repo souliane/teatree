@@ -16,6 +16,13 @@ from teatree.eval.transcript_conformance import render_report, render_report_jso
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 
+_VALID_FORMATS = ("text", "json")
+
+
+def _run_model(specs: list[EvalSpec]) -> str:
+    models = sorted({spec.model for spec in specs})
+    return ",".join(models)
+
 
 def _bootstrap_django() -> None:
     """Ensure Django is configured before overlay discovery runs.
@@ -56,24 +63,50 @@ def run(
         "--max-turns",
         help="Override the scenario's max_turns (per-invocation).",
     ),
+    persist: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        True,
+        "--persist/--no-persist",
+        help="Persist this run into the run-history ledger.",
+    ),
+    baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--baseline",
+        help="Mark the persisted run as the baseline for its model.",
+    ),
 ) -> None:
-    """Run one scenario by name, or all scenarios when no name is given."""
+    """Run one scenario by name, or all scenarios when no name is given.
+
+    Each run is recorded into the run-history ledger (``t3 eval history``)
+    unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
+    as the baseline for its model — the reference the later model-regression
+    diff compares a candidate against.
+    """
     _bootstrap_django()
-    specs = discover_specs() if name is None else [_require_spec(name)]
-    runner = ClaudePRunner(max_turns_override=max_turns)
-    results: list[ScenarioResult] = []
-    for spec in specs:
-        run_result = runner.run(spec)
-        results.append(evaluate(spec, run_result))
-    if output_format == "json":
-        typer.echo(render_json(results))
-    elif output_format == "text":
-        typer.echo(render_text(results))
-    else:
+    if output_format not in _VALID_FORMATS:
         typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
         raise typer.Exit(code=2)
+    specs = discover_specs() if name is None else [_require_spec(name)]
+    runner = ClaudePRunner(max_turns_override=max_turns)
+    results = [evaluate(spec, runner.run(spec)) for spec in specs]
+    if persist:
+        _persist_run(results, specs=specs, max_turns=max_turns, baseline=baseline)
+    typer.echo(render_json(results) if output_format == "json" else render_text(results))
     if any(not r.passed for r in results):
         sys.exit(1)
+
+
+def _persist_run(
+    results: list[ScenarioResult],
+    *,
+    specs: list[EvalSpec],
+    max_turns: int | None,
+    baseline: bool,
+) -> None:
+    from teatree.eval.persistence import persist_run  # noqa: PLC0415
+
+    record = persist_run(results, model=_run_model(specs), max_turns_override=max_turns)
+    if baseline:
+        record.mark_baseline()
 
 
 def _require_spec(name: str) -> EvalSpec:
@@ -84,6 +117,48 @@ def _require_spec(name: str) -> EvalSpec:
         typer.echo(f"available scenarios: {available}", err=True)
         raise typer.Exit(code=2)
     return spec
+
+
+@eval_app.command("history")
+def history(
+    limit: int = typer.Option(20, "--limit", help="Maximum number of recent runs to show."),
+    model: str | None = typer.Option(None, "--model", help="Filter to one model's runs."),
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    show_baseline: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--baseline",
+        help="Show only the current baseline run(s) and their per-scenario pass-rate.",
+    ),
+    mark_baseline: int | None = typer.Option(
+        None,
+        "--mark-baseline",
+        help="Mark the run with this id as the baseline for its model, then show history.",
+    ),
+) -> None:
+    """Show recent eval runs and per-scenario pass-rate over time.
+
+    The data substrate the later model-regression diff reads. ``--baseline``
+    shows the current reference run per model; ``--mark-baseline <id>`` promotes
+    a run to baseline (demoting the prior baseline for that model).
+    """
+    _bootstrap_django()
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
+    from teatree.core.models import EvalRunRecord  # noqa: PLC0415
+
+    if mark_baseline is not None and not mark_run_baseline(mark_baseline):
+        typer.echo(f"unknown run id: {mark_baseline}", err=True)
+        raise typer.Exit(code=2)
+    runs = EvalRunRecord.objects.all()
+    if model is not None:
+        runs = runs.for_model(model)
+    if show_baseline:
+        runs = runs.baselines()
+    runs = list(runs[:limit])
+    renderer = render_history_json if output_format == "json" else render_history_text
+    typer.echo(renderer(runs))
 
 
 def _resolve_transcript(*, latest: bool, session: str | None, file: Path | None) -> Path | None:
