@@ -2046,7 +2046,7 @@ def _repo_root_is_teatree_managed(repo_root: str) -> bool:
     gate-over-deny class this whole change closes).
 
     Reuses :func:`_overlay_managed_repo_signals` (the same signal source
-    as the out-of-band-merge gate) and ``publish_surface._slug_for_cwd``
+    as the out-of-band-merge gate) and ``publish_surface.slug_for_cwd``
     so the slug shape matches the rest of the managed-repo machinery.
     """
     slugs, paths = _overlay_managed_repo_signals()
@@ -2066,7 +2066,7 @@ def _repo_root_is_teatree_managed(repo_root: str) -> bool:
             added = True
         from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface._slug_for_cwd(root_resolved).lower()  # noqa: SLF001
+        slug = publish_surface.slug_for_cwd(root_resolved).lower()
     except Exception:  # noqa: BLE001
         return False
     finally:
@@ -2914,12 +2914,21 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         return False
 
     command = tool_input.get("command", "")
-    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+    cwd_repo = _resolve_cwd_repo(data)
+    if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
             "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
         )
         return False
+
+    unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
+    if unknown_slug:
+        sys.stderr.write(
+            f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
+            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
+            "for a reliable offline carve-out.\n"
+        )
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
@@ -5817,7 +5826,7 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
 
     Returns ``True`` (managed — keep the keystone-merge block), ``False``
     (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
-    caller fails safe and BLOCKS). Reuses ``publish_surface._slug_for_cwd``
+    caller fails safe and BLOCKS). Reuses ``publish_surface.slug_for_cwd``
     for slug resolution so the host/owner/repo shape matches the
     private-repo carve-out's.
     """
@@ -5834,7 +5843,7 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
             added = True
         from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface._slug_for_cwd(cwd).lower()  # noqa: SLF001
+        slug = publish_surface.slug_for_cwd(cwd).lower()
     except Exception:  # noqa: BLE001
         return None
     finally:
@@ -6140,6 +6149,42 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return False
 
 
+_AWAY_MIRROR_SUFFIX = "away-question-mirror"
+
+
+def _away_mirror_key(questions: list[dict], session_id: str) -> str:
+    """Stable hash of the question payload + session — the idempotency key."""
+    blob = json.dumps([questions, session_id], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _mirror_away_question_to_slack(questions: list[dict], session_id: str) -> None:
+    """Post an away-mode question to the user's Slack DM, exactly once.
+
+    The away-mode handler runs FIRST and denies, short-circuiting the
+    PreToolUse chain before ``handle_mirror_question_to_slack`` would
+    run — so without this the away-mode question never reaches Slack
+    (the user reads Slack, not ``t3 questions list``). Idempotent by a
+    stable hash of the question payload + session recorded in a STATE_DIR
+    marker file, so a harness retry of the same tool call does not
+    double-post. Fail-open: any Slack/IO error is swallowed so the deny
+    is never blocked and the loop never wedges.
+    """
+    if not questions:
+        return
+    slack_cfg = _slack_config_from_toml()
+    if slack_cfg is None:
+        return
+    key = _away_mirror_key(questions, session_id)
+    marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
+    if key in _read_lines(marker):
+        return
+    _perform_slack_post(slack_cfg, questions)
+    with contextlib.suppress(OSError):
+        _ensure_state_dir()
+        _append_line(marker, key)
+
+
 # ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
 
 
@@ -6200,14 +6245,18 @@ def _resolved_away_mode() -> bool:
 def handle_route_away_mode_question(data: dict) -> bool:
     """Convert an ``AskUserQuestion`` to a ``DeferredQuestion`` when availability=away.
 
-    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` so the
-    routing decision precedes the Slack mirror (the colleague should
-    not be paged for a question the agent already converted). Returns
-    ``True`` with a ``permissionDecision=deny`` and a friendly reason
-    that names the recorded row so the agent narrates the conversion
-    correctly. The denied tool_use block still appears in the transcript,
-    so the §807 structured-question Stop gate ``_last_assistant_turn``
-    detects ``used_question_tool=True`` and lets the turn complete.
+    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` and denies,
+    short-circuiting the chain before the present-mode
+    ``handle_mirror_question_to_slack`` (the last handler) would run. So
+    this handler is the only place that can mirror an away-mode question
+    to the user's Slack DM — and it does, between recording the row and
+    emitting the deny (the user reads Slack, not ``t3 questions list``).
+    Returns ``True`` with a ``permissionDecision=deny`` and a friendly
+    reason that names the recorded row so the agent narrates the
+    conversion correctly. The denied tool_use block still appears in the
+    transcript, so the §807 structured-question Stop gate
+    ``_last_assistant_turn`` detects ``used_question_tool=True`` and lets
+    the turn complete.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
@@ -6228,6 +6277,8 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # Teatree unavailable — fail open so the user is never blocked
         # by a hook crash. The standard interactive flow then runs.
         return False
+    with contextlib.suppress(Exception):
+        _mirror_away_question_to_slack(questions, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
         f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "

@@ -11,6 +11,17 @@ GITHUB_PROJECT_NUMBER: int = 2
 GITHUB_TOKEN_PASS_KEY: str = "github/token"  # noqa: S105 — pass key name, not a secret
 GITLAB_TOKEN_PASS_KEY: str = "gitlab/pat"  # noqa: S105 — pass key name, not a secret
 
+# One human, several forge handles. The first handle is the canonical
+# display name; a reassignment between two handles in a group is a
+# self-handoff and never surfaces on the statusline. The operator's own
+# private handles belong in ``~/.teatree.toml`` under
+# ``[overlays.t3-teatree] identity_aliases`` — applied at runtime via
+# ``OverlayConfig.apply_toml_overrides`` — so they stay out of this public
+# repo. The first group lists the public GitHub login alone.
+IDENTITY_ALIASES: list[list[str]] = [
+    ["souliane"],
+]
+
 # ── Workflow ────────────────────────────────────────────────────────
 
 REQUIRE_TICKET: bool = True

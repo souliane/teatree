@@ -24,7 +24,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import banned_terms_scanner, publish_surface
+from teatree.hooks import _repo_visibility, banned_terms_scanner
 
 
 @pytest.fixture
@@ -280,7 +280,7 @@ class TestPrivateRepoCarveOut:
         _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
         # No allowlist hit; the visibility probe finds nothing → unknown →
         # NOT private → hard-block stands.
-        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: None)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": 'git commit -m "ship to acmecorp"'},
@@ -311,7 +311,7 @@ class TestPrivateRepoCarveOut:
         # An explicit --repo pointing at a PUBLIC repo must never be carved out
         # regardless of what the CWD is. This is the load-bearing safety test.
         repo = _private_repo(tmp_path)
-        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": 'gh pr create --repo souliane/teatree --title t --body "ship to acmecorp"'},
