@@ -24,8 +24,8 @@ class TestInboundBridgeEndToEnd:
         """RED if ``SlackBotBackend.fetch_dms`` REST poll branch is removed.
 
         Guard: deleting the ``conversations.history`` poll fallback in
-        ``fetch_dms`` (the branch that runs when ``self._dms`` is empty)
-        turns this RED — no row would land.
+        ``fetch_dms`` (the branch that runs when the Socket-Mode queue
+        snapshot is empty) turns this RED — no row would land.
         """
         transport.default_responses["conversations.history"] = {
             "ok": True,
