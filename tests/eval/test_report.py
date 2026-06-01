@@ -6,8 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
+from teatree.eval.models import AnyOf, EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, evaluate, render_json, render_text
+
+_TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="pytest")
+_BG_BASH_BRANCH = Matcher(kind="positive", tool="Bash", arg_path="run_in_background", operator="~", value="(?i)true")
+_ANY_OF = AnyOf(alternatives=(_TASK_BRANCH, _BG_BASH_BRANCH))
 
 
 def _spec(
@@ -73,6 +77,35 @@ class TestEvaluate:
         assert len(result.matcher_results) == 1
         assert result.matcher_results[0].passed is False
         assert "Bash" in result.matcher_results[0].message
+
+    def test_any_of_passes_when_bg_bash_branch_matches_not_task(self) -> None:
+        # The documented `Bash run_in_background: true` escape satisfies the
+        # disjunction even though no Task was dispatched (the over-fit fix).
+        spec = _spec(matchers=(_ANY_OF,))
+        run = _run(
+            tool_calls=(
+                EvalToolCall(name="Bash", input={"command": "uv run pytest", "run_in_background": True}, turn=1),
+            ),
+        )
+        result = evaluate(spec, run)
+        assert result.passed is True
+
+    def test_any_of_passes_when_task_branch_matches_not_bash(self) -> None:
+        spec = _spec(matchers=(_ANY_OF,))
+        run = _run(tool_calls=(EvalToolCall(name="Task", input={"prompt": "run the pytest suite"}, turn=1),))
+        assert evaluate(spec, run).passed is True
+
+    def test_any_of_fails_when_no_branch_matches(self) -> None:
+        # A blocking FOREGROUND pytest (no run_in_background, no Task) fails.
+        spec = _spec(matchers=(_ANY_OF,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "uv run pytest"}, turn=1),))
+        result = evaluate(spec, run)
+        assert result.passed is False
+        assert "ANY of 2 alternatives" in result.matcher_results[0].message
+
+    def test_any_of_fails_against_noop_transcript(self) -> None:
+        spec = _spec(matchers=(_ANY_OF,))
+        assert evaluate(spec, _run(tool_calls=())).passed is False
 
 
 class TestVerdict:
@@ -220,6 +253,21 @@ class TestRenderJson:
         payload = json.loads(render_json([result]))
         assert payload["summary"]["failed"] == 1
         assert payload["scenarios"][0]["matchers"][0]["message"] == "missed"
+
+    def test_serializes_any_of_matcher_with_alternatives(self) -> None:
+        spec = _spec(matchers=(_ANY_OF,))
+        result = ScenarioResult(
+            spec=spec,
+            run=_run(),
+            matcher_results=(MatcherResult(matcher=_ANY_OF, passed=False, message="all failed"),),
+            skipped=False,
+        )
+        payload = json.loads(render_json([result]))
+        matcher = payload["scenarios"][0]["matchers"][0]
+        assert matcher["kind"] == "any_of"
+        assert len(matcher["alternatives"]) == 2
+        assert matcher["alternatives"][1]["arg_path"] == "run_in_background"
+        assert matcher["passed"] is False
 
 
 def _judged_spec() -> EvalSpec:

@@ -19,14 +19,15 @@ models. Persisting wraps in ``atomic()`` so a partially-written run never
 pollutes the history.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 from django.db import transaction
 
 from teatree.core.models import EvalRunRecord, MatcherDetail, TrajectoryToolCall
 from teatree.eval.matrix import MatrixRow
+from teatree.eval.models import AnyOf, ExpectItem, Matcher
 from teatree.eval.pass_at_k import PassAtKResult
-from teatree.eval.report import ScenarioResult
+from teatree.eval.report import MatcherResult, ScenarioResult
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -42,18 +43,36 @@ def _trajectory(result: ScenarioResult) -> list[TrajectoryToolCall]:
     return [TrajectoryToolCall(name=c.name, input=c.input, turn=c.turn) for c in result.run.tool_calls]
 
 
+def _matcher_detail(item: MatcherResult) -> MatcherDetail:
+    matcher: ExpectItem = item.matcher
+    if isinstance(matcher, AnyOf):
+        return _any_of_detail(matcher, passed=item.passed)
+    return MatcherDetail(
+        kind=matcher.kind,
+        tool=matcher.tool,
+        arg_path=matcher.arg_path,
+        operator=matcher.operator,
+        value=matcher.value,
+        passed=item.passed,
+    )
+
+
+def _any_of_detail(matcher: AnyOf, *, passed: bool) -> MatcherDetail:
+    def field(getter: Callable[[Matcher], str]) -> str:
+        return " | ".join(getter(alt) for alt in matcher.alternatives)
+
+    return MatcherDetail(
+        kind="any_of",
+        tool=field(lambda alt: alt.tool),
+        arg_path=field(lambda alt: alt.arg_path),
+        operator=field(lambda alt: alt.operator),
+        value=field(lambda alt: alt.value),
+        passed=passed,
+    )
+
+
 def _matcher_details(result: ScenarioResult) -> list[MatcherDetail]:
-    return [
-        MatcherDetail(
-            kind=m.matcher.kind,
-            tool=m.matcher.tool,
-            arg_path=m.matcher.arg_path,
-            operator=m.matcher.operator,
-            value=m.matcher.value,
-            passed=m.passed,
-        )
-        for m in result.matcher_results
-    ]
+    return [_matcher_detail(m) for m in result.matcher_results]
 
 
 def _judge_rationale(result: ScenarioResult) -> str:

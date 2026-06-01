@@ -22,6 +22,25 @@ class Matcher:
 
 
 @dataclasses.dataclass(frozen=True)
+class AnyOf:
+    """A disjunction of positive matchers — passes when ANY alternative holds.
+
+    Pins a rule that a documented set of equally-valid actions satisfies
+    (e.g. "background the long op via a ``Task`` dispatch OR a Bash call
+    with ``run_in_background: true``"), so a compliant response taking
+    either branch stays green. Restricted to positive alternatives: a
+    disjunction of negatives is just one wider negative regex, and mixing
+    a forbidden branch into an "any-of" reads ambiguously.
+    """
+
+    alternatives: tuple[Matcher, ...]
+
+
+# An ``expect`` entry is either a single matcher or a disjunction of them.
+ExpectItem = Matcher | AnyOf
+
+
+@dataclasses.dataclass(frozen=True)
 class JudgeSpec:
     """Opt-in LLM-judge grading config for a scenario.
 
@@ -45,7 +64,7 @@ class EvalSpec:
     scenario: str
     agent_path: str
     prompt: str
-    matchers: tuple[Matcher, ...]
+    matchers: tuple[ExpectItem, ...]
     source_path: Path
     model: str = "haiku"
     max_turns: int = 4

@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from teatree.eval.models import EvalSpec, JudgeSpec, Matcher
+from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 DEFAULT_MODEL = "haiku"
@@ -56,7 +56,7 @@ def _parse_spec(entry: object, path: Path) -> EvalSpec:
     judge = _parse_judge(spec_map, name, path)
     expect = spec_map.get("expect")
     if expect is None and judge is not None:
-        matchers: tuple[Matcher, ...] = ()
+        matchers: tuple[ExpectItem, ...] = ()
     elif not isinstance(expect, list) or not expect:
         raise EvalSpecError(path, None, f"spec {name!r}: `expect` must be a non-empty list")
     else:
@@ -123,10 +123,12 @@ def _required_str(entry: Mapping[str, Any], key: str, path: Path) -> str:
     return value
 
 
-def _parse_matcher(item: object, spec_name: str, path: Path) -> Matcher:
+def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
     if not isinstance(item, Mapping):
         raise EvalSpecError(path, None, f"spec {spec_name!r}: each `expect` entry must be a mapping")
     item_map: Mapping[str, Any] = {str(k): v for k, v in item.items()}
+    if "any_of" in item_map:
+        return _parse_any_of(item_map, spec_name, path)
     if "tool_call" in item_map:
         return _parse_positive(item_map, spec_name, path)
     if "no_tool_call_matching" in item_map:
@@ -134,8 +136,22 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> Matcher:
     raise EvalSpecError(
         path,
         None,
-        f"spec {spec_name!r}: expect entry must have `tool_call` or `no_tool_call_matching`",
+        f"spec {spec_name!r}: expect entry must have `tool_call`, `no_tool_call_matching`, or `any_of`",
     )
+
+
+def _parse_any_of(item: Mapping[str, Any], spec_name: str, path: Path) -> AnyOf:
+    branches = item["any_of"]
+    if not isinstance(branches, list) or not branches:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `any_of` must be a non-empty list of `tool_call` entries")
+    alternatives: list[Matcher] = []
+    for branch in branches:
+        if not isinstance(branch, Mapping) or "tool_call" not in branch:
+            raise EvalSpecError(
+                path, None, f"spec {spec_name!r}: every `any_of` branch must be a `tool_call` entry (positive only)"
+            )
+        alternatives.append(_parse_positive({str(k): v for k, v in branch.items()}, spec_name, path))
+    return AnyOf(alternatives=tuple(alternatives))
 
 
 def _parse_positive(item: Mapping[str, Any], spec_name: str, path: Path) -> Matcher:
