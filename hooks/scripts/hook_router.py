@@ -1401,8 +1401,11 @@ def _companions_for_task_text(task_text: str) -> list[str]:
     skill through :func:`resolve_companions` against the real trigger index
     (parsed from real ``SKILL.md`` frontmatter). The companions are already
     transitive — ``review`` pulls in ``code``/``workspace``/``platforms``/
-    … — so no companion-resolution logic is rebuilt here. On any
-    resolution failure (teatree not importable in this hook process, no
+    … — so no companion-resolution logic is rebuilt here. When the lifecycle
+    resolves to ``review`` the active overlay's
+    ``get_review_companion_skills()`` are unioned in, so a fanned-out
+    reviewing task that fails to load the overlay's review skills is denied.
+    On any resolution failure (teatree not importable in this hook process, no
     lifecycle match) the closure is empty and the gate falls back to the
     ``<session>.pending`` demand set alone.
     """
@@ -1424,7 +1427,8 @@ def _companions_for_task_text(task_text: str) -> list[str]:
 
         index = build_trigger_index(_skill_search_dirs())
         lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(task_text, trigger_index=index)
-        resolved, _missing = resolve_companions([lifecycle], index) if lifecycle else ([], [])
+        seed = _review_task_seed(lifecycle)
+        resolved, _missing = resolve_companions(seed, index) if seed else ([], [])
     except Exception:  # noqa: BLE001
         return []
     else:
@@ -1433,6 +1437,34 @@ def _companions_for_task_text(task_text: str) -> list[str]:
         for extra in added:
             with contextlib.suppress(ValueError):
                 sys.path.remove(extra)
+
+
+def _review_task_seed(lifecycle: str) -> list[str]:
+    """Return the companion-resolution seed for *lifecycle*.
+
+    A ``review`` lifecycle unions in the active overlay's review companions so a
+    fanned-out reviewing task that skips them is denied; any other lifecycle
+    seeds only itself.
+    """
+    if lifecycle == "review":
+        return [lifecycle, *_overlay_review_companions()]
+    return [lifecycle] if lifecycle else []
+
+
+def _overlay_review_companions() -> list[str]:
+    """Return the active overlay's ``get_review_companion_skills()``, or ``[]``.
+
+    Fail-open: any import or resolution failure (teatree unimportable, no
+    configured overlay) yields an empty list so the review-task closure
+    degrades to the lifecycle skill's own transitive companions alone — never
+    a lockout.
+    """
+    try:
+        from teatree.agents.skill_bundle import active_overlay_review_skills  # noqa: PLC0415
+
+        return active_overlay_review_skills()
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def emit_task_create_deny(reason: str) -> bool:

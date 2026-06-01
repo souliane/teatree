@@ -7,6 +7,7 @@ __all__ = [
     "DEFAULT_SKILLS_DIR",
     "active_overlay_companion_skills",
     "active_overlay_pr_review_companion",
+    "active_overlay_review_skills",
     "resolve_skill_bundle",
 ]
 
@@ -64,6 +65,31 @@ def active_overlay_pr_review_companion() -> str:
     return value if isinstance(value, str) else ""
 
 
+def active_overlay_review_skills() -> list[str]:
+    """Return the active overlay's ``get_review_companion_skills()``, or ``[]``.
+
+    The deduped ordered ``[pr_review_companion, *companion_skills]`` a headless
+    reviewer must hold. Mirrors :func:`active_overlay_pr_review_companion` but
+    returns the full review-skill set so the reviewing-phase bundle AND the
+    reviewing-phase system context embed every overlay review skill in full
+    rather than demoting them to a one-line summary. When no overlay is
+    reachable the caller behaves as if no review companions were declared.
+    """
+    config = _active_overlay_config()
+    if config is None:
+        return []
+    getter = getattr(config, "get_review_companion_skills", None)
+    if not callable(getter):
+        return []
+    try:
+        skills = getter()
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(skills, list):
+        return []
+    return [s for s in skills if isinstance(s, str) and s]
+
+
 def resolve_skill_bundle(
     *,
     phase: str,
@@ -78,5 +104,6 @@ def resolve_skill_bundle(
         trigger_index=trigger_index,
         companion_skills=active_overlay_companion_skills(),
         pr_review_companion=active_overlay_pr_review_companion(),
+        review_skills=active_overlay_review_skills(),
     )
     return result.skills
