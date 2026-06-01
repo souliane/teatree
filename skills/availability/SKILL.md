@@ -26,11 +26,12 @@ Load `/t3:availability` when the user wants to:
 
 `teatree.core.availability.resolve_mode()` returns the effective mode by:
 
-1. **Manual override (unexpired)** — `t3 teatree availability away --until <ISO8601>` (or `present`).
-2. **Cron-window schedule** — any active expression in `[teatree.availability].windows` (evaluated in `[teatree.availability].timezone`).
-3. **Default** — `present`.
+1. **Manual override (unexpired)** — `t3 teatree availability away --until <ISO8601>` (or `present`). A deliberate `away` (a holiday) is authoritative and wins over everything below.
+2. **Live presence beats a schedule `away`** — a `UserPromptSubmit` recorded within the last 15 min (`availability.PRESENCE_FRESHNESS`) is direct evidence the user is at the keyboard *now*, so it upgrades a schedule-derived `away` to `present` (source `live`). A user actively typing outside their configured work hours is demonstrably present — their questions must reach them, not get deferred. This layer only *upgrades* a schedule `away`; it never downgrades a present schedule and never overrides a manual `away`.
+3. **Cron-window schedule** — any active expression in `[teatree.availability].windows` (evaluated in `[teatree.availability].timezone`).
+4. **Default** — `present`.
 
-`t3 teatree availability auto` clears the override so the schedule decides again.
+`t3 teatree availability auto` clears the override so the schedule (and live presence) decide again. The heartbeat is stamped by the `handle_record_presence` `UserPromptSubmit` hook on every prompt; it is fail-open — a heartbeat that cannot be written just lets the schedule decide as before.
 
 ## CLI surface
 

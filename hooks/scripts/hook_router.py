@@ -845,6 +845,32 @@ def handle_user_prompt_submit(data: dict) -> None:
     print("\n".join(parts))  # noqa: T201
 
 
+# ── UserPromptSubmit: live-presence heartbeat (#58 away-misclassification) ────
+
+
+def handle_record_presence(data: dict) -> None:
+    """Stamp a live-presence heartbeat — a prompt proves the user is here.
+
+    ``availability.resolve_mode`` reads this stamp to upgrade a
+    schedule-derived ``away`` to ``present``: a user actively submitting
+    prompts is demonstrably reachable, so their ``AskUserQuestion`` calls
+    must not be deferred just because the clock is outside their configured
+    work hours. Fail-open and silent on the happy path — a heartbeat that
+    cannot be written never blocks the prompt (the schedule then decides
+    as before).
+    """
+    if not data.get("prompt"):
+        return
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core.availability import PRESENCE  # noqa: PLC0415
+
+        PRESENCE.record()
+    except Exception:  # noqa: BLE001 — heartbeat is best-effort; never block the prompt.
+        return
+
+
 # ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
 
 _LOOP_CADENCE_DEFAULT = 720
@@ -7151,6 +7177,7 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [
         handle_clear_classifier_deny_marker,
+        handle_record_presence,
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
         handle_inject_pending_questions,
