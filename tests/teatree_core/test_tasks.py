@@ -76,12 +76,14 @@ class TestDrainHeadlessQueue(TestCase):
     def test_enqueues_pending_headless_tasks(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
+        # ``architectural_review`` has no registered phase agent, so it is NOT
+        # loop-dispatched and the drain safety-net owns it.
         pending = Task.objects.create(
             ticket=ticket,
             session=session,
             execution_target=Task.ExecutionTarget.HEADLESS,
             status=Task.Status.PENDING,
-            phase="coding",
+            phase="architectural_review",
         )
         # Interactive task should NOT be enqueued
         Task.objects.create(
@@ -90,6 +92,15 @@ class TestDrainHeadlessQueue(TestCase):
             execution_target=Task.ExecutionTarget.INTERACTIVE,
             status=Task.Status.PENDING,
             phase="testing",
+        )
+        # A loop-dispatched author phase (coding) is the loop's sole
+        # responsibility — the drain must NOT also enqueue it (double-dispatch).
+        Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="coding",
         )
 
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
@@ -411,9 +422,11 @@ class TestExecuteHeadlessTask(TestCase):
 
         self.monkeypatch.setattr("teatree.agents.headless.run_headless", _raise)
 
-        # Signal auto-enqueues on creation; ImmediateBackend runs it synchronously
+        # ``architectural_review`` has no registered phase agent, so it is NOT
+        # loop-dispatched — it rides the auto-enqueue path the executor owns.
+        # ImmediateBackend runs the enqueued job synchronously.
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
-            task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+            task = Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
