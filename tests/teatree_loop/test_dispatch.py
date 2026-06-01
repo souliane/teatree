@@ -84,10 +84,46 @@ def test_reviewer_pr_approval_dismissed_dispatches_to_reviewer_agent() -> None:
     assert ("statusline", "action_needed") in kinds
 
 
-def test_pending_task_dispatches_to_orchestrator() -> None:
-    actions = dispatch([ScanSignal(kind="pending_task", summary="Task 1 pending")])
+def test_pending_task_dispatches_to_phase_agent() -> None:
+    """A ``pending_task`` routes to its PHASE's own agent, never a chaining orchestrator."""
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="pending_task",
+                summary="Task 1 (coding) pending",
+                payload={"task_id": 1, "phase": "coding", "ticket_id": 1, "ticket_role": "author"},
+            ),
+        ],
+    )
     assert actions[0].kind == "agent"
-    assert actions[0].zone == "t3:orchestrator"
+    assert actions[0].zone == "t3:coder"
+
+
+def test_pending_task_shipping_dispatches_to_shipper() -> None:
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="pending_task",
+                summary="Task 9 (shipping) pending",
+                payload={"task_id": 9, "phase": "shipping", "ticket_id": 3, "ticket_role": "author"},
+            ),
+        ],
+    )
+    assert [(a.kind, a.zone) for a in actions] == [("agent", "t3:shipper")]
+
+
+def test_pending_task_unregistered_phase_falls_through_to_statusline() -> None:
+    """A pending task with no registered phase agent surfaces for operator triage."""
+    actions = dispatch(
+        [
+            ScanSignal(
+                kind="pending_task",
+                summary="Task 2 (scoping) pending",
+                payload={"task_id": 2, "phase": "scoping", "ticket_id": 1, "ticket_role": "author"},
+            ),
+        ],
+    )
+    assert [(a.kind, a.zone) for a in actions] == [("statusline", "in_flight")]
 
 
 def test_notion_unrouted_routes_to_webhook() -> None:
