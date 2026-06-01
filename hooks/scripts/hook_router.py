@@ -3272,17 +3272,23 @@ def _orchestrator_bash_gate_enabled() -> bool:
 def _orchestrator_boundary_agent_gate_enabled() -> bool:
     """Whether the foreground-Agent-dispatch deny is enabled (default OFF, opt-in).
 
-    The ``Agent`` arm of the orchestrator-boundary gate (#1442) is a
-    previously-dead deny gate: the harness Workflow/Task fan-out vehicle that
-    spawns sub-agents BYPASSES ``PreToolUse`` (see
-    :func:`handle_enforce_orchestrator_boundary` and ``docs/claude-code-internals.md``
-    §9), so a ``PreToolUse`` ``Agent`` matcher would never deliver a real
-    dispatch to this handler — and the ``TaskCreated`` seam that DOES reach the
-    fan-out carries no ``run_in_background`` field, the only signal this gate
-    consults. The deny therefore ships behind an explicit opt-in: an unvalidated
-    deny gate that could wedge the loop's own foreground dispatches stays inert
-    unless the operator deliberately sets
-    ``[teatree] orchestrator_boundary_agent_gate_enabled = true``.
+    The ``Agent`` arm of the orchestrator-boundary gate (#1442) is currently a
+    dead deny gate because no ``Agent`` matcher is wired in ``hooks.json`` (the
+    registered ``PreToolUse`` matchers are ``Bash|Edit|Write``,
+    ``AskUserQuestion``, ``mcp__.*[Ss]lack.*``). The ``Agent`` TOOL itself DOES
+    reach ``PreToolUse`` — a foreground Agent dispatch fires it with
+    ``run_in_background`` in the tool_input — so adding an ``Agent`` matcher
+    would make this deny genuinely live. That is why the deny ships behind an
+    explicit opt-in even before the matcher exists: enabling it on the
+    orchestrator's own foreground Agent-dispatch hot path is a lockout risk
+    (it would block the loop's own foreground builder/reviewer/resolver
+    dispatches), so it must be validated attended (#1646) before default-ON.
+    The flag also makes it lockout-safe the moment a matcher is added.
+
+    (Distinct from the SEPARATE ``Task``/``Workflow`` fan-out vehicle, which
+    genuinely bypasses ``PreToolUse`` and fires ``TaskCreated`` — no
+    ``run_in_background`` in that schema, so this gate's foreground/background
+    signal exists only on the Agent-matcher path, not the TaskCreated one.)
 
     Fails CLOSED to disabled (missing/broken config → False; only an explicit
     ``true`` enables), mirroring :func:`_agent_plan_gate_on_task_create_enabled`.

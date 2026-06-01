@@ -419,12 +419,14 @@ class TestMainAgentForegroundAgentIsBlocked1442:
 
     Detection uses ``agent_id`` (the #115 fix) instead of the transcript
     ``isSidechain`` read. Since #171 PR B the Agent-arm deny ships default-OFF
-    behind ``orchestrator_boundary_agent_gate_enabled``: the harness fan-out
-    vehicle bypasses PreToolUse so a real dispatch never reaches this arm, and
-    an unvalidated deny that could wedge the loop's own foreground dispatches
-    stays inert unless deliberately enabled. These tests enable the flag to
-    exercise the deny logic, and the default-OFF / escape paths below prove the
-    no-lockout off-ramps.
+    behind ``orchestrator_boundary_agent_gate_enabled``: the deny sits on the
+    orchestrator's own foreground Agent-dispatch hot path, so enabling it could
+    wedge the loop's own foreground dispatches — a lockout risk to validate
+    attended (#1646) — and it stays inert unless deliberately enabled. (The arm
+    is also currently phantom: no ``Agent`` matcher is wired in hooks.json,
+    though the Agent tool itself DOES reach PreToolUse.) These tests enable the
+    flag to exercise the deny logic, and the default-OFF / escape paths below
+    prove the no-lockout off-ramps.
     """
 
     _RULE_CITATION = "feedback_always_run_in_background_for_sub_agent_dispatch"

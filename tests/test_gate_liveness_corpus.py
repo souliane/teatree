@@ -19,13 +19,18 @@ is registered on that event).
 
 After PR B (#171) three gates remain phantoms — the PreToolUse ``Agent`` arms of
 the plan-gate, dispatch-quote, and orchestrator-boundary gates. Their handler
-logic is correct but assertion (c) fails: the harness Workflow/Task fan-out
-vehicle that spawns sub-agents bypasses PreToolUse, so an ``Agent`` matcher
-would deliver no real dispatch (adding one would be corpus-green-but-production-
-phantom). Each fan-out concern is enforced in production on the ``TaskCreated``
-seam instead (the plan-gate and dispatch-quote have reachable TaskCreated
-counterparts; the orchestrator-boundary Agent arm has no TaskCreated signal —
-``run_in_background`` is absent there — so no production-live routing exists).
+logic is correct but assertion (c) fails because NO ``Agent`` matcher is wired
+in ``hooks.json`` (the registered PreToolUse matchers are ``Bash|Edit|Write``,
+``AskUserQuestion``, ``mcp__.*[Ss]lack.*``; ``Agent`` has only ever appeared in
+the PostToolUse matcher). The ``Agent`` TOOL itself DOES reach PreToolUse —
+adding an ``Agent`` matcher would make these arms genuinely live — so they are
+left unwired DELIBERATELY, not because the tool bypasses the event. The deny
+that matters most (the orchestrator-boundary foreground-Agent guard) sits on the
+orchestrator's own hot path, so enabling it unattended is a lockout risk to be
+validated attended (#1646). Distinguish this from the ``Task``/``Workflow``
+fan-out vehicle, which genuinely DOES bypass PreToolUse and fires ``TaskCreated``
+instead (no ``run_in_background`` in its schema) — that is why the plan-gate and
+dispatch-quote concerns also carry reachable ``TaskCreated`` counterparts.
 They are ``xfail(strict=True)`` so the suite is GREEN now and any later genuine
 fix flips the row to an unexpected-pass that FAILS the build, forcing the xfail
 removal. The final assertion makes the phantom roster LOUD (also visible via
@@ -448,8 +453,10 @@ def _quote_slack_allow(ctx: GateContext) -> dict:
 
 
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
-# verbatim user quote denies; a clean prompt allows. Agent/Task is NOT in any
-# PreToolUse matcher + the fan-out bypasses PreToolUse (phantom).
+# verbatim user quote denies; a clean prompt allows. Phantom because no Agent
+# matcher is wired in hooks.json (the Agent tool itself DOES reach PreToolUse —
+# adding the matcher would make this arm live). The clean-prompt fan-out concern
+# is also covered by the reachable TaskCreated counterpart below.
 
 
 def _dispatch_quote_deny(ctx: GateContext) -> dict:
@@ -558,13 +565,17 @@ def _orch_bash_allow(ctx: GateContext) -> dict:
 
 
 # enforce-orchestrator-boundary Agent arm (#1442): a foreground Agent dispatch
-# from the main agent denies — but Agent is NOT in any PreToolUse matcher AND
-# the fan-out vehicle that spawns sub-agents bypasses PreToolUse entirely, so
-# this arm stays production-phantom (the TaskCreated seam that reaches the
-# fan-out carries no run_in_background field, this gate's only signal). The
-# deny ships default-OFF behind orchestrator_boundary_agent_gate_enabled; the
-# arrange enables it so assertion (a) still proves the handler denies its real
-# must-DENY payload. run_in_background / a [fg-ok: <reason>] token clears it.
+# from the main agent denies — but no Agent matcher is wired in hooks.json, so
+# this arm is phantom. The Agent tool DOES reach PreToolUse (run_in_background is
+# present in its tool_input), so adding the matcher would make this arm live;
+# it is left unwired DELIBERATELY because the deny sits on the orchestrator's own
+# foreground-Agent-dispatch hot path — enabling it unattended is a lockout risk
+# to be validated attended (#1646). (Unlike the plan-gate/dispatch-quote arms it
+# has NO TaskCreated counterpart: the TaskCreated schema has no run_in_background,
+# this gate's only signal — so the Agent-matcher path is its only fix.) The deny
+# ships default-OFF behind orchestrator_boundary_agent_gate_enabled; the arrange
+# enables it so assertion (a) still proves the handler denies its real must-DENY
+# payload. run_in_background / a [fg-ok: <reason>] token clears it.
 
 
 def _arrange_orch_agent_gate(ctx: GateContext) -> None:
@@ -634,30 +645,33 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 
 # ── the registry ──────────────────────────────────────────────────────────
 
-# The harness Workflow/Task fan-out vehicle that spawns sub-agents BYPASSES
-# PreToolUse (docs/claude-code-internals.md §9, verified against the Claude Code
-# binary), so an `Agent` PreToolUse matcher would NOT deliver a real dispatch to
-# these handlers — adding it would be corpus-green-but-production-phantom. The
-# production-live enforcement of each fan-out concern rides TaskCreated instead.
-# These three therefore stay xfail with no `Agent` matcher (the deliberate STEP 0
-# deviation in #171 PR B); the genuine fix is the TaskCreated counterpart, which
-# exists and is reachable for the plan-gate and dispatch-quote concerns.
+# These three are phantom because NO `Agent` matcher is wired in hooks.json (the
+# registered PreToolUse matchers are `Bash|Edit|Write`, `AskUserQuestion`,
+# `mcp__.*[Ss]lack.*`; `Agent` has only ever been in the PostToolUse matcher).
+# The `Agent` TOOL itself DOES reach PreToolUse, so adding an `Agent` matcher
+# would make these arms genuinely live — they are kept unwired DELIBERATELY (the
+# deliberate STEP 0 deviation in #171 PR B), not because the tool bypasses the
+# event. The plan-gate and dispatch-quote concerns also carry reachable
+# TaskCreated counterparts because the SEPARATE `Task`/`Workflow` fan-out vehicle
+# genuinely DOES bypass PreToolUse (verified against the Claude Code binary;
+# docs/claude-code-internals.md §9). Do not conflate the two.
 _AGENT_PLAN_GATE_PHANTOM = (
-    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
-    "vehicle); an Agent matcher would not fire in production. The fan-out path is "
-    "enforced by the reachable enforce-plan-gate-on-task-create — tracked in #1644"
+    "phantom — no `Agent` PreToolUse matcher is wired in hooks.json; the `Agent` tool DOES "
+    "reach PreToolUse, so adding one would make this arm live. Kept unwired deliberately; "
+    "the fan-out path is enforced by the reachable enforce-plan-gate-on-task-create — see #1646"
 )
 _DISPATCH_QUOTE_PHANTOM = (
-    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
-    "vehicle); an Agent matcher would not fire in production. The fan-out path is "
-    "enforced by the reachable dispatch-prompt-quote-scanner-on-task-create — tracked in #1644"
+    "phantom — no `Agent` PreToolUse matcher is wired in hooks.json; the `Agent` tool DOES "
+    "reach PreToolUse, so adding one would make this arm live. Kept unwired deliberately; the "
+    "fan-out path is enforced by the reachable dispatch-prompt-quote-scanner-on-task-create — see #1646"
 )
 _ORCH_AGENT_PHANTOM = (
-    "production-phantom — Agent/Task dispatch bypasses PreToolUse (harness fan-out "
-    "vehicle); an Agent matcher would not fire in production, and the TaskCreated seam "
-    "that reaches the fan-out carries no run_in_background field — this gate's only "
-    "signal — so no production-live routing exists. Ships reachable-only-if-the-harness-"
-    "changes, default-OFF behind orchestrator_boundary_agent_gate_enabled — tracked in #1644"
+    "phantom — no `Agent` PreToolUse matcher is wired in hooks.json; the `Agent` tool DOES reach "
+    "PreToolUse (run_in_background present in its tool_input), so adding one would make this arm live. "
+    "Kept unwired deliberately: enabling the deny on the orchestrator's own foreground Agent-dispatch "
+    "hot path is a lockout risk to be validated attended. It has no TaskCreated counterpart (that "
+    "schema has no run_in_background), so the Agent-matcher path is its only fix; ships default-OFF "
+    "behind orchestrator_boundary_agent_gate_enabled — see #1646"
 )
 
 
@@ -870,24 +884,27 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 # one genuine CAUSE-B phantom — ``validate-mr-metadata-mcp`` — by adding the
 # ``mcp__glab__glab_mr_.*`` PreToolUse matcher (an ordinary MCP call merely
 # omitted from the matcher; it now fires in production). What stays phantom is
-# the THREE PreToolUse Agent arms, and STEP 0 of PR B proved they stay
-# PRODUCTION-phantom even with an ``Agent`` matcher: the harness Workflow/Task
-# fan-out vehicle that spawns sub-agents bypasses PreToolUse entirely
-# (docs/claude-code-internals.md §9), so an ``Agent`` matcher would deliver no
-# real dispatch — adding it would be corpus-green-but-production-phantom. The
-# fan-out concern of two of them is enforced in production by their reachable
-# TaskCreated counterparts (``enforce-plan-gate-on-task-create``,
-# ``dispatch-prompt-quote-scanner-on-task-create``); the orchestrator-boundary
-# Agent arm has NO production-live routing at all because its only signal
-# (``run_in_background``) is absent from the TaskCreated payload. They are kept
-# xfail (NOT given an ``Agent`` matcher) so the corpus keeps telling the truth.
-# The categories are asserted explicitly below so a row losing/gaining its
-# phantom status without a deliberate update is caught.
+# the THREE PreToolUse Agent arms — phantom because NO ``Agent`` matcher is wired
+# in ``hooks.json``, NOT because the Agent tool bypasses the event. The ``Agent``
+# TOOL itself DOES reach PreToolUse (a foreground Agent dispatch fires it with
+# ``run_in_background`` in the tool_input), so adding an ``Agent`` matcher would
+# make all three genuinely live. They are kept unwired DELIBERATELY in this PR:
+# the orchestrator-boundary deny in particular sits on the orchestrator's own
+# foreground Agent-dispatch hot path, so enabling it must be validated attended
+# (#1646). Two of them ALSO carry reachable TaskCreated counterparts
+# (``enforce-plan-gate-on-task-create``, ``dispatch-prompt-quote-scanner-on-task-create``)
+# because the SEPARATE ``Task``/``Workflow`` fan-out vehicle genuinely DOES bypass
+# PreToolUse (verified against the Claude Code binary; docs/claude-code-internals.md
+# §9); the orchestrator-boundary arm has no such counterpart because the TaskCreated
+# schema lacks ``run_in_background``. They stay xfail (NOT given an ``Agent``
+# matcher) so the corpus keeps telling the truth. The categories are asserted
+# explicitly below so a row losing/gaining its phantom status without a deliberate
+# update is caught.
 _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
     {
-        "enforce-agent-plan-gate",  # Agent/Task bypasses PreToolUse; enforced on TaskCreated
-        "dispatch-prompt-quote-scanner",  # Agent/Task bypasses PreToolUse; enforced on TaskCreated
-        "enforce-orchestrator-boundary-agent",  # Agent/Task bypasses PreToolUse; no TaskCreated signal
+        "enforce-agent-plan-gate",  # no Agent matcher wired; reachable via TaskCreated counterpart too
+        "dispatch-prompt-quote-scanner",  # no Agent matcher wired; reachable via TaskCreated counterpart too
+        "enforce-orchestrator-boundary-agent",  # no Agent matcher wired; no TaskCreated signal, deferred (#1646)
     }
 )
 # No allow-phantoms remain: the plan-tracker mismatch (#167) is fixed, so a
@@ -988,9 +1005,11 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
     Makes the dead-gate roster LOUD: a reader running ``pytest -rsx`` sees each
     xfail reason, and this test fails if a phantom is silently added/removed
     from the registry without updating the expected rosters. After PR B (#171)
-    the roster is exactly the three PreToolUse Agent arms, all production-phantom
-    because the harness fan-out vehicle bypasses PreToolUse (the one genuine
-    CAUSE-B phantom, ``validate-mr-metadata-mcp``, was repaired by a real matcher).
+    the roster is exactly the three PreToolUse Agent arms, phantom because no
+    ``Agent`` matcher is wired in ``hooks.json`` (the Agent tool DOES reach
+    PreToolUse — they are kept unwired deliberately, see #1646), while the one
+    genuine CAUSE-B phantom, ``validate-mr-metadata-mcp``, was repaired by a
+    real matcher.
     """
     reachability = frozenset(row.gate_id for row in GATE_REGISTRY if row.phantom_reason is not None)
     allow = frozenset(row.gate_id for row in GATE_REGISTRY if row.allow_phantom_reason is not None)
