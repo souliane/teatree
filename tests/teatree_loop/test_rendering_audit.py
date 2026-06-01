@@ -308,6 +308,86 @@ class TestOrphanedTaskCollapse:
         assert any("overlay-b" in ln and "1 task" in ln for ln in review_lines), repr(review_lines)
 
 
+def _pending_task(
+    task_id: int,
+    phase: str = "short_describe",
+    status: str = "pending",
+    overlay: str = "teatree",
+) -> DispatchAction:
+    """Build a ``pending_task`` statusline action as the dispatcher emits it.
+
+    A pending-task signal whose phase has no registered sub-agent falls
+    through ``dispatch._dispatch_one`` to the ``in_flight`` statusline zone.
+    """
+    return DispatchAction(
+        kind="statusline",
+        zone="in_flight",
+        detail=f"Task {task_id} ({phase}) {status}",
+        payload={
+            "task_id": task_id,
+            "phase": phase,
+            "status": status,
+            "ticket_id": task_id + 1000,
+            "overlay": overlay,
+        },
+    )
+
+
+class TestPendingTaskGrouping:
+    """Pending-task rows collapse to ONE line per status, not one per task."""
+
+    def test_many_pending_tasks_render_one_line_per_status(self) -> None:
+        actions = [_pending_task(i) for i in range(1, 51)]
+        zones = zones_for(actions, colorize=False)
+        lines = [item if isinstance(item, str) else item.text for item in zones.in_flight]
+        task_lines = [ln for ln in lines if "tasks:" in ln]
+        assert len(task_lines) == 1, repr(lines)
+        assert "pending: 50" in task_lines[0], repr(task_lines[0])
+
+    def test_no_per_task_line_appears(self) -> None:
+        actions = [_pending_task(i) for i in range(1, 51)]
+        zones = zones_for(actions, colorize=False)
+        text = _blob(zones.in_flight)
+        assert "Task 1 " not in text, repr(text)
+        assert "Task 30 " not in text, repr(text)
+
+    def test_bare_phase_token_never_leaks_as_description(self) -> None:
+        actions = [
+            _pending_task(1, phase="short_describe"),
+            _pending_task(2, phase="dogfood_smoke"),
+            _pending_task(3, phase="architectural_review"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        text = _blob(zones.in_flight)
+        assert "short_describe" not in text, repr(text)
+        assert "dogfood_smoke" not in text, repr(text)
+        assert "architectural_review" not in text, repr(text)
+
+    def test_groups_by_distinct_status(self) -> None:
+        actions = [
+            *(_pending_task(i, status="pending") for i in range(1, 4)),
+            _pending_task(10, status="claimed"),
+            _pending_task(11, status="claimed"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        text = _blob(zones.in_flight)
+        assert "pending: 3" in text, repr(text)
+        assert "claimed: 2" in text, repr(text)
+
+    def test_each_overlay_gets_its_own_grouped_line(self) -> None:
+        actions = [
+            _pending_task(1, overlay="overlay-a"),
+            _pending_task(2, overlay="overlay-a"),
+            _pending_task(3, overlay="overlay-b"),
+        ]
+        zones = zones_for(actions, colorize=False)
+        lines = [item if isinstance(item, str) else item.text for item in zones.in_flight]
+        task_lines = [ln for ln in lines if "tasks:" in ln]
+        assert len(task_lines) == 2, repr(lines)
+        assert any("overlay-a" in ln and "pending: 2" in ln for ln in task_lines), repr(task_lines)
+        assert any("overlay-b" in ln and "pending: 1" in ln for ln in task_lines), repr(task_lines)
+
+
 class TestNoRunningTasksLine(django.test.TestCase):
     """The DB-backed ``agents:`` row is gone post-#1156.
 
