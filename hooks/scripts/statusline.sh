@@ -171,6 +171,22 @@ if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "empty" ]; then
     g_usage="${g_usage}${_LBL}7d=${_RST}$(color_pct "$seven_day_pct")"
 fi
 
+# SDK-equivalent month-to-date spend, rendered immediately after the weekly
+# (7d) rate-limit segment so the two usage windows read together. The dollar
+# figure is computed Python-side and handed over via tick-meta.json's
+# ``cost_chip`` (e.g. ``SDK mtd ≈$48/$200``); this hook only places it. Empty
+# when no headless cost is captured this cycle or the sidecar is unreadable.
+_cost_chip=""
+_cost_meta="${target%.txt}-meta.json"
+[ ! -r "$_cost_meta" ] && _cost_meta="$(dirname "$target")/tick-meta.json"
+if [ -r "$_cost_meta" ] && command -v jq >/dev/null 2>&1; then
+    _cost_chip=$(jq -r '.cost_chip // empty' "$_cost_meta" 2>/dev/null)
+fi
+if [ -n "$_cost_chip" ]; then
+    [ -n "$g_usage" ] && g_usage="${g_usage}${isep}"
+    g_usage="${g_usage}${_BLU}${_cost_chip}${_RST}"
+fi
+
 # Skills are kept aside and tacked on last (or on their own line — see below)
 # so they never push critical info off a narrow terminal. Skills sharing a
 # ``<ns>:`` prefix collapse into one ``ns:{a,b,c}`` token so a long t3:* set
