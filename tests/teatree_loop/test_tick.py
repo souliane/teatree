@@ -1251,9 +1251,9 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
             # loop-owner is excluded from the shared consolidated loop line;
             # its badge is rendered per-session in statusline.sh instead
-            # (you ✓ / owner·pid / unclaimed). With only the owner lease live
-            # and no actual work loop, the loop line is intentionally absent
-            # from the shared zones file.
+            # (you ✓ / owner·pid / unclaimed). With only the owner lease live,
+            # no work loop, and no mini-loop reader injected on this direct
+            # ``run_tick`` path, the loop line is intentionally absent.
             body = sl.read_text(encoding="utf-8")
             assert "loops live" not in body, body
             assert "loop running · " not in body, body

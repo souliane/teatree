@@ -8,9 +8,11 @@ teatree model / FSM / DB write is real.
 """
 
 import json
+from collections.abc import Callable
 from unittest.mock import patch
 
 import pytest
+from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -24,7 +26,7 @@ from teatree.core.merge_execution import (
     merge_ticket_pr,
     record_merge_and_advance,
 )
-from teatree.core.models import MergeAudit, MergeClear, Session, Ticket
+from teatree.core.models import ClearRequest, MergeAudit, MergeClear, Session, Ticket
 
 pytestmark = pytest.mark.django_db
 
@@ -754,3 +756,87 @@ class TestConcurrentConsumptionReplayDefence(TestCase):
         with pytest.raises(MergePreconditionError):
             _run(clear, _GhStub())
         assert MergeAudit.objects.filter(clear=clear).count() == 1
+
+
+_LOCKED = "database is locked"
+
+
+class _LockOnce:
+    """Wraps the real ``select_for_update`` manager call, raising a transient lock once.
+
+    Models souliane/teatree#1520: a fix-agent holds the canonical-DB write
+    lock for a moment while the loop's post hook opens its ``atomic()`` block,
+    so the first attempt at the post-hook write hits ``OperationalError:
+    database is locked``. After the simulated holder releases, the real
+    manager call runs and the merge record lands.
+    """
+
+    def __init__(self, real_select_for_update: Callable[..., object]) -> None:
+        self._real = real_select_for_update
+        self.calls = 0
+
+    def __call__(self, *args: object, **kwargs: object) -> object:
+        self.calls += 1
+        if self.calls == 1:
+            raise OperationalError(_LOCKED)
+        return self._real(*args, **kwargs)
+
+
+class TestMergeKeystoneTransientLockResilience(TestCase):
+    """souliane/teatree#1520 — the post-hook write survives a transient lock.
+
+    The merge keystone is the one path that advances a PR to MERGED. A bare
+    ``OperationalError: database is locked`` from a concurrent canonical-DB
+    writer must NOT abort the ceremony mid-flight; the bounded retry-on-locked
+    around ``record_merge_and_advance``'s atomic write blocks-then-proceeds.
+    """
+
+    def test_transient_lock_in_post_hook_is_retried_not_crashed(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+
+        lock_once = _LockOnce(MergeClear.objects.select_for_update)
+        with (
+            patch("teatree.core.db_retry.time.sleep"),
+            patch.object(MergeClear.objects, "select_for_update", side_effect=lock_once),
+        ):
+            outcome = _run(clear, _GhStub())
+
+        assert lock_once.calls >= 2, "the post-hook write was not retried past the transient lock"
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        # Exactly one audit — the retry re-runs the idempotent post hook, it
+        # does not double-merge.
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
+        assert outcome.ticket_state == Ticket.State.MERGED
+
+    def test_clear_issue_survives_a_transient_lock(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        request = ClearRequest(
+            pr_id=4242,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            reviewer_identity="cold-reviewer",
+            ticket=ticket,
+        )
+
+        real_create = MergeClear.objects.create
+        call_count = {"n": 0}
+
+        def _create_lock_once(*args: object, **kwargs: object) -> object:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OperationalError(_LOCKED)
+            return real_create(*args, **kwargs)
+
+        with (
+            patch("teatree.core.db_retry.time.sleep"),
+            patch.object(MergeClear.objects, "create", side_effect=_create_lock_once),
+        ):
+            clear = MergeClear.issue(request)
+
+        assert call_count["n"] >= 2, "MergeClear.issue did not retry past the transient lock"
+        assert clear.pk is not None
+        assert MergeClear.objects.filter(pk=clear.pk).count() == 1
