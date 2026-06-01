@@ -216,8 +216,7 @@ class OutboundAuditScanner:
 
         claim.drift_detected = True
         claim.drift_reason = result.drift_reason
-        claim.drift_alerted_at = now
-        claim.save(update_fields=["drift_detected", "drift_reason", "drift_alerted_at"])
+        claim.save(update_fields=["drift_detected", "drift_reason"])
         alert_text = self.DEFAULT_DRIFT_TEMPLATE.format(
             kind=claim.kind,
             url=claim.target_url or "(no url)",
@@ -226,7 +225,10 @@ class OutboundAuditScanner:
         try:
             self.notifier(alert_text, f"outbound_drift:{claim.idempotency_key}")
         except Exception as exc:  # noqa: BLE001 — never break a tick on a notifier raise
-            logger.warning("Drift notifier raised: %s — drift recorded but DM skipped", exc)
+            logger.warning("Drift notifier raised: %s — drift recorded, alert retried next tick", exc)
+        else:
+            claim.drift_alerted_at = now
+            claim.save(update_fields=["drift_alerted_at"])
         return ScanSignal(
             kind="outbound.drift",
             summary=f"Drift on {claim.kind}: {result.drift_reason[:80]}",
