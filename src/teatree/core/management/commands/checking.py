@@ -64,6 +64,8 @@ class Command(TyperCommand):
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
         now = timezone.now()
 
+        _validate_since(since)
+
         if this_overlay:
             return self._show_single_overlay(
                 overlay_name=overlay_name,
@@ -174,6 +176,22 @@ class Command(TyperCommand):
             return [repo for repo in repos if isinstance(repo, str) and repo]
         except Exception:  # noqa: BLE001 — config read must never wedge a read-only report
             return []
+
+
+def _validate_since(since: str) -> None:
+    """Reject a malformed ``--since`` at the command boundary (#1652).
+
+    ``resolve_window_start`` raises ``ValueError`` on an unparsable
+    timestamp; surface it as a ``typer.BadParameter`` so the user sees a
+    clean "expected ISO-8601" message and a non-zero exit rather than a raw
+    traceback (mirrors ``availability._parse_until``).
+    """
+    if not since.strip():
+        return
+    try:
+        resolve_window_start(since=since, now=timezone.now())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 def _overlay_code_host(overlay: object) -> str:

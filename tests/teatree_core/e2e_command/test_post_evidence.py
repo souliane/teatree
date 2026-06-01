@@ -175,7 +175,11 @@ class TestHardFail(_EvidenceTestBase):
 
     def test_unknown_commit(self) -> None:
         self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
-        self._monkeypatch.setattr(_evidence.git, "check", lambda *, repo=".", args: False)
+
+        def _reject(*, repo: str = ".", args: list[str]) -> str:
+            raise _evidence.CommandFailedError(["git", *args], 128, "", "bad object")
+
+        self._monkeypatch.setattr(_evidence.git, "run_strict", _reject)
         before, after = self._before_after()
         host = MagicMock()
         self._run_expecting_exit(
@@ -253,6 +257,44 @@ class TestIdempotency(_EvidenceTestBase):
 
         assert result["action"] == "updated"
         assert result["comment_id"] == 33
+        host.update_issue_comment.assert_called_once()
+        host.post_issue_comment.assert_not_called()
+
+    def test_short_commit_dedups_against_full_sha_marker(self) -> None:
+        # #1652: a supplied short `--commit` is expanded to the canonical
+        # full SHA, so it matches a prior comment whose marker carries the
+        # full 40-char SHA (the no-`--commit` auto-detect form) instead of
+        # posting a duplicate.
+        self._ticket()
+        before, after = self._before_after()
+        full = "a" * 40
+        host = MagicMock()
+        host.list_issue_comments.return_value = [
+            self._existing_comment(env="dev", commit=full, comment_id=55),
+        ]
+        host.update_issue_comment.return_value = {"id": 55, "web_url": "u"}
+
+        self._patch_host(host)
+        self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
+        self._monkeypatch.setattr(_evidence.git, "run_strict", lambda *, repo=".", args: full)
+        host.upload_file.return_value = {"markdown": "![x](u)"}
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "e2e",
+                    "post-evidence",
+                    ticket=_ISSUE_URL,
+                    env="dev",
+                    commit="aaaaaaa",
+                    before=before,
+                    after=after,
+                    assertion="works",
+                ),
+            )
+
+        assert result["action"] == "updated"
+        assert result["commit"] == full
         host.update_issue_comment.assert_called_once()
         host.post_issue_comment.assert_not_called()
 
@@ -339,6 +381,15 @@ class TestPureValidators:
         ]
         assert _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV, commit="zzz") == 1
         assert _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV, commit="nope") is None
+
+    def test_resolve_commit_expands_short_to_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #1652: the supplied short SHA is captured from rev-parse output as
+        # the canonical full SHA, not echoed verbatim.
+        full = "b" * 40
+        monkeypatch.setattr(_evidence.git, "run_strict", lambda *, repo=".", args: full)
+        monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
+        resolved = _evidence.resolve_and_validate_commit(commit="bbbbbbb", repo=".")
+        assert resolved == full
 
     def test_build_body_includes_video_row_only_when_given(self) -> None:
         without = _evidence.build_evidence_body(

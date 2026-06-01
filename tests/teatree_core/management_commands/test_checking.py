@@ -152,6 +152,18 @@ class TestCheckingShow:
         _call("checking", "show", "--this-overlay", "--no-advance")
         assert not checkpoint_file.is_file()
 
+    def test_unparseable_since_exits_nonzero_not_traceback(self, checkpoint_file: Path) -> None:
+        # #1652: --since yesterday is rejected with a clean non-zero exit
+        # (typer.BadParameter), never a raw datetime ValueError traceback,
+        # and the marker is left untouched.
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from teatree.core.management.commands.checking import Command  # noqa: PLC0415
+
+        result = CliRunner().invoke(Command().typer_app, ["show", "--this-overlay", "--since", "yesterday"])
+        assert result.exit_code != 0
+        assert not checkpoint_file.is_file()
+
     def test_json_is_parseable(self, checkpoint_file: Path) -> None:
         _merged_ticket()
         out = _call("checking", "show", "--this-overlay", "--json")

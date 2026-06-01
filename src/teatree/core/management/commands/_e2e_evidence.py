@@ -159,9 +159,17 @@ def resolve_and_validate_commit(*, commit: str, repo: str) -> str:
         if not resolved:
             msg = f"Could not resolve a commit SHA (no --commit and git HEAD unavailable in {repo!r})."
             raise EvidenceValidationError(msg)
-    elif not git.check(repo=repo, args=["rev-parse", "--verify", f"{resolved}^{{commit}}"]):
-        msg = f"--commit {commit!r} is not a known commit in {repo!r}."
-        raise EvidenceValidationError(msg)
+    else:
+        # Expand the supplied SHA (often a short prefix) to the canonical
+        # full 40-char form so the stored marker matches the auto-detect
+        # path's ``git.head_sha`` — without this, a short-then-default
+        # round trip would post a duplicate evidence comment because
+        # ``find_matching_comment`` does raw string equality on the SHA.
+        try:
+            resolved = git.run_strict(repo=repo, args=["rev-parse", "--verify", f"{resolved}^{{commit}}"])
+        except CommandFailedError:
+            msg = f"--commit {commit!r} is not a known commit in {repo!r}."
+            raise EvidenceValidationError(msg) from None
 
     if git.status_porcelain(repo=repo).strip():
         msg = f"Working tree in {repo!r} is dirty; commit or stash changes so the evidence is reproducible."
