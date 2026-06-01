@@ -78,6 +78,15 @@ Task queue for multi-agent coordination.
 | `cancel` | `task_id`, `--confirm` | None | Cancels a pending or claimed task. Requires `--confirm` for claimed tasks. |
 | `list` | `--status`, `--execution-target` | list of dicts | Lists tasks, optionally filtered by status and/or execution target |
 
+## `queue`
+
+Background-task DB queue (`DBTaskResult`). The drain rides the loop tick (`teatree.loop.queue_drain`); this surface is for inspection and the one-off stale-job retirement.
+
+| Subcommand | Arguments | Returns | Description |
+|------------|-----------|---------|-------------|
+| `status` | -- | None | Prints the queue breakdown by status and READY jobs by task name (read-only) |
+| `expire-stale` | `--hours`, `--dry-run` | None | Retires READY jobs older than the threshold (default `T3_QUEUE_STALE_HOURS`, 24h) to `FAILED` so a drainer never runs them |
+
 ## `followup`
 
 Monitoring and reminders.

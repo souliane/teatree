@@ -5,6 +5,15 @@ from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThre
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, QualityGateError
+from teatree.core.models.eval_run import (
+    EvalRunRecord,
+    EvalScenarioResult,
+    EvalVerdict,
+    MatcherDetail,
+    ScenarioPassRate,
+    ScenarioRegression,
+    TrajectoryToolCall,
+)
 from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
@@ -58,6 +67,9 @@ __all__ = [
     "DeferredQuestionAudit",
     "DeferredQuestionError",
     "DirtyWorktreeError",
+    "EvalRunRecord",
+    "EvalScenarioResult",
+    "EvalVerdict",
     "ImplementedIssueMarker",
     "IncomingEvent",
     "IntentClassification",
@@ -65,6 +77,7 @@ __all__ = [
     "LivePostApproval",
     "LivePostApprovalError",
     "LoopLease",
+    "MatcherDetail",
     "MergeAudit",
     "MergeClear",
     "MiniLoopMarker",
@@ -88,6 +101,8 @@ __all__ = [
     "ReviewRequestPost",
     "ScannedBroadcast",
     "ScannedFailedE2E",
+    "ScenarioPassRate",
+    "ScenarioRegression",
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
@@ -96,6 +111,7 @@ __all__ = [
     "Ticket",
     "TicketExtra",
     "TicketTransition",
+    "TrajectoryToolCall",
     "Worktree",
     "WorktreeEnvOverride",
     "WorktreeExtra",
