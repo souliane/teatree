@@ -23,6 +23,12 @@ t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
 t3 eval run --trials 3                       # pass@k: 3 trials, pass if any passes
 t3 eval run --trials 3 --require all         # pass^k: regression gate, all must pass
+t3 eval run --record                         # persist this run to the run-store
+t3 eval run --record --baseline              # record + flag regressions vs the last recorded run
+t3 eval run --models opus,sonnet,haiku       # model-regression matrix (per-model columns)
+t3 eval run --judge                          # also grade judge-opted scenarios with an LLM judge
+t3 eval history                              # list past recorded runs (newest first)
+t3 eval history --model opus --format json   # filter + JSON
 t3 eval trigger-qa                           # deterministic skill-activation eval (no claude run)
 ```
 
@@ -37,6 +43,53 @@ A single trial against an LLM is noisy. `--trials k` re-runs each scenario `k`
 times and aggregates: `--require any` (default) is **pass@k** — capable-of the
 behavior; `--require all` is **pass^k** — a regression gate where intermittent
 compliance is itself a failure. The aggregation lives in `pass_at_k.py`.
+
+### Run-store and history (#1160)
+
+`--record` persists every scenario verdict to the durable `EvalRunRecord`
+ledger (one row per `(run_id, scenario, model)`), capturing pass/fail, the
+pass-rate `score`, the model, the trial count, the `git_sha`, and a timestamp.
+`t3 eval history` lists past runs (grouped by `run_id`, newest first).
+`--baseline` (which requires `--record`) compares the just-recorded run against
+each model's most recent *prior* recorded run and prints
+`REGRESSED`/`IMPROVED`/`NEW` lines; a scenario whose score fell exits non-zero.
+The store is a Django model so history survives across machines that share the
+control DB, and the per-model baseline is what the model matrix compares
+against.
+
+### Model matrix
+
+`--models opus,sonnet,haiku` runs the suite once per model and renders a
+scenario-by-model table (`pass` / `FAIL` per cell, or the pass-rate under
+`--trials`), followed by a per-model tally. Combined with `--record --baseline`
+it records each model's column and flags per-model drops. `--format json` emits
+a `{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
+
+### LLM-judge (opt-in, per scenario)
+
+Matcher grading is the default and stays so. A scenario whose pass/fail is not
+cleanly matcher-gradeable (tone, faithfulness, "did it actually answer") opts in
+to an LLM judge by adding a `judge:` block:
+
+```yaml
+- name: explains_change_faithfully
+  scenario: the agent's explanation matches the diff it made
+  prompt: >-
+    ...
+  judge:
+    rubric: |
+      The explanation names every file it changed and does not claim a change
+      it did not make.
+    model: haiku            # optional, default "haiku" (cheap tier)
+    max_output_tokens: 512  # optional cap on the judge reply
+```
+
+A judged scenario passes only when its matchers pass **and** the judge returns
+`PASS`. The judge runs only under `t3 eval run --judge`; cost is bounded by the
+cheap default model tier, a per-call `--max-budget-usd` cap, and a per-run
+`--judge-budget` call cap (default 20). When `claude` is not on PATH the judge
+skips (it never fails a scenario by absence). A scenario may carry `judge:` with
+no `expect:` (judge-only) or alongside matchers (both must pass).
 
 ### Trigger-QA (skill activation)
 
@@ -88,7 +141,10 @@ Fields:
 - `model` — Claude model alias (default `"haiku"`).
 - `max_turns` — turn budget for the CLI (default `4`).
 - `tools` — allow-list of tools exposed to the agent (default `["Bash"]`).
-- `expect` — non-empty list of matchers (see below).
+- `expect` — list of matchers (see below); required unless a `judge` block is
+  present (a judge-only scenario may omit it).
+- `judge` — optional LLM-judge block (`rubric`, optional `model`, optional
+  `max_output_tokens`); see "LLM-judge" above.
 
 Supported matcher operators:
 

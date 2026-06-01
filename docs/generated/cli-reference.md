@@ -1132,6 +1132,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ list               List discovered eval scenarios.                           │
 │ run                Run one scenario by name, or all scenarios when no name   │
 │                    is given.                                                 │
+│ history            List past recorded eval runs (newest first) from the      │
+│                    run-store.                                                │
 │ trigger-qa         Validate every skill's trigger keywords against the       │
 │                    must-fire/must-not-fire corpus.                           │
 │ transcript-replay  Replay a real session transcript against teatree          │
@@ -1160,21 +1162,64 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  With ``--trials k`` each scenario runs ``k`` times and the verdict is
  aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). A single
- trial (the default) is the legacy behavior.
+ trial (the default) is the legacy behavior. ``--models`` runs the suite once
+ per model and renders a comparison matrix. ``--record`` persists the verdicts
+ and ``--baseline`` flags scenarios that regressed versus the recorded
+ history.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format           TEXT     Report format: text or json. [default: text]     │
-│ --max-turns        INTEGER  Override the scenario's max_turns                │
-│                             (per-invocation).                                │
-│ --trials           INTEGER  Re-run each scenario this many times (pass@k).   │
-│                             [default: 1]                                     │
-│ --require          TEXT     With --trials > 1: 'any' (pass@k) or 'all'       │
-│                             (pass^k regression gate).                        │
-│                             [default: any]                                   │
-│ --help                      Show this message and exit.                      │
+│ --format                           TEXT     Report format: text or json.     │
+│                                             [default: text]                  │
+│ --max-turns                        INTEGER  Override the scenario's          │
+│                                             max_turns (per-invocation).      │
+│ --trials                           INTEGER  Re-run each scenario this many   │
+│                                             times (pass@k).                  │
+│                                             [default: 1]                     │
+│ --require                          TEXT     With --trials > 1: 'any'         │
+│                                             (pass@k) or 'all' (pass^k        │
+│                                             regression gate).                │
+│                                             [default: any]                   │
+│ --models                           TEXT     Comma-separated model matrix     │
+│                                             (e.g. opus,sonnet,haiku); runs   │
+│                                             the suite per model.             │
+│ --record          --no-record               Persist this run to the eval     │
+│                                             run-store (required for          │
+│                                             history/baseline).               │
+│                                             [default: no-record]             │
+│ --baseline        --no-baseline             After recording, diff this run   │
+│                                             against each model's preceding   │
+│                                             run; regressions exit non-zero.  │
+│                                             [default: no-baseline]           │
+│ --judge           --no-judge                Grade scenarios that opt in (a   │
+│                                             `judge:` block) with an LLM      │
+│                                             judge in addition to matchers.   │
+│                                             [default: no-judge]              │
+│ --judge-budget                     INTEGER  Max number of LLM-judge calls    │
+│                                             per run (cost cap).              │
+│                                             [default: 20]                    │
+│ --help                                      Show this message and exit.      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ List past recorded eval runs (newest first) from the run-store.
+
+ Reads the durable :class:`EvalRunRecord` ledger written by ``t3 eval run
+ --record``. Each line is one run: its id, timestamp, the models it touched,
+ and the pass/fail/skip tally.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --model         TEXT     Filter to runs that touched this model.             │
+│ --limit         INTEGER  Maximum number of past runs to list. [default: 20]  │
+│ --format        TEXT     Report format: text or json. [default: text]        │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

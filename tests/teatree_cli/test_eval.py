@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
@@ -323,3 +324,142 @@ class TestEvalTriggerQA:
             result = CliRunner().invoke(app, ["eval", "trigger-qa"])
         assert result.exit_code == 1
         assert "over-trigger" in result.output
+
+
+class _PassRunner:
+    def __init__(self, *_: object, **__: object) -> None: ...
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run(spec.name, tool_calls=_PASSING_CALL)
+
+
+@pytest.mark.django_db
+class TestEvalRecordAndHistory:
+    def test_record_persists_and_history_lists_it(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.run_store.current_git_sha", return_value="sha123"),
+        ):
+            run_result = CliRunner().invoke(app, ["eval", "run", "--record"])
+            assert run_result.exit_code == 0, run_result.output
+            history_result = CliRunner().invoke(app, ["eval", "history"])
+        assert history_result.exit_code == 0, history_result.output
+        assert "1 passed" in history_result.output
+
+    def test_history_empty_when_nothing_recorded(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "history"])
+        assert result.exit_code == 0
+        assert "(no recorded runs)" in result.output
+
+    def test_history_json_shape(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--record"])
+            result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+        payload = json.loads(result.output[result.output.index("[") : result.output.rindex("]") + 1])
+        assert payload[0]["passed"] == 1
+        assert payload[0]["models"] == ["haiku"]
+
+    def test_baseline_requires_record(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--baseline"])
+        assert result.exit_code == 2
+        assert "--baseline requires --record" in result.output
+
+    def test_baseline_flags_regression_across_runs(self) -> None:
+        specs = [_spec("alpha")]
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+        ):
+            first = CliRunner().invoke(app, ["eval", "run", "--record"])
+            assert first.exit_code == 0, first.output
+
+        class _FailRunner:
+            def __init__(self, *_: object, **__: object) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name)
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _FailRunner),
+            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+        ):
+            second = CliRunner().invoke(app, ["eval", "run", "--record", "--baseline"])
+
+        assert second.exit_code == 1, second.output
+        assert "REGRESSED alpha" in second.output
+
+
+@pytest.mark.django_db
+class TestEvalModelMatrix:
+    def test_matrix_runs_each_model_and_renders_columns(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
+        assert result.exit_code == 0, result.output
+        assert "opus" in result.output
+        assert "haiku" in result.output
+        assert "alpha" in result.output
+        assert "opus: 2 passed" in result.output
+
+    def test_matrix_json_shape(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--format", "json"])
+        payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
+        assert payload["models"] == ["opus", "haiku"]
+        assert payload["scenarios"][0]["results"]["opus"]["passed"] is True
+
+    def test_matrix_exits_nonzero_on_failure(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _FailOnHaiku:
+            def __init__(self, *_: object, **__: object) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL if spec.model == "opus" else ())
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _FailOnHaiku),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
+        assert result.exit_code == 1, result.output
+        assert "opus: 1 passed" in result.output
+        assert "haiku: 0 passed, 1 failed" in result.output
+
+    def test_empty_models_exits_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", " , "])
+        assert result.exit_code == 2
+        assert "--models was empty" in result.output
+
+    def test_matrix_records_when_record_flag_set(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.eval.run_store.current_git_sha", return_value=""),
+        ):
+            CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--record"])
+            history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
+        payload = json.loads(history.output[history.output.index("[") : history.output.rindex("]") + 1])
+        assert sorted(payload[0]["models"]) == ["haiku", "opus"]
