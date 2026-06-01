@@ -17,9 +17,10 @@ behaviour is UNCHANGED for unconfigured users. An unresolvable destination
 is PUBLIC (scan). :func:`gate_skips_destination` is the composed predicate
 the gates call.
 
-The shared command-parsing helpers (``_extract_repo_flag``,
-``_slug_for_cwd``, ``_config_path``, the eligible-verb sets) live in
-:mod:`teatree.hooks.publish_surface`; this module reuses them so the
+The shared command-parsing helpers (``_extract_repo_flag``, the
+eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
+repo-target resolution (``slug_for_cwd``, ``_config_path``) in
+:mod:`teatree.hooks._repo_visibility`; this module reuses them so the
 repo-target resolution stays in one place across both the private-repo
 carve-out and the destination skip.
 """
@@ -31,13 +32,8 @@ from pathlib import Path
 from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks.publish_surface import (
-    _GH_ELIGIBLE_VERBS,
-    _GLAB_ELIGIBLE_VERBS,
-    _config_path,
-    _extract_repo_flag,
-    _slug_for_cwd,
-)
+from teatree.hooks._repo_visibility import _config_path, slug_for_cwd
+from teatree.hooks.publish_surface import _GH_ELIGIBLE_VERBS, _GLAB_ELIGIBLE_VERBS, _extract_repo_flag
 
 
 @dataclass(frozen=True)
@@ -119,7 +115,7 @@ def _destination_from_current_repo(cwd: Path | None) -> Destination | None:
     """Resolve a flagless create/comment command's target from the git remote."""
     if cwd is None:
         return None
-    slug = _slug_for_cwd(cwd)
+    slug = slug_for_cwd(cwd)
     return Destination(slug=slug, via="cwd") if slug else None
 
 

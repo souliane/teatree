@@ -190,7 +190,78 @@ class TestReassignedShowsFromTo:
         zones = zones_for([action], colorize=False)
         blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
         assert "reassigned:" in blob, repr(blob)
-        assert "from " not in blob
+
+
+_OPERATOR_ALIASES: tuple[tuple[str, ...], ...] = (("souliane", "op-alt", "op.work", "op@example.com"),)
+
+
+class TestCanonicalIdentity:
+    def test_handle_outside_every_group_is_its_own_canonical(self) -> None:
+        from teatree.loop.rendering_classification import _CanonicalIdentity  # noqa: PLC0415
+
+        identity = _CanonicalIdentity(_OPERATOR_ALIASES)
+        assert identity.of("colleague") == "colleague"
+        assert identity.of("op-alt") == "souliane"
+
+    def test_empty_group_is_skipped(self) -> None:
+        from teatree.loop.rendering_classification import _CanonicalIdentity  # noqa: PLC0415
+
+        identity = _CanonicalIdentity(((), ("a", "b")))
+        assert identity.of("a") == "a"
+        assert identity.of("b") == "a"
+
+    def test_blank_owner_is_never_a_self_handoff(self) -> None:
+        from teatree.loop.rendering_classification import _CanonicalIdentity  # noqa: PLC0415
+
+        identity = _CanonicalIdentity(_OPERATOR_ALIASES)
+        assert identity.is_self_handoff("", ("souliane",)) is False
+        assert identity.is_self_handoff("souliane", ()) is False
+
+
+class TestSelfReassignmentSuppression:
+    """Self-reassignments between the operator's own aliases never render."""
+
+    def test_self_reassignment_is_suppressed(self) -> None:
+        action = _disposition_action(
+            reason="unassigned",
+            payload_extra={"old_owner": "op-alt", "new_owners": ["souliane"]},
+        )
+        zones = zones_for([action], colorize=False, identity_aliases=_OPERATOR_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned" not in blob, repr(blob)
+
+    def test_feed_of_only_self_reassignments_renders_zero_reassignment_output(self) -> None:
+        actions = [
+            _disposition_action(reason="unassigned", payload_extra={"old_owner": "op-alt", "new_owners": ["souliane"]}),
+            _disposition_action(
+                reason="unassigned", payload_extra={"old_owner": "op.work", "new_owners": ["souliane"]}
+            ),
+            _disposition_action(
+                reason="unassigned", payload_extra={"old_owner": "souliane", "new_owners": ["op.work"]}
+            ),
+        ]
+        zones = zones_for(actions, colorize=False, identity_aliases=_OPERATOR_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned" not in blob, repr(blob)
+
+    def test_cross_human_reassignment_still_renders(self) -> None:
+        action = _disposition_action(
+            reason="unassigned",
+            payload_extra={"old_owner": "souliane", "new_owners": ["colleague"]},
+        )
+        zones = zones_for([action], colorize=False, identity_aliases=_OPERATOR_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned (from souliane → to colleague):" in blob, repr(blob)
+
+    def test_alias_collapses_to_canonical_display(self) -> None:
+        action = _disposition_action(
+            reason="unassigned",
+            payload_extra={"old_owner": "op-alt", "new_owners": ["colleague"]},
+        )
+        zones = zones_for([action], colorize=False, identity_aliases=_OPERATOR_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned (from souliane → to colleague):" in blob, repr(blob)
+        assert "op-alt" not in blob, repr(blob)
 
 
 def _stale_action(*, number: str, state: str, age: int, overlay: str = "teatree") -> DispatchAction:

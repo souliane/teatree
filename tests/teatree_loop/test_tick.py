@@ -402,6 +402,82 @@ def test_identity_alias_groups_reads_overlay_config_first(
     )
 
 
+def test_identity_aliases_for_request_unions_across_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_identity_aliases_for_request`` unions every overlay's alias groups.
+
+    The renderer suppresses a self-reassignment only when both ends fall
+    inside one group; collecting every overlay's groups means the operator's
+    own handles suppress regardless of which overlay surfaced the reassign.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
+
+    def _backend(name: str, aliases: list[list[str]]) -> OverlayBackends:
+        overlay = MagicMock(spec=OverlayBase)
+        overlay.config = MagicMock()
+        overlay.config.identity_aliases = aliases
+        return OverlayBackends(
+            name=name,
+            hosts=(MagicMock(spec=CodeHostBackend),),
+            messaging=None,
+            ready_labels=(),
+            overlay=overlay,
+        )
+
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
+    request = TickRequest(
+        backends=[
+            _backend("teatree", [["souliane", "op-alt", "op.work"]]),
+            _backend("acme", [["alice", "alice.work"]]),
+        ],
+    )
+    assert _identity_aliases_for_request(request) == (
+        ("souliane", "op-alt", "op.work"),
+        ("alice", "alice.work"),
+    )
+
+
+def test_identity_aliases_for_request_empty_without_backends() -> None:
+    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
+
+    assert _identity_aliases_for_request(TickRequest()) == ()
+
+
+def test_identity_aliases_for_request_fails_open_on_config_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.loop import tick as tick_mod  # noqa: PLC0415
+    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        msg = "config read failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(tick_mod, "_identity_alias_groups_for_overlay", _boom)
+    request = TickRequest(
+        backends=[
+            OverlayBackends(
+                name="acme",
+                hosts=(MagicMock(spec=CodeHostBackend),),
+                messaging=None,
+                ready_labels=(),
+                overlay=None,
+            ),
+        ],
+    )
+    assert _identity_aliases_for_request(request) == ()
+
+
 def test_identity_alias_groups_falls_through_to_toml_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

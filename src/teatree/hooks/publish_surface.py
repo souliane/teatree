@@ -7,82 +7,95 @@ private repo's own customer/domain terms are exactly what its commits are
 supposed to carry, and hard-blocking them forced an
 ``--allow-banned-term`` / ``--quote-ok`` override on every commit.
 
-This module classifies a Bash command into one of two surface classes
-so the gates can DOWNGRADE from hard-block to warn for the private-repo
-commit case ONLY, while leaving every public surface hard-blocked:
+This module decides whether a banned/quoted match on a Bash command should
+DOWNGRADE from hard-block to warn, for two private surfaces ONLY -- a
+``git commit`` and a pure ``gh``/``glab`` post -- while leaving every public
+surface hard-blocked.
 
-``is_git_commit_command`` decides the command is a ``git commit`` -- the
-one surface eligible for the private-repo carve-out.
+The carve-out is an ALLOWLIST, not a denylist. Six prior cycles tried to
+DETECT a hidden public ``gh``/``glab`` invocation by enumerating transport
+mechanisms (shell ``-c``, ``env -S``, here-string, ``eval``, pipe-to-shell,
+...); every cycle a new un-enumerated transport leaked. Static analysis of
+"will this command, by ANY means, post to a public repo" is undecidable, so
+enumeration cannot win. :func:`command_is_pure_private_gh_glab_post` INVERTS
+the model: it PROVES the whole command is a pure private post and fails closed
+on anything it cannot prove. A hidden public post is then impossible -- it
+requires a second non-``gh`` verb, a transport construct, or a public
+``--repo``, all of which fail the proof.
 
-``is_gh_glab_posting_command`` decides the command is a structured
-``gh``/``glab`` PR/issue create-or-comment command (NOT ``gh api`` /
-``glab api`` raw REST, NOT ``curl``/Slack) that posts to a specific
-repo target. These are eligible for the carve-out ONLY when the target
-repo is POSITIVELY known-private (resolved from ``--repo``/``-R`` flag
-first, then CWD fallback). Unknown or public targets stay hard-blocked.
+``is_git_commit_command`` decides the command's first segment is a
+``git commit`` -- one surface eligible for the private-repo carve-out (its
+chained segments must be provably publish-inert or pure private posts).
 
-``commit_targets_private_repo`` decides the commit's repo is known-private,
-via an offline allowlist (``[teatree] private_repos`` slug substrings in
-``~/.teatree.toml``) first, then a cached ``gh``/``glab`` visibility probe.
-The dir it resolves is the one whose repo the commit LANDS in (via
-:func:`effective_repo_dir`): the ``--git-dir`` repo if specified, else the
-repo discovered from the ``-C``-adjusted working directory, falling back to
-the harness ``cwd`` for a plain ``git commit``. ``--work-tree`` only sets
-the working tree and NEVER selects the repo, so it is excluded -- a
-``--git-dir <PUBLIC> --work-tree <PRIVATE>`` commit lands in the PUBLIC
-repo, and resolving the private work-tree would leak banned content to
-public history. A sub-agent's ``git -C <worktree> commit`` runs from an
-ambient hook cwd that has reset away from the worktree, so resolving from
-the command's own flag is what keeps the carve-out from over-blocking that
-commit.
+``command_is_pure_private_gh_glab_post`` is the single positive decision for
+the posting path: EVERY top-level segment is a benign ``cd``/env navigation
+segment OR a structurally-pure ``gh``/``glab`` invocation (NOT ``gh api`` /
+``glab api`` raw REST, NOT ``curl``/Slack) targeting a POSITIVELY known-private
+repo (``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then CWD), with
+at least one posting segment. The structural half (per-token purity) lives in
+:mod:`teatree.hooks._gh_glab_hiding`.
 
-``posting_command_targets_private_repo`` applies the same privacy
-decision to a ``gh``/``glab`` posting command: the target repo slug is
-extracted from ``--repo``/``-R`` in the command first; if absent, the
-CWD repo is used as a fallback. Unknown/unresolvable => NOT private.
+``effective_repo_dir`` resolves the dir whose repo a ``git commit`` LANDS in,
+so the commit's private-repo decision uses that repo, not the ambient hook
+cwd: the ``--git-dir`` repo if specified, else the repo discovered from the
+``-C``-adjusted working directory, falling back to the harness ``cwd`` for a
+plain ``git commit``. ``--work-tree`` only sets the working tree and NEVER
+selects the repo, so it is excluded -- a ``--git-dir <PUBLIC> --work-tree
+<PRIVATE>`` commit lands in the PUBLIC repo, and resolving the private
+work-tree would leak banned content to public history. A sub-agent's
+``git -C <worktree> commit`` runs from an ambient hook cwd that has reset away
+from the worktree, so resolving from the command's own flag is what keeps the
+carve-out from over-blocking that commit.
 
-Detection is conservative and offline-first: the allowlist needs no
-network and is the recommended way to declare private repos; the cached
-probe is a best-effort fallback. An unknown/unresolvable repo is treated
-as NOT private -- the gate stays hard-blocking, never weakened by a
+``commit_targets_private_repo`` decides whether the commit's resolved repo
+is known-private. The "is this repo private?" question (offline
+``[teatree] private_repos`` allowlist first, then a cached ``gh``/``glab``
+visibility probe) lives in :mod:`teatree.hooks._repo_visibility`. Detection
+is conservative and offline-first; an unknown/unresolvable repo is treated
+as NOT private so the gate stays hard-blocking, never weakened by a
 detection failure.
 
 Secrets (API keys, tokens) are blocked on EVERY surface regardless of
 the carve-out -- see :func:`contains_secret`.
 
 The companion :mod:`teatree.hooks.publish_destination` reuses the
-repo-target helpers here (``_extract_repo_flag``, ``_slug_for_cwd``,
-``_config_path``, the eligible-verb sets) to make the banned-terms /
+repo-target helpers here (``_extract_repo_flag``, the eligible-verb
+sets) plus ``slug_for_cwd`` / ``_config_path`` from
+:mod:`teatree.hooks._repo_visibility` to make the banned-terms /
 bare-reference gates DESTINATION-AWARE: those gates scan only PUBLIC
 targets and skip a publish whose destination is provably internal.
 """
 
-import json
 import os
 import re
-import time
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import Final
 
+from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
 from teatree.hooks._command_parser import first_segment_words
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
-
-class _VisibilityEntry(TypedDict):
-    """One cached repo-visibility verdict with its capture timestamp."""
-
-    ts: float
-    visibility: str
-
-
-# A leading ``KEY=value`` token is an inline env assignment, not the
-# command name -- bash applies it to the command's environment. Skipped
-# so ``FOO=1 git commit`` is still classified as a ``git commit``.
-_ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+# Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
+# structural purity primitives (segment splitting, per-token classification)
+# live in ``_gh_glab_hiding`` (both split out for module-health LOC).
+# Re-exported / re-imported here so existing callers and tests keep using the
+# ``publish_surface`` names.
+slug_for_cwd = _repo_visibility.slug_for_cwd
+effective_repo_dir = _commit_repo_dir.effective_repo_dir
+UNRESOLVABLE_REPO_DIR = _commit_repo_dir.UNRESOLVABLE_REPO_DIR
+_command_segments = _gh_glab_hiding.command_segments
+_segment_is_pure_gh_glab_post = _gh_glab_hiding.segment_is_pure_gh_glab_post
+_strip_benign_prefix = _gh_glab_hiding.strip_benign_prefix
+_token_has_substitution_marker = _gh_glab_hiding.token_has_substitution_marker
+_token_is_transport_construct = _gh_glab_hiding.token_is_transport_construct
+_ENV_ASSIGNMENT_RE = _gh_glab_hiding.ENV_ASSIGNMENT_RE
 
 # ``git commit`` is the first command name + verb (after any env prefix).
 _COMMIT_WORD_COUNT: Final[int] = 2
+
+# A posting segment is ``<tool> <sub> <verb>`` at minimum (e.g. ``gh pr
+# create``); a raw-REST segment is ``<tool> api`` at minimum.
+_POSTING_WORD_COUNT: Final[int] = 3
+_RAW_REST_WORD_COUNT: Final[int] = 2
 
 # Value-taking global ``git`` flags that sit BEFORE the sub-command verb:
 # ``-C <dir>``, ``--git-dir <dir>``, ``--work-tree <dir>``. The verb-finding
@@ -91,19 +104,6 @@ _COMMIT_WORD_COUNT: Final[int] = 2
 # are recognised for VERB SKIPPING only -- repo identity is resolved
 # separately (git-dir/-C only, never --work-tree) by ``effective_repo_dir``.
 _GIT_GLOBAL_DIR_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--git-dir", "--work-tree"})
-
-# A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
-_MIN_SLUG_PARTS: Final[int] = 2
-
-# How long a cached visibility verdict stays fresh. Repo visibility
-# changes rarely; a day-long cache keeps the offline path fast while
-# tolerating the occasional flip.
-_VISIBILITY_TTL_S: Final[int] = 24 * 60 * 60
-
-# Visibility probe budget -- a hook that hangs blocks the user, so the
-# network call gets a tight timeout and any failure falls back to
-# "unknown" (treated as NOT private).
-_PROBE_TIMEOUT_S: Final[int] = 5
 
 # Eligible ``gh`` sub-command pairs: (tool, verb) where "tool" is the
 # second word (pr/issue) and "verb" is the third word (create/comment).
@@ -168,71 +168,14 @@ def is_git_commit_command(command: str) -> bool:
     return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
 
 
-def _last_flag_value(words: list[str], flag: str) -> str | None:
-    """Return the LAST ``flag <value>`` / ``flag=<value>`` value, or ``None``.
-
-    ``git`` resolves a repeated global flag LAST-WINS, so this scans the
-    whole word list and keeps the final occurrence across both the
-    space-separated and ``=`` spellings.
-    """
-    found: str | None = None
-    i = 0
-    prefix = flag + "="
-    while i < len(words):
-        w = words[i]
-        if w == flag and i + 1 < len(words):
-            found = words[i + 1]
-            i += 2
-            continue
-        if w.startswith(prefix):
-            found = w[len(prefix) :]
-        i += 1
-    return found
-
-
-def effective_repo_dir(command: str) -> str | None:
-    """Return the dir whose repo a ``git`` command's commit LANDS in, or ``None``.
-
-    ``git`` selects a commit's repo as: the ``--git-dir``/``$GIT_DIR`` repo
-    if specified, otherwise the repo discovered from the effective working
-    directory, which ``-C <dir>`` changes. ``--work-tree`` only sets the
-    working tree and NEVER selects the repo, so it is excluded here -- a
-    ``--git-dir <PUBLIC> --work-tree <PRIVATE>`` commit lands in the PUBLIC
-    repo, and resolving the private work-tree would leak banned content to
-    public history. Repeated ``-C``/``--git-dir`` flags are LAST-WINS.
-
-    Resolution: ``--git-dir`` (last-wins) if present, resolved relative to
-    the ``-C``-adjusted cwd when relative; else the ``-C``-adjusted path
-    (last-wins ``-C``). ``None`` when neither flag is present, so the caller
-    falls back to the ambient cwd for a plain ``git commit``.
-    """
-    words = first_segment_words(command)
-    dash_c = _last_flag_value(words, "-C")
-    git_dir = _last_flag_value(words, "--git-dir")
-    if git_dir is not None:
-        if dash_c is not None and not Path(git_dir).is_absolute():
-            return str(Path(dash_c) / git_dir)
-        return git_dir
-    return dash_c
-
-
-def is_gh_glab_posting_command(command: str) -> bool:
-    """Return True iff the first command segment is an eligible ``gh``/``glab`` posting verb.
+def _segment_is_posting_verb(words: list[str]) -> bool:
+    """Return True iff ``words`` is an eligible ``gh``/``glab`` posting verb.
 
     Eligible: ``gh pr create``, ``gh pr comment``, ``gh issue create``,
     ``gh issue comment``, ``glab mr create``, ``glab mr note``,
     ``glab issue create``, ``glab issue note``.
-
-    NOT eligible: ``gh api`` / ``glab api`` (raw REST -- can target any
-    surface), ``gh repo view``, ``glab mr list``, or anything that is not
-    a structured create-or-comment verb against a single repo target.
-
-    The carve-out uses this to gate which posting commands may be
-    downgraded from hard-block to warn when the target repo is positively
-    known-private.
     """
-    words = first_segment_words(command)
-    if len(words) < 3:  # noqa: PLR2004
+    if len(words) < _POSTING_WORD_COUNT:
         return False
     tool, sub, verb = words[0], words[1], words[2]
     if tool == "gh":
@@ -242,220 +185,53 @@ def is_gh_glab_posting_command(command: str) -> bool:
     return False
 
 
-def _config_path() -> Path:
-    override = os.environ.get("T3_BANNED_TERMS_CONFIG")
-    if override:
-        return Path(override)
-    return Path.home() / ".teatree.toml"
+def _segment_is_raw_rest(words: list[str]) -> bool:
+    """Return True iff ``words`` is a raw ``gh api`` / ``glab api`` REST call.
 
-
-def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] private_repos`` slug-substring allowlist.
-
-    Each entry is matched as a case-insensitive substring against the
-    repo's ``origin`` slug (``host/owner/repo``), so a single
-    organisation-namespace entry covers every repo under that namespace.
-    Reads the TOML directly (no Django/config import) to stay importable
-    from the hook process without a full settings bootstrap.
+    Raw REST can target any surface (an arbitrary endpoint, a public repo),
+    so a command carrying ANY such segment can leak and the carve-out must
+    fail closed on the whole command.
     """
-    import tomllib  # noqa: PLC0415
-
-    target = config_path if config_path is not None else _config_path()
-    if not target.is_file():
-        return []
-    try:
-        raw = tomllib.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    teatree = raw.get("teatree", {})
-    if not isinstance(teatree, dict):
-        return []
-    entries = teatree.get("private_repos", [])
-    if not isinstance(entries, list):
-        return []
-    return [str(e).strip().lower() for e in entries if str(e).strip()]
+    return words[0] in {"gh", "glab"} and len(words) >= _RAW_REST_WORD_COUNT and words[1] == "api"
 
 
-def _slug_for_cwd(cwd: Path) -> str:
-    """Return the ``origin`` slug (``host/owner/repo``) for ``cwd``, or ``""``.
+def is_gh_glab_posting_command(command: str) -> bool:
+    """Return True iff ANY command segment is an eligible ``gh``/``glab`` posting verb.
 
-    The full slug (including host) is used so an organisation-namespace
-    allowlist entry matches a GitLab remote and a GitHub probe can be
-    keyed by the same string.
+    Eligible: ``gh pr create``, ``gh pr comment``, ``gh issue create``,
+    ``gh issue comment``, ``glab mr create``, ``glab mr note``,
+    ``glab issue create``, ``glab issue note``.
+
+    NOT eligible: ``gh api`` / ``glab api`` (raw REST -- can target any
+    surface), ``gh repo view``, ``glab mr list``, or anything that is not
+    a structured create-or-comment verb against a single repo target.
+
+    Every segment is inspected (not just the first), so a posting verb
+    behind a leading ``cd ... &&`` / env-assignment prefix is still seen.
+    The carve-out uses this to gate which posting commands may be
+    downgraded from hard-block to warn when the target repo is positively
+    known-private.
     """
-    try:
-        url = git.remote_url(repo=str(cwd))
-    except CommandFailedError:
-        return ""
-    if not url:
-        return ""
-    cleaned = url.strip().rstrip("/").removesuffix(".git")
-    if "://" in cleaned:
-        return cleaned.split("://", 1)[1]
-    if "@" in cleaned and ":" in cleaned:
-        host, _, path = cleaned.partition(":")
-        host = host.rsplit("@", 1)[-1]
-        return f"{host}/{path}"
-    return cleaned
-
-
-def _cache_root() -> Path:
-    """Resolve a writable cache dir that never collides with the config file.
-
-    The historical default ``~/.teatree`` is the shell-sourceable config
-    FILE in this environment, so a cache write under it raised "Not a
-    directory" and the verdict could never persist -- every commit re-probed.
-    Honour ``T3_DATA_DIR`` when set, else use the XDG cache dir (matching
-    ``url_title_fetcher``'s ``~/.cache/teatree``). If the chosen root already
-    exists as a non-directory, fall back to a sibling so the write still
-    succeeds rather than being silently swallowed as an ``OSError``.
-    """
-    base = os.environ.get("T3_DATA_DIR")
-    if base:
-        return Path(base)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    root = (Path(xdg) if xdg else Path.home() / ".cache") / "teatree"
-    if root.exists() and not root.is_dir():
-        return Path.home() / ".teatree-data"
-    return root
-
-
-def _visibility_cache_path() -> Path:
-    return _cache_root() / "repo-visibility-cache.json"
-
-
-def _read_visibility_cache(slug: str) -> str | None:
-    """Return a fresh cached visibility verdict for ``slug``, or ``None``."""
-    path = _visibility_cache_path()
-    if not path.is_file():
-        return None
-    try:
-        cache = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    entry = cache.get(slug) if isinstance(cache, dict) else None
-    if not isinstance(entry, dict):
-        return None
-    ts = entry.get("ts")
-    verdict = entry.get("visibility")
-    if not isinstance(ts, (int, float)) or not isinstance(verdict, str):
-        return None
-    if time.time() - ts > _VISIBILITY_TTL_S:
-        return None
-    return verdict
-
-
-def _write_visibility_cache(slug: str, verdict: str) -> None:
-    """Persist a visibility verdict for ``slug`` (best-effort)."""
-    path = _visibility_cache_path()
-    cache: dict[str, _VisibilityEntry] = {}
-    if path.is_file():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                cache = loaded
-        except (OSError, ValueError):
-            cache = {}
-    cache[slug] = _VisibilityEntry(ts=time.time(), visibility=verdict)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(cache), encoding="utf-8")
-    except OSError:
-        return
-
-
-def _probe_visibility(slug: str) -> str | None:
-    """Probe repo visibility via ``gh`` (GitHub) or ``glab`` (GitLab).
-
-    Returns ``"PRIVATE"`` / ``"PUBLIC"`` (upper-cased) or ``None`` when
-    the tool is unavailable, the slug is unrecognised, or the probe
-    errors. ``None`` is the fail-safe "unknown" -- the caller then treats
-    the repo as NOT private and the gate stays hard-blocking.
-    """
-    parts = slug.split("/")
-    if len(parts) < _MIN_SLUG_PARTS:
-        return None
-    host = parts[0] if "." in parts[0] else ""
-    repo_path = "/".join(parts[1:]) if host else slug
-    if host.startswith("gitlab"):
-        return _probe_glab(repo_path)
-    if host.startswith("github") or not host:
-        return _probe_gh(repo_path)
-    return None
-
-
-def _probe_gh(repo_path: str) -> str | None:
-    try:
-        result = run_allowed_to_fail(
-            ["gh", "repo", "view", repo_path, "--json", "visibility", "--jq", ".visibility"],
-            expected_codes=(0,),
-            timeout=_PROBE_TIMEOUT_S,
-        )
-    except (CommandFailedError, OSError):
-        return None
-    verdict = result.stdout.strip().upper()
-    return verdict or None
-
-
-def _probe_glab(repo_path: str) -> str | None:
-    # ``glab api`` has no ``--jq`` flag (unlike ``gh``), so the verdict is
-    # parsed from the full project JSON in Python. Passing ``--jq`` makes
-    # glab exit non-zero with "Unknown flag", which silently defeats the
-    # private-repo carve-out for every GitLab repo.
-    try:
-        result = run_allowed_to_fail(
-            ["glab", "api", f"projects/{repo_path.replace('/', '%2F')}"],
-            expected_codes=(0,),
-            timeout=_PROBE_TIMEOUT_S,
-        )
-    except (CommandFailedError, OSError):
-        return None
-    try:
-        project = json.loads(result.stdout)
-    except ValueError:
-        return None
-    visibility = project.get("visibility") if isinstance(project, dict) else None
-    if not isinstance(visibility, str):
-        return None
-    return visibility.strip().upper() or None
-
-
-def _slug_is_private(slug: str) -> bool:
-    """Resolve whether ``slug`` is a private repo (cache -> probe -> cache write)."""
-    cached = _read_visibility_cache(slug)
-    if cached is not None:
-        return cached == "PRIVATE"
-    verdict = _probe_visibility(slug)
-    if verdict is None:
-        return False
-    _write_visibility_cache(slug, verdict)
-    return verdict == "PRIVATE"
-
-
-def _slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the offline allowlist."""
-    lowered = slug.lower()
-    return any(entry in lowered for entry in _private_repo_allowlist(config_path))
+    return any(_segment_is_posting_verb(words) for words in _command_segments(command))
 
 
 def commit_targets_private_repo(cwd: Path | None, *, config_path: Path | None = None) -> bool:
     """Return True iff a commit in ``cwd`` targets a known-private repo.
 
-    Offline-first: the ``[teatree] private_repos`` slug-substring
-    allowlist is consulted before any network probe, so a fully-offline
-    session still gets the carve-out for declared repos. The cached
-    ``gh``/``glab`` visibility probe is the fallback. An unresolvable repo
-    is NOT private (the gate stays hard-blocking) -- detection failure
-    never weakens the gate.
+    Offline-first: the ``[teatree] private_repos`` slug-substring allowlist is
+    consulted before any network probe, so a fully-offline session still gets
+    the carve-out for declared repos. The cached ``gh``/``glab`` visibility
+    probe is the fallback. An unresolvable repo is NOT private -- detection
+    failure never weakens the gate.
     """
     if cwd is None:
         return False
-    slug = _slug_for_cwd(cwd)
+    slug = _repo_visibility.slug_for_cwd(cwd)
     if not slug:
         return False
-    if _slug_is_allowlisted_private(slug, config_path):
+    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
         return True
-    return _slug_is_private(slug)
+    return _repo_visibility.slug_is_private(slug)
 
 
 def _extract_repo_flag(words: list[str]) -> str:
@@ -487,25 +263,34 @@ def _extract_repo_flag(words: list[str]) -> str:
     return found
 
 
-def posting_command_targets_private_repo(
-    command: str,
-    cwd: Path | None,
-    *,
-    config_path: Path | None = None,
-) -> bool:
-    """Return True iff the gh/glab posting command's target repo is known-private.
+def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
+    """Resolve THIS posting segment's own target slug, mirroring gh/glab.
 
-    Resolves the target repo slug, mirroring how ``gh``/``glab`` themselves
-    resolve their target, in priority order:
+    Resolution order, scoped to ``words`` (never to a sibling ``cd``
+    segment -- a ``cd`` in another segment does NOT change where gh/glab
+    posts):
 
-    - ``--repo``/``-R`` from the command (explicit flag always wins).
+    - ``--repo``/``-R`` from this segment (explicit flag, LAST-WINS).
     - For ``gh`` ONLY: the ``GH_REPO`` env var, when no flag is present.
-        ``gh`` reads ``GH_REPO`` as its default target, so a flagless
-        ``gh pr create`` with ``GH_REPO`` exported posts there -- NOT to the
-        CWD repo. The hook shares the process environment ``gh`` inherits, so
-        ``os.environ`` reflects the same value. ``glab`` has no equivalent
-        env var, so this step is skipped for it.
+        ``gh`` reads ``GH_REPO`` as its default target; the hook shares the
+        process environment gh inherits, so ``os.environ`` reflects it.
+        ``glab`` has no equivalent env var, so this step is skipped for it.
     - The CWD origin slug, as the final fallback.
+
+    Unresolvable/empty => ``""`` (caller treats as NOT private).
+    """
+    explicit_repo = _extract_repo_flag(words)
+    if explicit_repo:
+        return explicit_repo
+    if words[0] == "gh" and os.environ.get("GH_REPO", ""):
+        return os.environ["GH_REPO"]
+    if cwd is not None:
+        return _repo_visibility.slug_for_cwd(cwd)
+    return ""
+
+
+def _segment_target_is_private(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
+    """Return True iff this posting segment's resolved target is known-private.
 
     An explicit ``--repo owner/name`` slug has no host prefix; it is matched
     against the allowlist as-is, then passed to the visibility probe directly
@@ -514,25 +299,107 @@ def posting_command_targets_private_repo(
 
     Unknown/unresolvable target => NOT private (default-deny preserved).
     """
-    words = first_segment_words(command)
-    explicit_repo = _extract_repo_flag(words)
-    is_gh = bool(words) and words[0] == "gh"
-
-    if explicit_repo:
-        slug = explicit_repo
-    elif is_gh and os.environ.get("GH_REPO", ""):
-        slug = os.environ["GH_REPO"]
-    elif cwd is not None:
-        slug = _slug_for_cwd(cwd)
-    else:
-        return False
-
+    slug = _segment_target_slug(words, cwd)
     if not slug:
         return False
-
-    if _slug_is_allowlisted_private(slug, config_path):
+    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
         return True
-    return _slug_is_private(slug)
+    return _repo_visibility.slug_is_private(slug)
+
+
+def command_is_pure_private_gh_glab_post(
+    command: str,
+    cwd: Path | None,
+    *,
+    config_path: Path | None = None,
+) -> bool:
+    r"""Return True iff the WHOLE command is PROVABLY a pure private gh/glab post.
+
+    This is the carve-out's single positive decision predicate -- the
+    INVERSION of the old "detect a hidden public invocation" denylist. Rather
+    than enumerate every transport mechanism a public post could hide behind
+    (shell ``-c``, ``env -S``, here-string, ``eval``, pipe-to-shell,
+    ``source <(...)``, ``ssh host gh ...``, ``node -e "...gh..."``,
+    ``make`` with a ``gh`` recipe, ...), which is an unbounded list that leaks
+    on every un-enumerated construct, this PROVES the command is entirely good
+    and fails closed on anything it cannot prove.
+
+    The command must have at least one segment and EVERY top-level segment
+    (``&&`` / ``||`` / ``;`` / ``|`` / ``&`` / newline) must be, all of:
+
+    - STRUCTURALLY a pure ``gh``/``glab`` posting invocation
+        (:func:`_gh_glab_hiding.segment_is_pure_gh_glab_post`) -- ``gh``/``glab``
+        EXACTLY at ``words[0]`` after a benign ``cd <path>`` / ``VAR=value``
+        prefix, every token a flag / opaque flag-value / positional with no
+        execution-transport or substitution construct anywhere;
+    - a RECOGNISED posting verb (:func:`_segment_is_posting_verb`) -- ``gh pr
+        create``, ``gh issue comment``, ``glab mr create``, ... but NOT
+        ``gh api`` / ``glab api`` raw REST (which can target any surface) nor a
+        read verb (``gh issue view``); and
+    - targeting a known-PRIVATE repo (:func:`_segment_target_is_private`) --
+        ``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then the CWD
+        fallback. One public/unknown target fails the proof.
+
+    A single non-conforming segment -- a second non-``gh`` verb, ANY transport
+    construct, a raw-REST segment, a read verb, or a public/unknown target --
+    makes the command not pure, so this returns False and the banned-term
+    hard-block stands. A hidden public post is therefore impossible: it
+    requires a second non-``gh`` verb, a transport construct, or a public
+    ``--repo`` -- all of which fail the proof.
+
+    Accepted (safe, recoverable) over-block: an exotic-but-legitimate private
+    post that uses ``$()`` / a pipe / a here-doc / etc. in its body or chain
+    fails the proof and is HARD-BLOCKED. That is the price of an unbypassable
+    privacy guarantee -- the operator can split it into a plain post, and a
+    hard-block is recoverable where a leak is not.
+    """
+    segments = _command_segments(command)
+    if not segments:
+        return False
+    if not any(_segment_is_posting_verb(_strip_cd_prefix(words)) for words in segments):
+        return False
+    return all(_segment_proves_pure_private_post(words, cwd, config_path=config_path) for words in segments)
+
+
+def _segment_proves_pure_private_post(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
+    """Return True iff one top-level segment is provably good for the carve-out.
+
+    A segment is good when it is EITHER a benign navigation segment (a bare
+    ``cd <path>`` and/or ``VAR=value`` assignments, nothing else -- the
+    ``cd /x &&`` / ``ENV=1 &&`` prefix the lexer splits into its own segment),
+    OR a STRUCTURALLY pure ``gh``/``glab`` invocation
+    (:func:`_segment_is_pure_gh_glab_post`) that is NOT raw REST
+    (:func:`_segment_is_raw_rest`) and targets a known-PRIVATE repo. A chained
+    private READ (``gh issue view 5 --repo PRIV``) is provably good -- it posts
+    nothing and touches no public surface -- so it does not have to be a
+    posting verb; the command-level proof separately requires at least one
+    posting segment so a pure-read command is not eligible. Anything else --
+    a second non-``gh`` verb, a transport construct, a raw-REST call, or a
+    public/unknown target -- makes the segment not provably good, so the whole
+    command fails the proof.
+    """
+    rest = _strip_cd_prefix(words)
+    if not rest:
+        return True
+    return (
+        _segment_is_pure_gh_glab_post(words)
+        and not _segment_is_raw_rest(rest)
+        and _segment_target_is_private(rest, cwd, config_path=config_path)
+    )
+
+
+def _strip_cd_prefix(words: list[str]) -> list[str]:
+    """Return ``words`` with a leading ``cd <path>`` and ``VAR=value`` prefix removed.
+
+    The posting-verb recognition and target resolution must see the ``gh``/
+    ``glab`` invocation itself, not the benign ``cd``/env prefix that
+    :func:`_gh_glab_hiding.segment_is_pure_gh_glab_post` already validates as
+    benign. A malformed prefix (``cd`` with no path) collapses to the original
+    words -- the structural proof has already rejected it, so the downstream
+    posting/target checks are never reached for such a segment.
+    """
+    rest = _strip_benign_prefix(words)
+    return rest if rest is not None else words
 
 
 # -- Always-on secret detection -----------------------------------------------
@@ -598,21 +465,118 @@ def carve_out_applies(
     Ineligible regardless: ``gh api`` / ``glab api`` raw REST, ``curl``,
     Slack, and any non-structured verb. Public/unknown targets stay blocked.
     """
-    if tool_name != "Bash":
-        return False
     from teatree.hooks._command_parser import is_fail_closed_sentinel  # noqa: PLC0415
 
-    if is_fail_closed_sentinel(payload):
-        return False
-    if contains_secret(payload):
+    if tool_name != "Bash" or is_fail_closed_sentinel(payload) or contains_secret(payload):
         return False
 
     if is_git_commit_command(command):
-        repo_dir = effective_repo_dir(command)
-        target = Path(repo_dir) if repo_dir else cwd
-        return commit_targets_private_repo(target, config_path=config_path)
+        return _commit_branch_downgrades(command, cwd, config_path=config_path)
 
-    if is_gh_glab_posting_command(command):
-        return posting_command_targets_private_repo(command, cwd, config_path=config_path)
+    return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
-    return False
+
+def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
+    r"""Return True iff a ``git commit`` command may downgrade to warn.
+
+    The first segment is the ``git commit`` (:func:`is_git_commit_command`),
+    whose body is private-repo-eligible only when the repo the commit LANDS in
+    is known-private. That repo is resolved by :func:`effective_repo_dir` (the
+    ``--git-dir`` else the ``-C``-adjusted dir, never ``--work-tree``) when the
+    command carries such a flag, else the ambient ``cwd`` -- so a sub-agent's
+    ``git -C <private-worktree> commit`` downgrades even though the ambient hook
+    cwd has reset away from the worktree, while a ``git -C <public> commit``
+    stays hard-blocked.
+
+    Every CHAINED segment must additionally be PROVABLY publish-inert with
+    respect to that body: either a pure private ``gh``/``glab`` post
+    (:func:`command_is_pure_private_gh_glab_post` over that segment), or a
+    segment that provably cannot carry the body to an external surface
+    (:func:`_segment_is_publish_inert` -- no forge tool, no execution-transport
+    or substitution construct anywhere). A chained ``&& gh ... --repo PUBLIC``,
+    a ``&& sh -c "gh ... PUBLIC"``, or any other publishing construct that is
+    not a proven pure private post fails the proof and the hard-block stands.
+
+    This mirrors the posting-path inversion: the commit downgrades only when
+    the WHOLE chain is provably good, never by failing to detect a hidden
+    public post.
+    """
+    repo_dir = effective_repo_dir(command)
+    if repo_dir == UNRESOLVABLE_REPO_DIR:
+        return False
+    commit_target = Path(repo_dir) if repo_dir else cwd
+    if not commit_targets_private_repo(commit_target, config_path=config_path):
+        return False
+    for words in _command_segments(command):
+        if is_git_commit_command(" ".join(words)):
+            continue
+        if _segment_is_publish_inert(words):
+            continue
+        if _segment_is_pure_gh_glab_post(words) and _segment_target_is_private(
+            _strip_cd_prefix(words), cwd, config_path=config_path
+        ):
+            continue
+        return False
+    return True
+
+
+# A forge-tool command word the body could be posted through. Detected as a
+# SUBSTRING in any token so a forge invocation hidden inside a quoted shell
+# string (``sh -c "gh ... PUBLIC"``) is not treated as publish-inert.
+_FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
+
+
+def _segment_is_publish_inert(words: list[str]) -> bool:
+    r"""Return True iff ``words`` provably cannot publish a body externally.
+
+    A chained segment after a private ``git commit`` is publish-inert when it
+    carries NO forge tool (``gh``/``glab``/``curl`` as a substring of any
+    token -- so a forge call hidden in a quoted ``sh -c "gh ..."`` string is
+    NOT inert) and NO execution-transport / substitution construct
+    (substitution marker, redirection, group opener) anywhere. Such a segment
+    (``git push origin main``, ``echo done``, ``make build``) cannot carry the
+    commit body to a public surface, so it does not block the commit downgrade.
+
+    This is the positive complement of the pure-post proof for the commit
+    chain: a chained segment is either provably inert (here) or a proven pure
+    private post; anything else fails the proof and the hard-block stands.
+    """
+    for token in words:
+        if _token_has_substitution_marker(token) or _token_is_transport_construct(token):
+            return False
+        if any(marker in token for marker in _FORGE_TOOL_MARKERS):
+            return False
+    return True
+
+
+def visibility_unknown_for_block(
+    command: str,
+    cwd: Path | None,
+    *,
+    config_path: Path | None = None,
+) -> str | None:
+    """Return the first target slug whose visibility is UNKNOWN in-hook, or ``None``.
+
+    Read-only diagnostic for the deny path: it NEVER changes a verdict. When
+    a banned-term block fires, this reports the first posting/commit target
+    that is NEITHER allowlisted NOR probe-resolved (the probe returned
+    ``None`` -- tool absent in-hook or auth differs), so the operator gets a
+    one-line hint to add it to ``[teatree] private_repos`` for a reliable
+    offline carve-out.
+
+    Returns ``None`` when every resolvable target is allowlisted-private or
+    genuinely PUBLIC (a public target is correctly blocked, not "unknown" --
+    emitting the add-to-allowlist hint there would be misleading).
+    """
+    slugs: list[str] = []
+    if is_git_commit_command(command) and cwd is not None:
+        slugs.append(_repo_visibility.slug_for_cwd(cwd))
+    slugs.extend(
+        _segment_target_slug(words, cwd) for words in _command_segments(command) if _segment_is_posting_verb(words)
+    )
+    for slug in slugs:
+        if not slug or _repo_visibility.slug_is_allowlisted_private(slug, config_path):
+            continue
+        if _repo_visibility.probe_visibility(slug) is None:
+            return slug
+    return None

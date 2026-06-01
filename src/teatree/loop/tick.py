@@ -193,13 +193,29 @@ def run_tick(
     _execute_mechanical(report)
     _persist_agent_dispatches(report)
 
-    zones = zones_for(report.actions, colorize=colorize)
+    zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
     _write_tick_meta(started_at, target=statusline_path)
     if report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
     _populate_loop_owner_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _identity_aliases_for_request(request: TickRequest) -> tuple[tuple[str, ...], ...]:
+    """Union the identity-alias groups across every overlay in *request*.
+
+    The renderer suppresses a reassignment between two handles of the same
+    human and collapses each handle to its group's canonical name. Fails
+    open: any config-read error degrades to no suppression.
+    """
+    groups: list[tuple[str, ...]] = []
+    try:
+        for backend in request.backends or []:
+            groups.extend(_identity_alias_groups_for_overlay(backend.name, backend))
+    except Exception:  # noqa: BLE001
+        return ()
+    return tuple(groups)
 
 
 def _populate_overlays_in_anchors(zones: StatuslineZones) -> None:
