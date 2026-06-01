@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 
 
 def _spec(name: str = "scenario_a") -> EvalSpec:
@@ -209,3 +210,116 @@ class TestTranscriptReplay:
             result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9"])
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
+
+
+class TestEvalPassAtK:
+    def test_trials_aggregates_and_reports_pass_rate(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3"])
+        assert result.exit_code == 0, result.output
+        assert "PASS alpha (3/3 trials" in result.output
+
+    def test_require_all_fails_when_a_trial_fails(self) -> None:
+        specs = [_spec("alpha")]
+        calls = {"n": 0}
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                calls["n"] += 1
+                return _run(spec.name, tool_calls=_PASSING_CALL if calls["n"] == 1 else ())
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "all"])
+        assert result.exit_code == 1
+        assert "FAIL alpha (1/2 trials" in result.output
+
+    def test_bad_require_exits_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "most"])
+        assert result.exit_code == 2
+        assert "unknown --require" in result.output
+
+    def test_json_format_reports_pass_rate(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        output = result.output
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert payload["mode"] == "pass@2"
+        assert payload["scenarios"][0]["passes"] == 2
+
+    def test_all_trials_skipped_reports_skip(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, terminal_reason="skipped: claude binary not on PATH")
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2"])
+        assert result.exit_code == 0
+        assert "SKIP alpha" in result.output
+
+
+class TestEvalTriggerQA:
+    def test_shipped_corpus_passes(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+        assert result.exit_code == 0, result.output
+        assert "0 failed" in result.output
+
+    def test_reports_failure_and_exits_nonzero(self) -> None:
+        bad = TriggerQAReport(checks=(TriggerCheck("debug", "no scope here", should_fire=True, fired=False),))
+        with patch("teatree.cli.eval.run_trigger_qa", return_value=bad):
+            result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+        assert result.exit_code == 1
+        assert "under-trigger" in result.output
+
+    def test_json_format_emits_checks(self) -> None:
+        good = TriggerQAReport(checks=(TriggerCheck("debug", "the build is broken", should_fire=True, fired=True),))
+        with patch("teatree.cli.eval.run_trigger_qa", return_value=good):
+            result = CliRunner().invoke(app, ["eval", "trigger-qa", "--format", "json"])
+        assert result.exit_code == 0
+        output = result.output
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert payload["ok"] is True
+        assert payload["checks"][0]["skill"] == "debug"
+
+    def test_over_trigger_message_for_unexpected_fire(self) -> None:
+        bad = TriggerQAReport(checks=(TriggerCheck("debug", "open a PR", should_fire=False, fired=True),))
+        with patch("teatree.cli.eval.run_trigger_qa", return_value=bad):
+            result = CliRunner().invoke(app, ["eval", "trigger-qa"])
+        assert result.exit_code == 1
+        assert "over-trigger" in result.output

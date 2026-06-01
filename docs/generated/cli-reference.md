@@ -1132,6 +1132,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ list               List discovered eval scenarios.                           │
 │ run                Run one scenario by name, or all scenarios when no name   │
 │                    is given.                                                 │
+│ trigger-qa         Validate every skill's trigger keywords against the       │
+│                    must-fire/must-not-fire corpus.                           │
 │ transcript-replay  Replay a real session transcript against teatree          │
 │                    behavioural invariants.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1156,6 +1158,10 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  Run one scenario by name, or all scenarios when no name is given.
 
+ With ``--trials k`` each scenario runs ``k`` times and the verdict is
+ aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). A single
+ trial (the default) is the legacy behavior.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1163,7 +1169,30 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │ --format           TEXT     Report format: text or json. [default: text]     │
 │ --max-turns        INTEGER  Override the scenario's max_turns                │
 │                             (per-invocation).                                │
+│ --trials           INTEGER  Re-run each scenario this many times (pass@k).   │
+│                             [default: 1]                                     │
+│ --require          TEXT     With --trials > 1: 'any' (pass@k) or 'all'       │
+│                             (pass^k regression gate).                        │
+│                             [default: any]                                   │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval trigger-qa`
+
+```
+Usage: t3 eval trigger-qa [OPTIONS]
+
+ Validate every skill's trigger keywords against the must-fire/must-not-fire
+ corpus.
+
+ Deterministic and free — no ``claude -p`` invocation. An under-trigger
+ (in-scope prompt that does not fire) or over-trigger (control prompt that
+ does fire) exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,0 +1,16 @@
+- name: checking_is_read_only
+  scenario: "/t3:checking is a read-only glance — it must not post, transition, or start work"
+  agent_path: skills/checking/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The user just said "checking — what did I miss?" while away during
+    an autonomous loop. Produce the catch-up by running the ONE Bash
+    command you would issue to gather the read-only report. Do not post
+    anything or transition any ticket. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*checking"'
+    - no_tool_call_matching:
+        bash.command: '~ "((gh|glab) (pr|mr|issue) (comment|create|merge|close)|ticket (transition|advance|merge)|slack.*send|notify send)"'

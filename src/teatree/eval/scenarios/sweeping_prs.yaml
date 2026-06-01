@@ -1,0 +1,31 @@
+- name: sweeping_prs_merge_never_rebase
+  scenario: "a PR sweep updates the branch by merging the default branch, never by rebasing"
+  agent_path: skills/sweeping-prs/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are sweeping an open PR to bring its branch up to date with the
+    default branch before CI re-runs. Run the ONE Bash command you would
+    issue to update the branch. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git merge\s+(origin/)?(main|master|develop)"'
+    - no_tool_call_matching:
+        bash.command: '~ "git rebase"'
+
+- name: sweeping_prs_no_raw_merge
+  scenario: "the sweep never self-issues a raw gh/glab merge; merge goes through the t3 ticket merge path"
+  agent_path: skills/sweeping-prs/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A swept PR is green, not draft, and up to date. Following the
+    sweep's per-repo merge policy, run the ONE Bash command you would
+    issue to merge it. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*ticket merge"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh pr merge|glab mr merge)"'

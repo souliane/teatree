@@ -1,5 +1,6 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -9,10 +10,12 @@ import typer
 from teatree.claude_sessions import list_sessions
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
+from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.runner import ClaudePRunner
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_conformance import render_report, render_report_json, replay
+from teatree.eval.trigger_qa import run_trigger_qa
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 
@@ -56,23 +59,116 @@ def run(
         "--max-turns",
         help="Override the scenario's max_turns (per-invocation).",
     ),
+    trials: int = typer.Option(1, "--trials", help="Re-run each scenario this many times (pass@k)."),
+    require: str = typer.Option(
+        "any",
+        "--require",
+        help="With --trials > 1: 'any' (pass@k) or 'all' (pass^k regression gate).",
+    ),
 ) -> None:
-    """Run one scenario by name, or all scenarios when no name is given."""
+    """Run one scenario by name, or all scenarios when no name is given.
+
+    With ``--trials k`` each scenario runs ``k`` times and the verdict is
+    aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). A single
+    trial (the default) is the legacy behavior.
+    """
     _bootstrap_django()
     specs = discover_specs() if name is None else [_require_spec(name)]
+    if output_format not in {"text", "json"}:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    if trials > 1:
+        _run_pass_at_k(specs, max_turns=max_turns, trials=trials, require=require, output_format=output_format)
+        return
     runner = ClaudePRunner(max_turns_override=max_turns)
     results: list[ScenarioResult] = []
     for spec in specs:
         run_result = runner.run(spec)
         results.append(evaluate(spec, run_result))
-    if output_format == "json":
-        typer.echo(render_json(results))
-    elif output_format == "text":
-        typer.echo(render_text(results))
-    else:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
+    typer.echo(render_json(results) if output_format == "json" else render_text(results))
     if any(not r.passed for r in results):
+        sys.exit(1)
+
+
+def _run_pass_at_k(
+    specs: list[EvalSpec],
+    *,
+    max_turns: int | None,
+    trials: int,
+    require: str,
+    output_format: str,
+) -> None:
+    if require not in {"any", "all"}:
+        typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
+        raise typer.Exit(code=2)
+    runner = ClaudePRunner(max_turns_override=max_turns)
+
+    def _trial(spec: EvalSpec) -> ScenarioResult:
+        return evaluate(spec, runner.run(spec))
+
+    results = [run_pass_at_k(spec, _trial, k=trials, require=require) for spec in specs]
+    if output_format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "mode": f"pass@{trials}" if require == "any" else f"pass^{trials}",
+                    "scenarios": [
+                        {
+                            "name": r.spec_name,
+                            "trials": r.trials,
+                            "passes": r.passes,
+                            "pass_rate": r.pass_rate,
+                            "skipped": r.skipped,
+                            "ok": r.ok,
+                        }
+                        for r in results
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for r in results:
+            if r.skipped:
+                typer.echo(f"SKIP {r.spec_name}: all {r.trials} trials skipped")
+                continue
+            status = "PASS" if r.ok else "FAIL"
+            typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
+    if any(not r.ok for r in results):
+        sys.exit(1)
+
+
+@eval_app.command("trigger-qa")
+def trigger_qa(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+) -> None:
+    """Validate every skill's trigger keywords against the must-fire/must-not-fire corpus.
+
+    Deterministic and free — no ``claude -p`` invocation. An under-trigger
+    (in-scope prompt that does not fire) or over-trigger (control prompt that
+    does fire) exits non-zero.
+    """
+    report = run_trigger_qa()
+    if output_format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "ok": report.ok,
+                    "checks": [
+                        {"skill": c.skill, "prompt": c.prompt, "should_fire": c.should_fire, "fired": c.fired}
+                        for c in report.checks
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        for check in report.failures:
+            kind = "under-trigger (expected fire, none)" if check.should_fire else "over-trigger (fired, unexpected)"
+            typer.echo(f"FAIL {check.skill}: {kind}\n  prompt: {check.prompt}")
+        passed = len(report.checks) - len(report.failures)
+        typer.echo(f"\nsummary: {passed} passed, {len(report.failures)} failed (of {len(report.checks)})")
+    if not report.ok:
         sys.exit(1)
 
 

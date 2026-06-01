@@ -21,12 +21,42 @@ t3 eval run                                 # run all
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
+t3 eval run --trials 3                       # pass@k: 3 trials, pass if any passes
+t3 eval run --trials 3 --require all         # pass^k: regression gate, all must pass
+t3 eval trigger-qa                           # deterministic skill-activation eval (no claude run)
 ```
 
-Each invocation shells out to `claude -p` in `--output-format stream-json`
-mode with a 120-second wall-clock watchdog and a `--max-budget-usd 0.10`
-circuit breaker. When `claude` is not on `PATH` the runner emits
-`SKIP <scenario>: claude binary not on PATH` and exits 0.
+Each scenario invocation shells out to `claude -p` in `--output-format
+stream-json` mode with a 120-second wall-clock watchdog and a
+`--max-budget-usd 0.10` circuit breaker. When `claude` is not on `PATH` the
+runner emits `SKIP <scenario>: claude binary not on PATH` and exits 0.
+
+### pass@k (multi-trial)
+
+A single trial against an LLM is noisy. `--trials k` re-runs each scenario `k`
+times and aggregates: `--require any` (default) is **pass@k** — capable-of the
+behavior; `--require all` is **pass^k** — a regression gate where intermittent
+compliance is itself a failure. The aggregation lives in `pass_at_k.py`.
+
+### Trigger-QA (skill activation)
+
+`t3 eval trigger-qa` is a Layer-1 (deterministic, free, no `claude` run) eval.
+It loads each skill's `triggers.keywords` frontmatter and checks the
+must-fire / must-not-fire prompt corpus in `trigger_qa_corpus.yaml`: an
+under-trigger (in-scope prompt that does not fire) or over-trigger (control
+prompt that fires) exits non-zero. A skill author registers expectations by
+editing the corpus.
+
+## Triggering
+
+- **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
+  `t3 eval trigger-qa` locally whenever you want.
+- **Weekly, on the first PR of the ISO week.** CI runs the suite once a week —
+  not on every push, not on every PR. `scripts/eval/first_pr_of_week.py` decides
+  whether the current MR is the earliest-created MR of the current ISO week
+  (order-independent, re-run safe). The rule is wired in `.gitlab-ci.yml`
+  (`eval-gate` → `eval-weekly`) and mirrored in `.github/workflows/ci.yml`
+  (`eval-weekly` job).
 
 ## Scenario shape
 

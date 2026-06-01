@@ -1,0 +1,61 @@
+# Trigger-QA corpus: must-fire / must-not-fire prompts per skill.
+# Each `should_fire` prompt must match at least one of the skill's
+# `triggers.keywords` regexes; each `should_not_fire` prompt must match none.
+# A skill's keywords firing on an unrelated control prompt is an
+# over-trigger; failing to fire on an in-scope prompt is an under-trigger.
+
+- skill: checking
+  should_fire:
+    - "checking — what did I miss while I was away?"
+    - "catch me up on what changed since this morning"
+  should_not_fire:
+    - "implement the postal_code field on the Address model"
+    - "open a pull request for the finished branch"
+
+- skill: debug
+  should_fire:
+    - "the backend is broken and the page is blank, please debug it"
+    - "I get a 500 with a traceback when I hit the endpoint"
+  should_not_fire:
+    - "write a retrospective for this session"
+    - "create a worktree and provision the database"
+
+- skill: full-speed
+  should_fire:
+    - "go full-speed and blast the backlog in parallel mode"
+    - "fan-out and tackle everything at once"
+  should_not_fire:
+    - "review the code on this merge request"
+    - "run the e2e suite against local"
+
+- skill: retro
+  should_fire:
+    - "let's do a retro on what went wrong this session"
+    - "capture lessons learned and improve skills"
+  should_not_fire:
+    - "start the backend and the frontend servers"
+    - "fetch ticket 1234 and start working"
+
+- skill: scanning-news
+  should_fire:
+    - "scan the AI news for teatree improvement ideas"
+    - "run the tldr scan this morning"
+  should_not_fire:
+    - "merge the default branch into all my open PRs"
+    - "debug the crash on startup"
+
+- skill: ticket
+  should_fire:
+    - "new ticket: please start working on it"
+    - "what should i do for issue #1234?"
+  should_not_fire:
+    - "run pytest and report coverage"
+    - "do a retro and capture lessons learned"
+
+- skill: workspace
+  should_fire:
+    - "create a worktree and refresh the db for this ticket"
+    - "start the backend and the frontend"
+  should_not_fire:
+    - "review the merge request feedback"
+    - "scan the AI news for improvement ideas"

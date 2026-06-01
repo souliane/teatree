@@ -218,3 +218,42 @@ jobs:
         with:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
+
+  eval-weekly:
+    # Weekly behavioral-eval gate. The eval suite shells out to `claude -p`
+    # (cost, network, model variance), so it must NOT run on every push or
+    # every PR. The cadence is once a week, on the FIRST pull request opened
+    # that ISO week — `scripts/eval/first_pr_of_week.py` makes that decision
+    # (order-independent, re-run safe). Manual on-demand runs bypass CI: the
+    # user runs `t3 eval run` / `t3 eval trigger-qa` locally. The GitLab mirror
+    # carries the equivalent rule in `.gitlab-ci.yml`.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Decide whether this is the first PR of the ISO week
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=asc&per_page=100" \
+            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
+          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_eval=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Trigger-QA (deterministic, free)
+        if: steps.gate.outputs.run_eval == 'true'
+        run: uv run t3 eval trigger-qa
+      - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
+        if: steps.gate.outputs.run_eval == 'true'
+        run: uv run t3 eval run --trials 3 --require any

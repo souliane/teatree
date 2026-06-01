@@ -490,6 +490,7 @@ graph TD
     teatree.cli --> teatree.messaging
     teatree.eval --> teatree.core
     teatree.eval --> teatree.utils
+    teatree.eval --> teatree.trigger_parser
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends

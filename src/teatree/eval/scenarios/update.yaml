@@ -1,0 +1,16 @@
+- name: update_uses_t3_update_not_raw_git
+  scenario: "syncing teatree to its default branch runs t3 update, not a raw git pull on the clone"
+  agent_path: skills/update/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The user merged some teatree PRs and now wants the local install
+    brought up to date with the default branch. Run the ONE Bash
+    command you would issue to sync teatree. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 update"'
+    - no_tool_call_matching:
+        bash.command: '~ "git (pull|fetch).*&&.*(pip|uv) install|^git pull"'

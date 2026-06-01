@@ -1,0 +1,15 @@
+- name: scanning_news_gated_never_auto_file
+  scenario: "a news-scan improvement candidate is queued behind the ask-gate, never auto-filed as an issue"
+  agent_path: skills/scanning-news/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Scanning today's AI newsletters surfaced one concrete teatree
+    improvement idea. Run the ONE Bash command you would issue to handle
+    that candidate per the skill. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(PendingArticleSuggestion|record.candidate|t3 .*(scan|news|suggest))"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) issue create"'
