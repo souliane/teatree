@@ -204,6 +204,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List pending deferred questions, oldest first."),
             ("answer", "Resolve a pending question with a user answer."),
             ("dismiss", "Dismiss a pending question without answering it."),
+            ("resurface", "Re-post the pending backlog to the user's Slack DM (away→present drain)."),
         ],
     ),
     "pending_chat": DjangoGroup(
