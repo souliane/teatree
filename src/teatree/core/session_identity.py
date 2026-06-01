@@ -67,28 +67,62 @@ def _loop_registry_path() -> Path:
     return base / "teatree" / "loop-registry.json"
 
 
-def _session_id_from_loop_registry() -> str:
-    """Read the tick-owner's session id from the loop registry, ``""`` on any error.
+def _owner_record_from_loop_registry() -> dict | None:
+    """Read the tick-owner record from the loop registry, ``None`` on any error.
 
     Fail-open spans the whole resolve+read because ``_loop_registry_path``
     can itself raise (``Path.home()`` raises ``RuntimeError`` when neither
     ``HOME`` nor ``XDG_DATA_HOME`` nor ``T3_LOOP_REGISTRY_DIR`` is set —
     seen in CI sandboxes that clear the env). A read failure here must
     NEVER block claim resolution; the right behaviour is "no registry
-    fallback available → return ``""``" so the caller proceeds to the
-    final ``""`` outcome rather than crashing.
+    fallback available → return ``None``" so the caller proceeds to its
+    own no-fallback outcome rather than crashing.
     """
     try:
         path = _loop_registry_path()
         if not path.is_file():
-            return ""
+            return None
         data = json.loads(path.read_text(encoding="utf-8") or "{}")
     except (OSError, ValueError, RuntimeError):
-        return ""
+        return None
     owner = data.get(_OWNER_KEY) if isinstance(data, dict) else None
-    if not isinstance(owner, dict):
-        return ""
-    return owner.get("session_id") or ""
+    return owner if isinstance(owner, dict) else None
+
+
+def _session_id_from_loop_registry() -> str:
+    """The tick-owner's durable session id from the loop registry, ``""`` on any error."""
+    owner = _owner_record_from_loop_registry()
+    return (owner or {}).get("session_id") or ""
+
+
+def current_session_pid() -> int | None:
+    """The owning *session* process pid, or ``None`` when not resolvable (#1073).
+
+    The persistent ``loop-owner`` lease is anchored to the session that
+    started the loop, so its ``owner_pid`` must be that session's
+    long-lived process — NOT ``os.getppid()`` of the ephemeral tick
+    subprocess. ``t3 loop tick`` runs inside a Bash-tool shell that the
+    harness spawns per tool call and tears down seconds later, so
+    ``os.getppid()`` there is a transient shell pid that is dead almost
+    immediately. Anchoring the lease on it makes the pid-liveness check
+    (``_session_lease_is_live``) see a dead owner within seconds of every
+    tick, collapsing the pid-anchored protection back to TTL-only: once
+    the 30-min TTL lapses for a busy/idle owner, a fresh SessionStart
+    finds "no live owner" and STEALS the loop.
+
+    The ``SessionStart`` hook already records the durable session pid in
+    the same ``loop-registry.json`` record this module reads for the
+    session id (``hook_router._tick_owner_record`` stores ``os.getppid()``
+    of the SessionStart hook, whose parent IS the persistent session
+    process). Reading the pid from that record anchors the lease on the
+    long-lived session, so a busy owner past TTL stays protected and only
+    a genuinely-dead session (or ``--take-over``) releases the loop.
+    """
+    owner = _owner_record_from_loop_registry()
+    if owner is None:
+        return None
+    pid = owner.get("pid")
+    return int(pid) if isinstance(pid, int) or (isinstance(pid, str) and pid.isdigit()) else None
 
 
 def current_session_id() -> str:
@@ -110,4 +144,4 @@ def current_session_id() -> str:
     )
 
 
-__all__ = ["current_session_id"]
+__all__ = ["current_session_id", "current_session_pid"]

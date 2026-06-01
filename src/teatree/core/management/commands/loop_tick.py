@@ -144,7 +144,7 @@ class Command(TyperCommand):
         )
         from teatree.core.connector_preflight import run_connector_preflight  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+        from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
         from teatree.loop.tick import run_tick  # noqa: PLC0415
 
         # Refuse to tick into silent no-ops when a hard-dependency
@@ -176,13 +176,19 @@ class Command(TyperCommand):
 
         session_id = current_session_id()
         owner_ttl = _loop_owner_ttl_seconds()
-        # #1604: record the durable session pid (the long-lived session
-        # process, not this ephemeral tick subprocess). ``os.getppid()``
-        # returns the parent of ``t3 loop tick``, which is the session
-        # process that launched the cron — the same value the hook layer
-        # records in ``_tick_owner_record``.
+        # The lease's ``owner_pid`` MUST be the long-lived SESSION process,
+        # not ``os.getppid()`` here: the Stop self-pump runs this tick inside
+        # a Bash-tool shell the harness tears down seconds after the call, so
+        # ``os.getppid()`` is a transient pid that is dead almost immediately
+        # — anchoring on it collapses the pid-liveness protection back to
+        # TTL-only and lets a fresh SessionStart steal a busy owner's loop
+        # once the TTL lapses (#1706 root cause). The durable session pid
+        # comes from the same loop-registry record the SessionStart hook
+        # writes (``_tick_owner_record``); ``os.getppid()`` is the fallback
+        # only for a direct in-session invocation with no registry record.
+        owner_pid = current_session_pid() or _os.getppid()
         won_owner, owner_session = LoopLease.objects.claim_ownership(
-            "loop-owner", session_id=session_id, ttl_seconds=owner_ttl, owner_pid=_os.getppid()
+            "loop-owner", session_id=session_id, ttl_seconds=owner_ttl, owner_pid=owner_pid
         )
         if not won_owner:
             self._emit_skip(

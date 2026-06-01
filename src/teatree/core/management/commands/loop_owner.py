@@ -31,7 +31,7 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
     import os  # noqa: PLC0415
 
     from teatree.core.models import LoopLease  # noqa: PLC0415
-    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+    from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
     session_id = current_session_id()
     if not session_id:
@@ -41,11 +41,19 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
         else:
             stdout_write(f"ERROR  {msg}")
         raise SystemExit(2)
-    # #1604: record the durable session pid for the ``loop-owner`` slot only
-    # so ``evict_stale_owner`` can distinguish a post-compaction same-process
-    # self-reclaim from a genuinely foreign live lease. Other slots (e.g.
-    # ``loop-slack-answer-owner``) are per-tick ephemeral and don't need it.
-    owner_pid = os.getppid() if slot == "loop-owner" else None
+    # Record the durable SESSION pid for the ``loop-owner`` slot so
+    # ``evict_stale_owner`` / the pid-anchored liveness check can tell a
+    # post-compaction same-process self-reclaim from a genuinely foreign
+    # live lease. It MUST be the long-lived session process, not
+    # ``os.getppid()``: ``t3 loop claim`` runs in a Bash-tool shell torn
+    # down seconds later, so anchoring on its pid stored a dead pid — the
+    # take-over then "only held until the next fresh session" (the new
+    # session saw a dead pid + lapsed TTL and stole the loop). The durable
+    # pid comes from the loop-registry record the SessionStart hook wrote;
+    # ``os.getppid()`` is the fallback only for a direct in-session call.
+    # Other slots (e.g. ``loop-slack-answer-owner``) are per-tick ephemeral
+    # and don't need it.
+    owner_pid = (current_session_pid() or os.getppid()) if slot == "loop-owner" else None
     won, owner = LoopLease.objects.claim_ownership(
         slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
     )

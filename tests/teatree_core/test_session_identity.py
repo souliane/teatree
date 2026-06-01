@@ -20,7 +20,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.core.models import LoopLease
-from teatree.core.session_identity import current_session_id
+from teatree.core.session_identity import current_session_id, current_session_pid
 
 pytestmark = pytest.mark.django_db
 
@@ -95,6 +95,53 @@ class TestSessionIdRegistryFallback:
             assert current_session_id() == "xdg-sess"
 
 
+class TestCurrentSessionPid:
+    """The durable owning-session pid for the loop-owner lease anchor (#1706).
+
+    The lease ``owner_pid`` must be the long-lived session process, not
+    ``os.getppid()`` of the transient Bash-tool tick subprocess. The
+    SessionStart hook already records that durable pid in the same loop
+    registry record this resolver reads.
+    """
+
+    def test_reads_pid_from_registry_owner_record(self, tmp_path: Path) -> None:
+        (tmp_path / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "s", "pid": 4242}}), encoding="utf-8"
+        )
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() == 4242
+
+    def test_string_pid_is_coerced(self, tmp_path: Path) -> None:
+        (tmp_path / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "s", "pid": "4242"}}), encoding="utf-8"
+        )
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() == 4242
+
+    def test_missing_registry_is_none(self, tmp_path: Path) -> None:
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() is None
+
+    def test_missing_pid_field_is_none(self, tmp_path: Path) -> None:
+        (tmp_path / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "s"}}), encoding="utf-8"
+        )
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() is None
+
+    def test_non_numeric_pid_is_none(self, tmp_path: Path) -> None:
+        (tmp_path / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "s", "pid": "not-a-pid"}}), encoding="utf-8"
+        )
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() is None
+
+    def test_corrupt_registry_is_none(self, tmp_path: Path) -> None:
+        (tmp_path / "loop-registry.json").write_text("{not json", encoding="utf-8")
+        with patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True):
+            assert current_session_pid() is None
+
+
 class TestLoopClaimSucceedsViaRegistrySessionId:
     """The literal #1107 incident reproduction (Prong A2)."""
 
@@ -110,3 +157,31 @@ class TestLoopClaimSucceedsViaRegistrySessionId:
         status = LoopLease.objects.ownership_status("loop-owner")
         assert status.is_live is True
         assert status.owner_session == "sess-abc"
+
+    def test_take_over_anchors_lease_on_durable_session_pid(self, tmp_path: Path) -> None:
+        """``t3 loop claim --take-over`` must store the durable session pid (#1706).
+
+        The command runs in a Bash-tool shell torn down seconds later, so
+        ``os.getppid()`` there is a transient pid. Anchoring the lease on it
+        made the take-over "only hold until the next fresh session" — the
+        new session saw a dead pid + lapsed TTL and stole the loop. The
+        lease must instead carry the durable session pid from the registry.
+        """
+        import os  # noqa: PLC0415
+
+        durable_session_pid = os.getpid()
+        (tmp_path / "loop-registry.json").write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": "sess-abc", "pid": durable_session_pid}}),
+            encoding="utf-8",
+        )
+        out = io.StringIO()
+        with (
+            patch.dict("os.environ", {**_no_session_env(), "T3_LOOP_REGISTRY_DIR": str(tmp_path)}, clear=True),
+            patch("os.getppid", return_value=999999),
+        ):
+            call_command("loop_owner", "claim", "--take-over", stdout=out)
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.owner_pid == durable_session_pid, (
+            "take-over must anchor on the durable session pid, not os.getppid() of the transient shell"
+        )
