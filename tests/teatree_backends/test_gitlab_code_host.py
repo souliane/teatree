@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
@@ -7,6 +7,27 @@ from teatree.backends.protocols import PullRequestSpec
 
 def _project() -> ProjectInfo:
     return ProjectInfo(project_id=42, path_with_namespace="org/repo", short_name="repo", default_branch="main")
+
+
+def _two_page_http_side_effect(page1: list[dict], page2: list[dict]):
+    """httpx.get side-effect: page 1 advertises x-next-page=2, page 2 ends it.
+
+    ``get_json_paginated`` appends ``&page=N``; this routes the request by that
+    marker so a real ``GitLabAPI`` walks both pages.
+    """
+
+    def _side_effect(url: str, **_: object) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        if "page=2" in url:
+            resp.json.return_value = page2
+            resp.headers = {"x-next-page": ""}
+        else:
+            resp.json.return_value = page1
+            resp.headers = {"x-next-page": "2"}
+        return resp
+
+    return _side_effect
 
 
 def test_create_pr_uses_repo_remote_and_auto_labels(tmp_path) -> None:
@@ -117,13 +138,13 @@ def test_create_issue_returns_error_when_project_not_resolved() -> None:
 def test_search_open_issues_searches_project() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    client.get_json.return_value = [{"iid": 3}]
+    client.get_json_paginated.return_value = [{"iid": 3}]
     host = GitLabCodeHost(client=client)
 
     result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
 
     assert result == [{"iid": 3}]
-    endpoint = client.get_json.call_args[0][0]
+    endpoint = client.get_json_paginated.call_args[0][0]
     assert endpoint.startswith("projects/42/issues?state=opened&search=")
 
 
@@ -485,29 +506,29 @@ def test_post_issue_comment_returns_empty_dict_when_post_returns_none() -> None:
 
 
 def test_list_issue_comments_hits_notes_endpoint() -> None:
-    """list_issue_comments GETs the issue notes endpoint with per_page=100."""
+    """list_issue_comments paginates the issue notes endpoint with per_page=100."""
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    client.get_json.return_value = [{"id": 1, "body": "a"}, {"id": 2, "body": "b"}]
+    client.get_json_paginated.return_value = [{"id": 1, "body": "a"}, {"id": 2, "body": "b"}]
     host = GitLabCodeHost(client=client)
 
     result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
 
     assert result == [{"id": 1, "body": "a"}, {"id": 2, "body": "b"}]
-    client.get_json.assert_called_once_with("projects/42/issues/7/notes?per_page=100")
+    client.get_json_paginated.assert_called_once_with("projects/42/issues/7/notes?per_page=100")
 
 
 def test_list_issue_comments_supports_work_items_url() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    client.get_json.return_value = []
+    client.get_json_paginated.return_value = []
     host = GitLabCodeHost(client=client)
 
     result = host.list_issue_comments(issue_url="https://gitlab.com/group/sub/repo/-/work_items/469")
 
     assert result == []
     client.resolve_project.assert_called_once_with("group/sub/repo")
-    client.get_json.assert_called_once_with("projects/42/issues/469/notes?per_page=100")
+    client.get_json_paginated.assert_called_once_with("projects/42/issues/469/notes?per_page=100")
 
 
 def test_list_issue_comments_returns_empty_on_non_issue_url() -> None:
@@ -517,7 +538,7 @@ def test_list_issue_comments_returns_empty_on_non_issue_url() -> None:
     result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/merge_requests/12")
 
     assert result == []
-    client.get_json.assert_not_called()
+    client.get_json_paginated.assert_not_called()
 
 
 def test_list_issue_comments_returns_empty_when_project_unresolved() -> None:
@@ -528,13 +549,14 @@ def test_list_issue_comments_returns_empty_when_project_unresolved() -> None:
     result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
 
     assert result == []
-    client.get_json.assert_not_called()
+    client.get_json_paginated.assert_not_called()
 
 
-def test_list_issue_comments_returns_empty_when_get_returns_non_list() -> None:
+def test_list_issue_comments_returns_paginated_result() -> None:
+    """The paginated helper owns the list contract; the method returns it verbatim."""
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
-    client.get_json.return_value = {"error": "boom"}
+    client.get_json_paginated.return_value = []
     host = GitLabCodeHost(client=client)
 
     result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
@@ -774,6 +796,47 @@ def test_get_mr_approvals_uses_canonical_approvals_left_not_fallback() -> None:
     state = host.get_mr_approvals(repo="org/repo", pr_iid=12)
 
     assert state["approvals_left"] == 2
+
+
+def test_list_issue_comments_returns_notes_from_page_two() -> None:
+    """A note that sits exclusively on page 2 must be returned, not truncated.
+
+    A non-paginated GET caps at per_page=100, so a ``## Test Plan`` evidence
+    note older than the 100 most-recent notes goes unseen and the poster
+    duplicates it. Pagination must surface the full note history (>100).
+    """
+    page1 = [{"id": i, "body": f"c{i}"} for i in range(100)]
+    page2 = [{"id": 100, "body": "## Test Plan"}]
+    api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
+    host = GitLabCodeHost(client=api)
+    with (
+        patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)),
+        patch.object(api, "resolve_project", return_value=_project()),
+    ):
+        result = host.list_issue_comments(issue_url="https://gitlab.com/org/repo/-/issues/7")
+
+    assert len(result) == 101
+    assert {"id": 100, "body": "## Test Plan"} in result
+
+
+def test_search_open_issues_returns_issues_from_page_two() -> None:
+    """An open issue past the first page must be found by the dedup search.
+
+    A non-paginated GET caps the matched-issue list at per_page=100; a
+    previously-filed enforcement issue on page 2 would be missed and refiled.
+    """
+    page1 = [{"iid": i} for i in range(100)]
+    page2 = [{"iid": 100, "title": "fingerprint:abc"}]
+    api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
+    host = GitLabCodeHost(client=api)
+    with (
+        patch("httpx.get", side_effect=_two_page_http_side_effect(page1, page2)),
+        patch.object(api, "resolve_project", return_value=_project()),
+    ):
+        result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
+
+    assert len(result) == 101
+    assert {"iid": 100, "title": "fingerprint:abc"} in result
 
 
 def test_get_mr_approvals_falls_back_when_left_absent() -> None:
