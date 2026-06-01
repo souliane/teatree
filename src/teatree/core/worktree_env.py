@@ -133,6 +133,8 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     for cfg in overlay.get_base_images(worktree):
         pairs[cfg.env_var] = cfg.image_tag()
 
+    pairs.update(load_overrides(worktree))
+
     # Drop secret keys from the on-disk cache — they remain in ``get_env_extra``
     # so subprocess callers (run backend, worktree_start) still receive them
     # via ``env=``, but the file at chmod 444 must not contain credentials.

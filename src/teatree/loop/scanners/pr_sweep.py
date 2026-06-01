@@ -448,6 +448,8 @@ class GhPrApiClient:
             slug,
             "--state",
             "open",
+            "--limit",
+            "100",
             "--json",
             "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup",
         ]
