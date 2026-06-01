@@ -637,13 +637,17 @@ class TestNewSessionHijackFix(TestCase):
         assert row.session_id == "", "expected dead-pid lease to be evicted"
         assert row.lease_expires_at is None
 
-    def test_expired_foreign_lease_is_evicted(self) -> None:
-        """Expired foreign lease → EVICT regardless of pid."""
+    def test_expired_foreign_lease_with_unknown_pid_is_evicted(self) -> None:
+        """Expired foreign lease + null owner_pid → EVICT (TTL fallback governs).
+
+        With no live ``owner_pid`` to anchor liveness, the TTL is the sole
+        release: an expired lease is dead and reclaimable. (An *alive*
+        ``owner_pid`` past TTL is the protected busy-owner case covered by
+        ``test_alive_owner_pid_expired_ttl_keeps_loop_with_incumbent``.)
+        """
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="expired-owner", ttl_seconds=1, owner_pid=os.getpid()
-        )
+        LoopLease.objects.claim_ownership("loop-owner", session_id="expired-owner", ttl_seconds=1, owner_pid=None)
         row = LoopLease.objects.get(name="loop-owner")
         row.lease_expires_at = timezone.now() - timedelta(seconds=5)
         row.save(update_fields=["lease_expires_at"])
@@ -712,3 +716,30 @@ class TestNewSessionHijackFix(TestCase):
         # Session fell through to the owner path (fail-open).
         won, _ = LoopLease.objects.claim_ownership("loop-owner", session_id="new-session")
         assert won is True
+
+    def test_alive_owner_pid_expired_ttl_keeps_loop_with_incumbent(self) -> None:
+        """An ALIVE owner_pid past TTL is a live owner — no SessionStart hijack.
+
+        The headline #1073 hijack: the incumbent is alive but busy past the
+        tick TTL, so no Stop fires and the lease TTL-lapses while the owner
+        process is alive. ``_db_live_foreign_owner`` must recognise the
+        alive ``owner_pid`` as a live owner (not TTL-only) and the new
+        session must stay idle, leaving the DB row owned by the incumbent.
+        """
+        from hooks.scripts.hook_router import _db_live_foreign_owner  # noqa: PLC0415
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        # Incumbent: alive process pid, but its TTL has lapsed (busy > TTL).
+        LoopLease.objects.claim_ownership("loop-owner", session_id="incumbent", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=30)
+        row.save(update_fields=["lease_expires_at"])
+
+        # The new session is a different OS process.
+        live_owner = _db_live_foreign_owner("new-session", current_pid=os.getpid() + 1)
+        assert live_owner == "incumbent", "alive owner_pid past TTL must be recognised as a live owner"
+
+        handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "incumbent", "HIJACK: new-session took over an alive owner's expired-TTL lease"
