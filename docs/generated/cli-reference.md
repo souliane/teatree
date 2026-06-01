@@ -2496,6 +2496,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ db            Database operations.                                           │
 │ pr            Pull request helpers.                                          │
 │ tasks         Async task queue.                                              │
+│ queue         Background-task DB queue (inspect, expire stale jobs).         │
 │ followup      Follow-up snapshots.                                           │
 │ standup       Auto-generated daily update (read-only).                       │
 │ checking      Terse 'what did I miss' report since the last check            │
@@ -3954,6 +3955,59 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 Usage: t3 teatree tasks work-next-user-input [OPTIONS]
 
  Claim and execute a user input task.
+```
+
+#### `t3 teatree queue`
+
+```
+Usage: t3 teatree queue [OPTIONS] COMMAND [ARGS]...
+
+ Background-task DB queue (inspect, expire stale jobs).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status        Print the queue breakdown by status and READY jobs by task     │
+│               name (read-only).                                              │
+│ expire-stale  Retire READY jobs older than the threshold to FAILED so a      │
+│               drainer never runs them.                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue status`
+
+```
+Usage: t3 teatree queue status [OPTIONS]
+
+ Print the queue breakdown by status, and READY jobs by task name.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue expire-stale`
+
+```
+Usage: t3 teatree queue expire-stale [OPTIONS]
+
+ Retire stale READY jobs to FAILED so a drainer never runs them.
+
+ Conservative: only READY jobs older than the threshold are touched.
+ FAILED is reversible — the row and its args are preserved — so an
+ operator can re-enqueue a wrongly-retired job.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --hours                      INTEGER  Expire READY jobs enqueued more than   │
+│                                       this many hours ago (default:          │
+│                                       T3_QUEUE_STALE_HOURS).                 │
+│                                       [default: 0]                           │
+│ --dry-run    --no-dry-run             Report what would be expired without   │
+│                                       mutating any rows.                     │
+│                                       [default: no-dry-run]                  │
+│ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 #### `t3 teatree followup`
