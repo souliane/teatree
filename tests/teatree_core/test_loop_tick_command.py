@@ -396,6 +396,88 @@ class TestLoopOwnerGate(TestCase):
             assert _loop_owner_ttl_seconds() == 1800
 
 
+class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
+    """The lease ``owner_pid`` must be the persistent session pid (#1706 root cause).
+
+    ``t3 loop tick`` runs inside the Stop self-pump's Bash-tool shell, which
+    the harness tears down seconds after the call. Anchoring the lease on
+    ``os.getppid()`` (that transient shell) made the pid-liveness check see
+    a dead owner within seconds of every tick, collapsing the pid-anchored
+    protection back to TTL-only and letting a fresh SessionStart steal a
+    busy owner's loop once the TTL lapsed. The tick must instead read the
+    durable session pid the SessionStart hook recorded in the loop registry.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _registry_isolation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg_dir = tmp_path / "data"
+        reg_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
+        self._reg_path = reg_dir / "loop-registry.json"
+
+    def _write_owner_record(self, *, session_id: str, pid: int) -> None:
+        self._reg_path.write_text(
+            json.dumps({"t3-loop-tick-owner": {"session_id": session_id, "agent_id": "a", "pid": pid}}),
+            encoding="utf-8",
+        )
+
+    def test_tick_stores_registry_session_pid_not_getppid(self) -> None:
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        durable_session_pid = os.getpid()
+        self._write_owner_record(session_id="owner-session", pid=durable_session_pid)
+
+        report = _build_report()
+        # A pid that is NOT the durable session pid — what ``os.getppid()``
+        # of the transient tick subprocess would have stored pre-fix.
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
+            patch("os.getppid", return_value=999999),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "owner-session"
+        assert row.owner_pid == durable_session_pid, (
+            "lease must anchor on the durable session pid from the registry, "
+            "not os.getppid() of the transient tick subprocess"
+        )
+
+    def test_idle_owner_past_ttl_is_not_stealable_after_tick(self) -> None:
+        """End-to-end: a busy/idle owner past TTL stays protected (no steal).
+
+        Pre-fix the tick stored the transient shell pid, so once that shell
+        died (seconds later) and the TTL lapsed, ``_session_lease_is_live``
+        judged the owner dead and a fresh SessionStart claim won. Post-fix
+        the lease carries the alive session pid, so the claim is blocked.
+        """
+        from teatree.core.models import LoopLease  # noqa: PLC0415
+
+        durable_session_pid = os.getpid()
+        self._write_owner_record(session_id="owner-session", pid=durable_session_pid)
+
+        report = _build_report()
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session", "T3_LOOP_OWNER_TTL": "60"}),
+            patch("os.getppid", return_value=999999),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        # Simulate the owner going busy/idle past the TTL: the lease lapses
+        # but the session process (durable_session_pid) is still alive.
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = dt.datetime.now(tz=dt.UTC) - dt.timedelta(seconds=120)
+        row.save(update_fields=["lease_expires_at"])
+
+        won, current = LoopLease.objects.claim_ownership("loop-owner", session_id="fresh-session")
+        assert won is False, "HIJACK: a fresh session stole an alive owner's expired-TTL loop"
+        assert current == "owner-session"
+
+
 _HIJACK_MR_URL = "https://gitlab.com/owner/repo/-/merge_requests/77"
 _HIJACK_USER = "U0OWNER"
 _HIJACK_CHANNEL = "C0HIJACK"
