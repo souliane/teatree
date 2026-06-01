@@ -1,4 +1,5 @@
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from django.db import models, transaction
 from django.utils import timezone
@@ -8,6 +9,9 @@ from teatree.core.managers import TaskManager
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
+
+if TYPE_CHECKING:
+    from teatree.core.cost import AttemptUsage, CostBreakdown
 
 
 class Task(models.Model):
@@ -374,9 +378,46 @@ class Task(models.Model):
         self.heartbeat_at = None
 
 
-class TaskAttempt(models.Model):
-    objects = models.Manager()
+class TaskAttemptQuerySet(models.QuerySet):
+    def headless(self) -> "TaskAttemptQuerySet":
+        """Only the attempts that ran a billed ``claude -p`` subprocess.
 
+        SDK-equivalent billing covers headless usage only — interactive turns
+        run inside the user's own session, not against the credit.
+        """
+        return self.filter(execution_target=Task.ExecutionTarget.HEADLESS)
+
+    def usages(self) -> "list[AttemptUsage]":
+        """Map each attempt to the :class:`AttemptUsage` the cost layer reads."""
+        from teatree.core.cost import AttemptUsage  # noqa: PLC0415
+
+        return [
+            AttemptUsage(
+                model=row.model or None,
+                reported_cost_usd=row.cost_usd,
+                input_tokens=row.input_tokens or 0,
+                output_tokens=row.output_tokens or 0,
+                cache_read_tokens=row.cache_read_tokens or 0,
+                cache_write_tokens=row.cache_write_tokens or 0,
+            )
+            for row in self.only(
+                "model",
+                "cost_usd",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            )
+        ]
+
+    def cost_breakdown(self) -> "CostBreakdown":
+        """SDK-equivalent spend across the attempts in this queryset."""
+        from teatree.core.cost import CostBreakdown  # noqa: PLC0415
+
+        return CostBreakdown.from_usages(self.usages())
+
+
+class TaskAttempt(models.Model):
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -385,12 +426,17 @@ class TaskAttempt(models.Model):
     exit_code = models.IntegerField(null=True, blank=True)
     artifact_path = models.CharField(max_length=500, blank=True)
     result = models.JSONField(default=dict, blank=True)
+    model = models.CharField(max_length=128, blank=True)
     input_tokens = models.IntegerField(null=True, blank=True)
     output_tokens = models.IntegerField(null=True, blank=True)
+    cache_read_tokens = models.IntegerField(null=True, blank=True)
+    cache_write_tokens = models.IntegerField(null=True, blank=True)
     cost_usd = models.FloatField(null=True, blank=True)
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
+
+    objects = TaskAttemptQuerySet.as_manager()
 
     class Meta:
         db_table = "teatree_taskattempt"

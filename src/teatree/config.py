@@ -636,6 +636,13 @@ class UserSettings:
     # disable) wins over both the per-overlay override and the global
     # setting; resolution is env → per-overlay ``[overlays.<name>]`` →
     # global ``[teatree]`` → this dataclass default.
+    # SDK-equivalent cost reporting (``t3 cost``). Day-of-month the Agent-SDK
+    # monthly credit refreshes; the billing cycle ``t3 cost`` totals against
+    # starts on that day. ``0`` (default) means the refresh day is unknown, so
+    # the cycle is the calendar month. ``sdk_monthly_credit_usd`` is the credit
+    # the cycle-to-date spend is shown against ($200 = Max 20x).
+    billing_cycle_anchor_day: int = 0
+    sdk_monthly_credit_usd: float = 200.0
 
 
 @dataclass
@@ -755,6 +762,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
         issue_implementer_max_concurrent=int(teatree.get("issue_implementer_max_concurrent", 1)),
         issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
+        billing_cycle_anchor_day=int(teatree.get("billing_cycle_anchor_day", 0)),
+        sdk_monthly_credit_usd=float(teatree.get("sdk_monthly_credit_usd", 200.0)),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
