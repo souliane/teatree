@@ -190,11 +190,18 @@ class ValidationResult(TypedDict):
     warnings: list[str]
 
 
-# Default Conventional-Commits MR title pattern enforced at ``pr create``
-# (#1540). Lives here (no deps) so both :mod:`teatree.config` (the
-# ``mr_title_regex`` setting default) and :mod:`teatree.core.mr_metadata`
-# (the gate logic) reference one source without a layering violation.
-DEFAULT_MR_TITLE_REGEX = r"^(feat|fix|chore|docs|refactor|test|perf|build|ci)(\(.+\))?!?: .+"
+# Default MR title pattern enforced at ``pr create`` (#1540). Lives here (no
+# deps) so both :mod:`teatree.config` (the ``mr_title_regex`` setting default)
+# and :mod:`teatree.core.mr_metadata` (the gate logic) reference one source
+# without a layering violation. The type set is the union of Conventional
+# Commits (``feat|fix|chore|docs|refactor|test|perf|build|ci``) and the
+# release-notes types some overlays narrow to (``improvement|config|techdebt``),
+# so the same accurate label (``test``, ``techdebt`` …) passes whichever gate
+# fires — this core default, or an overlay's narrower ``mr_title_regex`` that
+# mirrors its own CI. An overlay still declares a stricter pattern when needed.
+DEFAULT_MR_TITLE_REGEX = (
+    r"^(feat|fix|improvement|config|techdebt|chore|docs|refactor|test|perf|build|ci)(\(.+\))?!?: .+"
+)
 
 
 @dataclass(frozen=True, slots=True)
