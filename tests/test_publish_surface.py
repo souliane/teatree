@@ -1011,6 +1011,63 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    # S5-S11: the shell-string ``-c`` hide is found wherever the shell token
+    # sits in the segment, not only when it is ``words[0]``. A wrapper word
+    # (``timeout``/``nice``/``xargs``/``env``/``command``), a path-form shell
+    # (``/bin/sh``, ``/usr/bin/env bash``), the ``find -exec sh -c ... \;``
+    # form, and a nested ``sh -c "sh -c 'gh ...'"`` all reach a gh/glab verb
+    # inside a quoted ``-c`` argument the count invariant cannot see. Scanning
+    # EVERY shell-basename token followed by a ``-c`` flag, then recursing into
+    # that flag's argument, fails closed on all of them.
+    _CorpusRow(
+        "S5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& timeout 5 sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S6",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& nice sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S7",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& /bin/sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S8",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& /usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S9",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'| xargs sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}" \\;',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 
@@ -1077,6 +1134,61 @@ class TestShellCStringHidesGhGlab:
 
     def test_prose_body_with_literal_gh_word_does_not_over_block(self) -> None:
         cmd = f'gh issue create --repo {_PRIV_SLUG} --body "run gh issue list later"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    @pytest.mark.parametrize(
+        "prefix",
+        ["timeout 5 ", "nice ", "command ", "env FOO=x ", "xargs "],
+    )
+    def test_wrapper_word_before_shell_fails_closed(self, prefix: str) -> None:
+        # The shell token is NOT ``words[0]`` -- a wrapper word precedes it.
+        # Scanning every shell-basename token (not only the first) catches it.
+        cmd = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok "
+            f'&& {prefix}sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
+        )
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    @pytest.mark.parametrize("shell_path", ["/bin/sh", "/usr/bin/zsh", "/opt/homebrew/bin/bash"])
+    def test_path_form_shell_fails_closed(self, shell_path: str) -> None:
+        # ``os.path.basename`` strips the path so ``/bin/sh`` matches ``sh``.
+        cmd = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok "
+            f'&& {shell_path} -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
+        )
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_env_path_then_shell_fails_closed(self) -> None:
+        # ``/usr/bin/env bash -c ...`` -- the basename of the path-form ``env``
+        # is not a shell, but the following ``bash`` token is.
+        cmd = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok "
+            f'&& /usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
+        )
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_find_exec_shell_c_fails_closed(self) -> None:
+        # ``find . -exec sh -c "..." \;`` -- the ``\;`` is a literal arg, so the
+        # whole ``find`` invocation stays one segment with ``sh`` mid-segment.
+        cmd = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok "
+            f'&& find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}" \\;'
+        )
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_nested_shell_c_fails_closed(self) -> None:
+        # ``sh -c "sh -c 'gh ...'"`` -- the inner gh verb is two ``-c`` levels
+        # deep; recursion into each ``-c`` argument fails closed.
+        cmd = (
+            f"gh issue create --repo {_PRIV_SLUG} --body ok "
+            f"&& sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\""
+        )
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_wrapper_word_before_shell_with_benign_inner_does_not_block(self) -> None:
+        # A wrapper-prefixed shell whose ``-c`` argument runs no gh/glab verb
+        # is not over-blocked.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && timeout 5 sh -c "date"'
         assert publish_surface._command_hides_gh_glab(cmd) is False
 
     def test_runtime_resolved_verbs_are_accepted_static_limits(self) -> None:

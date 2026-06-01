@@ -212,29 +212,68 @@ def _count_top_level_gh_glab_segments(command: str) -> int:
 
 
 def _shell_c_string_hides_gh_glab(words: list[str]) -> bool:
-    """Return True iff a shell ``-c`` command-string in ``words`` runs ``gh``/``glab``.
+    r"""Return True iff a shell ``-c`` command-string in ``words`` runs ``gh``/``glab``.
 
-    A ``sh``/``bash``/``zsh``/``dash``/``ksh``/``ash`` segment whose ``-c``-style
-    flag (any flag token containing ``c`` -- ``-c``, ``-lc``, ``-ic``, ...) is
-    followed by a command-string argument hands that STATIC substring to a child
-    shell. The argument is re-tokenized and any inner token that strips to
-    ``gh``/``glab`` (the same opener-strip used for the count invariant's T) means
-    a real gh/glab invocation is hidden behind the shell wrapper -> fail closed.
+    A shell token -- one whose ``Path(word).name`` basename is in ``_SHELL_WORDS``
+    (``sh``/``bash``/``zsh``/``dash``/``ksh``/``ash``, so path-forms ``/bin/sh``
+    and ``/usr/bin/env bash`` match) -- found ANYWHERE in the segment and followed
+    by a ``-c``-style flag (any flag token containing ``c`` -- ``-c``, ``-lc``,
+    ``-ic``, ``-cx``, ...) hands the next argument as a STATIC command-string to a
+    child shell. That argument is analysed by :func:`_child_shell_string_runs_gh_glab`,
+    which is itself recursive -- so a nested ``sh -c "sh -c 'gh ...'"`` fails closed
+    by recursion, and an inner ``gh``/``glab`` command-word means a real invocation
+    is hidden behind the shell wrapper.
 
-    Scoped STRICTLY to the argument immediately following the ``-c`` flag -- a
-    prose ``--body "... gh ..."`` token elsewhere in a posting segment is NOT
+    Scanning for the shell token ANYWHERE in the segment (not only at ``words[0]``)
+    subsumes wrapper words (``timeout``/``nice``/``xargs``/``env``/``command``) and
+    the ``find . -exec sh -c "..." \\;`` form (the ``\\;`` terminator lexes as a
+    literal argument, keeping the inner ``sh -c`` in the same segment) without
+    enumerating them.
+
+    Scoped STRICTLY to the argument immediately following a ``-c`` flag -- a prose
+    ``--body "... gh ..."`` token elsewhere in a posting segment is NOT
     re-tokenized, so an ordinary private post mentioning the word ``gh`` is not
     over-blocked.
     """
-    if not words or words[0] not in _SHELL_WORDS:
-        return False
-    for i, word in enumerate(words[1:-1], start=1):
-        if word.startswith("-") and "c" in word:
-            inner = tokenize(words[i + 1])
-            return any(
-                _strip_leading_openers(token.value) in _GH_GLAB_WORDS for token in inner if token.kind is TokenKind.WORD
-            )
+    for i, word in enumerate(words[:-1]):
+        if Path(word).name not in _SHELL_WORDS:
+            continue
+        for j in range(i + 1, len(words) - 1):
+            flag = words[j]
+            if flag.startswith("-") and "c" in flag:
+                if _child_shell_string_runs_gh_glab(words[j + 1]):
+                    return True
+                break
+            if not flag.startswith("-"):
+                break
     return False
+
+
+def _child_shell_string_runs_gh_glab(command_string: str) -> bool:
+    r"""Return True iff a child-shell ``-c`` ``command_string`` runs ``gh``/``glab``.
+
+    The string is the full command bash hands to a child shell, so EVERY
+    ``gh``/``glab`` command-word inside it targets an unverifiable surface (the
+    parent gate cannot resolve the child's ``--repo``) -- ANY such word is a
+    hidden invocation, not just a surplus one. So this fails closed when:
+
+    - any WORD token strips (:func:`_strip_leading_openers`) to ``gh``/``glab``;
+    - a substitution marker (``$(gh``/backtick ``gh``) appears in any token; or
+    - a nested shell ``-c`` command-string itself runs ``gh``/``glab`` -- via
+        :func:`_shell_c_string_hides_gh_glab` per re-tokenized segment -- so
+        ``sh -c "sh -c 'gh ...'"`` fails closed by recursion.
+
+    Unlike :func:`_command_hides_gh_glab`'s top-level ``T > R`` count invariant --
+    which subtracts the recognised top-level segments whose target the gate DID
+    verify -- inside an opaque child-shell string no target is verifiable, so the
+    threshold is ``T >= 1``, not ``T > R``.
+    """
+    tokens = [token for token in tokenize(command_string) if token.kind is TokenKind.WORD]
+    if any(marker in token.value for token in tokens for marker in _SUBST_MARKERS):
+        return True
+    if any(_strip_leading_openers(token.value) in _GH_GLAB_WORDS for token in tokens):
+        return True
+    return any(_shell_c_string_hides_gh_glab(words) for words in _command_segments(command_string))
 
 
 def _command_hides_gh_glab(command: str) -> bool:
