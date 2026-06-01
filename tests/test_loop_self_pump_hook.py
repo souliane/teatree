@@ -87,6 +87,25 @@ class TestLoopSelfPump:
         # Short-circuits the handler chain (a decision was emitted).
         assert result is True
 
+    def test_pump_directive_tags_tick_with_owner_session_id(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The self-pump tick command carries the owner session id (#1073 follow-up).
+
+        The owner's tick must claim under its real session id (and record
+        its pid) instead of resolving to ``""`` in a Bash subprocess
+        (#1107). Prefixing the emitted ``t3 loop tick`` with
+        ``T3_LOOP_SESSION_ID=<session>`` guarantees the re-claim heartbeat
+        keeps the lease anchored to the owner.
+        """
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        handle_loop_self_pump({"session_id": "owner-1"})
+
+        reason = _decision(capsys)["reason"]
+        assert "T3_LOOP_SESSION_ID=owner-1 t3 loop tick" in reason
+
     def test_owner_with_no_pending_work_does_not_block(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
