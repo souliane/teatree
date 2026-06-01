@@ -166,6 +166,24 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
+#### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
+
+What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch in `~/.teatree.toml` (`src/teatree/config.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
+
+**Autonomous tiers (`autonomy = "full"` or `"notify"`, which collapse `on_behalf_post_mode → immediate`):** once an independent cold-review verdict exists, act directly — no draft-default, no "say the word", no per-MR ask:
+
+- **Merge-safe verdict** → post the terse verdict / nits live (`t3 review post-comment --live`) **and** `t3 review approve`.
+- **Nits only** → post them directly (`t3 review post-comment --live`); approve per the merge-safe rule above.
+- **A blocking finding** → post it (`t3 review post-comment --live`); do **not** approve.
+
+`notify` additionally DMs the user after each on-behalf post (derived `notify_on_behalf`); `full` posts without the after-the-fact DM. The autonomy collapse relaxes exactly the three gates in `_AUTONOMY_COLLAPSED_GATE_VALUES` (`on_behalf_post_mode → immediate`, `require_human_approval_to_merge → False`, `require_human_approval_to_answer → False`), so the on-behalf pre-gate no longer refuses unattended.
+
+**Live posts still need a token, even under `full`.** The `--live` colleague-visible publish is gated by the #1207 single-use `LivePostApproval` token (`teatree.core.live_post_gate.require_live_post_approval`), which `check_live_post` enforces **orthogonally to `on_behalf_post_mode` and to `autonomy`** — it is *not* in the collapsed-gate set, so `post-comment --live` is refused with no token regardless of tier. Under an autonomous tier, mint the token in the same one step that records the on-behalf authorization — `t3 review authorize <repo>!<mr> --approver <user-id>` (#126) — then post live; or post the verdict as a **draft note** (`t3 review post-comment`, the default), which needs no token. Either path keeps the autonomous "act on the verdict, don't ask the user per-MR" posture; the token is a single-use idempotency/audit seal on the outward publish, not a per-MR user decision.
+
+**Babysit tier (`autonomy = "babysit"`, the conservative default):** keep the draft-and-ask flow — drafts publish autonomously, every live post / approval waits for the user (Step 3 below; `t3 review authorize`). This is the right setting for client / shared-team overlays.
+
+**The quality floor is identical under every tier and is never relaxed by this knob:** the verdict must come from an *independent* cold reviewer (maker ≠ checker — never self-approve your own MR), findings are verified against ground truth before posting (a Blocker you cannot falsify is posted as a question, not a Blocker), `t3 review approve` keeps its review-first precondition (no approval without a prior reviewing footprint), and CI must be green. The knob decides *whether to ask the user*, never *whether the work is correct*.
+
 **Step -1 — Own PR vs External PR:**
 
 When the PR under review belongs to the **user themselves**, do NOT post review comments. Instead, **implement the fixes directly** on the branch — commit and push. Present findings to the user as a summary of what you fixed, not as review comments to post. The user is asking you to take over and improve their code, not to leave notes for themselves.
@@ -343,9 +361,11 @@ A `// TODO`, `# TODO`, `/* TODO */`, `// FIXME`, `# FIXME`, `// XXX`, `# XXX`, `
 
 Failure mode this prevents: re-asking a colleague to do work they have explicitly deferred makes the reviewer (and the user, whose identity posts on-behalf) look unable to read code.
 
-**Step 3 — Post Draft Review Comments:**
+**Step 3 — Post Draft Review Comments (babysit tier):**
 
-**Always use draft notes** (or the platform's equivalent "pending review" feature), not direct/immediate comments. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit all comments as a batch.
+This step is the **`autonomy = "babysit"`** flow (the conservative default). Under an autonomous tier (`full` / `notify`), follow "Colleague-MR Autonomy — Act on the Verdict, Don't Ask" above instead: post the verdict / nits live and approve per the merge-safe rule, no draft-and-ask round-trip.
+
+**Under babysit, always use draft notes** (or the platform's equivalent "pending review" feature), not direct/immediate comments. Draft notes are only visible to the reviewer until explicitly submitted — this lets the user review, edit, and submit all comments as a batch.
 
 **Pre-flight: read existing comments (Non-Negotiable).** Before posting any new comments, fetch all existing discussions and notes on the PR (from all authors, not just the current user):
 
@@ -438,7 +458,7 @@ t3 review unapprove <REPO> <MR_IID>    # revoke your approval
 
 **Review-first precondition (enforced, not advisory).** `approve` refuses unless a review note/discussion authored by *your* identity already exists on that MR. This encodes the approve-on-review doctrine in the tool itself: you cannot record an approval without having left a reviewing footprint first. If it refuses, post your review (`t3 review post-comment` — default draft, #1207) and then approve. `unapprove` has no precondition — revoking is the safe direction and is always reachable.
 
-**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960): under `"ask"` or `"draft_or_ask"` (the default) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or widen the mode to `"immediate"` per-overlay.
+**On-behalf gate.** An approval is an outward, state-changing post under your identity, so `approve`/`unapprove` also respect the `on_behalf_post_mode` pre-gate (souliane/teatree#960). Under an autonomous overlay (`autonomy = "full"` / `"notify"`, which collapse the mode to `"immediate"`) the approval proceeds unattended — that is the "Colleague-MR Autonomy" behavior above, no further step. Under `"babysit"` (mode stays `"ask"` / `"draft_or_ask"`) the command refuses unattended with an actionable message — record an `OnBehalfApproval` via `t3 review approve-on-behalf <target> approve --approver <user-id>` and re-run, or set `autonomy = "full"` / `"notify"` (preferred — one knob) for the overlay.
 
 ### Concluding a no-postable-action external review — `mark_review_no_action` (Mandatory, #1077)
 

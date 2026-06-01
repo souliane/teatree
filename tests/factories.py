@@ -9,7 +9,7 @@ merge-time gate refuses it independently of the issue-time gate.
 import factory
 from factory.django import DjangoModelFactory
 
-from teatree.core.models import ImplementedIssueMarker, MergeClear, Ticket
+from teatree.core.models import ImplementedIssueMarker, MergeClear, ReviewVerdict, Ticket
 
 _FORTY_HEX = "c" * 40
 
@@ -39,6 +39,27 @@ class MergeClearFactory(DjangoModelFactory[MergeClear]):
         failed = factory.Trait(gh_verify_result=MergeClear.VerifyResult.FAILED)
         substrate = factory.Trait(blast_class=MergeClear.BlastClass.SUBSTRATE)
         docs = factory.Trait(blast_class=MergeClear.BlastClass.DOCS)
+
+
+class ReviewVerdictFactory(DjangoModelFactory[ReviewVerdict]):
+    class Meta:
+        model = ReviewVerdict
+
+    ticket = factory.SubFactory(TicketFactory)
+    pr_id = factory.Sequence(lambda n: 900 + n)
+    slug = "souliane/teatree"
+    reviewed_sha = _FORTY_HEX
+    verdict = ReviewVerdict.Verdict.MERGE_SAFE
+    reviewer_identity = "cold-reviewer"
+    blast_class = MergeClear.BlastClass.LOGIC
+    gh_verify_result = MergeClear.VerifyResult.GREEN
+    findings = factory.LazyFunction(list)
+
+    class Params:
+        hold = factory.Trait(
+            verdict=ReviewVerdict.Verdict.HOLD,
+            gh_verify_result=MergeClear.VerifyResult.FAILED,
+        )
 
 
 class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):

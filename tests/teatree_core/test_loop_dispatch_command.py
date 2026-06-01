@@ -74,6 +74,20 @@ class TestPendingSpawn(_LoopDispatchTest):
         call_command("loop_dispatch", "pending-spawn", stdout=stdout)
         assert "No pending spawn requests." in stdout.getvalue()
 
+    def test_payload_carries_model_and_skill_bundle(self) -> None:
+        # The model tier + skill bundle are resolved in LOOP scope and threaded
+        # into the dispatch payload so the in-session /loop slot passes them to
+        # its Agent (not inside a claude -p subprocess).
+        self._reviewer_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+
+        entry = json.loads(stdout.getvalue())[0]
+        assert "model" in entry
+        # reviewing is a mechanical phase → sonnet tier by default.
+        assert entry["model"] == "sonnet"
+        assert isinstance(entry["skill_bundle"], list)
+
 
 class TestClaimNextAtomicDispatch(_LoopDispatchTest):
     """#786 N4 keystone: claim-then-spawn so two ticks never double-dispatch one Task.

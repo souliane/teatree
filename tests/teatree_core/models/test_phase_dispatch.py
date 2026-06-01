@@ -31,7 +31,10 @@ class TestPhaseAutoDispatch(TestCase):
 
         ticket.refresh_from_db()
         task = ticket.tasks.get(phase="coding")
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        # Coding is loop-dispatched ((author, coding) → t3:coder), so it runs
+        # as an in-session sub-agent (subscription-covered), not a metered
+        # detached claude -p.
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "coding"
         assert ticket.state == Ticket.State.STARTED
 
@@ -45,7 +48,8 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.save()
 
         task = ticket.tasks.get(phase="testing")
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        # Testing is loop-dispatched ((author, testing) → t3:tester) → in-session.
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "testing"
         assert ticket.state == Ticket.State.CODED
 
@@ -117,26 +121,29 @@ class TestPhaseAutoDispatch(TestCase):
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "user approval" in task.execution_reason
 
-    def test_shipping_is_headless_when_t3_auto_ship_true(self) -> None:
+    def test_shipping_is_interactive_with_auto_reason_when_t3_auto_ship_true(self) -> None:
+        # Shipping is loop-dispatched, so it always runs as an in-session
+        # sub-agent (subscription-covered). Auto mode no longer flips the
+        # target to headless — it only changes the approval posture, carried
+        # on the reason ("auto mode" = push without waiting for approval).
         ticket = Ticket.objects.create()
 
         with patch.dict("os.environ", {"T3_AUTO_SHIP": "true", "T3_MODE": "interactive"}):
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "auto mode" in task.execution_reason
 
-    def test_shipping_is_headless_when_global_mode_is_auto(self) -> None:
-        # When teatree.mode = auto in ~/.teatree.toml (or T3_MODE=auto), the
-        # ship task should run headlessly even without T3_AUTO_SHIP — the
-        # global auto mode is the user's blanket consent for publishing.
+    def test_shipping_is_interactive_with_auto_reason_when_global_mode_is_auto(self) -> None:
+        # teatree.mode = auto (or T3_MODE=auto) is blanket publish consent, but
+        # the ship still runs in-session — only the reason reflects auto mode.
         ticket = Ticket.objects.create()
 
         with patch.dict("os.environ", {"T3_MODE": "auto"}, clear=False) as env:
             env.pop("T3_AUTO_SHIP", None)
             task = ticket.schedule_shipping()
 
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "auto mode" in task.execution_reason
 
     def test_shipping_task_completion_advances_to_shipped(self) -> None:

@@ -1129,11 +1129,15 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list               List discovered eval scenarios.                           │
-│ run                Run one scenario by name, or all scenarios when no name   │
-│                    is given.                                                 │
-│ transcript-replay  Replay a real session transcript against teatree          │
-│                    behavioural invariants.                                   │
+│ list                  List discovered eval scenarios.                        │
+│ run                   Run one scenario by name, or all scenarios when no     │
+│                       name is given.                                         │
+│ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
+│                       eval run.                                              │
+│ history               Show recent eval runs and per-scenario pass-rate over  │
+│                       time.                                                  │
+│ transcript-replay     Replay a real session transcript against teatree       │
+│                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1156,14 +1160,92 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  Run one scenario by name, or all scenarios when no name is given.
 
+ Each run is recorded into the run-history ledger (``t3 eval history``)
+ unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
+ as the baseline for its model — the reference the later model-regression
+ diff compares a candidate against.
+
+ ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the
+ CI job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+ transcripts produced on the subscription via an in-session sub-agent (run
+ ``t3 eval prepare-subscription`` first for the prompts + expected paths).
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format           TEXT     Report format: text or json. [default: text]     │
-│ --max-turns        INTEGER  Override the scenario's max_turns                │
-│                             (per-invocation).                                │
-│ --help                      Show this message and exit.                      │
+│ --format                            TEXT     Report format: text or json.    │
+│                                              [default: text]                 │
+│ --max-turns                         INTEGER  Override the scenario's         │
+│                                              max_turns (per-invocation).     │
+│ --persist           --no-persist             Persist this run into the       │
+│                                              run-history ledger.             │
+│                                              [default: persist]              │
+│ --baseline                                   Mark the persisted run as the   │
+│                                              baseline for its model.         │
+│ --backend                           TEXT     Execution backend: 'sdk'        │
+│                                              (metered claude -p, reserved    │
+│                                              for CI with ANTHROPIC_API_KEY)  │
+│                                              or 'subscription' (grade        │
+│                                              subscription-produced           │
+│                                              transcripts; see `t3 eval       │
+│                                              prepare-subscription`).         │
+│                                              [default: sdk]                  │
+│ --transcript-dir                    PATH     Directory of <scenario>.jsonl   │
+│                                              transcripts for the             │
+│                                              'subscription' backend          │
+│                                              (default: cwd).                 │
+│ --help                                       Show this message and exit.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval prepare-subscription`
+
+```
+Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
+
+ Emit the per-scenario prompts for a LOCAL subscription eval run.
+
+ The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+ cannot itself drive a subscription-covered turn. This command prints, per
+ scenario, the agent definition, prompt, and the transcript path the
+ ``subscription`` backend will read — so an operator (or an in-session
+ ``/loop`` driver) runs each prompt via an in-session sub-agent with
+ ``--output-format stream-json``, saves it to that path, then grades with
+ ``t3 eval run --backend subscription``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH  Where the operator will save each              │
+│                               <scenario>.jsonl transcript (default: cwd).    │
+│ --format                TEXT  Manifest format: text or json. [default: text] │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ Show recent eval runs and per-scenario pass-rate over time.
+
+ The data substrate the later model-regression diff reads. ``--baseline``
+ shows the current reference run per model; ``--mark-baseline <id>`` promotes
+ a run to baseline (demoting the prior baseline for that model).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2504,6 +2586,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
+│ review        Persist + look up cold-review verdicts per MR.                 │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
@@ -3813,7 +3896,8 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ complete              Mark a claimed task COMPLETED for work finished        │
 │                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
-│ list                  List tasks with optional filters.                      │
+│ list                  List tasks with optional filters; --session scopes to  │
+│                       the current Claude session's todos.                    │
 │ start                 Claim and run the next interactive task in the current │
 │                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
@@ -3913,9 +3997,13 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 Usage: t3 teatree tasks list [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --status                  TEXT  Filter by status                             │
-│ --execution-target        TEXT  Filter by execution target                   │
-│ --help                          Show this message and exit.                  │
+│ --status                              TEXT  Filter by status                 │
+│ --execution-target                    TEXT  Filter by execution target       │
+│ --session             --no-session          Scope to the current Claude      │
+│                                             session and group pending /      │
+│                                             claimed / done.                  │
+│                                             [default: no-session]            │
+│ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4661,6 +4749,83 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree review`
+
+```
+Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
+
+ Persist + look up cold-review verdicts per MR.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record  Persist a cold-review verdict for a PR at an exact reviewed SHA.     │
+│ status  Report whether an MR is safe to approve at its current head          │
+│         (read-only).                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review record`
+
+```
+Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
+
+ Persist a cold-review verdict for a PR at an exact reviewed SHA.
+
+ The durable sibling of ``ticket clear``: where a CLEAR authorises one
+ merge, this records the *judgment* so ``review status`` can answer
+ "safe to approve at the current head?" without a fresh cold review.
+ Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
+ verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
+│                                     reviewed tree.                           │
+│ --verdict                  TEXT     merge_safe / hold. [default: merge_safe] │
+│ --reviewer-identity        TEXT     Identity of the reviewer who reached     │
+│                                     this verdict.                            │
+│ --gh-verify-result         TEXT     Checks snapshot at review time: green /  │
+│                                     pending / failed.                        │
+│                                     [default: green]                         │
+│ --blast-class              TEXT     Reviewer judgment: substrate / logic /   │
+│                                     docs.                                    │
+│                                     [default: logic]                         │
+│ --findings-json            TEXT     JSON array of                            │
+│                                     {"severity","summary","file","line"}     │
+│                                     findings.                                │
+│ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
+│                                     is for.                                  │
+│                                     [default: 0]                             │
+│ --help                              Show this message and exit.              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review status`
+
+```
+Usage: t3 teatree review status [OPTIONS] MR_URL
+
+ Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
+
+ Parses the PR/MR URL, fetches the live head SHA, looks up the latest
+ recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+ (head moved — re-review needed), or ``no recorded verdict``. The point
+ is to avoid re-deriving a full cold review when a fresh verdict already
+ vouches for the current tree.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

@@ -29,6 +29,12 @@ class ScenarioResult:
             return False
         return all(m.passed for m in self.matcher_results)
 
+    @property
+    def verdict(self) -> str:
+        if self.skipped:
+            return "skip"
+        return "pass" if self.passed else "fail"
+
 
 def evaluate(spec: EvalSpec, run: EvalRun) -> ScenarioResult:
     skipped = run.terminal_reason.startswith("skipped:")

@@ -106,6 +106,19 @@ class TestEvaluate:
         spec = _spec(matchers=(_ANY_OF,))
         assert evaluate(spec, _run(tool_calls=())).passed is False
 
+
+class TestVerdict:
+    def test_skip_maps_to_skip(self) -> None:
+        result = evaluate(_spec(), _run(terminal_reason="skipped: claude not on PATH"))
+        assert result.verdict == "skip"
+
+    def test_pass_maps_to_pass(self) -> None:
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "git worktree add x"}, turn=1),))
+        assert evaluate(_spec(), run).verdict == "pass"
+
+    def test_fail_maps_to_fail(self) -> None:
+        assert evaluate(_spec(), _run(tool_calls=())).verdict == "fail"
+
     def test_canonicalizes_lowercase_bash_to_capitalized(self) -> None:
         # Loader emits lowercase `bash` from YAML; report should match against
         # the canonical `Bash` tool name in the captured calls.

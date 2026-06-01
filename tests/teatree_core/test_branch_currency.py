@@ -23,10 +23,12 @@ import pytest
 from teatree.core import branch_currency as branch_currency_module
 from teatree.core.branch_currency import (
     BranchStaleness,
+    MergeConflict,
     MergeOutcome,
     auto_merge_target,
     branch_behind_target,
     require_current_branch,
+    sha_conflicts_with_target,
 )
 
 
@@ -237,6 +239,66 @@ class TestRequireCurrentBranch:
         assert _git(clone, "rev-parse", "HEAD") == pre_sha
         # The result reports the staleness, no auto_merged side effect.
         assert result["auto_merged"] is False
+
+
+class TestShaConflictsWithTarget:
+    """Conflict-only CLEAR gate: behind alone is fine; only conflicts block."""
+
+    def test_returns_none_when_already_current(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
+        # No remote advance — nothing behind, nothing to conflict.
+        assert sha_conflicts_with_target(str(clone), "feat/x") is None
+
+    def test_returns_none_when_behind_but_mergeable(self, tmp_path: Path) -> None:
+        """The core requirement: a behind-but-conflict-free SHA is NOT blocked."""
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_feature_branch(clone, "feat/x", "b.txt", "feature\n")
+        # Target advances with a non-overlapping file — clean merge.
+        _advance_remote(tmp_path, bare, filename="c.txt", content="remote-add\n")
+        feature_sha = _git(clone, "rev-parse", "feat/x")
+
+        # Confirm it really is behind (the old gate would have blocked here).
+        assert branch_behind_target(str(clone), "feat/x") is not None
+        # The conflict-only gate lets it through.
+        assert sha_conflicts_with_target(str(clone), feature_sha) is None
+
+    def test_returns_conflict_when_behind_and_overlapping(self, tmp_path: Path) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_overlap_branch(clone, "feat/x")
+        _advance_remote_overlap(tmp_path, bare)
+        feature_sha = _git(clone, "rev-parse", "feat/x")
+
+        result = sha_conflicts_with_target(str(clone), feature_sha)
+
+        assert isinstance(result, MergeConflict)
+        assert result.behind_count == 1
+        assert "a.txt" in result.conflicting_paths
+
+    def test_does_not_mutate_worktree(self, tmp_path: Path) -> None:
+        """merge-tree prediction never touches HEAD or the working tree."""
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_overlap_branch(clone, "feat/x")
+        _advance_remote_overlap(tmp_path, bare)
+        pre_sha = _git(clone, "rev-parse", "HEAD")
+
+        sha_conflicts_with_target(str(clone), "feat/x")
+
+        assert _git(clone, "rev-parse", "HEAD") == pre_sha
+        assert _git(clone, "status", "--porcelain") == ""
+
+    def test_fetch_failure_is_inconclusive_skip(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _make_overlap_branch(clone, "feat/x")
+        _advance_remote_overlap(tmp_path, bare)
+        monkeypatch.setattr(branch_currency_module, "_fetch_target", lambda repo, target: False)
+
+        assert sha_conflicts_with_target(str(clone), "feat/x") is None
 
 
 class TestFetchFailureSurface:

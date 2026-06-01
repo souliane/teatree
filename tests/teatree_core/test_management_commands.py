@@ -229,6 +229,110 @@ class TestTaskCommands(TestCase):
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
 
 
+class TestTasksListSession(TestCase):
+    """``t3 <overlay> tasks list --session`` scopes to the current Claude session."""
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_scopes_rows_to_the_active_claude_session(self) -> None:
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            mine = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            other = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-xyz")
+            my_task = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+            Task.objects.create(ticket=ticket, session=other, phase="coding")
+
+            rows = cast("list[dict]", call_command("tasks", "list", "--session"))
+
+        assert [row["task_id"] for row in rows] == [my_task.pk]
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_anonymous_session_lists_nothing(self) -> None:
+        with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": "", "XDG_DATA_HOME": ""}):
+            ticket = Ticket.objects.create(overlay="test")
+            session = Session.objects.create(ticket=ticket, overlay="test", agent_id="claude-abc")
+            Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+            rows = cast("list[dict]", call_command("tasks", "list", "--session"))
+
+        assert rows == []
+
+
+class TestSessionTodoRendering(TestCase):
+    """The session-scoped renderer groups task rows + harness todos."""
+
+    @staticmethod
+    def _row(
+        task_id: int, *, status: str, ticket_id: int = 1, phase: str = "coding", reason: str = "do it"
+    ) -> tasks_cmd.TaskRow:
+        return tasks_cmd.TaskRow(
+            task_id=task_id,
+            ticket_id=ticket_id,
+            status=status,
+            execution_target="headless",
+            phase=phase,
+            execution_reason=reason,
+            claimed_by="",
+        )
+
+    def test_groups_tasks_and_merges_harness_todos(self) -> None:
+        out = io.StringIO()
+        rows = [
+            self._row(1, status="pending", reason="write the gate"),
+            self._row(2, status="claimed", reason="run the suite"),
+            self._row(3, status="completed", reason="read the model"),
+        ]
+        tasks_cmd._render_session_todos(
+            rows,
+            harness_todos=[("pending", "draft the helper"), ("completed", "open the PR")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "pending" in printed
+        assert "in_progress" in printed
+        assert "completed" in printed
+        assert "write the gate" in printed
+        assert "run the suite" in printed
+        assert "draft the helper" in printed
+        assert "open the PR" in printed
+
+    def test_no_active_session_is_explicit(self) -> None:
+        out = io.StringIO()
+        tasks_cmd._render_session_todos([], harness_todos=[], session_id="", stream=out)
+        assert "No active Claude session" in out.getvalue()
+
+    def test_empty_session_says_no_todos(self) -> None:
+        out = io.StringIO()
+        tasks_cmd._render_session_todos([], harness_todos=[], session_id="claude-abc", stream=out)
+        assert "No todos for this session" in out.getvalue()
+
+
+class TestReadHarnessTodos(TestCase):
+    """The harness ``TodoWrite`` state file is parsed into ``(status, text)``."""
+
+    def test_parses_status_lines(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as state_dir,
+            override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
+        ):
+            (Path(state_dir) / "claude-abc.todos").write_text(
+                "- [pending] draft the helper\n- [in_progress] wire the CLI\n",
+                encoding="utf-8",
+            )
+            todos = tasks_cmd._read_harness_todos("claude-abc")
+        assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
+
+    def test_missing_file_is_empty(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as state_dir,
+            override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
+        ):
+            assert tasks_cmd._read_harness_todos("claude-abc") == []
+
+    def test_empty_session_id_is_empty(self) -> None:
+        assert tasks_cmd._read_harness_todos("") == []
+
+
 class DbOverlay(CommandOverlay):
     """CommandOverlay with a DB import strategy that always fails."""
 
@@ -535,19 +639,33 @@ class TestTicketCommand(TestCase):
 class TestTasksCreateCommand(TestCase):
     """Tests for the tasks create subcommand — phase handoff used by /t3:next."""
 
-    def test_create_headless_defaults(self) -> None:
+    def test_create_headless_defaults_for_free_form_phase(self) -> None:
+        # ``scoping`` has no registered author phase agent, so it is genuinely
+        # headless and the default sticks. (A loop-dispatched phase like
+        # ``coding`` is routed to INTERACTIVE by the Task.save invariant — see
+        # test_create_loop_dispatched_phase_is_interactive.)
+        ticket = Ticket.objects.create(overlay="test")
+        result = cast(
+            "dict[str, object]",
+            call_command("tasks", "create", ticket.pk, phase="scoping", reason="Decide X."),
+        )
+        assert result["phase"] == "scoping"
+        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
+        task = Task.objects.get(pk=result["task_id"])
+        assert task.ticket_id == ticket.pk
+        assert task.execution_reason == "Decide X."
+        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.session.ticket_id == ticket.pk
+
+    def test_create_loop_dispatched_phase_is_interactive(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
         result = cast(
             "dict[str, object]",
             call_command("tasks", "create", ticket.pk, phase="coding", reason="Implement X."),
         )
-        assert result["phase"] == "coding"
-        assert result["execution_target"] == Task.ExecutionTarget.HEADLESS
+        assert result["execution_target"] == Task.ExecutionTarget.INTERACTIVE
         task = Task.objects.get(pk=result["task_id"])
-        assert task.ticket_id == ticket.pk
-        assert task.execution_reason == "Implement X."
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
-        assert task.session.ticket_id == ticket.pk
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
 
     def test_create_reuses_latest_session(self) -> None:
         ticket = Ticket.objects.create(overlay="test")
@@ -857,7 +975,7 @@ class TestTasksListCommand(TestCase):
         buf = StringIO()
         _render_tasks_table(rows, stream=buf)
         out = buf.getvalue()
-        assert "Tasks (1)" in out
+        assert "teatree tasks (1)" in out
         assert "ID" in out
         assert "Ticket" in out
         assert "Phase" in out
