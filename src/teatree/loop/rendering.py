@@ -37,7 +37,12 @@ __all__ = [
 ]
 
 
-def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) -> StatuslineZones:
+def zones_for(
+    actions: list[DispatchAction],
+    *,
+    colorize: bool | None = None,
+    identity_aliases: tuple[tuple[str, ...], ...] = (),
+) -> StatuslineZones:
     """Build statusline zones from dispatched actions.
 
     *colorize* threads the OSC 8 vs. plain ``text <url>`` decision into the
@@ -45,6 +50,10 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     (#721). ``None`` resolves from the environment via
     :func:`~teatree.loop.statusline.colorize_enabled`, matching
     :func:`~teatree.loop.statusline.render`'s own default.
+
+    *identity_aliases* groups one human's forge handles; a reassignment
+    between handles of the same human is suppressed and every handle
+    collapses to its group's canonical name.
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
@@ -54,7 +63,7 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     _populate_live_loops_anchor(zones)
     _populate_availability_anchor(zones)
     _populate_overlays_anchor(zones)
-    c = _classify_actions(actions)
+    c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
     _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
