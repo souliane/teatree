@@ -141,6 +141,21 @@ class UnmigratedSelfDbTest(TransactionTestCase):
         assert result["merged"] is False
         assert "unapplied migration" in str(result["error"])
 
+    def test_review_record_command_fails_closed_with_remediation(self) -> None:
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "review",
+                "record",
+                866,
+                "souliane/teatree",
+                reviewed_sha="29f0a77a4fd03bd281b23e53cfc47ea9a928620b",
+                reviewer_identity="coldrev-866",
+            ),
+        )
+        assert result["recorded"] is False
+        assert "unapplied migration" in str(result["error"])
+
     def test_doctor_surface_fails_and_names_pending_migrations(self) -> None:
         buffer = io.StringIO()
         with redirect_stdout(buffer):

@@ -2503,6 +2503,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
+│ review        Persist + look up cold-review verdicts per MR.                 │
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
@@ -4607,6 +4608,83 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree review`
+
+```
+Usage: t3 teatree review [OPTIONS] COMMAND [ARGS]...
+
+ Persist + look up cold-review verdicts per MR.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ record  Persist a cold-review verdict for a PR at an exact reviewed SHA.     │
+│ status  Report whether an MR is safe to approve at its current head          │
+│         (read-only).                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review record`
+
+```
+Usage: t3 teatree review record [OPTIONS] PR_ID SLUG
+
+ Persist a cold-review verdict for a PR at an exact reviewed SHA.
+
+ The durable sibling of ``ticket clear``: where a CLEAR authorises one
+ merge, this records the *judgment* so ``review status`` can answer
+ "safe to approve at the current head?" without a fresh cold review.
+ Refuses the same way ``MergeClear.issue`` does (full-SHA bind, known
+ verdict/blast/verify, non-empty reviewer, no merge_safe-on-red-checks).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    pr_id      INTEGER  [required]                                          │
+│ *    slug       TEXT     [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --reviewed-sha             TEXT     Full 40-char hex commit id of the        │
+│                                     reviewed tree.                           │
+│ --verdict                  TEXT     merge_safe / hold. [default: merge_safe] │
+│ --reviewer-identity        TEXT     Identity of the reviewer who reached     │
+│                                     this verdict.                            │
+│ --gh-verify-result         TEXT     Checks snapshot at review time: green /  │
+│                                     pending / failed.                        │
+│                                     [default: green]                         │
+│ --blast-class              TEXT     Reviewer judgment: substrate / logic /   │
+│                                     docs.                                    │
+│                                     [default: logic]                         │
+│ --findings-json            TEXT     JSON array of                            │
+│                                     {"severity","summary","file","line"}     │
+│                                     findings.                                │
+│ --ticket-id                INTEGER  Optional teatree Ticket id this verdict  │
+│                                     is for.                                  │
+│                                     [default: 0]                             │
+│ --help                              Show this message and exit.              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree review status`
+
+```
+Usage: t3 teatree review status [OPTIONS] MR_URL
+
+ Report whether *mr_url* is safe to approve at its CURRENT head (read-only).
+
+ Parses the PR/MR URL, fetches the live head SHA, looks up the latest
+ recorded verdict, and prints one of: ``safe-to-approve``, ``stale``
+ (head moved — re-review needed), or ``no recorded verdict``. The point
+ is to avoid re-deriving a full cold review when a fresh verdict already
+ vouches for the current tree.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    mr_url      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

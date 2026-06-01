@@ -29,6 +29,7 @@ from teatree.core.models.reply_dispatch import ReplyDispatch
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_request_post import ReviewRequestPost
+from teatree.core.models.review_verdict import Finding, ReviewVerdict, ReviewVerdictError, Severity
 from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedBroadcast
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
@@ -58,6 +59,7 @@ __all__ = [
     "DeferredQuestionAudit",
     "DeferredQuestionError",
     "DirtyWorktreeError",
+    "Finding",
     "ImplementedIssueMarker",
     "IncomingEvent",
     "IntentClassification",
@@ -86,11 +88,14 @@ __all__ = [
     "ReviewAssignment",
     "ReviewIntent",
     "ReviewRequestPost",
+    "ReviewVerdict",
+    "ReviewVerdictError",
     "ScannedBroadcast",
     "ScannedFailedE2E",
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
+    "Severity",
     "Task",
     "TaskAttempt",
     "Ticket",
