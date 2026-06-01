@@ -142,6 +142,60 @@ class TestIsGitCommitCommand:
         # Only the FIRST segment is the command under classification.
         assert publish_surface.is_git_commit_command('echo hi && git commit -m "x"') is False
 
+    def test_git_dash_c_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git -C /some/worktree commit -m "x"') is True
+
+    def test_git_git_dir_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --git-dir=/x/.git commit -m "x"') is True
+
+    def test_git_work_tree_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --work-tree=/x commit -m "x"') is True
+
+    def test_git_dash_c_separate_value_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --git-dir /x/.git commit -m "x"') is True
+
+    def test_env_prefix_and_global_flags_combined_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('FOO=1 git -C /some/worktree commit -m "x"') is True
+
+    def test_git_dash_c_status_is_not_a_commit(self) -> None:
+        assert publish_surface.is_git_commit_command("git -C /some/worktree status") is False
+
+
+class TestEffectiveWorktree:
+    """``effective_worktree`` extracts the git command's own target dir.
+
+    A sub-agent's ``git -C <worktree> commit`` runs from an ambient hook
+    ``cwd`` that has reset to ``~/workspace`` -- the worktree the commit
+    actually targets lives in the command's ``-C``/``--work-tree``/
+    ``--git-dir`` flags, which mirror gh/glab's ``--repo`` LAST-WINS shape.
+    """
+
+    def test_dash_c_separate_value(self) -> None:
+        assert publish_surface.effective_worktree("git -C /some/worktree commit -m x") == "/some/worktree"
+
+    def test_work_tree_separate_value(self) -> None:
+        assert publish_surface.effective_worktree("git --work-tree /some/worktree commit -m x") == "/some/worktree"
+
+    def test_work_tree_equals_form(self) -> None:
+        assert publish_surface.effective_worktree("git --work-tree=/some/worktree commit -m x") == "/some/worktree"
+
+    def test_git_dir_separate_value(self) -> None:
+        assert publish_surface.effective_worktree("git --git-dir /x/.git commit -m x") == "/x/.git"
+
+    def test_git_dir_equals_form(self) -> None:
+        assert publish_surface.effective_worktree("git --git-dir=/x/.git commit -m x") == "/x/.git"
+
+    def test_absent_returns_none(self) -> None:
+        assert publish_surface.effective_worktree('git commit -m "x"') is None
+
+    def test_repeated_dash_c_last_wins(self) -> None:
+        assert publish_surface.effective_worktree("git -C /first -C /second commit -m x") == "/second"
+
+    def test_work_tree_wins_over_earlier_dash_c(self) -> None:
+        # Any of the worktree-selecting flags is read LAST-WINS regardless
+        # of which flag form carried the final value.
+        assert publish_surface.effective_worktree("git -C /first --work-tree /second commit -m x") == "/second"
+
 
 class TestIsGhGlabPostingCommand:
     def test_gh_pr_create_is_eligible(self) -> None:
@@ -717,4 +771,112 @@ class TestCarveOutApplies:
                 config_path=cfg,
             )
             is True
+        )
+
+    # The over-block this fix targets: a sub-agent's ``git -C <private>
+    # commit`` runs from an ambient hook cwd that has reset away from the
+    # worktree. The carve-out must resolve the EFFECTIVE worktree from the
+    # command's own ``-C`` flag, not the wrong ambient cwd.
+    def test_git_dash_c_private_worktree_downgrades_despite_ambient_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # The ambient hook cwd is an UNRELATED dir with no private origin --
+        # simulating the sub-agent shell's reset to ~/workspace.
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {private_worktree} commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # SAFETY TEST: ``git -C <public-worktree> commit`` must STAY hard-blocked.
+    # The resolver reads the real dir's origin (public), so the carve-out does
+    # not apply -- widening must never let a public-repo commit downgrade.
+    def test_git_dash_c_public_worktree_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        public_worktree = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(
+            tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # No probe tool -> the public worktree's slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {public_worktree} commit -m "acmewidget"',
+                "acmewidget",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # SAFETY TEST: an unresolvable ``-C`` dir falls closed. The effective
+    # worktree does not resolve to a repo with a known-private origin, so the
+    # commit stays hard-blocked (fail-closed preserved).
+    def test_git_dash_c_nonexistent_dir_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        ambient_cwd = _repo_with_remote(
+            tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git -C /nonexistent/worktree commit -m "acmewidget"',
+                "acmewidget",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_plain_git_commit_in_private_cwd_still_downgrades(self, private_cfg: Path, private_repo: Path) -> None:
+        # No -C flag -> the cwd fallback is used unchanged. A plain ``git
+        # commit`` in a private worktree cwd still downgrades (no regression).
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                private_repo,
+                config_path=private_cfg,
+            )
+            is True
+        )
+
+    def test_git_dash_c_secret_in_body_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A secret hard-blocks regardless of repo privacy or the -C target.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        body = "token is ghp_" + "a" * 36
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f"git -C {private_worktree} commit -F /tmp/msg",
+                body,
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
         )

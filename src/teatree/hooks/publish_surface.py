@@ -21,10 +21,15 @@ repo target. These are eligible for the carve-out ONLY when the target
 repo is POSITIVELY known-private (resolved from ``--repo``/``-R`` flag
 first, then CWD fallback). Unknown or public targets stay hard-blocked.
 
-``commit_targets_private_repo`` decides the commit's repo (resolved from
-the harness ``cwd``) is known-private, via an offline allowlist
-(``[teatree] private_repos`` slug substrings in ``~/.teatree.toml``)
-first, then a cached ``gh``/``glab`` visibility probe.
+``commit_targets_private_repo`` decides the commit's repo is known-private,
+via an offline allowlist (``[teatree] private_repos`` slug substrings in
+``~/.teatree.toml``) first, then a cached ``gh``/``glab`` visibility probe.
+The dir it resolves is the command's EFFECTIVE worktree (``-C`` /
+``--work-tree`` / ``--git-dir``, via :func:`effective_worktree`) when one
+is present, falling back to the harness ``cwd`` for a plain ``git commit``.
+A sub-agent's ``git -C <worktree> commit`` runs from an ambient hook cwd
+that has reset away from the worktree, so resolving from the command's own
+flag is what keeps the carve-out from over-blocking that commit.
 
 ``posting_command_targets_private_repo`` applies the same privacy
 decision to a ``gh``/``glab`` posting command: the target repo slug is
@@ -68,6 +73,14 @@ _ENV_ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*
 # ``git commit`` is the first command name + verb (after any env prefix).
 _COMMIT_WORD_COUNT: Final[int] = 2
 
+# Global ``git`` flags that select an alternate working tree / git dir and
+# take a value: ``-C <dir>``, ``--git-dir <dir>``, ``--work-tree <dir>``.
+# They sit BEFORE the sub-command verb, so the verb-finding walk skips
+# them as flag(+value) pairs to still recognise ``git -C <dir> commit``.
+# The same flags name the EFFECTIVE worktree the command operates on,
+# which the carve-out resolves instead of trusting the ambient hook cwd.
+_GIT_WORKTREE_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--git-dir", "--work-tree"})
+
 # A slug must have at least ``owner/repo`` (host-prefixed slugs add more).
 _MIN_SLUG_PARTS: Final[int] = 2
 
@@ -104,16 +117,74 @@ _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
 )
 
 
+def _strip_git_global_prefix(words: list[str]) -> list[str]:
+    """Drop a leading env assignment and ``git`` global worktree flags.
+
+    Leaves ``words`` positioned so ``words[0]`` is the sub-command verb of
+    a ``git`` invocation. A leading inline env assignment (``FOO=1 git``)
+    and the value-taking global flags (``-C <dir>``, ``--git-dir <dir>``,
+    ``--work-tree <dir>``, plus their ``=`` forms) are skipped so
+    ``git -C <dir> commit`` resolves to the ``commit`` verb. ``words[0]``
+    must already be ``git`` for the global-flag skip to run.
+    """
+    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
+        words = words[1:]
+    if not words or words[0] != "git":
+        return words
+    rest = words[1:]
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w in _GIT_WORKTREE_FLAGS:
+            i += 2
+            continue
+        if any(w.startswith(flag + "=") for flag in _GIT_WORKTREE_FLAGS):
+            i += 1
+            continue
+        break
+    return ["git", *rest[i:]]
+
+
 def is_git_commit_command(command: str) -> bool:
     """Return True iff the first command segment is a ``git commit``.
 
-    A leading inline env assignment (``FOO=1 git commit``) is skipped so
-    the command name resolves to ``git``.
+    A leading inline env assignment (``FOO=1 git commit``) and ``git``
+    global worktree flags (``git -C <dir> commit``, ``--git-dir``,
+    ``--work-tree``) are skipped so the command still resolves to the
+    ``commit`` verb.
+    """
+    words = _strip_git_global_prefix(first_segment_words(command))
+    return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
+
+
+def effective_worktree(command: str) -> str | None:
+    """Return the EFFECTIVE worktree dir of a ``git`` command, or ``None``.
+
+    A sub-agent's ``git -C <worktree> commit`` runs from an ambient hook
+    ``cwd`` that has reset away from the worktree, so the dir the command
+    actually targets lives in its own ``-C``/``--work-tree``/``--git-dir``
+    flags. ``git`` resolves repeated worktree-selecting flags LAST-WINS
+    (the same effective-resolution rule as ``_extract_repo_flag``'s
+    ``--repo``/``-R``), so this scans the WHOLE word list and keeps the
+    LAST value across all three flag forms (and their ``=`` spellings).
+    ``None`` when no worktree-selecting flag is present, so the caller
+    falls back to the ambient cwd for a plain ``git commit``.
     """
     words = first_segment_words(command)
-    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
-        words = words[1:]
-    return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
+    found: str | None = None
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if w in _GIT_WORKTREE_FLAGS and i + 1 < len(words):
+            found = words[i + 1]
+            i += 2
+            continue
+        for flag in _GIT_WORKTREE_FLAGS:
+            if w.startswith(flag + "="):
+                found = w[len(flag) + 1 :]
+                break
+        i += 1
+    return found
 
 
 def is_gh_glab_posting_command(command: str) -> bool:
@@ -488,9 +559,11 @@ def carve_out_applies(
     - The tool is ``Bash``.
     - The payload was actually resolved (fail-closed sentinel => hard-block).
     - The payload carries no high-confidence secret (credentials always leak).
-    - The command is a ``git commit`` to a known-private CWD repo, OR a
-        structured ``gh``/``glab`` create-or-comment command whose RESOLVED
-        TARGET is positively known-private (--repo/-R first, CWD fallback).
+    - The command is a ``git commit`` to a known-private repo (resolved
+        from the command's EFFECTIVE worktree -- ``-C`` / ``--work-tree`` /
+        ``--git-dir`` -- when present, else the CWD), OR a structured
+        ``gh``/``glab`` create-or-comment command whose RESOLVED TARGET is
+        positively known-private (--repo/-R first, CWD fallback).
 
     Ineligible regardless: ``gh api`` / ``glab api`` raw REST, ``curl``,
     Slack, and any non-structured verb. Public/unknown targets stay blocked.
@@ -505,7 +578,9 @@ def carve_out_applies(
         return False
 
     if is_git_commit_command(command):
-        return commit_targets_private_repo(cwd, config_path=config_path)
+        worktree = effective_worktree(command)
+        target = Path(worktree) if worktree else cwd
+        return commit_targets_private_repo(target, config_path=config_path)
 
     if is_gh_glab_posting_command(command):
         return posting_command_targets_private_repo(command, cwd, config_path=config_path)
