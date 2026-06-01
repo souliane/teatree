@@ -14,6 +14,15 @@ known-private (via ``--repo``/``-R`` flag, or CWD fallback). Raw REST
 (``gh api``, ``glab api``) and ``curl``/Slack remain ineligible. An
 unknown or public target stays hard-blocked.
 
+Reworked in #1657 to an ALLOWLIST: the posting path now decides via
+``command_is_pure_private_gh_glab_post`` -- a single positive proof that the
+WHOLE command is a pure private ``gh``/``glab`` post -- instead of an
+enumerated set of execution introducers the gate tried to DETECT. The golden
+corpus is the two-dimensional contract: a must-ALLOW set (every legit private
+post still downgrades -- the over-block guard) and a must-DENY set (any
+transport, public target, raw REST, secret, or NOVEL mechanism hard-blocks --
+the leak guard, transport-agnostically).
+
 Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten
 remote URL, plus a fake ``gh`` on PATH for the probe dimension.
 """
@@ -198,13 +207,13 @@ class TestIsGhGlabPostingCommand:
         monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
         monkeypatch.delenv("GH_REPO", raising=False)
         assert (
-            publish_surface.posting_command_targets_private_repo(
+            publish_surface.command_is_pure_private_gh_glab_post(
                 "cd /x && gh pr create --repo acmecorp-engineering/p --title x", None, config_path=cfg
             )
             is True
         )
         assert (
-            publish_surface.posting_command_targets_private_repo(
+            publish_surface.command_is_pure_private_gh_glab_post(
                 "cd /x && gh pr create --repo souliane/teatree --title x", None, config_path=cfg
             )
             is False
@@ -772,8 +781,12 @@ class _CorpusRow(NamedTuple):
     cwd_remote: str
 
 
-# must-ALLOW: a private-target post/commit downgrades to warn. These prove the
-# over-block is fixed -- prefixed / env / cd-prefixed posting verbs are seen.
+# must-ALLOW: a private-target post/commit PROVES pure and downgrades to warn.
+# These are the over-block dimension of the prove-pure inversion -- every legit
+# private-post shape the factory and user actually use (prefixed / env / cd-
+# prefixed posting verbs, a private READ chained after a post, a flag VALUE
+# whose prose contains the word ``gh``/``glab`` or a quoted ``sh -c`` string)
+# must still downgrade, else the allowlist over-blocks legitimate work.
 _MUST_ALLOW: tuple[_CorpusRow, ...] = (
     _CorpusRow("A1", f'gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
     _CorpusRow("A2", f'cd /x && gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
@@ -812,17 +825,17 @@ _MUST_ALLOW: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
-    _CorpusRow(
-        "A13",
-        f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "date"',
-        _TERM,
-        _PRIV_REMOTE,
-    ),
 )
 
-# must-DENY: the load-bearing under-block guards. A public/unknown target, a
-# raw-REST segment, a secret, a chained public posting segment, or the
-# commit-plus-public-post guard must ALL stay hard-blocked.
+# must-DENY: the load-bearing leak guards -- anything the prove-pure proof
+# cannot prove is a pure private post stays hard-blocked. A public/unknown
+# target, a raw-REST segment, a secret, a chained public posting segment, the
+# commit-plus-public-post guard, ANY execution-transport construct (subshell,
+# process substitution, shell ``-c``, ``env -S``, here-string/here-doc,
+# ``eval``, pipe-to-shell, a ``$()`` inside a flag value), a chained non-``gh``
+# command (even a benign-looking one), and NOVEL transports never enumerated by
+# any prior cycle (``ssh``/``node -e``/``make``/``source <(...)``/...) must ALL
+# fail the proof -- transport-agnostically, by not being a recognised pure post.
 _MUST_DENY: tuple[_CorpusRow, ...] = (
     _CorpusRow("D1", f'cd /x && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
     _CorpusRow("D2", f"ENV=1 gh issue create --repo {_PUBLIC_SLUG} --body x", _TERM, _PRIV_REMOTE),
@@ -890,11 +903,11 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
-    # L1-L13: the wrapper / process-substitution / wrapper-word under-block
-    # leaks the prefix-strip guard missed. A bare ``gh`` token whose segment's
-    # words[0] is the opener/wrapper-word evades the recognised-segment scan, so
-    # a PUBLIC-targeting post hides behind the private one. The count invariant
-    # (more gh/glab command-words than recognised gh/glab segments) fails closed.
+    # L1-L13: a PUBLIC-targeting post wrapped in a subshell / process
+    # substitution / brace group / wrapper word. Under the prove-pure inversion
+    # the wrapping segment's ``words[0]`` is the opener or wrapper word, not an
+    # EXACT ``gh``/``glab``, so the segment is not a recognised pure post and the
+    # whole command fails the proof -- no enumeration of the wrapper needed.
     _CorpusRow(
         "L1",
         f"gh issue create --repo {_PRIV_SLUG} --body ok && ( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
@@ -976,13 +989,11 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
-    # S1-S4: the shell-string ``-c`` under-block the count invariant misses.
-    # The inner ``gh`` lives wholly inside the quoted ``-c`` argument, so it is
-    # ONE WORD token that does NOT strip to ``gh``/``glab`` (T not raised) and the
-    # ``sh``/``bash``/``zsh`` segment's words[0] is the shell, not gh/glab (R not
-    # raised), and there is no ``$(gh`` marker -- so the count check alone passes
-    # it. Re-tokenizing the ``-c`` argument and checking for an inner gh/glab
-    # command-word fails closed on all four shell + flag variants.
+    # S1-S4: a public ``gh`` post buried in a quoted shell ``-c`` argument.
+    # Under the prove-pure inversion the ``sh``/``bash``/``zsh`` segment's
+    # ``words[0]`` is the shell, not an EXACT ``gh``/``glab``, so the segment is
+    # not a recognised pure post and the proof fails closed -- the inner verb is
+    # never inspected and no shell needs to be enumerated.
     _CorpusRow(
         "S1",
         f"gh issue create --repo {_PRIV_SLUG} --body ok "
@@ -1011,14 +1022,12 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
-    # S5-S11: the shell-string ``-c`` hide is found wherever the shell token
-    # sits in the segment, not only when it is ``words[0]``. A wrapper word
-    # (``timeout``/``nice``/``xargs``/``env``/``command``), a path-form shell
-    # (``/bin/sh``, ``/usr/bin/env bash``), the ``find -exec sh -c ... \;``
-    # form, and a nested ``sh -c "sh -c 'gh ...'"`` all reach a gh/glab verb
-    # inside a quoted ``-c`` argument the count invariant cannot see. Scanning
-    # EVERY shell-basename token followed by a ``-c`` flag, then recursing into
-    # that flag's argument, fails closed on all of them.
+    # S5-S11: a wrapper word (``timeout``/``nice``/``xargs``/...), a path-form
+    # shell (``/bin/sh``, ``/usr/bin/env bash``), the ``find -exec sh -c ... \;``
+    # form, and a nested ``sh -c "sh -c 'gh ...'"`` all chain a shell whose
+    # ``words[0]`` is not an EXACT ``gh``/``glab``. The prove-pure proof rejects
+    # each for not being a recognised pure post -- no shell-basename scan, no
+    # ``-c``-argument recursion, no enumeration.
     _CorpusRow(
         "S5",
         f"gh issue create --repo {_PRIV_SLUG} --body ok "
@@ -1068,16 +1077,12 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
-    # S12-S15: the remaining STATIC inline-string execution introducers the
-    # ``-c``/count paths missed. ``env -S`` / ``env --split-string`` statically
-    # word-split a literal string and exec it; a here-string ``<shell> <<<``
-    # feeds a literal string to a shell on STDIN; ``eval`` concatenates its
-    # literal args and runs them. Each hands a literal operand to execution with
-    # NO runtime variable/command resolution, so each is a recursion entry point.
-    # The inner ``gh`` lives wholly inside the quoted operand token (T not raised)
-    # and the segment's words[0] is the introducer command, not gh/glab (R not
-    # raised), so the count invariant alone passes them. Consolidating every
-    # introducer's operand extraction into one registry and recursing fails closed.
+    # S12-S15: ``env -S`` / ``env --split-string``, a here-string ``<shell>
+    # <<<``, and ``eval`` each chain a segment whose ``words[0]`` is the
+    # introducer command (``env``/``bash``/``eval``), not an EXACT
+    # ``gh``/``glab``. The prove-pure proof rejects each for not being a
+    # recognised pure post -- no per-introducer operand extractor, no registry,
+    # no recursion.
     _CorpusRow(
         "S12",
         f"gh issue create --repo {_PRIV_SLUG} --body ok "
@@ -1123,17 +1128,86 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    # P1-P3: under the prove-pure inversion a private post CHAINED with any
+    # non-``gh`` command -- even a benign-looking ``sh -c "date"``, an ``eval``
+    # with an inert string, or a bare ``echo`` -- hard-blocks. Proving the
+    # chained command inert requires inspecting the shell-string, which is the
+    # very denylist the inversion retires; so the proof fails closed. This is
+    # the safe, recoverable price (split into a plain post), and it makes the
+    # previously-"accepted runtime residual" A13 a correct hard-block.
+    _CorpusRow(
+        "P1",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "date"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "P2",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo done"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "P3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && echo done",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # N1-N6: NOVEL transports never enumerated by any prior cycle. The inversion
+    # is transport-agnostic -- each is rejected for not being part of a
+    # recognised pure ``gh``/``glab`` post, not because it was added to a list.
+    _CorpusRow(
+        "N1",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && ssh localhost "gh issue create --repo {_PUBLIC_SLUG}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& node -e \"require('child_process').execSync('gh issue create --repo {_PUBLIC_SLUG}')\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && make publish-public-post",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && source <(echo gh issue create --repo {_PUBLIC_SLUG})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& python3 -c \"import os; os.system('gh issue create --repo {_PUBLIC_SLUG}')\"",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "N6",
+        f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 
 class TestCarveOutGoldenCorpus:
-    """HERMETIC golden must-ALLOW / must-DENY corpus for the carve-out.
+    """HERMETIC golden must-ALLOW / must-DENY corpus for the prove-pure carve-out.
 
-    The binding durable artifact for the segment-scan over-block fix and the
-    under-block guards. Fully offline: ``gh``/``glab`` are ABSENT from PATH and
-    ``_PROBE_PATH_EXTRA`` is emptied, so any non-allowlisted slug resolves
-    NOT-private deterministically (no network). The PRIVATE namespace is
-    injected into the tmp allowlist; the PUBLIC slug is never allowlisted.
+    The binding durable artifact for the two dimensions of the inversion: the
+    must-ALLOW set is the OVER-BLOCK guard (every legit private-post shape still
+    downgrades) and the must-DENY set is the LEAK guard (anything not provably a
+    pure private post -- any transport, public target, raw REST, secret, novel
+    mechanism -- hard-blocks). Fully offline: ``gh``/``glab`` are ABSENT from
+    PATH and ``_PROBE_PATH_EXTRA`` is emptied, so any non-allowlisted slug
+    resolves NOT-private deterministically (no network). The PRIVATE namespace
+    is injected into the tmp allowlist; the PUBLIC slug is never allowlisted.
     """
 
     @pytest.fixture(autouse=True)
@@ -1159,252 +1233,254 @@ class TestCarveOutGoldenCorpus:
         assert self._verdict(row, tmp_path) is False, f"{row.case}: expected hard-block (carve-out must NOT apply)"
 
 
-class TestShellCStringHidesGhGlab:
-    """The scoped ``sh -c "gh ..."`` command-string fail-closed detector."""
+def _proves_pure(command: str, tmp_path: Path) -> bool:
+    """Run ``command_is_pure_private_gh_glab_post`` against a hermetic offline env.
+
+    The PRIVATE namespace is allowlisted; the PUBLIC slug never is, and no
+    probe tool is reachable, so any non-allowlisted slug resolves NOT-private
+    deterministically. The CWD origin is the PRIVATE remote, so a flagless
+    private post still downgrades via the CWD fallback.
+    """
+    cfg = _config(tmp_path, [_PRIV_NS])
+    cwd = _repo_with_remote(tmp_path / "cwd", _PRIV_REMOTE)
+    return publish_surface.command_is_pure_private_gh_glab_post(command, cwd, config_path=cfg)
+
+
+class TestPurityProofBlocksTransportLeaks:
+    """The transport leaks the OLD denylist enumerated now fail the purity proof.
+
+    Each scenario chains a real public post behind a transport construct
+    (shell ``-c``, ``env -S``, here-string, ``eval``, wrapper word, path-form
+    shell, ``find -exec``, pipe-to-shell, nesting). Under the inversion the
+    proof does not try to DETECT the hidden public post -- the segment carrying
+    the transport is simply not a recognised pure ``gh``/``glab`` post, so the
+    whole command fails the proof and the hard-block stands. The proof is
+    transport-agnostic: it never enumerates ``sh``/``bash``/``eval``/...; it
+    rejects them for not being part of a recognised post.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
     @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "dash", "ksh", "ash"])
     @pytest.mark.parametrize("flag", ["-c", "-lc", "-ic", "-xc"])
-    def test_inner_gh_in_c_string_fails_closed(self, shell: str, flag: str) -> None:
+    def test_shell_c_transport_blocks(self, shell: str, flag: str, tmp_path: Path) -> None:
         cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && {shell} {flag} "gh issue create --repo {_PUBLIC_SLUG}"'
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_inner_glab_in_c_string_fails_closed(self) -> None:
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash -c "glab mr create --repo {_PUBLIC_SLUG}"'
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_shell_c_string_without_inner_gh_does_not_block(self) -> None:
-        assert publish_surface._command_hides_gh_glab('sh -c "date"') is False
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "echo done"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_shell_segment_without_c_flag_does_not_block(self) -> None:
-        # ``sh script.sh gh`` -- no ``-c`` flag, so the command-string detector
-        # finds nothing to re-tokenize; the count invariant covers a real gh
-        # token elsewhere.
-        assert publish_surface._command_hides_gh_glab("sh script.sh") is False
-        # ``-e`` precedes the ``-c`` flag: a non-c flag is skipped before the
-        # ``-c`` argument is re-tokenized.
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash -e -c "gh issue create --repo {_PUBLIC_SLUG}"'
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_prose_body_with_literal_gh_word_does_not_over_block(self) -> None:
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body "run gh issue list later"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    @pytest.mark.parametrize(
-        "prefix",
-        ["timeout 5 ", "nice ", "command ", "env FOO=x ", "xargs "],
-    )
-    def test_wrapper_word_before_shell_fails_closed(self, prefix: str) -> None:
-        # The shell token is NOT ``words[0]`` -- a wrapper word precedes it.
-        # Scanning every shell-basename token (not only the first) catches it.
-        cmd = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok "
-            f'&& {prefix}sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
-        )
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    @pytest.mark.parametrize("shell_path", ["/bin/sh", "/usr/bin/zsh", "/opt/homebrew/bin/bash"])
-    def test_path_form_shell_fails_closed(self, shell_path: str) -> None:
-        # ``os.path.basename`` strips the path so ``/bin/sh`` matches ``sh``.
-        cmd = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok "
-            f'&& {shell_path} -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
-        )
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_env_path_then_shell_fails_closed(self) -> None:
-        # ``/usr/bin/env bash -c ...`` -- the basename of the path-form ``env``
-        # is not a shell, but the following ``bash`` token is.
-        cmd = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok "
-            f'&& /usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"'
-        )
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_find_exec_shell_c_fails_closed(self) -> None:
-        # ``find . -exec sh -c "..." \;`` -- the ``\;`` is a literal arg, so the
-        # whole ``find`` invocation stays one segment with ``sh`` mid-segment.
-        cmd = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok "
-            f'&& find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}" \\;'
-        )
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_nested_shell_c_fails_closed(self) -> None:
-        # ``sh -c "sh -c 'gh ...'"`` -- the inner gh verb is two ``-c`` levels
-        # deep; recursion into each ``-c`` argument fails closed.
-        cmd = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok "
-            f"&& sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}'\""
-        )
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_wrapper_word_before_shell_with_benign_inner_does_not_block(self) -> None:
-        # A wrapper-prefixed shell whose ``-c`` argument runs no gh/glab verb
-        # is not over-blocked.
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && timeout 5 sh -c "date"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_runtime_resolved_verbs_are_accepted_static_limits(self) -> None:
-        # Documented limitations: a static gate that cannot execute the shell
-        # cannot see a verb produced at runtime. These are NOT caught by design.
-        var_indirection = (
-            f'gh issue create --repo {_PRIV_SLUG} --body ok && G=gh; "$G" issue create --repo {_PUBLIC_SLUG}'
-        )
-        subst_verb = f"gh issue create --repo {_PRIV_SLUG} --body ok && $(echo gh) issue create --repo {_PUBLIC_SLUG}"
-        subst_verb_backtick = (
-            f"gh issue create --repo {_PRIV_SLUG} --body ok && `echo gh` issue create --repo {_PUBLIC_SLUG}"
-        )
-        assert publish_surface._command_hides_gh_glab(var_indirection) is False
-        assert publish_surface._command_hides_gh_glab(subst_verb) is False
-        assert publish_surface._command_hides_gh_glab(subst_verb_backtick) is False
-
-
-class TestEnvSplitStringIntroducer:
-    """``env -S`` / ``env --split-string`` statically word-splits + execs a string."""
+        assert _proves_pure(cmd, tmp_path) is False
 
     @pytest.mark.parametrize(
         "introducer",
         [
             f'env -S "gh issue create --repo {_PUBLIC_SLUG}"',
-            f'env -S"gh issue create --repo {_PUBLIC_SLUG}"',
-            f'env --split-string "gh issue create --repo {_PUBLIC_SLUG}"',
             f'env --split-string="gh issue create --repo {_PUBLIC_SLUG}"',
-            f"env -S \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
-            f'timeout 5 env -S "gh issue create --repo {_PUBLIC_SLUG}"',
-        ],
-    )
-    def test_inner_gh_in_env_split_string_fails_closed(self, introducer: str) -> None:
-        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
-        assert publish_surface._command_hides_gh_glab(cmd) is True
-
-    def test_benign_env_split_string_does_not_over_block(self) -> None:
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && env -S "echo done"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_env_name_inside_body_prose_does_not_over_block(self) -> None:
-        # ``--body "env -S 'gh issue list'"`` -- the env-name is one quoted token
-        # of a real private post, NOT an execution introducer (no word-splitting).
-        cmd = f"""gh issue create --repo {_PRIV_SLUG} --body "env -S 'gh issue list'\""""
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_env_split_flag_with_no_following_operand_is_none(self) -> None:
-        # A trailing ``env -S`` with nothing after the flag has no operand.
-        assert _gh_glab_hiding._env_split_string_operand(["env", "-S"]) is None
-
-    def test_env_non_flag_arg_stops_the_scan(self) -> None:
-        # ``env VAR=x gh ...`` -- the first non-flag word after ``env`` ends the
-        # flag scan (env's own assignment/command argument), so no split operand
-        # is extracted from this segment (a real ``gh`` there is caught elsewhere).
-        assert _gh_glab_hiding._env_split_string_operand(["env", "VAR=x", "gh", "issue", "create"]) is None
-
-    def test_env_other_dash_flags_then_exhaust_is_none(self) -> None:
-        # ``env -i -u VAR`` -- only non-split dash flags follow, exhausting the
-        # word list with no ``-S``/``--split-string`` operand found.
-        assert _gh_glab_hiding._env_split_string_operand(["env", "-i", "-u"]) is None
-
-
-class TestHereStringIntroducer:
-    """``<shell> <<< "str"`` feeds a literal string to a shell on STDIN."""
-
-    @pytest.mark.parametrize(
-        "introducer",
-        [
             f'bash <<< "gh issue create --repo {_PUBLIC_SLUG}"',
-            f'bash <<<"gh issue create --repo {_PUBLIC_SLUG}"',
-            f'sh <<< "glab mr create --repo {_PUBLIC_SLUG}"',
-            f'/bin/zsh <<< "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'eval "gh issue create --repo {_PUBLIC_SLUG}"',
+            f"eval gh issue create --repo {_PUBLIC_SLUG}",
+            f'timeout 5 sh -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'/bin/sh -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'/usr/bin/env bash -c "gh issue create --repo {_PUBLIC_SLUG}"',
+            f'find . -exec sh -c "gh issue create --repo {_PUBLIC_SLUG}" \\;',
+            f"sh -c \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
         ],
     )
-    def test_inner_gh_in_shell_here_string_fails_closed(self, introducer: str) -> None:
+    def test_introducer_transport_blocks(self, introducer: str, tmp_path: Path) -> None:
         cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
-        assert publish_surface._command_hides_gh_glab(cmd) is True
+        assert _proves_pure(cmd, tmp_path) is False
 
-    def test_benign_here_string_does_not_over_block(self) -> None:
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash <<< "echo done"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_non_shell_here_string_consumer_does_not_over_block(self) -> None:
-        # ``cat <<< "gh ..."`` only PRINTS the string -- ``cat`` is not a shell,
-        # so the string is never executed and the here-string is not an
-        # execution introducer for it.
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && cat <<< "gh issue create --repo {_PUBLIC_SLUG}"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-
-class TestEvalIntroducer:
-    """``eval`` concatenates its literal args and runs them as a command."""
+    def test_pipe_to_shell_transport_blocks(self, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok | xargs gh issue create --repo {_PUBLIC_SLUG}"
+        assert _proves_pure(cmd, tmp_path) is False
 
     @pytest.mark.parametrize(
-        "introducer",
+        "wrapper",
         [
-            f'eval "gh issue create --repo {_PUBLIC_SLUG}"',
-            f"eval \"sh -c 'gh issue create --repo {_PUBLIC_SLUG}'\"",
-            f"eval gh issue create --repo {_PUBLIC_SLUG}",
-            f'eval "glab mr create --repo {_PUBLIC_SLUG}"',
-            f'command eval "gh issue create --repo {_PUBLIC_SLUG}"',
+            f"( gh issue create --repo {_PUBLIC_SLUG} )",
+            f"$( gh issue create --repo {_PUBLIC_SLUG} )",
+            f"{{ gh issue create --repo {_PUBLIC_SLUG}; }}",
+            f"env FOO=x gh issue create --repo {_PUBLIC_SLUG}",
+            f"command gh issue create --repo {_PUBLIC_SLUG}",
         ],
     )
-    def test_inner_gh_in_eval_fails_closed(self, introducer: str) -> None:
-        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {introducer}"
-        assert publish_surface._command_hides_gh_glab(cmd) is True
+    def test_wrapper_word_or_group_blocks(self, wrapper: str, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {wrapper}"
+        assert _proves_pure(cmd, tmp_path) is False
 
-    def test_benign_eval_does_not_over_block(self) -> None:
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo done"'
-        assert publish_surface._command_hides_gh_glab(cmd) is False
-
-    def test_subst_marker_inside_introducer_operand_fails_closed(self) -> None:
-        # An introducer operand whose body carries a ``$(gh ...)`` substitution
-        # marker fails closed via the marker path inside the recursive analyser.
-        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && eval "echo $(gh issue create --repo {_PUBLIC_SLUG})"'
-        assert publish_surface._command_hides_gh_glab(cmd) is True
+    def test_substitution_in_body_value_blocks(self, tmp_path: Path) -> None:
+        # ``--body "$(gh ... PUBLIC ...)"`` -- a command substitution inside a
+        # flag value runs a second post at runtime, so the value is not provably
+        # inert: the proof rejects any token carrying a ``$(`` marker.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG})"'
+        assert _proves_pure(cmd, tmp_path) is False
 
 
-class TestChildShellStringAnalyser:
-    """The self-contained recursive analyser for one introducer operand string.
+class TestPurityProofBlocksNovelTransports:
+    """Transports NEVER enumerated by any prior cycle still block.
 
-    Its contract is "does THIS literal command-string run gh/glab", independent
-    of the top-level ``_command_hides_gh_glab`` short-circuits, via three paths:
-    a ``$(gh`` substitution marker, a bare ``gh``/``glab`` word, or a nested
-    introducer operand that itself runs gh/glab.
+    The inversion is transport-agnostic: ``ssh``, ``node -e``, ``make``, a
+    ``source <(...)`` process substitution -- none were ever in a denylist, yet
+    each is rejected for not being part of a recognised pure ``gh``/``glab``
+    post. This is the load-bearing proof that the model closed the
+    whack-a-mole rather than adding three more entries to it.
     """
 
-    def test_substitution_marker_in_operand_runs_gh(self) -> None:
-        operand = f"echo $(gh issue create --repo {_PUBLIC_SLUG})"
-        assert _gh_glab_hiding._child_shell_string_runs_gh_glab(operand) is True
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
 
-    def test_bare_gh_word_in_operand_runs_gh(self) -> None:
-        assert _gh_glab_hiding._child_shell_string_runs_gh_glab(f"gh issue create --repo {_PUBLIC_SLUG}") is True
+    @pytest.mark.parametrize(
+        "transport",
+        [
+            f'ssh localhost "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+            f"node -e \"require('child_process').execSync('gh issue create --repo {_PUBLIC_SLUG}')\"",
+            f"python3 -c \"import os; os.system('gh issue create --repo {_PUBLIC_SLUG}')\"",
+            "make publish-public-post",
+            f"source <(echo gh issue create --repo {_PUBLIC_SLUG})",
+            f'perl -e "system(q{{gh issue create --repo {_PUBLIC_SLUG}}})"',
+        ],
+    )
+    def test_novel_transport_blocks(self, transport: str, tmp_path: Path) -> None:
+        cmd = f"gh issue create --repo {_PRIV_SLUG} --body ok && {transport}"
+        assert _proves_pure(cmd, tmp_path) is False
 
-    def test_nested_introducer_operand_runs_gh(self) -> None:
+
+class TestPurityProofAllowsPrivatePosts:
+    """Legit private-post shapes still PROVE pure -- the over-block dimension.
+
+    The inverted proof MUST keep downgrading every private-post shape the
+    factory and user actually use, else it over-blocks legitimate work. A flag
+    VALUE containing the word ``gh``/``glab`` or a quoted ``sh -c ...`` STRING
+    is opaque prose, not a second command, so it stays pure and downgrades.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            f"gh issue create --repo {_PRIV_SLUG} --body x",
+            f"gh pr create --repo {_PRIV_SLUG} --title x --body y --label bug",
+            f"gh issue comment 5 --repo {_PRIV_SLUG} --body x",
+            f"glab mr create --repo {_PRIV_SLUG} --title x --description y",
+            f"glab issue create --repo {_PRIV_SLUG} --title x",
+            f"cd /some/worktree && gh issue create --repo {_PRIV_SLUG} --body x",
+            f"GH_TOKEN=x gh issue create --repo {_PRIV_SLUG} --body x",
+            f"gh issue create --repo {_PRIV_SLUG} --body x && gh pr comment 5 --repo {_PRIV_SLUG} --body y",
+            f'gh issue create --repo {_PRIV_SLUG} --body "run gh issue list later for glab notes"',
+            f'gh issue create --repo {_PRIV_SLUG} --body "see (gh issue 5) and glab notes here"',
+            f"""gh issue create --repo {_PRIV_SLUG} --body "later run sh -c 'date' for the build\"""",
+        ],
+    )
+    def test_legit_private_post_proves_pure(self, command: str, tmp_path: Path) -> None:
+        assert _proves_pure(command, tmp_path) is True
+
+    def test_flagless_private_cwd_proves_pure(self, tmp_path: Path) -> None:
+        assert _proves_pure(f"gh issue create --body {_TERM}", tmp_path) is True
+
+
+class TestPurityProofStructuralPrimitives:
+    """The visibility-independent token classifier in ``_gh_glab_hiding``."""
+
+    def test_plain_private_post_is_structurally_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "x"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_cd_and_env_prefix_is_stripped(self) -> None:
+        words = ["cd", "/x", "gh", "pr", "create", "--repo", _PRIV_SLUG, "--title", "x"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_substitution_marker_in_value_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", f"$(gh issue create --repo {_PUBLIC_SLUG})"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_backtick_marker_in_value_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "`gh issue create`"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_prose_paren_in_value_stays_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "--body", "see (gh issue 5)"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is True
+
+    def test_redirection_token_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, ">/tmp/out"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_group_opener_token_is_not_pure(self) -> None:
+        words = ["gh", "issue", "create", "--repo", _PRIV_SLUG, "{"]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_non_gh_words0_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(["sh", "-c", "gh issue create"]) is False
+
+    def test_path_form_gh_is_not_pure(self) -> None:
+        words = ["/usr/bin/gh", "issue", "create", "--repo", _PRIV_SLUG]
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(words) is False
+
+    def test_too_short_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.segment_is_pure_gh_glab_post(["gh", "pr"]) is False
+
+    def test_malformed_cd_prefix_is_not_pure(self) -> None:
+        assert _gh_glab_hiding.strip_benign_prefix(["cd"]) is None
+
+    def test_publish_inert_segment_for_commit_chain(self) -> None:
+        assert publish_surface._segment_is_publish_inert(["git", "push", "origin", "main"]) is True
+        assert publish_surface._segment_is_publish_inert(["echo", "done"]) is True
+
+    def test_forge_or_transport_segment_is_not_publish_inert(self) -> None:
+        assert publish_surface._segment_is_publish_inert(["sh", "-c", "gh issue create"]) is False
+        assert publish_surface._segment_is_publish_inert(["gh", "issue", "create"]) is False
+        assert publish_surface._segment_is_publish_inert(["echo", "$(gh issue create)"]) is False
+
+
+class TestPurityProofIsTheDecisionPath:
+    """Meta-test: the carve-out decides via the prove-pure ALLOWLIST predicate.
+
+    The durable anti-whack-a-mole contract. The carve-out's posting-path
+    decision is ``command_is_pure_private_gh_glab_post`` -- a single positive
+    proof that the WHOLE command is good -- NOT an enumerated set of execution
+    introducers (``_EXEC_INTRODUCERS``) the gate tries to DETECT. The six prior
+    cycles all failed by growing that enumeration; this test pins that the
+    enumeration is gone and the decision path is the allowlist.
+    """
+
+    def test_no_exec_introducer_enumeration_remains(self) -> None:
+        # The denylist registry that leaked on every un-enumerated transport is
+        # retired; its absence is the structural signal the model inverted.
+        assert not hasattr(_gh_glab_hiding, "_EXEC_INTRODUCERS")
+        assert not hasattr(_gh_glab_hiding, "_EXEC_INTRODUCER_EXTRACTORS")
+        assert not hasattr(_gh_glab_hiding, "command_hides_gh_glab")
+
+    def test_carve_out_posting_path_is_the_purity_proof(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``carve_out_applies`` (non-commit branch) routes through the purity
+        # proof: patching the proof to a constant flips the verdict, proving it
+        # is the decision path and not a separate detector.
+        cfg = _config(tmp_path, [_PRIV_NS])
+        cwd = _repo_with_remote(tmp_path / "cwd", _PRIV_REMOTE)
+        monkeypatch.setattr(publish_surface, "command_is_pure_private_gh_glab_post", lambda *a, **k: False)
         assert (
-            _gh_glab_hiding._child_shell_string_runs_gh_glab(f'env -S "gh issue create --repo {_PUBLIC_SLUG}"') is True
+            publish_surface.carve_out_applies(
+                "Bash", f"gh issue create --repo {_PRIV_SLUG} --body {_TERM}", _TERM, cwd, config_path=cfg
+            )
+            is False
         )
-
-    def test_benign_operand_runs_nothing(self) -> None:
-        assert _gh_glab_hiding._child_shell_string_runs_gh_glab("echo done") is False
-
-
-class TestExecIntroducerRegistry:
-    """Meta-test pinning the closed set of static inline-string execution introducers.
-
-    The recognised set is the anti-whack-a-mole contract: a scanner that
-    enumerates execution mechanisms by RECALL leaks on every un-enumerated
-    introducer (this fix's 5th rework). Pinning ``_EXEC_INTRODUCERS`` to the
-    documented tuple AND requiring an extractor for each means adding or removing
-    a construct trips this test, forcing the docstring enumeration + corpus to
-    move with the code rather than drifting silently.
-    """
-
-    def test_recognised_introducer_set_is_pinned(self) -> None:
-        assert _gh_glab_hiding._EXEC_INTRODUCERS == ("shell_c", "env_split_string", "here_string", "eval")
-
-    def test_every_introducer_has_an_extractor(self) -> None:
-        assert tuple(_gh_glab_hiding._EXEC_INTRODUCER_EXTRACTORS) == _gh_glab_hiding._EXEC_INTRODUCERS
-
-    def test_no_extra_extractor_without_a_registry_entry(self) -> None:
-        assert set(_gh_glab_hiding._EXEC_INTRODUCER_EXTRACTORS) == set(_gh_glab_hiding._EXEC_INTRODUCERS)
+        monkeypatch.setattr(publish_surface, "command_is_pure_private_gh_glab_post", lambda *a, **k: True)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash", f"gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}", _TERM, cwd, config_path=cfg
+            )
+            is True
+        )
 
 
 class TestProbeEnvResolution:

@@ -7,23 +7,36 @@ private repo's own customer/domain terms are exactly what its commits are
 supposed to carry, and hard-blocking them forced an
 ``--allow-banned-term`` / ``--quote-ok`` override on every commit.
 
-This module classifies a Bash command into one of two surface classes
-so the gates can DOWNGRADE from hard-block to warn for the private-repo
-commit case ONLY, while leaving every public surface hard-blocked:
+This module decides whether a banned/quoted match on a Bash command should
+DOWNGRADE from hard-block to warn, for two private surfaces ONLY -- a
+``git commit`` and a pure ``gh``/``glab`` post -- while leaving every public
+surface hard-blocked.
 
-``is_git_commit_command`` decides the command is a ``git commit`` -- the
-one surface eligible for the private-repo carve-out.
+The carve-out is an ALLOWLIST, not a denylist. Six prior cycles tried to
+DETECT a hidden public ``gh``/``glab`` invocation by enumerating transport
+mechanisms (shell ``-c``, ``env -S``, here-string, ``eval``, pipe-to-shell,
+...); every cycle a new un-enumerated transport leaked. Static analysis of
+"will this command, by ANY means, post to a public repo" is undecidable, so
+enumeration cannot win. :func:`command_is_pure_private_gh_glab_post` INVERTS
+the model: it PROVES the whole command is a pure private post and fails closed
+on anything it cannot prove. A hidden public post is then impossible -- it
+requires a second non-``gh`` verb, a transport construct, or a public
+``--repo``, all of which fail the proof.
 
-``is_gh_glab_posting_command`` decides the command is a structured
-``gh``/``glab`` PR/issue create-or-comment command (NOT ``gh api`` /
-``glab api`` raw REST, NOT ``curl``/Slack) that posts to a specific
-repo target. These are eligible for the carve-out ONLY when the target
-repo is POSITIVELY known-private (resolved from ``--repo``/``-R`` flag
-first, then CWD fallback). Unknown or public targets stay hard-blocked.
+``is_git_commit_command`` decides the command's first segment is a
+``git commit`` -- one surface eligible for the private-repo carve-out (its
+chained segments must be provably publish-inert or pure private posts).
 
-``commit_targets_private_repo`` / ``posting_command_targets_private_repo``
-decide whether the commit's / posting command's resolved target repo is
-known-private. The "is this repo private?" question (offline
+``command_is_pure_private_gh_glab_post`` is the single positive decision for
+the posting path: EVERY top-level segment is a benign ``cd``/env navigation
+segment OR a structurally-pure ``gh``/``glab`` invocation (NOT ``gh api`` /
+``glab api`` raw REST, NOT ``curl``/Slack) targeting a POSITIVELY known-private
+repo (``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then CWD), with
+at least one posting segment. The structural half (per-token purity) lives in
+:mod:`teatree.hooks._gh_glab_hiding`.
+
+``commit_targets_private_repo`` decides whether the commit's resolved CWD repo
+is known-private. The "is this repo private?" question (offline
 ``[teatree] private_repos`` allowlist first, then a cached ``gh``/``glab``
 visibility probe) lives in :mod:`teatree.hooks._repo_visibility`. Detection
 is conservative and offline-first; an unknown/unresolvable repo is treated
@@ -43,12 +56,16 @@ from teatree.hooks import _gh_glab_hiding, _repo_visibility
 from teatree.hooks._command_parser import first_segment_words
 
 # Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
-# hidden-``gh``/``glab``-invocation detection lives in ``_gh_glab_hiding``
-# (both split out for module-health LOC). Re-exported / re-imported here so
-# existing callers and tests keep using the ``publish_surface`` names.
+# structural purity primitives (segment splitting, per-token classification)
+# live in ``_gh_glab_hiding`` (both split out for module-health LOC).
+# Re-exported / re-imported here so existing callers and tests keep using the
+# ``publish_surface`` names.
 slug_for_cwd = _repo_visibility.slug_for_cwd
 _command_segments = _gh_glab_hiding.command_segments
-_command_hides_gh_glab = _gh_glab_hiding.command_hides_gh_glab
+_segment_is_pure_gh_glab_post = _gh_glab_hiding.segment_is_pure_gh_glab_post
+_strip_benign_prefix = _gh_glab_hiding.strip_benign_prefix
+_token_has_substitution_marker = _gh_glab_hiding.token_has_substitution_marker
+_token_is_transport_construct = _gh_glab_hiding.token_is_transport_construct
 _ENV_ASSIGNMENT_RE = _gh_glab_hiding.ENV_ASSIGNMENT_RE
 
 # ``git commit`` is the first command name + verb (after any env prefix).
@@ -233,45 +250,99 @@ def _segment_target_is_private(words: list[str], cwd: Path | None, *, config_pat
     return _repo_visibility.slug_is_private(slug)
 
 
-def posting_command_targets_private_repo(
+def command_is_pure_private_gh_glab_post(
     command: str,
     cwd: Path | None,
     *,
     config_path: Path | None = None,
 ) -> bool:
-    """Return True iff EVERY posting segment's target repo is known-private.
+    r"""Return True iff the WHOLE command is PROVABLY a pure private gh/glab post.
 
-    The command is split into segments; the posting segments
-    (:func:`_segment_is_posting_verb`) are isolated and each resolves its OWN
-    target (``--repo``/``-R`` first, then ``GH_REPO`` for ``gh``, then the CWD
-    fallback -- never a sibling ``cd`` segment).
+    This is the carve-out's single positive decision predicate -- the
+    INVERSION of the old "detect a hidden public invocation" denylist. Rather
+    than enumerate every transport mechanism a public post could hide behind
+    (shell ``-c``, ``env -S``, here-string, ``eval``, pipe-to-shell,
+    ``source <(...)``, ``ssh host gh ...``, ``node -e "...gh..."``,
+    ``make`` with a ``gh`` recipe, ...), which is an unbounded list that leaks
+    on every un-enumerated construct, this PROVES the command is entirely good
+    and fails closed on anything it cannot prove.
 
-    Fail-closed rules:
+    The command must have at least one segment and EVERY top-level segment
+    (``&&`` / ``||`` / ``;`` / ``|`` / ``&`` / newline) must be, all of:
 
-    - ANY ``gh``/``glab`` hidden from the segment scan -- a count of
-        ``gh``/``glab`` command-words exceeding the recognised top-level
-        segments, or a ``$(gh``/backtick-``gh`` substitution marker => False
-        (:func:`_command_hides_gh_glab`). The segment scan cannot resolve a
-        wrapped/procsub/wrapper-word invocation's target, so its presence blocks
-        the whole command -- otherwise a PUBLIC post hidden in ``... && ( gh ...
-        --repo PUBLIC ...)`` or ``... && eval gh ... --repo PUBLIC`` would leak
-        behind a private segment.
-    - No posting segment => False (nothing eligible to downgrade).
-    - ANY raw ``gh api`` / ``glab api`` segment => False. Raw REST can target
-        an arbitrary surface, so its mere presence blocks the whole command.
-    - Otherwise, the carve-out applies only when ALL posting segments target a
-        known-private repo. One public/unknown target blocks the whole command
-        -- a ``... && gh issue create --repo PUBLIC`` half would leak.
+    - STRUCTURALLY a pure ``gh``/``glab`` posting invocation
+        (:func:`_gh_glab_hiding.segment_is_pure_gh_glab_post`) -- ``gh``/``glab``
+        EXACTLY at ``words[0]`` after a benign ``cd <path>`` / ``VAR=value``
+        prefix, every token a flag / opaque flag-value / positional with no
+        execution-transport or substitution construct anywhere;
+    - a RECOGNISED posting verb (:func:`_segment_is_posting_verb`) -- ``gh pr
+        create``, ``gh issue comment``, ``glab mr create``, ... but NOT
+        ``gh api`` / ``glab api`` raw REST (which can target any surface) nor a
+        read verb (``gh issue view``); and
+    - targeting a known-PRIVATE repo (:func:`_segment_target_is_private`) --
+        ``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then the CWD
+        fallback. One public/unknown target fails the proof.
+
+    A single non-conforming segment -- a second non-``gh`` verb, ANY transport
+    construct, a raw-REST segment, a read verb, or a public/unknown target --
+    makes the command not pure, so this returns False and the banned-term
+    hard-block stands. A hidden public post is therefore impossible: it
+    requires a second non-``gh`` verb, a transport construct, or a public
+    ``--repo`` -- all of which fail the proof.
+
+    Accepted (safe, recoverable) over-block: an exotic-but-legitimate private
+    post that uses ``$()`` / a pipe / a here-doc / etc. in its body or chain
+    fails the proof and is HARD-BLOCKED. That is the price of an unbypassable
+    privacy guarantee -- the operator can split it into a plain post, and a
+    hard-block is recoverable where a leak is not.
     """
-    if _command_hides_gh_glab(command):
-        return False
     segments = _command_segments(command)
-    if any(_segment_is_raw_rest(words) for words in segments):
+    if not segments:
         return False
-    posting = [words for words in segments if _segment_is_posting_verb(words)]
-    if not posting:
+    if not any(_segment_is_posting_verb(_strip_cd_prefix(words)) for words in segments):
         return False
-    return all(_segment_target_is_private(words, cwd, config_path=config_path) for words in posting)
+    return all(_segment_proves_pure_private_post(words, cwd, config_path=config_path) for words in segments)
+
+
+def _segment_proves_pure_private_post(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
+    """Return True iff one top-level segment is provably good for the carve-out.
+
+    A segment is good when it is EITHER a benign navigation segment (a bare
+    ``cd <path>`` and/or ``VAR=value`` assignments, nothing else -- the
+    ``cd /x &&`` / ``ENV=1 &&`` prefix the lexer splits into its own segment),
+    OR a STRUCTURALLY pure ``gh``/``glab`` invocation
+    (:func:`_segment_is_pure_gh_glab_post`) that is NOT raw REST
+    (:func:`_segment_is_raw_rest`) and targets a known-PRIVATE repo. A chained
+    private READ (``gh issue view 5 --repo PRIV``) is provably good -- it posts
+    nothing and touches no public surface -- so it does not have to be a
+    posting verb; the command-level proof separately requires at least one
+    posting segment so a pure-read command is not eligible. Anything else --
+    a second non-``gh`` verb, a transport construct, a raw-REST call, or a
+    public/unknown target -- makes the segment not provably good, so the whole
+    command fails the proof.
+    """
+    rest = _strip_cd_prefix(words)
+    if not rest:
+        return True
+    return (
+        _segment_is_pure_gh_glab_post(words)
+        and not _segment_is_raw_rest(rest)
+        and _segment_target_is_private(rest, cwd, config_path=config_path)
+    )
+
+
+def _strip_cd_prefix(words: list[str]) -> list[str]:
+    """Return ``words`` with a leading ``cd <path>`` and ``VAR=value`` prefix removed.
+
+    The posting-verb recognition and target resolution must see the ``gh``/
+    ``glab`` invocation itself, not the benign ``cd``/env prefix that
+    :func:`_gh_glab_hiding.segment_is_pure_gh_glab_post` already validates as
+    benign. A malformed prefix (``cd`` with no path) collapses to the original
+    words -- the structural proof has already rejected it, so the downstream
+    posting/target checks are never reached for such a segment.
+    """
+    rest = _strip_benign_prefix(words)
+    return rest if rest is not None else words
 
 
 # -- Always-on secret detection -----------------------------------------------
@@ -342,25 +413,68 @@ def carve_out_applies(
     if is_git_commit_command(command):
         return _commit_branch_downgrades(command, cwd, config_path=config_path)
 
-    if is_gh_glab_posting_command(command):
-        return posting_command_targets_private_repo(command, cwd, config_path=config_path)
-
-    return False
+    return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
 
 def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
-    """Return True iff a ``git commit`` command may downgrade to warn.
+    r"""Return True iff a ``git commit`` command may downgrade to warn.
 
-    The commit body is private-repo-eligible only when the CWD repo is
-    known-private AND any chained posting segment
-    (``git commit && gh issue create --repo PUBLIC``) is ALSO entirely
-    private -- that posting half would carry the SAME body to a public
-    surface, so a public/unknown target there blocks the whole command.
+    The first segment is the ``git commit`` (:func:`is_git_commit_command`),
+    whose body is private-repo-eligible only when the CWD repo is known-private.
+    Every CHAINED segment must additionally be PROVABLY publish-inert with
+    respect to that body: either a pure private ``gh``/``glab`` post
+    (:func:`command_is_pure_private_gh_glab_post` over that segment), or a
+    segment that provably cannot carry the body to an external surface
+    (:func:`_segment_is_publish_inert` -- no forge tool, no execution-transport
+    or substitution construct anywhere). A chained ``&& gh ... --repo PUBLIC``,
+    a ``&& sh -c "gh ... PUBLIC"``, or any other publishing construct that is
+    not a proven pure private post fails the proof and the hard-block stands.
+
+    This mirrors the posting-path inversion: the commit downgrades only when
+    the WHOLE chain is provably good, never by failing to detect a hidden
+    public post.
     """
     if not commit_targets_private_repo(cwd, config_path=config_path):
         return False
-    if is_gh_glab_posting_command(command):
-        return posting_command_targets_private_repo(command, cwd, config_path=config_path)
+    for words in _command_segments(command):
+        if is_git_commit_command(" ".join(words)):
+            continue
+        if _segment_is_publish_inert(words):
+            continue
+        if _segment_is_pure_gh_glab_post(words) and _segment_target_is_private(
+            _strip_cd_prefix(words), cwd, config_path=config_path
+        ):
+            continue
+        return False
+    return True
+
+
+# A forge-tool command word the body could be posted through. Detected as a
+# SUBSTRING in any token so a forge invocation hidden inside a quoted shell
+# string (``sh -c "gh ... PUBLIC"``) is not treated as publish-inert.
+_FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
+
+
+def _segment_is_publish_inert(words: list[str]) -> bool:
+    r"""Return True iff ``words`` provably cannot publish a body externally.
+
+    A chained segment after a private ``git commit`` is publish-inert when it
+    carries NO forge tool (``gh``/``glab``/``curl`` as a substring of any
+    token -- so a forge call hidden in a quoted ``sh -c "gh ..."`` string is
+    NOT inert) and NO execution-transport / substitution construct
+    (substitution marker, redirection, group opener) anywhere. Such a segment
+    (``git push origin main``, ``echo done``, ``make build``) cannot carry the
+    commit body to a public surface, so it does not block the commit downgrade.
+
+    This is the positive complement of the pure-post proof for the commit
+    chain: a chained segment is either provably inert (here) or a proven pure
+    private post; anything else fails the proof and the hard-block stands.
+    """
+    for token in words:
+        if _token_has_substitution_marker(token) or _token_is_transport_construct(token):
+            return False
+        if any(marker in token for marker in _FORGE_TOOL_MARKERS):
+            return False
     return True
 
 
