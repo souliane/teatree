@@ -4653,13 +4653,18 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
         import datetime  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
 
         row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
         owner_session = (row or {}).get("session_id") or ""
         is_foreign_session = bool(owner_session) and owner_session != session_id
         expires_at = (row or {}).get("lease_expires_at")
-        is_live = expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)
         stored_pid = (row or {}).get("owner_pid")
+        # Liveness is pid-anchored: an alive owner_pid is a live owner past
+        # its tick TTL (the busy-owner hijack the TTL-only check missed).
+        is_live = (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
+            stored_pid is not None and pid_alive(stored_pid)
+        )
         pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
     except Exception:  # noqa: BLE001
         return ""
@@ -5046,9 +5051,15 @@ def _loop_self_pump(data: dict) -> bool | None:
         return None
 
     marker.write_text("1", encoding="utf-8")
+    # Tag the tick with the owner session id so its re-claim heartbeat
+    # always lands under the real session (and records its pid) instead of
+    # resolving to "" in the Bash-tool subprocess (#1107). The id IS the
+    # owner session here (the self-pump only fires for the owner), so the
+    # pid-anchored claim keeps the lease anchored to this session (#1073).
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
-        "without waiting for an external prompt. Run `t3 loop tick`, then "
+        f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
+        "t3 loop tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
         "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
