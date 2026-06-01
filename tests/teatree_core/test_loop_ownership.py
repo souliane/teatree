@@ -80,6 +80,54 @@ class TestClaimOwnership(TestCase):
         assert owner == "sess-B"
         assert LoopLease.objects.get(name="loop-owner").session_id == "sess-A"
 
+    def test_anonymous_claim_on_unowned_slot_wins_without_writing_owner(self) -> None:
+        """An anonymous tick on an unowned slot RUNS (won) but never persists.
+
+        Pure-cron / no-session deployments (#1107) still run the tick
+        (``won=True``), but the row must stay ``session_id=""`` with no
+        future expiry so the phantom "owned by nobody but not expired" row
+        can never form.
+        """
+        LoopLease.objects.get_or_create(name="loop-owner")
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="")
+        assert won is True
+        assert owner == ""
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == ""
+        assert row.lease_expires_at is None
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is False
+
+    def test_alive_foreign_pid_blocks_reclaim_past_ttl(self) -> None:
+        """A live owner_pid protects a foreign claim past its TTL (pid-anchored)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-A", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="newcomer")
+        assert won is False
+        assert owner == "owner-A"
+        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-A"
+
+    def test_dead_pid_expired_lease_is_reclaimable(self) -> None:
+        """A dead owner_pid + expired TTL stays reclaimable (no over-block)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="dead", ttl_seconds=1, owner_pid=999999)
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="successor")
+        assert won is True
+        assert owner == "successor"
+
+    def test_anonymous_claim_skips_when_live_real_owner(self) -> None:
+        """An anonymous tick with a live real owner present SKIPs, row untouched."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-A")
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="")
+        assert won is False
+        assert owner == "owner-A"
+        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-A"
+
 
 class TestHeartbeatOwnership(TestCase):
     def test_heartbeat_extends_when_still_owner(self) -> None:
@@ -133,6 +181,22 @@ class TestOwnershipStatus(TestCase):
             name="loop-owner",
             defaults={"lease_expires_at": timezone.now() + timedelta(seconds=999)},
         )
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is False
+
+    def test_alive_pid_owner_past_ttl_reports_live(self) -> None:
+        """A non-empty session with an alive owner_pid is_live past its TTL (pid-anchored)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is True
+
+    def test_dead_pid_expired_is_not_live(self) -> None:
+        """A dead owner_pid + expired TTL is not live (no over-block of the snapshot)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="dead", ttl_seconds=1, owner_pid=999999)
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
         assert LoopLease.objects.ownership_status("loop-owner").is_live is False
 
 

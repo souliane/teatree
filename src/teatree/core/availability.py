@@ -241,8 +241,8 @@ def resolve_mode(
     Override → live presence (upgrade-only) → schedule → default. Each layer
     is independently testable by passing it explicitly; the production path
     reads override from :func:`load_override`, schedule from
-    :func:`load_schedule`, and the live-presence heartbeat from
-    :func:`last_presence`.
+    :func:`load_schedule`, and the live-presence heartbeat from the
+    :data:`PRESENCE` singleton's :meth:`PresenceHeartbeat.last_seen`.
 
     Live presence only ever upgrades a schedule-derived ``away`` to
     ``present`` — direct evidence (a recent ``UserPromptSubmit``) beats the

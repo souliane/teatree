@@ -382,7 +382,7 @@ _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD = 3
 # when looped. Conservative allow-list: a deny whose reason does not start with
 # one of these is treated as a SAFETY gate and NEVER auto-opens. The
 # skill-loading gate is the documented minimum.
-_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = ("SKILL LOADING ENFORCEMENT",)
+_DENY_CIRCUIT_UX_GATE_PREFIXES: tuple[str, ...] = ("SKILL LOADING ENFORCEMENT", "LOOP REGISTRATION")
 
 # Volatile substrings stripped from a deny reason before fingerprinting so "the
 # same denial" matches across retries even when the reason embeds a changing
@@ -985,14 +985,77 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     )
 
 
+def _loop_registration_gate_enabled() -> bool:
+    """Whether the loop-registration PreToolUse gate is enabled (default True).
+
+    Best-effort read of ``[teatree] loop_registration_gate_enabled`` from
+    ``~/.teatree.toml`` (mirrors :func:`_deny_circuit_breaker_enabled`'s shape).
+    Fails OPEN to enabled on a missing/broken config; an explicit ``false`` is
+    the one-line durable kill-switch — never a code edit (NEVER-LOCKOUT).
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("loop_registration_gate_enabled") is not False
+
+
+_LOOP_REGISTRATION_EXEMPT_TOOLS = frozenset(
+    {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}
+)
+
+
+def _loop_registration_exempt(data: dict) -> bool:
+    """True when this call must NOT be nudge-blocked for loop registration.
+
+    Groups the side-effect-free NEVER-LOCKOUT exemptions so the handler stays a
+    single decision. A call is exempt when any of these holds:
+
+    - the tool is a cron-management / skill tool the agent uses to register the
+        loop (no point blocking the very tools that satisfy the gate);
+    - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
+        no ``CronCreate`` tool, so a deny is an *unrecoverable* lockout that
+        killed every spawned coder/reviewer in the incident;
+    - the durable kill-switch ``[teatree] loop_registration_gate_enabled =
+        false`` is set (disable without a code edit);
+    - there is no ``session_id`` (no per-session marker to key on).
+    """
+    if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
+        return True
+    if _call_is_from_subagent(data):
+        return True
+    if not _loop_registration_gate_enabled():
+        return True
+    return not data.get("session_id")
+
+
 def handle_enforce_loop_registration(data: dict) -> bool:
-    """Block Bash/Edit/Write until the background loop cron is registered."""
-    tool_name = data.get("tool_name", "")
-    if tool_name in {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}:
+    """Nudge-block Bash/Edit/Write until the background loop cron is registered.
+
+    NEVER-LOCKOUT: this is the loop-bootstrap NUDGE, not a safety gate, so it
+    must never be able to wedge a session (it hard-locked the factory several
+    times — the worst recurring incident). The exemptions in
+    :func:`_loop_registration_exempt` (cron tools, sub-agents, kill-switch,
+    no-session) cover the first two layers; the deny itself adds two more:
+
+    - it routes through :func:`_fail_open_or_deny`, so the always-allowed
+        self-rescue commands and the master ``gate_fail_open`` switch relax it;
+    - the reason carries the ``LOOP REGISTRATION`` UX-gate prefix, so the
+        repeated-denial circuit breaker auto-relaxes it after K consecutive
+        denials instead of blocking forever.
+    """
+    if _loop_registration_exempt(data):
         return False
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return False
+    session_id = data["session_id"]
     pending = _state_file(session_id, "loop-pending")
     if not pending.is_file():
         return False
@@ -1002,11 +1065,12 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     cadence = _loop_cadence_seconds()
     minutes = max(1, cadence // 60)
     reason = (
-        f"The teatree background loop is not registered yet. "
-        f"Please call CronCreate with "
-        f'cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true.'
+        f"LOOP REGISTRATION: the teatree background loop is not registered yet. "
+        f"Register it with CronCreate "
+        f'(cron="*/{minutes} * * * *", prompt="{_LOOP_PROMPT}", recurring=true). '
+        f"To run without the loop, set [teatree] loop_registration_gate_enabled = false."
     )
-    return emit_pretooluse_deny(reason)
+    return _fail_open_or_deny(data, reason)
 
 
 # ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
@@ -4615,13 +4679,18 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
         import datetime  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
 
         row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
         owner_session = (row or {}).get("session_id") or ""
         is_foreign_session = bool(owner_session) and owner_session != session_id
         expires_at = (row or {}).get("lease_expires_at")
-        is_live = expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)
         stored_pid = (row or {}).get("owner_pid")
+        # Liveness is pid-anchored: an alive owner_pid is a live owner past
+        # its tick TTL (the busy-owner hijack the TTL-only check missed).
+        is_live = (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
+            stored_pid is not None and pid_alive(stored_pid)
+        )
         pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
     except Exception:  # noqa: BLE001
         return ""
@@ -5008,9 +5077,15 @@ def _loop_self_pump(data: dict) -> bool | None:
         return None
 
     marker.write_text("1", encoding="utf-8")
+    # Tag the tick with the owner session id so its re-claim heartbeat
+    # always lands under the real session (and records its pid) instead of
+    # resolving to "" in the Bash-tool subprocess (#1107). The id IS the
+    # owner session here (the self-pump only fires for the owner), so the
+    # pid-anchored claim keeps the lease anchored to this session (#1073).
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
-        "without waiting for an external prompt. Run `t3 loop tick`, then "
+        f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
+        "t3 loop tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
         "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
