@@ -193,6 +193,37 @@ def availability_anchor(mode: str, queued: int) -> str:
     return "mode=away"
 
 
+def _configured_overlay_names() -> list[str]:
+    """Return the sorted names of every configured overlay.
+
+    Thin discovery seam so :func:`overlays_anchor` stays a pure formatter —
+    tests stub this rather than registering real overlays. Production reads
+    the unified entry-point + ``~/.teatree.toml`` discovery in
+    :func:`teatree.core.overlay_loader.get_all_overlay_names`.
+    """
+    from teatree.core.overlay_loader import get_all_overlay_names  # noqa: PLC0415
+
+    return sorted(get_all_overlay_names())
+
+
+def overlays_anchor() -> list[str]:
+    """Return the single configured-overlays summary line, or ``[]``.
+
+    Surfaces the user's multi-overlay context (``overlays: a · b · c``)
+    directly, rather than leaving overlays to appear only implicitly when a
+    ticket or PR happens to carry an ``[ov]`` prefix. Returns ``[]`` when no
+    overlay is configured. Fails open: any discovery error degrades to ``[]``
+    so a broken config can never blank the statusline.
+    """
+    try:
+        names = _configured_overlay_names()
+    except Exception:  # noqa: BLE001
+        return []
+    if not names:
+        return []
+    return [f"overlays: {' · '.join(names)}"]
+
+
 def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     """Return ``(loop_name, acquired_at)`` for every currently-live LoopLease.
 
@@ -445,6 +476,7 @@ __all__ = [
     "default_path",
     "live_loops_anchor",
     "loop_owner_anchor",
+    "overlays_anchor",
     "render",
     "statusline_for_slack",
 ]
