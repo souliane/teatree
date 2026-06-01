@@ -77,12 +77,10 @@ def test_fetch_failed_tests_returns_empty_for_no_pipeline() -> None:
 
 def test_fetch_pipeline_errors_extracts_from_failed_jobs() -> None:
     client, mock = _make_client(project=_project())
-    mock.get_json.side_effect = [
-        [{"id": 600}],  # latest pipeline
-        [  # jobs
-            {"id": 1, "name": "test", "status": "failed"},
-            {"id": 2, "name": "lint", "status": "success"},
-        ],
+    mock.get_json.return_value = [{"id": 600}]  # latest pipeline
+    mock.get_json_paginated.return_value = [
+        {"id": 1, "name": "test", "status": "failed"},
+        {"id": 2, "name": "lint", "status": "success"},
     ]
 
     with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value="FAILED in test_foo"):
@@ -192,12 +190,10 @@ def test_latest_pipeline_url_encodes_ref_with_slash() -> None:
     assert "ref=feature%2Fabc" in endpoint
 
 
-def test_fetch_pipeline_errors_returns_empty_when_jobs_not_a_list() -> None:
+def test_fetch_pipeline_errors_returns_empty_when_no_jobs() -> None:
     client, mock = _make_client(project=_project())
-    mock.get_json.side_effect = [
-        [{"id": 600}],  # latest pipeline
-        {"error": "not a list"},  # jobs response is a dict, not a list
-    ]
+    mock.get_json.return_value = [{"id": 600}]  # latest pipeline
+    mock.get_json_paginated.return_value = []  # paginated helper owns the list contract
     service = GitLabCIService(client=client)
 
     result = service.fetch_pipeline_errors(project="org/repo", ref="main")
@@ -207,10 +203,8 @@ def test_fetch_pipeline_errors_returns_empty_when_jobs_not_a_list() -> None:
 
 def test_fetch_pipeline_errors_skips_empty_trace() -> None:
     client, mock = _make_client(project=_project())
-    mock.get_json.side_effect = [
-        [{"id": 600}],  # latest pipeline
-        [{"id": 1, "name": "test", "status": "failed"}],  # jobs
-    ]
+    mock.get_json.return_value = [{"id": 600}]  # latest pipeline
+    mock.get_json_paginated.return_value = [{"id": 1, "name": "test", "status": "failed"}]
 
     with patch.object(service := GitLabCIService(client=client), "_get_job_trace", return_value=""):
         result = service.fetch_pipeline_errors(project="org/repo", ref="main")
@@ -377,3 +371,40 @@ def test_default_client_is_created_when_none_provided() -> None:
     service = GitLabCIService()
 
     assert isinstance(service._client, GitLabAPI)
+
+
+def test_fetch_pipeline_errors_paginates_jobs_beyond_first_page() -> None:
+    """A failed job past the first jobs page must still surface an error.
+
+    A non-paginated GET caps the jobs list at per_page=100; a job that failed
+    but sits on page 2 would be silently dropped from the error report.
+    """
+    page1 = [{"id": i, "name": f"job{i}", "status": "success"} for i in range(100)]
+    page2 = [{"id": 100, "name": "test", "status": "failed"}]
+
+    def _http_side_effect(url: str, **_: object) -> MagicMock:
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        if "/jobs" in url:
+            if "page=2" in url:
+                resp.json.return_value = page2
+                resp.headers = {"x-next-page": ""}
+            else:
+                resp.json.return_value = page1
+                resp.headers = {"x-next-page": "2"}
+        else:  # latest pipeline list
+            resp.json.return_value = [{"id": 600}]
+            resp.headers = {"x-next-page": ""}
+        return resp
+
+    api = GitLabAPI(token="tok", base_url="https://gitlab.example.com/api/v4")
+    with (
+        patch("httpx.get", side_effect=_http_side_effect),
+        patch.object(api, "resolve_project", return_value=_project()),
+    ):
+        service = GitLabCIService(client=api)
+        with patch.object(service, "_get_job_trace", return_value="FAILED in test_foo"):
+            result = service.fetch_pipeline_errors(project="org/repo", ref="main")
+
+    assert len(result) == 1
+    assert "test" in result[0]

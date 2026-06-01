@@ -21,9 +21,9 @@ class GitLabCIService:
             return [f"No pipeline found for ref: {ref}"]
 
         pipeline_id = int(cast("int | str", pipeline["id"]))
-        jobs = self._client.get_json(f"projects/{project_info.project_id}/pipelines/{pipeline_id}/jobs?per_page=100")
-        if not isinstance(jobs, list):
-            return []
+        jobs = self._client.get_json_paginated(
+            f"projects/{project_info.project_id}/pipelines/{pipeline_id}/jobs?per_page=100"
+        )
 
         errors: list[str] = []
         for job in jobs:
