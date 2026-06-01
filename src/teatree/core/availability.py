@@ -25,6 +25,7 @@ read race re-resolve cleanly.
 """
 
 import json
+import logging
 import os
 import tempfile
 import tomllib
@@ -39,7 +40,10 @@ from pathlib import Path
 from croniter import croniter
 
 from teatree.core.models.deferred_question import DeferredQuestion
+from teatree.core.notify import drain_deferred_questions
 from teatree.paths import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 MODE_PRESENT = "present"
 MODE_AWAY = "away"
@@ -272,17 +276,35 @@ def load_override(path: Path | None = None) -> Override | None:
     return Override(mode=mode, until=until)
 
 
-def write_override(mode: str, *, until: datetime | None = None, path: Path | None = None) -> Path:
+def write_override(
+    mode: str,
+    *,
+    until: datetime | None = None,
+    path: Path | None = None,
+    user_id: str = "",
+    overlay: str = "",
+) -> Path:
     """Write the override atomically via ``tmp.replace``.
 
     ``mode`` must be one of ``"present"`` / ``"away"``. ``until`` is an
     optional aware-datetime; ``None`` means the override never expires
     on its own (it is cleared explicitly with :func:`clear_override`).
+
+    Setting ``present`` from a prior effective mode of ``away`` is the
+    canonical away→present transition: it auto-drains the deferred-question
+    backlog to the user's Slack DM (the user reads Slack, not the CLI), so
+    returning never silently swallows questions and never depends on the
+    agent remembering to run ``t3 questions resurface``. The drain only
+    fires on an actual transition — setting present while already present
+    is a no-op — and is fully fail-open: a Slack failure is swallowed and
+    never blocks the availability flip. ``user_id`` / ``overlay`` are
+    forwarded to the drain for DM targeting and per-overlay bot routing.
     """
     if mode not in _VALID_MODES:
         msg = f"mode must be 'present' or 'away', got {mode!r}"
         raise ValueError(msg)
     target = path or override_path()
+    prior_mode = resolve_mode().mode if mode == MODE_PRESENT else None
     target.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, str] = {"mode": mode}
     if until is not None:
@@ -299,7 +321,24 @@ def write_override(mode: str, *, until: datetime | None = None, path: Path | Non
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
+    if prior_mode == MODE_AWAY:
+        _drain_on_return(user_id=user_id, overlay=overlay)
     return target
+
+
+def _drain_on_return(*, user_id: str, overlay: str) -> None:
+    """Auto-fire the away→present deferred-question drain, fail-open.
+
+    Reuses the canonical :func:`teatree.core.notify.drain_deferred_questions`
+    egress (the same code path ``t3 questions resurface`` runs). Any
+    failure — a Slack outage, a missing backend, an import error — is
+    swallowed so the availability flip that already landed on disk is never
+    rolled back or made to raise.
+    """
+    try:
+        drain_deferred_questions(user_id=user_id, overlay=overlay)
+    except Exception as exc:  # noqa: BLE001 — drain is best-effort; never block the availability flip
+        logger.warning("away→present auto-drain failed: %s", exc)
 
 
 def clear_override(path: Path | None = None) -> bool:

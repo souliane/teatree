@@ -18,7 +18,9 @@ core keeps the dependency direction one-way.
 """
 
 import enum
+import json
 import logging
+import os
 import re
 
 from django.db import DatabaseError, IntegrityError, transaction
@@ -26,7 +28,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.models import BotPing, OutboundClaim
+from teatree.core.models import BotPing, DeferredQuestion, OutboundClaim
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
@@ -266,8 +268,6 @@ def _record_outbound_claim(
     ignores it), so adding a return value would be dead code — a future
     sibling-sync pass should not "fix" this asymmetry.
     """
-    import os  # noqa: PLC0415 — defer stdlib import out of module load
-
     session_id = current_session_id()
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
@@ -307,8 +307,6 @@ def _resolve_user_id() -> str:
     fallback isn't required — every routing path agrees on the same
     resolution order.
     """
-    import os  # noqa: PLC0415
-
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
     overlays = cfg.get("overlays") or {}
@@ -334,8 +332,6 @@ def resolve_user_channel() -> str:
     as "open a DM to the resolved user_id" rather than pinning to a
     specific ``D...`` channel.
     """
-    import os  # noqa: PLC0415
-
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
     overlays = cfg.get("overlays") or {}
@@ -411,4 +407,62 @@ def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: 
         logger.warning("notify_user failed-row audit write failed for key=%s: %s", idempotency_key, exc)
 
 
-__all__ = ["NotifyKind", "notify_user"]
+def _resurface_text(row: DeferredQuestion) -> str:
+    lines = [f"*Pending question #{row.pk}* (deferred while you were away):", row.question]
+    try:
+        options = json.loads(row.options_json) if row.options_json else []
+    except (ValueError, TypeError):
+        options = []
+    for i, opt in enumerate(options, 1):
+        if not isinstance(opt, dict):
+            continue
+        label = opt.get("label", "")
+        desc = opt.get("description", "")
+        lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
+    lines.append(f"\n_Answer with_ `t3 questions answer {row.pk} <text>`")
+    return "\n".join(lines)
+
+
+def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[int, int]:
+    """Re-post the pending :class:`DeferredQuestion` backlog to the user's Slack DM.
+
+    The single canonical away→present drain. Both the manual
+    ``t3 questions resurface`` command and the automatic
+    ``write_override(MODE_PRESENT)`` away→present transition call this —
+    one code path, no duplicated egress logic.
+
+    Idempotent per question (the ``BotPing`` ledger dedupes the
+    per-question ``resurface-deferred-question-<pk>`` key), so re-running
+    on a later tick or after a manual ``resurface`` never double-posts.
+    Fails open: a delivery failure for one question is recorded on its
+    ``BotPing`` row by :func:`notify_user` and never aborts the drain or
+    raises. Returns ``(delivered, total)``.
+    """
+    rows = list(DeferredQuestion.pending())
+    if not rows:
+        return 0, 0
+
+    previous_overlay = os.environ.get("T3_OVERLAY_NAME")
+    if overlay:
+        os.environ["T3_OVERLAY_NAME"] = overlay
+    delivered = 0
+    try:
+        for row in rows:
+            if notify_user(
+                _resurface_text(row),
+                kind=NotifyKind.QUESTION,
+                idempotency_key=f"resurface-deferred-question-{row.pk}",
+                user_id=user_id or None,
+            ):
+                delivered += 1
+    finally:
+        if overlay:
+            if previous_overlay is None:
+                os.environ.pop("T3_OVERLAY_NAME", None)
+            else:
+                os.environ["T3_OVERLAY_NAME"] = previous_overlay
+
+    return delivered, len(rows)
+
+
+__all__ = ["NotifyKind", "drain_deferred_questions", "notify_user"]
