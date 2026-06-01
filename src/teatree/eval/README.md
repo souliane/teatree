@@ -36,6 +36,8 @@ t3 eval run --backend subscription            # grade subscription-produced tran
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
+t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
+t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
 ```
 
 Each scenario invocation shells out to `claude -p` in `--output-format
@@ -116,16 +118,72 @@ under-trigger (in-scope prompt that does not fire) or over-trigger (control
 prompt that fires) exits non-zero. A skill author registers expectations by
 editing the corpus.
 
+### Regression corpus (real gate/checker code paths)
+
+`t3 eval regression` is a Layer-1 (deterministic, free, no `claude` run) eval —
+sibling of trigger-QA. Where a scenario grades what an agent *says* it would
+do, the regression corpus (`regression_corpus.py`) grades what the gate/checker
+code *does*: each `RegressionCheck` calls the **real** function for a recurring
+failure class on a constructed must-block input and a must-allow input, and
+reports a violation when either direction is wrong. Checks that need git build
+a throwaway repo under `tempfile`; checks that need the ORM run under the test
+DB (and skip cleanly when Django is not configured). `tests/eval/
+test_regression_corpus.py` proves each check is non-vacuous — a deliberately
+broken stand-in for the same code path turns the corpus RED — so a check that
+would silently pass on the pre-fix behavior is caught at test time. The corpus
+also runs in the normal pytest gate on every PR (via that test), so it is not
+gated behind the weekly cadence.
+
+Add a check by appending a `RegressionCheck` to `_CHECKS` with its
+`failure_class`, a clickable `origin` URL (the originating fix PR/issue), the
+`invariant` it pins, and a `predicate` that returns `True` only when the real
+code path still honors the invariant — then add the matching anti-vacuous test.
+
 ## Triggering
 
 - **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
-  `t3 eval trigger-qa` locally whenever you want.
-- **Weekly, on the first PR of the ISO week.** CI runs the suite once a week —
-  not on every push, not on every PR. `scripts/eval/first_pr_of_week.py` decides
-  whether the current MR is the earliest-created MR of the current ISO week
-  (order-independent, re-run safe). The rule is wired in `.gitlab-ci.yml`
-  (`eval-gate` → `eval-weekly`) and mirrored in `.github/workflows/ci.yml`
-  (`eval-weekly` job).
+  `t3 eval trigger-qa` / `t3 eval regression` locally whenever you want.
+- **Every PR (deterministic layers).** The regression corpus is exercised by
+  `tests/eval/test_regression_corpus.py` in the normal pytest gate on every
+  PR, and trigger-QA + the scenario anti-vacuous matchers are pinned by
+  `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
+  test_eval.py`. The deterministic, free layers therefore guard every PR
+  through pytest — only the paid `claude -p` scenario *run* is weekly.
+- **Weekly, on the first PR of the ISO week.** CI runs the full suite (the
+  paid scenario run plus the free `trigger-qa` and `regression` commands) once
+  a week — not on every push, not on every PR. `scripts/eval/
+  first_pr_of_week.py` decides whether the current MR is the earliest-created
+  MR of the current ISO week (order-independent, re-run safe). The rule is
+  wired in `.gitlab-ci.yml` (`eval-gate` → `eval-weekly`) and mirrored in
+  `.github/workflows/ci.yml` (`eval-weekly` job).
+
+## Failure-class coverage
+
+The regression corpus (`t3 eval regression`, real code-path checks) and the
+behavioral scenarios (`t3 eval run`, agent-trajectory checks) together pin the
+recurring failure classes of the last development cycle. Each row names the
+class, where it is pinned, and the originating fix:
+
+| Failure class | Where pinned | Originating fix |
+|---|---|---|
+| migration-fork / multiple leaf nodes | `regression_corpus` (graph leaf count) | [#1721](https://github.com/souliane/teatree/pull/1721) |
+| branch-currency §940 (conflict-only, never behind-only) | `regression_corpus` | [#1719](https://github.com/souliane/teatree/pull/1719) |
+| bare-reference gate over-block on read-only `gh api` | `regression_corpus` | [#1535](https://github.com/souliane/teatree/pull/1535) |
+| substrate-merge human-authorize floor | `regression_corpus` (merge precondition) | [#1498](https://github.com/souliane/teatree/pull/1498) |
+| maker≠checker at merge time | `regression_corpus` (merge precondition) | [#1601](https://github.com/souliane/teatree/pull/1601) |
+| loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
+| orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
+| structured-question — AskUserQuestion, one decision | `scenarios/structured_question.yaml` | [#1622](https://github.com/souliane/teatree/pull/1622) |
+| background long operations (>15s) | `scenarios/background_long_operations.yaml` | [#1701](https://github.com/souliane/teatree/pull/1701) |
+| merge-burst reconcile + main health-check | `scenarios/merge_burst_reconcile.yaml` | [#1721](https://github.com/souliane/teatree/pull/1721) |
+| never-edit-main-clone + ff-not-reset | `scenarios/main_clone_protected.yaml` | [#1662](https://github.com/souliane/teatree/pull/1662) |
+| do-work-now (run the command, don't hand back) | `scenarios/do_work_now.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
+| BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
+| CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
+
+The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
+skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
+ticket, …) cover the remaining classes already shipped on this branch.
 
 ## Run history and baselines
 

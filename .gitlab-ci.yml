@@ -57,5 +57,6 @@ eval-weekly:
     # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
     # weekly job runs the suite if a CLI is provisioned and is a no-op otherwise.
     - uv run t3 eval trigger-qa
+    - uv run t3 eval regression
     - uv run t3 eval run --trials 3 --require any
   allow_failure: false

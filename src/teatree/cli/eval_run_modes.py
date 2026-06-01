@@ -9,6 +9,7 @@ the typer surface and the runner loop.
 """
 
 import dataclasses
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
@@ -118,3 +119,29 @@ def gate_run_regressions(record: "EvalRunRecord", *, enabled: bool) -> bool:
     if not any_baseline:
         typer.echo("baseline: no baseline recorded for these models — nothing to compare")
     return any_regressed
+
+
+def build_subscription_manifest(specs: list[EvalSpec], target_dir: Path) -> list[dict[str, str]]:
+    return [
+        {
+            "scenario": spec.name,
+            "agent_path": spec.agent_path,
+            "model": spec.model,
+            "prompt": spec.prompt,
+            "transcript_path": str(target_dir / f"{spec.name}.jsonl"),
+        }
+        for spec in specs
+    ]
+
+
+def render_subscription_text(manifest: list[dict[str, str]]) -> str:
+    blocks = [
+        (
+            f"scenario: {entry['scenario']}  (model {entry['model']})\n"
+            f"  agent:      {entry['agent_path']}\n"
+            f"  save to:    {entry['transcript_path']}\n"
+            f"  prompt:     {entry['prompt']}\n"
+        )
+        for entry in manifest
+    ]
+    return "\n".join(blocks)

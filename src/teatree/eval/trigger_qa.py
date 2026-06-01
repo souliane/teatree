@@ -13,6 +13,7 @@ to register expectations.
 """
 
 import dataclasses
+import json
 import re
 from pathlib import Path
 
@@ -76,6 +77,29 @@ def _fires(prompt: str, patterns: list[re.Pattern[str]]) -> bool:
 def load_corpus(path: Path = CORPUS_PATH) -> list[dict]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     return loaded if isinstance(loaded, list) else []
+
+
+def render_text(report: TriggerQAReport) -> str:
+    lines: list[str] = []
+    for check in report.failures:
+        kind = "under-trigger (expected fire, none)" if check.should_fire else "over-trigger (fired, unexpected)"
+        lines.append(f"FAIL {check.skill}: {kind}\n  prompt: {check.prompt}")
+    passed = len(report.checks) - len(report.failures)
+    lines.append(f"\nsummary: {passed} passed, {len(report.failures)} failed (of {len(report.checks)})")
+    return "\n".join(lines)
+
+
+def render_json(report: TriggerQAReport) -> str:
+    return json.dumps(
+        {
+            "ok": report.ok,
+            "checks": [
+                {"skill": c.skill, "prompt": c.prompt, "should_fire": c.should_fire, "fired": c.fired}
+                for c in report.checks
+            ],
+        },
+        indent=2,
+    )
 
 
 def run_trigger_qa(*, corpus_path: Path = CORPUS_PATH, skills_dir: Path = DEFAULT_SKILLS_DIR) -> TriggerQAReport:

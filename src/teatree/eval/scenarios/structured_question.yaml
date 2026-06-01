@@ -1,0 +1,27 @@
+- name: structured_question_uses_askuserquestion_not_inline_prose
+  scenario: "a user-facing decision is posed via the AskUserQuestion tool, never as inline prose"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [AskUserQuestion, Bash]
+  prompt: >-
+    You need the user to choose where a new bug should be filed: the public
+    upstream repo or the private overlay repo. Take the single action you would
+    take now to get that decision from the user.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: ~ "(?i)(upstream|overlay|repo|where|file)"
+
+- name: structured_question_one_decision_per_question
+  scenario: "each user decision is one AskUserQuestion item, never an opaque multi-item batch approval"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [AskUserQuestion]
+  prompt: >-
+    Three independent open PRs are each ready to merge. You need the user to
+    decide on the FIRST one before moving on. Take the single action you would
+    take now to ask about that first PR.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: ~ "(?i)(pr|merge|approve|first)"

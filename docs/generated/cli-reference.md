@@ -1153,6 +1153,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       time.                                                  │
 │ trigger-qa            Validate every skill's trigger keywords against the    │
 │                       must-fire/must-not-fire corpus.                        │
+│ regression            Run the deterministic regression corpus over the real  │
+│                       gate/checker code paths.                               │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1309,6 +1311,25 @@ Usage: t3 eval trigger-qa [OPTIONS]
  Deterministic and free — no ``claude -p`` invocation. An under-trigger
  (in-scope prompt that does not fire) or over-trigger (control prompt that
  does fire) exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval regression`
+
+```
+Usage: t3 eval regression [OPTIONS]
+
+ Run the deterministic regression corpus over the real gate/checker code paths.
+
+ Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+ function for a recurring failure class (branch-currency §940, the
+ bare-reference gate, the substrate-merge and maker≠checker floors, the
+ pid-anchored loop lease, the migration-graph leaf count) on a must-block and
+ a must-allow input. Any violated invariant exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │

@@ -9,11 +9,13 @@ import typer
 
 from teatree.claude_sessions import list_sessions
 from teatree.cli.eval_run_modes import (
+    build_subscription_manifest,
     gate_run_regressions,
     make_grader,
     persist_matrix_run,
     persist_pass_at_k_run,
     persist_single,
+    render_subscription_text,
     with_model,
 )
 from teatree.eval.backends import SDK_BACKEND, UnknownBackendError, make_runner
@@ -21,10 +23,15 @@ from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.models import EvalSpec
 from teatree.eval.pass_at_k import run_pass_at_k
+from teatree.eval.regression_corpus import render_json as render_regression_json
+from teatree.eval.regression_corpus import render_text as render_regression_text
+from teatree.eval.regression_corpus import run_regression_corpus
 from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
 from teatree.eval.runner import ClaudePRunner
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_conformance import render_report, render_report_json, replay
+from teatree.eval.trigger_qa import render_json as render_trigger_json
+from teatree.eval.trigger_qa import render_text as render_trigger_text
 from teatree.eval.trigger_qa import run_trigger_qa
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
@@ -339,26 +346,8 @@ def prepare_subscription(
         typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
         raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
-    target_dir = transcript_dir or Path.cwd()
-    manifest = [
-        {
-            "scenario": spec.name,
-            "agent_path": spec.agent_path,
-            "model": spec.model,
-            "prompt": spec.prompt,
-            "transcript_path": str(target_dir / f"{spec.name}.jsonl"),
-        }
-        for spec in specs
-    ]
-    if output_format == "json":
-        typer.echo(json.dumps(manifest, indent=2))
-        return
-    for entry in manifest:
-        typer.echo(f"scenario: {entry['scenario']}  (model {entry['model']})")
-        typer.echo(f"  agent:      {entry['agent_path']}")
-        typer.echo(f"  save to:    {entry['transcript_path']}")
-        typer.echo(f"  prompt:     {entry['prompt']}")
-        typer.echo("")
+    manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
+    typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
 
 
 @eval_app.command("history")
@@ -414,25 +403,29 @@ def trigger_qa(
     does fire) exits non-zero.
     """
     report = run_trigger_qa()
-    if output_format == "json":
-        typer.echo(
-            json.dumps(
-                {
-                    "ok": report.ok,
-                    "checks": [
-                        {"skill": c.skill, "prompt": c.prompt, "should_fire": c.should_fire, "fired": c.fired}
-                        for c in report.checks
-                    ],
-                },
-                indent=2,
-            )
-        )
-    else:
-        for check in report.failures:
-            kind = "under-trigger (expected fire, none)" if check.should_fire else "over-trigger (fired, unexpected)"
-            typer.echo(f"FAIL {check.skill}: {kind}\n  prompt: {check.prompt}")
-        passed = len(report.checks) - len(report.failures)
-        typer.echo(f"\nsummary: {passed} passed, {len(report.failures)} failed (of {len(report.checks)})")
+    typer.echo(render_trigger_json(report) if output_format == "json" else render_trigger_text(report))
+    if not report.ok:
+        sys.exit(1)
+
+
+@eval_app.command("regression")
+def regression(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+) -> None:
+    """Run the deterministic regression corpus over the real gate/checker code paths.
+
+    Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+    function for a recurring failure class (branch-currency §940, the
+    bare-reference gate, the substrate-merge and maker≠checker floors, the
+    pid-anchored loop lease, the migration-graph leaf count) on a must-block and
+    a must-allow input. Any violated invariant exits non-zero.
+    """
+    _bootstrap_django()
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    report = run_regression_corpus()
+    typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
     if not report.ok:
         sys.exit(1)
 

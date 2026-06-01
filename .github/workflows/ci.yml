@@ -281,6 +281,9 @@ jobs:
       - name: Trigger-QA (deterministic, free)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval trigger-qa
+      - name: Regression corpus (deterministic, free; also gated every PR via pytest)
+        if: steps.gate.outputs.run_eval == 'true'
+        run: uv run t3 eval regression
       - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval run --trials 3 --require any

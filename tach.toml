@@ -134,7 +134,7 @@ depends_on = [
 
 [[modules]]
 path = "teatree.eval"
-depends_on = ["teatree.core", "teatree.utils", "teatree.trigger_parser"]
+depends_on = ["teatree.core", "teatree.hooks", "teatree.utils", "teatree.trigger_parser"]
 
 [[modules]]
 path = "teatree.core.management"

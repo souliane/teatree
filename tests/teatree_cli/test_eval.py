@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 
 
@@ -519,3 +520,50 @@ class TestPrepareSubscription:
         manifest = json.loads(result.output[start:end])
         assert manifest[0]["scenario"] == "alpha"
         assert manifest[0]["transcript_path"] == str(tmp_path / "alpha.jsonl")
+
+
+class TestEvalRegression:
+    def test_passing_corpus_renders_pass_and_exits_zero(self) -> None:
+        check = RegressionCheck(
+            failure_class="synthetic",
+            origin="https://example.com/x",
+            invariant="ok",
+            predicate=lambda: True,
+        )
+        good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
+        with patch("teatree.cli.eval.run_regression_corpus", return_value=good):
+            result = CliRunner().invoke(app, ["eval", "regression"])
+        assert result.exit_code == 0, result.output
+        assert "0 failed" in result.output
+        assert "PASS synthetic" in result.output
+
+    def test_reports_failure_and_exits_nonzero(self) -> None:
+        check = RegressionCheck(
+            failure_class="synthetic",
+            origin="https://example.com/x",
+            invariant="never",
+            predicate=lambda: False,
+        )
+        result_row = CheckResult(check=check, ok=False, skipped=False, detail="invariant violated")
+        bad = RegressionReport(results=(result_row,))
+        with patch("teatree.cli.eval.run_regression_corpus", return_value=bad):
+            result = CliRunner().invoke(app, ["eval", "regression"])
+        assert result.exit_code == 1
+        assert "FAIL synthetic" in result.output
+
+    def test_json_format_emits_checks(self) -> None:
+        check = RegressionCheck(
+            failure_class="synthetic",
+            origin="https://example.com/x",
+            invariant="ok",
+            predicate=lambda: True,
+        )
+        good = RegressionReport(results=(CheckResult(check=check, ok=True, skipped=False, detail=""),))
+        with patch("teatree.cli.eval.run_regression_corpus", return_value=good):
+            result = CliRunner().invoke(app, ["eval", "regression", "--format", "json"])
+        assert result.exit_code == 0
+        output = result.output
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert payload["ok"] is True
+        assert payload["checks"][0]["failure_class"] == "synthetic"
+        assert payload["checks"][0]["origin"].startswith("https://")
