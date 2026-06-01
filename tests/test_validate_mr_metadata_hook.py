@@ -24,6 +24,13 @@ def _glab_create(title: str, description: str) -> dict:
     }
 
 
+def _fields(command: str) -> tuple[str, str]:
+    """Extract (title, description) for *command*, asserting it IS an MR mutation."""
+    result = router._extract_mr_fields({"tool_name": "Bash", "tool_input": {"command": command}})
+    assert result is not None
+    return result
+
+
 class TestDefaultOverlayValidation:
     """No T3_MR_VALIDATE_SCRIPT set -> validate via `t3 tool validate-mr`."""
 
@@ -114,6 +121,100 @@ class TestDefaultOverlayValidation:
         assert blocked is True
         argv = run.call_args[0][0]
         assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
+
+
+class TestFileBasedDescriptionIsRead:
+    """A file-based MR description (`-F`/`--description-file`) is read, not "".
+
+    The inline ``--description 'x'`` regex captures nothing for a file-based
+    description, so the gate previously validated an empty string and a
+    non-compliant first line slipped through and failed CI downstream.
+    """
+
+    def test_extract_reads_description_file(self, tmp_path):
+        desc = tmp_path / "d.md"
+        desc.write_text("config(ci): real first line (proj#1)\n\nbody\n", encoding="utf-8")
+        title, description = _fields(f"glab mr create --title 'config(ci): t' -F {desc}")
+        assert title == "config(ci): t"
+        assert description.startswith("config(ci): real first line")
+
+    def test_extract_reads_long_description_file_flag(self, tmp_path):
+        desc = tmp_path / "d.md"
+        desc.write_text("fix: real (proj#1)\n", encoding="utf-8")
+        _title, description = _fields(f"glab mr create --title 'fix: t' --description-file {desc}")
+        assert description.startswith("fix: real")
+
+    def test_missing_file_falls_back_to_empty_not_crash(self):
+        # Unreadable file => "" (the validator then rejects the empty first
+        # line — the correct verdict — rather than the gate crashing).
+        title, description = _fields("glab mr create --title 'fix: t' -F /no/such/file.md")
+        assert title == "fix: t"
+        assert description == ""
+
+
+class TestOutOfBandApiEditIsGated:
+    """A REST-API MR/PR write is validated too, not just the create/update CLI.
+
+    A description set via ``glab api --method PUT .../merge_requests/N
+    --field description=…`` bypasses the ``glab mr create`` surface entirely.
+    The gate now intercepts the API write and validates the fields it sets.
+    """
+
+    def test_bad_description_via_api_put_is_validated(self, monkeypatch):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        cmd = "glab api --method PUT projects/x%2Fy/merge_requests/123 --field 'description=bad prose'"
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Invalid first line.")
+        with patch.object(router.subprocess, "run", return_value=rejected) as run:
+            blocked = handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert blocked is True
+        argv = run.call_args[0][0]
+        assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
+        # The untouched title is back-filled with the (here bad) description so
+        # the verdict reflects only the edited field, never a spurious
+        # "title empty" for an unset title.
+        assert "bad prose" in argv
+
+    def test_description_only_api_edit_does_not_force_validate_title(self):
+        # The untouched title is mirrored from the set description, so a
+        # description-only edit can never false-block on "Title is empty."
+        title, description = _fields(
+            "glab api --method PUT projects/x%2Fy/merge_requests/123 --field 'description=config(ci): real (proj#1)'"
+        )
+        assert title == "config(ci): real (proj#1)"
+        assert description == "config(ci): real (proj#1)"
+
+    def test_state_only_api_edit_is_skipped(self):
+        # No title/description field touched => nothing to validate
+        # (never-lockout: a partial state edit must not be force-validated).
+        assert (
+            router._extract_mr_fields(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {
+                        "command": "glab api --method PUT projects/x%2Fy/merge_requests/123 --field state_event=close"
+                    },
+                }
+            )
+            is None
+        )
+
+    def test_api_get_read_is_not_a_write(self):
+        assert (
+            router._extract_mr_fields(
+                {"tool_name": "Bash", "tool_input": {"command": "glab api projects/x%2Fy/merge_requests/123"}}
+            )
+            is None
+        )
+
+    def test_gh_api_pr_create_is_gated(self, monkeypatch):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        cmd = "gh api repos/o/r/pulls --method POST -f 'title=bad title' -f 'body=bad body'"
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert blocked is True
 
 
 class TestEnvVarOverrideStillWorks:
