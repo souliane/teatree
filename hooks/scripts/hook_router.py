@@ -3090,11 +3090,18 @@ def handle_banned_terms_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
+_BANNED_TERMS_CREDENTIAL_DENY = (
+    "BLOCKED: a high-confidence secret (token / key / private-key block) was detected in the "
+    "publish payload. Secrets are blocked on every surface, including a private repo — remove "
+    "the credential before posting."
+)
+
+
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import banned_terms_scanner, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, publish_destination, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -3102,19 +3109,29 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         return False
     tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
 
+    command = tool_input.get("command", "")
+    cwd_repo = _resolve_cwd_repo(data)
+
+    # A high-confidence secret leaks on EVERY surface -- a title, a short ``-t``
+    # flag, a ``gh api -f title=`` field, a ``git -C ... commit`` subject -- not
+    # only the description body, and on an internal post the destination gate
+    # would SKIP or a command carrying the --allow-banned-term override. Scan the
+    # WIDE surface set and block before the payload-None early-return and any skip
+    # / override short-circuit (#1672 secrets-always-blocked invariant).
+    if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
+        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
+
     payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
     if payload is None:
         return False
 
-    if banned_terms_scanner.has_override(tool_name, tool_input):
-        return False
-
-    term = banned_terms_scanner.scan_text(payload)
+    skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
+        tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo)
+    )
+    term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
 
-    command = tool_input.get("command", "")
-    cwd_repo = _resolve_cwd_repo(data)
     if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
@@ -3181,7 +3198,7 @@ def _run_bare_reference_pretool(data: dict) -> bool:
     """Bare-reference inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
+    from teatree.hooks import bare_reference_scanner, publish_destination  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -3191,6 +3208,10 @@ def _run_bare_reference_pretool(data: dict) -> bool:
 
     payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
     if payload is None:
+        return False
+
+    command = tool_input.get("command", "")
+    if tool_name == "Bash" and publish_destination.gate_skips_destination(command, _resolve_cwd_repo(data)):
         return False
 
     refs = bare_reference_scanner.scan_text(payload)

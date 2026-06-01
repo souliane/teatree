@@ -16,6 +16,8 @@ The names re-exported below keep ``from teatree.loop.rendering import X``
 working for every existing consumer and test after the split.
 """
 
+from django.utils import timezone
+
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.pr_ticket_index import build_ticket_index
 from teatree.loop.rendering_classification import _ClassifiedActions, _classify_actions, _issue_ref_from
@@ -33,6 +35,7 @@ __all__ = [
     "_issue_ref_from",
     "_render_action_line",
     "_render_pr_group",
+    "cost_chip_lines",
     "zones_for",
 ]
 
@@ -60,6 +63,7 @@ def zones_for(
     # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400);
     # the live availability segment rides on that line (#1678).
     _populate_live_loops_anchor(zones)
+    _populate_cost_chip(zones)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -106,3 +110,40 @@ def _populate_live_loops_anchor(zones: StatuslineZones) -> None:
     from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
 
     zones.anchors.extend(live_loops_anchor())
+
+
+def _populate_cost_chip(zones: StatuslineZones) -> None:
+    """Append the compact ``SDK ≈$48/$200`` cost chip anchor (#cost).
+
+    Cycle-to-date SDK-equivalent spend of the loop's headless ``claude -p``
+    usage against the monthly Agent-SDK credit, tiny at any spend. Silenced
+    (no line) when no headless cost is captured this cycle. Fails open to a
+    no-op on any DB / import error so a broken cost read never blanks the
+    statusline.
+    """
+    zones.anchors.extend(cost_chip_lines())
+
+
+def cost_chip_lines() -> list[str]:
+    """Return the cost chip as a one-line anchor list, or ``[]``. Fail-open."""
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415
+        from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
+        from teatree.core.models.task import TaskAttempt  # noqa: PLC0415
+
+        settings = get_effective_settings()
+        anchor = settings.billing_cycle_anchor_day or None
+        today = timezone.localdate()
+        start_dt = cycle_start_datetime(today, anchor_day=anchor)
+        breakdown = TaskAttempt.objects.headless().filter(started_at__gte=start_dt).cost_breakdown()
+        if breakdown.attempts == 0:
+            return []
+        report = CostReport.build(
+            breakdown,
+            credit_usd=settings.sdk_monthly_credit_usd,
+            cycle_start_date=cycle_start(today, anchor_day=anchor),
+            today=today,
+        )
+        return [report.chip()]
+    except Exception:  # noqa: BLE001
+        return []

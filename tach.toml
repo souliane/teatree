@@ -128,7 +128,8 @@ depends_on = [
   "teatree.memory_audit",
   "teatree.on_behalf_gate",
   "teatree.outbound_claim",
-  "teatree.messaging"
+  "teatree.messaging",
+  "teatree.quality"
 ]
 
 [[modules]]
