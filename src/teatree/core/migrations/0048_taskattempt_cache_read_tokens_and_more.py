@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0045_evalrunrecord_evalscenarioresult"),
+        ("core", "0047_merge_0046_reviewverdict_0046_ticket_kind"),
     ]
 
     operations = [

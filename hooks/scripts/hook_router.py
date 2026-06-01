@@ -1612,17 +1612,17 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     if not demanded:
         return False
 
+    # A demanded skill that does not resolve (a stale/renamed keyword→skill
+    # mapping in ``~/.teatree-skills.yml``, e.g. one pointing at a skill name
+    # the registry no longer carries) is dropped from the demand — never
+    # blocked on. The drop is SILENT: the harness treats ANY ``TaskCreated``
+    # hook stderr as an error and aborts task creation, so a fail-open skip
+    # must emit nothing. (#1488 originally warned here, which made every task
+    # whose text mapped to an unresolvable skill fail to be created.) The
+    # ``PreToolUse`` counterpart still warns — there stderr is the documented
+    # logging channel and does not abort the tool call.
     search_dirs = _skill_search_dirs()
     enforceable = [s for s in demanded if _skill_resolves(s, search_dirs)]
-    stale = [s for s in demanded if s not in enforceable]
-
-    config_path = os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml"))
-    for name in stale:
-        sys.stderr.write(
-            f"WARNING: skill-loading-on-task gate skipped unresolvable skill '{name}' "
-            f"(not found in any skill dir; check the keyword→skill mapping in {config_path}).\n"
-        )
-
     if not enforceable:
         return False
 
@@ -2237,15 +2237,125 @@ def handle_protect_default_branch(data: dict) -> bool:
 
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
+# Inline ``--title``/``--description`` (single OR double quoted, multi-line:
+# ``[^'"]`` already spans newlines, no DOTALL needed). The `glab mr` CLI uses
+# ``--title``/``--description``; the long-flag value is captured verbatim.
+_MR_TITLE_FLAG_RE = re.compile(r"""--title[ =]+(['"])(?P<val>.*?)\1""", re.DOTALL)
+_MR_DESC_FLAG_RE = re.compile(r"""--description[ =]+(['"])(?P<val>.*?)\1""", re.DOTALL)
+# A file-based description flag (``--description-file``/``-F``) is PRESENT even
+# when the inline quote-capture fails: used to decide whether to fall back to
+# :func:`_read_message_file` rather than pass a falsely-empty description
+# through the validator. ``--description`` is included because the inline
+# capture failing on it (``--description "$(cat f)"`` / heredoc) still means a
+# description WAS intended — re-read it from the resolvable file arg if any.
+_MR_DESC_FLAG_PRESENT_RE = re.compile(r"(?:--description-file|--description\b|\s-F\b)")
+# REST-API field args set on a ``glab api``/``gh api`` MR/PR write
+# (``--field title=…`` / ``-f description=…`` / ``--raw-field …``). Three
+# shapes, in order:
+#   1. whole token quoted — ``--field 'description=multi word …'`` (the common
+#      shell form; the value runs to the matching CLOSING outer quote, so
+#      embedded spaces and newlines are kept);
+#   2. value quoted only — ``--field description='multi word …'``;
+#   3. bare value — ``--field description=oneword`` (runs to next whitespace).
+# ``body`` is GitHub's PR-description field (``gh api … -f body=…``); it is
+# normalised to ``description`` so the overlay validator sees one key.
+_API_FIELD_RE = re.compile(
+    r"""(?:--field|--raw-field|-f|-F)[ =]+"""
+    r"""(?:(?P<oq>['"])(?P<key>title|description|body)=(?P<oqval>.*?)(?P=oq)"""
+    r"""|(?P<key2>title|description|body)=(?:(?P<q>['"])(?P<qval>.*?)(?P=q)|(?P<bval>[^\s'"]*)))""",
+    re.DOTALL,
+)
+
+
+def _extract_inline_or_file_desc(command: str) -> str:
+    """Description text from a Bash MR command — inline quote, then file/heredoc.
+
+    Inline ``--description 'x'`` wins. When the flag is present but the inline
+    capture is empty (file-based ``-F``/``--description-file``, a heredoc, or a
+    ``$(...)`` substitution), fall back to :func:`_read_message_file` so a
+    multi-line description is actually read and validated rather than passed
+    through as a falsely-empty (and trivially "valid"-looking) string. Returns
+    ``""`` only when no description source can be resolved — the validator then
+    rejects the empty first line, which is the correct verdict for an MR create
+    with a genuinely empty description.
+    """
+    inline = _MR_DESC_FLAG_RE.search(command)
+    if inline is not None and inline.group("val"):
+        return inline.group("val")
+    if _MR_DESC_FLAG_PRESENT_RE.search(command):
+        from_file = _read_message_file(command)
+        if from_file is not None:
+            return from_file
+    return ""
+
+
+def _extract_api_mr_fields(command: str) -> tuple[str, str] | None:
+    """Title/description for an out-of-band ``glab api``/``gh api`` MR write.
+
+    Closes the gap where a non-compliant title/description reaches GitLab via
+    ``glab api --method PUT .../merge_requests/N --field description=…`` (or a
+    ``gh api`` POST), entirely outside the ``glab mr create`` surface the gate
+    historically watched. Validates ONLY the fields the command actually sets.
+
+    Neither field set (e.g. ``--field state_event=close``): returns ``None`` —
+    nothing to validate (never-lockout: a partial state edit must not be
+    force-validated against an empty description). Exactly one field set: the
+    untouched field is back-filled with the set field's value as a known-good
+    placeholder so the verdict reflects ONLY the field under edit. A valid
+    ``type(scope): … (ticket_url)`` line is, by the canonical grammar,
+    simultaneously a valid title and a valid description first line — so
+    mirroring the set field can never inject a spurious failure for the
+    untouched field, while a non-compliant edited field is still rejected
+    (without this, editing only the description would false-block on
+    ``Title is empty.``). Both fields set: validated as a pair, like a create.
+
+    Reuses :func:`_is_api_create_endpoint_write` so a bare ``GET`` read is
+    never treated as a write.
+    """
+    if not re.search(r"\b(?:gh|glab)\s+api\b", command):
+        return None
+    if not _is_api_create_endpoint_write(command):
+        return None
+    fields: dict[str, str] = {}
+    for m in _API_FIELD_RE.finditer(command):
+        if m.group("oq"):
+            key, value = m.group("key"), (m.group("oqval") or "")
+        else:
+            key = m.group("key2")
+            value = (m.group("qval") if m.group("q") else m.group("bval")) or ""
+        # GitHub's PR description field is ``body``; map it onto ``description``.
+        fields["description" if key == "body" else key] = value
+    if not fields:
+        return None
+    title = fields.get("title")
+    description = fields.get("description")
+    if title is None:
+        title = description or ""
+    if description is None:
+        description = title
+    return title, description
+
 
 def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     """Return ``(title, description)`` for an MR create/update, else ``None``.
 
-    ``None`` means "not a `glab mr create/update`" — nothing to validate.
-    A returned tuple means the command IS an MR mutation and must be
-    validated *even if title/description are empty* — an empty/missing
-    title is exactly the kind of bad metadata the pre-push gate must
-    reject, not silently pass (#119).
+    ``None`` means "not an MR-metadata mutation" — nothing to validate. A
+    returned tuple means the command IS an MR mutation and must be validated
+    *even if title/description are empty* — an empty/missing title is exactly
+    the kind of bad metadata the gate must reject, not silently pass (#119).
+
+    Covers four surfaces so a non-compliant title/description cannot slip onto
+    GitLab through any of them:
+
+    1.  ``glab mr create/update --title/--description`` (inline quotes).
+    2.  The same command's file-based / heredoc / ``$(...)`` description
+        (``-F``/``--description-file``) — read via :func:`_read_message_file`
+        instead of passed through as a falsely-empty string (the slip class: a
+        multi-line prose description whose first line was not the
+        ``type(scope): … (ticket_url)`` form).
+    3.  Out-of-band ``glab api``/``gh api`` PUT/POST to an MR/PR endpoint —
+        the web-UI-equivalent description edit that bypasses ``glab mr``.
+    4.  The ``mcp__glab__glab_mr_create``/``_update`` MCP tools.
     """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
@@ -2253,11 +2363,11 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         # Use \s+ (not plain `in`) so double-space variants are caught (F1).
-        if not re.search(r"\bglab\s+mr\s+(?:create|update)\b", command):
-            return None
-        title_match = re.search(r"""--title\s+['"]([^'"]+)['"]""", command)
-        desc_match = re.search(r"""--description\s+['"]([^'"]+)['"]""", command)
-        return (title_match.group(1) if title_match else ""), (desc_match.group(1) if desc_match else "")
+        if re.search(r"\bglab\s+mr\s+(?:create|update)\b", command):
+            title_match = _MR_TITLE_FLAG_RE.search(command)
+            title = title_match.group("val") if title_match else ""
+            return title, _extract_inline_or_file_desc(command)
+        return _extract_api_mr_fields(command)
 
     if tool_name in _MR_TOOLS:
         return tool_input.get("title", ""), tool_input.get("description", "")
@@ -2370,7 +2480,7 @@ _GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DO
 # matcher). ``[ =]*`` on the short-flag branch covers glued, space, and
 # ``=`` uniformly.
 _MSG_FILE_FLAG_RE = re.compile(
-    r"(?:(?:--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
+    r"(?:(?:--description-file|--body-file|--file|--description)[ =]+|-[FC][ =]*)['\"]?([^'\"\s]+)['\"]?",
 )
 _PR_CREATE_TOOLS = {
     "mcp__glab__glab_mr_create",

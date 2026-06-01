@@ -33,7 +33,8 @@ class TestScheduleExternalReview(TestCase):
         task = schedule_external_review(ticket)
 
         assert task.phase == "reviewing"
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        # (reviewer, reviewing) → t3:reviewer is loop-dispatched → in-session.
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.ticket_id == ticket.pk
 
     def test_refuses_author_ticket(self) -> None:

@@ -61,6 +61,46 @@ class Task(models.Model):
     def __str__(self) -> str:
         return f"task-{self.pk}-{self.execution_target!s}"
 
+    def save(self, *args: object, **kwargs: object) -> None:
+        if self._state.adding and self.execution_target == self.ExecutionTarget.HEADLESS:
+            self._default_loop_dispatched_to_interactive()
+        super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    @classmethod
+    def loop_dispatched(cls, *, role: str, phase: str) -> bool:
+        """True iff ``(role, phase)`` has a registered phase sub-agent.
+
+        Such a task is dispatched per-phase by the in-session ``/loop`` slot
+        (``loop_dispatch claim-next`` → the ``Agent`` tool), never via a
+        detached ``claude -p`` subprocess. Post the 2026-06-15 billing change
+        a ``claude -p`` dispatch is metered, so a loop-dispatched phase task
+        must run INTERACTIVE (subscription-covered). A pair with no registered
+        agent is free-form headless work and is left HEADLESS.
+        """
+        from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
+
+        return bool(subagent_for_phase(role, phase))
+
+    def _default_loop_dispatched_to_interactive(self) -> None:
+        """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
+
+        The single chokepoint for "phase tasks default to interactive": the
+        loop is their sole dispatcher, so every ``schedule_*`` / scanner / CLI
+        creation site inherits the rule here without each having to know it.
+        Only an insert-time HEADLESS row is touched; an explicit
+        ``route_to_interactive`` / ``route_to_headless`` after creation goes
+        through ``_route`` (not an insert) and is never overridden here.
+        """
+        try:
+            role = self.ticket.role
+        except Task.ticket.RelatedObjectDoesNotExist:
+            return
+        if not self.loop_dispatched(role=role, phase=self.phase):
+            return
+        self.execution_target = self.ExecutionTarget.INTERACTIVE
+        if not self.execution_reason:
+            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (subscription-covered)"
+
     def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
         now = timezone.now()
         with transaction.atomic():

@@ -60,6 +60,23 @@ class TestSessionQuerySet(TestCase):
 
 
 class TestTaskQuerySet(TestCase):
+    def test_for_claude_session_scopes_to_matching_agent_id_newest_first(self) -> None:
+        ticket = Ticket.objects.create()
+        mine = Session.objects.create(ticket=ticket, agent_id="claude-abc")
+        other = Session.objects.create(ticket=ticket, agent_id="claude-xyz")
+        first = Task.objects.create(ticket=ticket, session=mine, phase="coding")
+        second = Task.objects.create(ticket=ticket, session=mine, phase="testing")
+        Task.objects.create(ticket=ticket, session=other, phase="coding")
+
+        assert list(Task.objects.for_claude_session("claude-abc")) == [second, first]
+
+    def test_for_claude_session_empty_id_matches_nothing(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="claude-abc")
+        Task.objects.create(ticket=ticket, session=session)
+
+        assert list(Task.objects.for_claude_session("")) == []
+
     def test_claimable_queries_respect_target_status_and_leases(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id="agent-1")

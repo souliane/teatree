@@ -48,6 +48,7 @@ def _dispatchable_q() -> Q:
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
     ticket = task.ticket
+    model, skill_bundle = _resolve_model_and_bundle(task.phase)
     return {
         "task_id": int(task.pk),
         "ticket_id": int(ticket.pk),
@@ -58,7 +59,38 @@ def _task_to_dict(task: Task) -> dict[str, Any]:
         "ticket_role": ticket.role,
         "ticket_state": ticket.state,
         "ticket_extra": ticket.extra or {},
+        # Model tier + skill bundle resolved in LOOP scope (not inside a
+        # ``claude -p`` subprocess) so the in-session ``/loop`` slot passes
+        # ``model`` to its ``Agent`` tool and the ``skill_bundle`` into the
+        # sub-agent prompt. ``model`` is ``null`` when the phase inherits the
+        # user's default tier (no ``--model`` override).
+        "model": model,
+        "skill_bundle": skill_bundle,
     }
+
+
+def _resolve_model_and_bundle(phase: str) -> tuple[str | None, list[str]]:
+    """Resolve the phase model tier and skill bundle for a dispatch, loop-side.
+
+    Moved out of the ``claude -p`` subprocess (``run_headless``) so the
+    INTERACTIVE ``/loop`` slot resolves them once at claim time and threads
+    them into the in-session sub-agent. Overlay/skill discovery failures
+    degrade to ``(model, [])`` so a dispatch is never blocked on resolution —
+    the slot then falls back to base skills.
+    """
+    from teatree.agents.model_tiering import resolve_phase_model  # noqa: PLC0415
+    from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
+    from teatree.core.phases import normalize_phase  # noqa: PLC0415
+
+    model = resolve_phase_model(normalize_phase(phase))
+    try:
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
+        skill_bundle = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    except Exception:  # noqa: BLE001
+        skill_bundle = []
+    return model, skill_bundle
 
 
 class Command(TyperCommand):

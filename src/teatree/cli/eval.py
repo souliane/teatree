@@ -7,10 +7,10 @@ from pathlib import Path
 import typer
 
 from teatree.claude_sessions import list_sessions
+from teatree.eval.backends import SDK_BACKEND, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
-from teatree.eval.runner import ClaudePRunner
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_conformance import render_report, render_report_json, replay
 
@@ -55,7 +55,7 @@ def list_scenarios() -> None:
 
 
 @eval_app.command("run")
-def run(
+def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval run`` flag (scenario/format/max-turns/persist/baseline/backend/transcript-dir). The arg list IS the CLI contract.
     name: str | None = typer.Argument(None, help="Scenario name to run (omit to run all)."),
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
     max_turns: int | None = typer.Option(
@@ -73,6 +73,19 @@ def run(
         "--baseline",
         help="Mark the persisted run as the baseline for its model.",
     ),
+    backend: str = typer.Option(
+        SDK_BACKEND,
+        "--backend",
+        help=(
+            "Execution backend: 'sdk' (metered claude -p, reserved for CI with ANTHROPIC_API_KEY) "
+            "or 'subscription' (grade subscription-produced transcripts; see `t3 eval prepare-subscription`)."
+        ),
+    ),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Directory of <scenario>.jsonl transcripts for the 'subscription' backend (default: cwd).",
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -80,13 +93,22 @@ def run(
     unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
     as the baseline for its model — the reference the later model-regression
     diff compares a candidate against.
+
+    ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the
+    CI job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+    transcripts produced on the subscription via an in-session sub-agent (run
+    ``t3 eval prepare-subscription`` first for the prompts + expected paths).
     """
     _bootstrap_django()
     if output_format not in _VALID_FORMATS:
         typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
         raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
-    runner = ClaudePRunner(max_turns_override=max_turns)
+    try:
+        runner = make_runner(backend, max_turns_override=max_turns, transcript_dir=transcript_dir)
+    except UnknownBackendError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
     results = [evaluate(spec, runner.run(spec)) for spec in specs]
     if persist:
         _persist_run(results, specs=specs, max_turns=max_turns, baseline=baseline)
@@ -107,6 +129,55 @@ def _persist_run(
     record = persist_run(results, model=_run_model(specs), max_turns_override=max_turns)
     if baseline:
         record.mark_baseline()
+
+
+@eval_app.command("prepare-subscription")
+def prepare_subscription(
+    name: str | None = typer.Argument(None, help="Scenario name to prepare (omit to prepare all)."),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Where the operator will save each <scenario>.jsonl transcript (default: cwd).",
+    ),
+    output_format: str = typer.Option("text", "--format", help="Manifest format: text or json."),
+) -> None:
+    """Emit the per-scenario prompts for a LOCAL subscription eval run.
+
+    The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+    cannot itself drive a subscription-covered turn. This command prints, per
+    scenario, the agent definition, prompt, and the transcript path the
+    ``subscription`` backend will read — so an operator (or an in-session
+    ``/loop`` driver) runs each prompt via an in-session sub-agent with
+    ``--output-format stream-json``, saves it to that path, then grades with
+    ``t3 eval run --backend subscription``.
+    """
+    _bootstrap_django()
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
+    specs = discover_specs() if name is None else [_require_spec(name)]
+    target_dir = transcript_dir or Path.cwd()
+    manifest = [
+        {
+            "scenario": spec.name,
+            "agent_path": spec.agent_path,
+            "model": spec.model,
+            "prompt": spec.prompt,
+            "transcript_path": str(target_dir / f"{spec.name}.jsonl"),
+        }
+        for spec in specs
+    ]
+    if output_format == "json":
+        import json  # noqa: PLC0415
+
+        typer.echo(json.dumps(manifest, indent=2))
+        return
+    for entry in manifest:
+        typer.echo(f"scenario: {entry['scenario']}  (model {entry['model']})")
+        typer.echo(f"  agent:      {entry['agent_path']}")
+        typer.echo(f"  save to:    {entry['transcript_path']}")
+        typer.echo(f"  prompt:     {entry['prompt']}")
+        typer.echo("")
 
 
 def _require_spec(name: str) -> EvalSpec:
