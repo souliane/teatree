@@ -11,7 +11,7 @@ from django_typer.management import TyperCommand, command, group
 
 from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
-from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, Ticket
+from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
 
@@ -49,6 +49,7 @@ class ClearIssueResult(TypedDict, total=False):
     blast_class: str
     human_authorizer: str
     ticket_id: int
+    recorded_verdict_id: int
     error: str
 
 
@@ -344,6 +345,20 @@ class Command(TyperCommand):
             return {"issued": False, "error": str(exc)}
 
         self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
+        # A CLEAR is a merge-safe judgment at the reviewed tree by construction
+        # (issuance refused any non-green verdict). Record the durable read-side
+        # sibling so a later `review status` lookup can answer "safe to approve
+        # at the current head?" without re-deriving the cold review.
+        verdict = ReviewVerdict.record(
+            pr_id=clear.pr_id,
+            slug=clear.slug,
+            reviewed_sha=clear.reviewed_sha,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity=clear.reviewer_identity,
+            blast_class=clear.blast_class,
+            gh_verify_result=clear.gh_verify_result,
+            ticket=resolved_ticket,
+        )
         result: ClearIssueResult = {
             "issued": True,
             "clear_id": int(clear.pk),
@@ -351,6 +366,7 @@ class Command(TyperCommand):
             "slug": clear.slug,
             "blast_class": clear.blast_class,
             "human_authorizer": clear.human_authorizer,
+            "recorded_verdict_id": int(verdict.pk),
         }
         if resolved_ticket is not None:
             result["ticket_id"] = int(resolved_ticket.pk)
