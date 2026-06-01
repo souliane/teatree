@@ -96,6 +96,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
+| `autonomy` | Single trust switch (#1668): `full` collapses the three approval gates + pins `mode = auto` in one value; `babysit` (default) keeps the overlay gated. Explicit per-gate value still wins; safety floor untouched |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |

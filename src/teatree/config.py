@@ -48,6 +48,56 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class Autonomy(StrEnum):
+    """The single per-overlay trust switch governing the USER-approval surface (#1668).
+
+    One coherent value collapses the three otherwise-scattered
+    user-in-the-loop approval gates — ``on_behalf_post_mode``,
+    ``require_human_approval_to_merge``, ``require_human_approval_to_answer`` —
+    so an overlay's whole approval posture is set in one place rather than
+    three independent flags drifting apart.
+
+    *   :attr:`BABYSIT` (default) — the conservative posture: each gate keeps
+        its own default/explicit value, the user stays in the loop on merges,
+        answers, and colleague-visible posts.
+    *   :attr:`FULL` — full autonomy: the agent approves, merges, answers, and
+        publishes colleague-facing posts WITHOUT per-action user approval. The
+        three gates resolve to their autonomous value in
+        :func:`get_effective_settings` (and ``mode`` is pinned to ``auto`` so
+        the merge-autonomy path is actually reachable).
+
+    Autonomy governs ONLY those three USER-approval gates. The safety/quality
+    floor is out of scope by construction and never touched: the privacy /
+    banned-terms / public-repo leak gate, the independent cold-review
+    requirement (reviewer != maker), CI-green-before-merge, the never-lockout
+    self-rescue posture, and the substrate ``--human-authorize`` keystone all
+    remain in force under :attr:`FULL`.
+
+    An explicit per-gate override always wins over the :attr:`FULL` collapse —
+    autonomy fills only the gates the user left unpinned, so a deliberate
+    opinion is never silently overridden.
+    """
+
+    BABYSIT = "babysit"
+    FULL = "full"
+
+    @classmethod
+    def parse(cls, value: str) -> "Autonomy":
+        """Parse an autonomy string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`BABYSIT`) is applied by the caller when the setting is
+        absent, so a typo never silently grants full autonomy.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid autonomy {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class OnBehalfPostMode(StrEnum):
     """Tri-state pre-gate over on-behalf colleague/customer posts (#960).
 
@@ -206,6 +256,7 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # generically via ``dataclasses.replace`` — no per-setting wiring needed.
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
+    "autonomy": Autonomy.parse,
     "branch_prefix": str,
     "privacy": str,
     "contribute": bool,
@@ -306,6 +357,15 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
+    # The single per-overlay trust switch (#1668). ``babysit`` (default) keeps
+    # every approval gate at its own value; ``full`` collapses the three
+    # user-in-the-loop gates (``on_behalf_post_mode``,
+    # ``require_human_approval_to_merge``, ``require_human_approval_to_answer``)
+    # to their autonomous value in ``get_effective_settings`` and pins ``mode``
+    # to ``auto`` so merge autonomy is reachable. An explicit per-gate override
+    # still wins. The safety floor (privacy/leak gate, cold-review, CI-green,
+    # never-lockout, substrate ``--human-authorize``) is never touched.
+    autonomy: Autonomy = Autonomy.BABYSIT
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # Training-wheel for `auto` overlays: when true, the loop autonomously
@@ -654,6 +714,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
+        autonomy=_resolve_autonomy(teatree),
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
@@ -736,6 +797,17 @@ def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceC
         if scoped is not None:
             return SlackVoiceClassifierMode.parse(scoped)
     return SlackVoiceClassifierMode.WARN
+
+
+def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:
+    """Resolve the global ``autonomy`` switch from a ``[teatree]`` toml table (#1668).
+
+    Absent → the conservative :attr:`Autonomy.BABYSIT`; a typo raises via
+    :meth:`Autonomy.parse` (never a silent grant of full autonomy). The
+    per-overlay override is applied later in :func:`get_effective_settings`.
+    """
+    raw = teatree.get("autonomy")
+    return Autonomy.parse(raw) if raw is not None else Autonomy.BABYSIT
 
 
 def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:
@@ -823,17 +895,71 @@ def get_effective_settings() -> UserSettings:
     ``ENV_SETTING_OVERRIDES`` (env). The resolver picks it up generically
     via ``dataclasses.replace`` — no per-setting getter glue required.
     Callers read the effective value with ``get_effective_settings().X``.
+
+    As a final step, the single ``autonomy`` switch (#1668) is applied: when
+    the effective autonomy resolves to :attr:`Autonomy.FULL`, the three
+    user-in-the-loop approval gates collapse to their autonomous value —
+    unless the user pinned a gate explicitly (an explicit per-gate value
+    always wins). See :func:`_apply_autonomy`.
     """
-    base = load_config().user
+    config = load_config()
+    base = config.user
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
     for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
         raw = os.environ.get(env_var)
         if raw is not None:
             overrides[field_name] = parser(raw)
-    if not overrides:
-        return base
-    return replace(base, **overrides)
+    settings = base if not overrides else replace(base, **overrides)
+    pinned = _explicitly_pinned_fields(config, overrides)
+    return _apply_autonomy(settings, pinned)
+
+
+# The user-in-the-loop approval gates the single ``autonomy`` switch governs,
+# mapped to the value each takes under ``autonomy = "full"`` (#1668). Each is
+# a USER-approval gate, not a safety-floor control — the floor (privacy/leak
+# gate, cold-review, CI-green, never-lockout, substrate keystone) is out of
+# scope by construction and never appears here.
+_AUTONOMY_FULL_GATE_VALUES: dict[str, Any] = {
+    "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
+    "require_human_approval_to_merge": False,
+    "require_human_approval_to_answer": False,
+}
+
+
+def _explicitly_pinned_fields(config: TeaTreeConfig, overrides: dict[str, Any]) -> set[str]:
+    """Names of settings the user set explicitly (env / per-overlay / global).
+
+    A field is pinned when it appears in ``overrides`` (env var or active
+    overlay table) or as a key in the global ``[teatree]`` toml table. The
+    autonomy collapse skips any pinned gate so a deliberate per-gate opinion
+    is never silently overridden by ``autonomy = "full"``.
+    """
+    teatree = config.raw.get("teatree", {})
+    global_keys = set(teatree) if isinstance(teatree, dict) else set()
+    return set(overrides) | global_keys
+
+
+def _apply_autonomy(settings: UserSettings, pinned: set[str]) -> UserSettings:
+    """Collapse the three approval gates when effective autonomy is ``full``.
+
+    ``full`` fills only the gates the user left unpinned and pins ``mode`` to
+    ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``, so a
+    ``full`` overlay that forgot ``mode`` would otherwise be a silent no-op).
+    ``babysit`` is a no-op — every gate keeps its resolved value. The safety
+    floor is untouched: only the keys in :data:`_AUTONOMY_FULL_GATE_VALUES`
+    (plus ``mode``) are ever written here.
+    """
+    if settings.autonomy is not Autonomy.FULL:
+        return settings
+    relaxed = {
+        field_name: value for field_name, value in _AUTONOMY_FULL_GATE_VALUES.items() if field_name not in pinned
+    }
+    if "mode" not in pinned:
+        relaxed["mode"] = Mode.AUTO
+    if not relaxed:
+        return settings
+    return replace(settings, **relaxed)
 
 
 def cadence_seconds() -> int:
