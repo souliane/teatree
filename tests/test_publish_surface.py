@@ -195,8 +195,34 @@ class TestEffectiveRepoDir:
     def test_absent_returns_none(self) -> None:
         assert publish_surface.effective_repo_dir('git commit -m "x"') is None
 
-    def test_repeated_dash_c_last_wins(self) -> None:
+    def test_repeated_absolute_dash_c_resets(self) -> None:
+        # An absolute subsequent ``-C`` resets the accumulator (git semantics),
+        # so the last absolute value wins.
         assert publish_surface.effective_repo_dir("git -C /first -C /second commit -m x") == "/second"
+
+    def test_repeated_relative_dash_c_is_cumulative(self) -> None:
+        # git: each subsequent NON-absolute ``-C <path>`` is interpreted
+        # relative to the preceding ``-C <path>``. The commit lands in
+        # ``/pub/relpriv``, NOT the bare last segment ``relpriv``.
+        assert publish_surface.effective_repo_dir("git -C /pub -C relpriv commit -m x") == "/pub/relpriv"
+
+    def test_absolute_dash_c_after_relative_resets(self) -> None:
+        # An absolute value anywhere in the chain resets the accumulator.
+        assert publish_surface.effective_repo_dir("git -C rel -C /abs commit -m x") == "/abs"
+
+    def test_three_relative_dash_c_accumulate(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C /a -C b -C c commit -m x") == "/a/b/c"
+
+    def test_dash_c_equals_form_accumulates(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C=/pub -C=relpriv commit -m x") == "/pub/relpriv"
+
+    def test_unresolvable_dash_c_value_is_fail_closed(self) -> None:
+        # A ``-C`` value carrying a substitution marker cannot be resolved
+        # statically -> fail-closed sentinel so the carve-out never downgrades.
+        assert (
+            publish_surface.effective_repo_dir("git -C /pub -C $(echo x) commit -m x")
+            == publish_surface.UNRESOLVABLE_REPO_DIR
+        )
 
     def test_repeated_git_dir_last_wins(self) -> None:
         command = "git --git-dir=/first/.git --git-dir=/second/.git commit"
@@ -516,6 +542,34 @@ class TestCarveOutApplies:
                 "Bash", f'git commit -m "{body}"', body, private_repo, config_path=private_cfg
             )
             is True
+        )
+
+    # SAFETY TEST: This test is load-bearing. A commit whose CUMULATIVE
+    # ``-C`` landing dir is a PUBLIC repo must stay hard-blocked even when the
+    # bare last ``-C`` segment, resolved alone, would name a private repo.
+    # git resolves ``-C /pub -C relpriv`` to ``/pub/relpriv``; the body lands
+    # in the PUBLIC repo there, so the carve-out must NOT downgrade.
+    def test_cumulative_dash_c_public_landing_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        # Bare last segment ``relpriv`` (resolved vs the process cwd) is PRIVATE.
+        _repo_with_remote(tmp_path / "relpriv", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        # Cumulative landing ``<pub>/relpriv`` is a PUBLIC/unknown repo.
+        pub = tmp_path / "pub"
+        _repo_with_remote(pub / "relpriv", "git@github.com:some/unrelated-public.git")
+        # No probe tool -> unknown slug stays NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.chdir(tmp_path)
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {pub} -C relpriv commit -m "acmewidget fix"',
+                "acmewidget fix",
+                None,
+                config_path=cfg,
+            )
+            is False
         )
 
     # SAFETY TEST: This test is load-bearing. A public-repo target MUST always

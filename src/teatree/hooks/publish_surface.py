@@ -64,7 +64,7 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _gh_glab_hiding, _repo_visibility
+from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
 from teatree.hooks._command_parser import first_segment_words
 
 # Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
@@ -73,6 +73,8 @@ from teatree.hooks._command_parser import first_segment_words
 # Re-exported / re-imported here so existing callers and tests keep using the
 # ``publish_surface`` names.
 slug_for_cwd = _repo_visibility.slug_for_cwd
+effective_repo_dir = _commit_repo_dir.effective_repo_dir
+UNRESOLVABLE_REPO_DIR = _commit_repo_dir.UNRESOLVABLE_REPO_DIR
 _command_segments = _gh_glab_hiding.command_segments
 _segment_is_pure_gh_glab_post = _gh_glab_hiding.segment_is_pure_gh_glab_post
 _strip_benign_prefix = _gh_glab_hiding.strip_benign_prefix
@@ -157,54 +159,6 @@ def is_git_commit_command(command: str) -> bool:
     """
     words = _strip_git_global_prefix(first_segment_words(command))
     return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
-
-
-def _last_flag_value(words: list[str], flag: str) -> str | None:
-    """Return the LAST ``flag <value>`` / ``flag=<value>`` value, or ``None``.
-
-    ``git`` resolves a repeated global flag LAST-WINS, so this scans the
-    whole word list and keeps the final occurrence across both the
-    space-separated and ``=`` spellings.
-    """
-    found: str | None = None
-    i = 0
-    prefix = flag + "="
-    while i < len(words):
-        w = words[i]
-        if w == flag and i + 1 < len(words):
-            found = words[i + 1]
-            i += 2
-            continue
-        if w.startswith(prefix):
-            found = w[len(prefix) :]
-        i += 1
-    return found
-
-
-def effective_repo_dir(command: str) -> str | None:
-    """Return the dir whose repo a ``git`` command's commit LANDS in, or ``None``.
-
-    ``git`` selects a commit's repo as: the ``--git-dir``/``$GIT_DIR`` repo
-    if specified, otherwise the repo discovered from the effective working
-    directory, which ``-C <dir>`` changes. ``--work-tree`` only sets the
-    working tree and NEVER selects the repo, so it is excluded here -- a
-    ``--git-dir <PUBLIC> --work-tree <PRIVATE>`` commit lands in the PUBLIC
-    repo, and resolving the private work-tree would leak banned content to
-    public history. Repeated ``-C``/``--git-dir`` flags are LAST-WINS.
-
-    Resolution: ``--git-dir`` (last-wins) if present, resolved relative to
-    the ``-C``-adjusted cwd when relative; else the ``-C``-adjusted path
-    (last-wins ``-C``). ``None`` when neither flag is present, so the caller
-    falls back to the ambient cwd for a plain ``git commit``.
-    """
-    words = first_segment_words(command)
-    dash_c = _last_flag_value(words, "-C")
-    git_dir = _last_flag_value(words, "--git-dir")
-    if git_dir is not None:
-        if dash_c is not None and not Path(git_dir).is_absolute():
-            return str(Path(dash_c) / git_dir)
-        return git_dir
-    return dash_c
 
 
 def _segment_is_posting_verb(words: list[str]) -> bool:
@@ -541,6 +495,8 @@ def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pa
     public post.
     """
     repo_dir = effective_repo_dir(command)
+    if repo_dir == UNRESOLVABLE_REPO_DIR:
+        return False
     commit_target = Path(repo_dir) if repo_dir else cwd
     if not commit_targets_private_repo(commit_target, config_path=config_path):
         return False
