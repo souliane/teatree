@@ -193,6 +193,70 @@ class TestRunHeadless(TestCase):
         assert attempt.agent_session_id == "sess-abc-123"
         assert attempt.result["summary"] == "Work done"
 
+    def test_persists_usage_and_cost_from_real_envelope(self) -> None:
+        """Captured tokens, model, and ``total_cost_usd`` land on the row.
+
+        The regression this guards: ``cost_usd`` was NULL on every attempt.
+        """
+        result_json = json.dumps(
+            {"summary": "Work done", "files_modified": [{"path": "src/x.py", "action": "modified"}]},
+        )
+        cli_envelope = json.dumps(
+            {
+                "session_id": "sess-xyz",
+                "result": result_json,
+                "num_turns": 4,
+                "total_cost_usd": 0.5,
+                "usage": {
+                    "input_tokens": 1000,
+                    "output_tokens": 200,
+                    "cache_creation_input_tokens": 50,
+                    "cache_read_input_tokens": 9000,
+                },
+                "modelUsage": {"claude-opus-4-8[1m]": {"costUSD": 0.5}},
+            },
+        )
+        with _fake_claude(stdout=cli_envelope):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        attempt.refresh_from_db()
+        assert attempt.exit_code == 0
+        assert attempt.cost_usd == pytest.approx(0.5)
+        assert attempt.input_tokens == 1000
+        assert attempt.output_tokens == 200
+        assert attempt.cache_write_tokens == 50
+        assert attempt.cache_read_tokens == 9000
+        assert attempt.model == "claude-opus-4-8[1m]"
+        assert attempt.num_turns == 4
+
+    def test_estimates_cost_from_price_table_when_cli_cost_absent(self) -> None:
+        """An envelope with tokens but no ``total_cost_usd`` still persists a cost.
+
+        The price-table estimate is stored so historical rows get one too.
+        """
+        result_json = json.dumps(
+            {"summary": "Work done", "files_modified": [{"path": "src/x.py", "action": "modified"}]},
+        )
+        cli_envelope = json.dumps(
+            {
+                "session_id": "sess-noc",
+                "result": result_json,
+                "usage": {"input_tokens": 1_000_000, "output_tokens": 0},
+                "modelUsage": {"claude-sonnet-4-6": {}},
+            },
+        )
+        with _fake_claude(stdout=cli_envelope):
+            session = Session.objects.create(ticket=self.ticket)
+            task = Task.objects.create(ticket=self.ticket, session=session)
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        attempt.refresh_from_db()
+        assert attempt.exit_code == 0
+        # 1M input tokens at the Sonnet $3/MTok input rate.
+        assert attempt.cost_usd == pytest.approx(3.0)
+
 
 # --- Pure function tests (no DB) ---
 
@@ -342,7 +406,37 @@ def test_parse_cli_envelope_extracts_session_id_and_result() -> None:
     assert parsed["agent_text"] == "Agent output text"
 
 
-def test_parse_cli_envelope_extracts_usage_stats() -> None:
+def test_parse_cli_envelope_extracts_real_nested_usage_and_total_cost() -> None:
+    """Nested ``usage`` tokens and ``total_cost_usd`` are extracted.
+
+    The old flat-key reader captured nothing — cost_usd was NULL on every row.
+    """
+    envelope = json.dumps(
+        {
+            "session_id": "abc-123",
+            "result": "Done",
+            "num_turns": 3,
+            "total_cost_usd": 0.087722,
+            "usage": {
+                "input_tokens": 10817,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 3904,
+                "cache_read_input_tokens": 18224,
+            },
+            "modelUsage": {"claude-opus-4-8[1m]": {"costUSD": 0.087722}},
+        },
+    )
+    parsed = _parse_cli_envelope(envelope)
+    assert parsed["input_tokens"] == "10817"
+    assert parsed["output_tokens"] == "5"
+    assert parsed["cache_write_tokens"] == "3904"
+    assert parsed["cache_read_tokens"] == "18224"
+    assert parsed["cost_usd"] == "0.087722"
+    assert parsed["num_turns"] == "3"
+    assert parsed["model"] == "claude-opus-4-8[1m]"
+
+
+def test_parse_cli_envelope_honours_pre_2x_flat_usage_fallback() -> None:
     envelope = json.dumps(
         {
             "session_id": "abc-123",
@@ -365,6 +459,7 @@ def test_parse_cli_envelope_omits_missing_usage_stats() -> None:
     parsed = _parse_cli_envelope(envelope)
     assert "input_tokens" not in parsed
     assert "cost_usd" not in parsed
+    assert "model" not in parsed
 
 
 def test_parse_cli_envelope_falls_back_for_non_envelope_json() -> None:
