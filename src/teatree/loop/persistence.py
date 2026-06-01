@@ -167,10 +167,11 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
 def _handle_orchestrator(action: DispatchAction) -> Task | None:
     """Auto-start assigned issue → Ticket(role=author) + Task(phase=coding).
 
-    Only fires for ``assigned_issue.ready`` signals that carry
-    ``auto_start=True`` (the dispatcher already filtered). ``pending_task``
-    signals — which also resolve to ``t3:orchestrator`` — describe a Task
-    that already exists, so we skip them here.
+    Only fires for ``assigned_issue.ready`` / ``issue_implementer.claimed``
+    signals that carry ``auto_start=True`` (the dispatcher already filtered).
+    The scheduled coding task is then dispatched per-phase by the loop —
+    ``pending_task`` signals route directly to the phase's own agent, not
+    through ``t3:orchestrator``.
     """
     payload = action.payload
     if payload.get("auto_start") is not True:

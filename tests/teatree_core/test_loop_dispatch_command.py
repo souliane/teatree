@@ -41,7 +41,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert entry["ticket_role"] == Ticket.Role.REVIEWER
         assert entry["issue_url"] == "https://example.com/pr/1"
 
-    def test_emits_orchestrator_subagent_for_author_coding(self) -> None:
+    def test_emits_coder_subagent_for_author_coding(self) -> None:
         task = self._author_task()
         stdout = StringIO()
         call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
@@ -49,7 +49,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         payload = json.loads(stdout.getvalue())
         assert len(payload) == 1
         assert payload[0]["task_id"] == task.pk
-        assert payload[0]["subagent"] == "t3:orchestrator"
+        assert payload[0]["subagent"] == "t3:coder"
 
     def test_skips_claimed_tasks(self) -> None:
         task = self._reviewer_task()

@@ -32,13 +32,11 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
 
-        # #1284: ``coding`` phase requires ``files_modified`` evidence.
-        result_blob = _json.dumps(
-            {
-                "summary": "OK",
-                "files_modified": [{"path": "src/x.py", "action": "modified"}],
-            },
-        )
+        # ``architectural_review`` has no registered phase agent, so it is NOT
+        # loop-dispatched and the post_save signal owns its execution. A
+        # loop-dispatched phase (coding/testing/...) is the loop's
+        # responsibility and is intentionally not auto-enqueued.
+        result_blob = _json.dumps({"summary": "OK"})
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(
@@ -52,7 +50,7 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
                 ticket=ticket,
                 session=session,
                 execution_target=Task.ExecutionTarget.HEADLESS,
-                phase="coding",
+                phase="architectural_review",
             )
 
         task.refresh_from_db()
@@ -101,12 +99,15 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
                 msg = "backend unavailable"
                 raise RuntimeError(msg)
 
+        # ``architectural_review`` is NOT loop-dispatched, so the auto-enqueue
+        # actually fires and hits the broken backend (a loop-dispatched phase
+        # would skip the enqueue entirely and never exercise this path).
         with patch.object(tasks_mod, "execute_headless_task", BrokenEnqueue):
             task = Task.objects.create(
                 ticket=ticket,
                 session=session,
                 execution_target=Task.ExecutionTarget.HEADLESS,
-                phase="coding",
+                phase="architectural_review",
             )
 
         task.refresh_from_db()
@@ -123,21 +124,17 @@ class TestAutoEnqueueHeadlessSignal(TestCase):
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test")
 
+        # ``architectural_review`` has no registered phase agent, so it is NOT
+        # loop-dispatched — the post_save auto-enqueue owns its execution.
         task = Task.objects.create(
             ticket=ticket,
             session=session,
             execution_target=Task.ExecutionTarget.INTERACTIVE,
-            phase="coding",
+            phase="architectural_review",
         )
         assert task.status == Task.Status.PENDING
 
-        # #1284: ``coding`` phase requires ``files_modified`` evidence.
-        result_blob = _json.dumps(
-            {
-                "summary": "OK",
-                "files_modified": [{"path": "src/x.py", "action": "modified"}],
-            },
-        )
+        result_blob = _json.dumps({"summary": "OK"})
         with (
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude-code"),
             patch.object(

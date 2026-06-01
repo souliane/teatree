@@ -103,28 +103,28 @@ For new tickets, don't spawn a sub-agent. Handle directly:
 4. `t3 <overlay> worktree provision [VARIANT]`
 5. Report the worktree paths, then ask what phase to start.
 
-### 7. Auto-start mode
+### 7. Auto-start mode (kickoff only — never chain phases inline)
 
 When the loop dispatches an `assigned_issue.ready` signal with `auto_start: true`
-in the payload, you skip the intake question (§ 6 step 5) and chain the lifecycle
-through PR creation without further user input:
+in the payload, you skip the intake question (§ 6 step 5) and start the maker
+pipeline — you do NOT execute or chain the phases yourself:
 
 1. Run § 6 steps 1–4 to set up the worktree.
 2. Mark the ticket as auto-started so the scanner counts it against the budget:
    `t3 <overlay> ticket update <ID> --extra auto_started=true`
-3. Spawn `@coder`, then `@tester`, then `@reviewer`, then `@shipper` in order.
-   After each sub-agent returns, run `t3 <overlay> pr check-gates`. Advance the
-   ticket only when the gate passes.
-4. Stop after `@shipper` opens the PR. The PR-merge step is the configured
-   `require_human_approval_to_merge` gate — the loop surfaces the open PR via
-   `MyPrsScanner` and a human approves the merge.
-5. **On phase failure**: halt. Do not retry, do not run the next phase. The
-   ticket stays in its current state; `MyPrsScanner` and the `in_flight`
-   statusline zone keep the failure visible to the operator.
+3. Let the FSM drive the pipeline. Each lifecycle phase is dispatched to its OWN
+   agent by the loop when its phase task is claimed — `coding → @coder`,
+   `testing → @tester`, `reviewing → @reviewer`, `shipping → @shipper`. The
+   orchestrator never spawns the phase agents in sequence and never runs the
+   work of a phase itself (BLUEPRINT §5.2 / §17.8 invariant 10: the orchestrator
+   does synthesis and dispatch, not execution).
+4. The PR-merge step is the configured `require_human_approval_to_merge` gate —
+   the loop surfaces the open PR via `MyPrsScanner` and a human approves the
+   merge.
 
 The orchestrator never auto-merges, never overrides `require_ticket`, and never
-bypasses CI quality gates — auto-start only automates the work the operator
-would otherwise type by hand.
+bypasses CI quality gates — auto-start only kicks off the work; the per-phase
+loop dispatch carries it forward.
 
 ## Rules
 
