@@ -246,12 +246,18 @@ class CostReport:
         )
 
     def chip(self) -> str:
-        """Compact statusline chip, e.g. ``SDK ≈$48/$200``.
+        """Compact statusline chip, e.g. ``SDK mtd ≈$48/$200``.
+
+        ``mtd`` (month-to-date) names the accumulation window explicitly so the
+        figure is unambiguous next to the weekly rate-limit segment: it is the
+        spend since :attr:`cycle_start_date` (the monthly Agent-SDK billing
+        cycle, anchored to ``billing_cycle_anchor_day`` or the calendar month),
+        not a 5-hour or 7-day window. The ``/$<credit>`` is the monthly credit.
 
         Stays tiny at any spend: whole dollars, no decimals, no thousands
         separators that would balloon the width.
         """
-        return f"SDK ≈${round(self.breakdown.total_usd)}/${round(self.credit_usd)}"
+        return f"SDK mtd ≈${round(self.breakdown.total_usd)}/${round(self.credit_usd)}"
 
     def render_lines(self) -> list[str]:
         """Human-readable multi-line report body."""

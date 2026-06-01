@@ -63,7 +63,6 @@ def zones_for(
     # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400);
     # the live availability segment rides on that line (#1678).
     _populate_live_loops_anchor(zones)
-    _populate_cost_chip(zones)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -112,20 +111,16 @@ def _populate_live_loops_anchor(zones: StatuslineZones) -> None:
     zones.anchors.extend(live_loops_anchor())
 
 
-def _populate_cost_chip(zones: StatuslineZones) -> None:
-    """Append the compact ``SDK ≈$48/$200`` cost chip anchor (#cost).
+def cost_chip_lines() -> list[str]:
+    """Return the SDK-equivalent cost chip as a one-line list, or ``[]``.
 
     Cycle-to-date SDK-equivalent spend of the loop's headless ``claude -p``
-    usage against the monthly Agent-SDK credit, tiny at any spend. Silenced
-    (no line) when no headless cost is captured this cycle. Fails open to a
-    no-op on any DB / import error so a broken cost read never blanks the
-    statusline.
+    usage against the monthly Agent-SDK credit, tiny at any spend. Empty when
+    no headless cost is captured this cycle. The statusline header reads it
+    from the ``tick-meta.json`` sidecar and renders it next to the weekly
+    (``7d=``) rate-limit segment. Fails open to ``[]`` on any DB / import
+    error so a broken cost read never blanks the statusline.
     """
-    zones.anchors.extend(cost_chip_lines())
-
-
-def cost_chip_lines() -> list[str]:
-    """Return the cost chip as a one-line anchor list, or ``[]``. Fail-open."""
     try:
         from teatree.config import get_effective_settings  # noqa: PLC0415
         from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
