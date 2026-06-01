@@ -547,11 +547,15 @@ class TestDestinationAwareGate:
         assert capsys.readouterr().out == ""
 
     @pytest.mark.usefixtures("_internal_config")
-    def test_bare_ref_to_internal_glab_api_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Raw-REST ``gh api`` / ``glab api`` can target any surface, so the
+        # destination gate never SKIPS an api segment even when its URL path
+        # resolves to an internal project -- mirroring the carve-out, which
+        # excludes api from its eligible verbs.
         cmd = "glab api projects/acme-internal%2Fapp/issues -f body='see #1500'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
+        assert blocked is True
+        assert _out(capsys)["permissionDecision"] == "deny"
 
     @pytest.mark.usefixtures("_internal_config")
     def test_bare_ref_in_slack_send_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:

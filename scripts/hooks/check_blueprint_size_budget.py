@@ -92,7 +92,11 @@ _BUDGET_TOP_LEVEL_BYTES = 82_000
 # and #1530 bare-reference publish gates is a load-bearing config/safety fact; the
 # appendix corpus was at capacity (109,957 B), so the budget is raised one minimal
 # ~1 KB step (~543 B headroom) to admit the row.
-_BUDGET_APPENDICES_BYTES = 110_500
+# Reviewed bump (#1672): the new `private_repos` config-key row plus the gate-2
+# paragraph delta (private_repos-or-namespaces union, per-segment skip, secrets-
+# always-blocked, commit cd/walk-up fail-open) are load-bearing config/safety facts;
+# the appendix corpus was at capacity, so the budget is raised one minimal ~1 KB step.
+_BUDGET_APPENDICES_BYTES = 111_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -111,7 +115,10 @@ _BUDGET_APPENDICES_BYTES = 110_500
 # Reviewed bump (publish-gate-destination-aware): the `internal_publish_namespaces`
 # config-key row pushes the total to 191,732 B; raised to 192,500 (~768 B headroom).
 # Invariant holds: 192,500 - 82,000 = 110,500 <= 110,500.
-_BUDGET_TOTAL_BYTES = 192_500
+# Reviewed bump (#1672): the `private_repos` row + gate-2 paragraph delta push the
+# total to 192,641 B; raised to 193,000 (~359 B headroom).
+# Invariant holds: 193,000 - 82,000 = 111,000 <= 111,000.
+_BUDGET_TOTAL_BYTES = 193_000
 
 
 def _repo_root() -> pathlib.Path:

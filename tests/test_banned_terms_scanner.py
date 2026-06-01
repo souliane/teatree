@@ -303,11 +303,16 @@ class TestDestinationAwareGate:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_banned_term_to_internal_glab_api_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Raw-REST ``gh api`` / ``glab api`` can target any surface (custom
+        # host, method, endpoint), so the destination gate never SKIPS an
+        # api segment even when its URL path resolves to an internal
+        # project -- mirroring the carve-out, which excludes api from its
+        # eligible verbs. The over-scan is recoverable via --allow-banned-term.
         cmd = "glab api projects/internalcorp%2Fprivate-svc/issues -f body=acmecorp"
         blocked = handle_banned_terms_pretool(_bash(cmd))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_banned_term_unparseable_destination_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         # A Slack-bound ``chat.postMessage`` curl has no resolvable repo
@@ -365,11 +370,12 @@ class TestPrivateRepoCarveOut:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_private_repo_posting_command_with_cwd_target_downgrades(
+    def test_private_repo_posting_command_with_cwd_target_allowed(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # gh issue create (no --repo flag) from a private CWD resolves the
-        # target from the CWD origin and applies the carve-out.
+        # target from the CWD origin; the allowlisted-private destination is
+        # skipped by the destination gate (#1672) -- allowed, no deny.
         repo = _private_repo(tmp_path)
         data = {
             "tool_name": "Bash",
@@ -377,7 +383,7 @@ class TestPrivateRepoCarveOut:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is False  # downgraded to warn, not denied
+        assert blocked is False
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_posting_command_with_explicit_public_repo_still_blocks(
