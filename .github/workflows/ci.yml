@@ -25,6 +25,12 @@ jobs:
       - uses: j178/prek-action@v2
         env:
           SKIP: pytest,uv-audit,cyclonedx-sbom
+      # Migration-graph linearity gate. Two PRs branching a migration off
+      # the same parent each pass locally and pass their own CI, then merge
+      # into a forked graph with multiple leaf nodes that ``migrate`` refuses
+      # to run. ``makemigrations --check`` raises ``Conflicting migrations
+      # detected`` (exit 1) on a forked graph, failing the PR before it lands.
+      - run: uv run python manage.py makemigrations --check --dry-run
 
   blueprint-cross-pr:
     # Cross-PR §17.1 invariant-numbering gate (souliane/teatree#1288).
