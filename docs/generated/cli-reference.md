@@ -1129,13 +1129,15 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list               List discovered eval scenarios.                           │
-│ run                Run one scenario by name, or all scenarios when no name   │
-│                    is given.                                                 │
-│ history            Show recent eval runs and per-scenario pass-rate over     │
-│                    time.                                                     │
-│ transcript-replay  Replay a real session transcript against teatree          │
-│                    behavioural invariants.                                   │
+│ list                  List discovered eval scenarios.                        │
+│ run                   Run one scenario by name, or all scenarios when no     │
+│                       name is given.                                         │
+│ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
+│                       eval run.                                              │
+│ history               Show recent eval runs and per-scenario pass-rate over  │
+│                       time.                                                  │
+│ transcript-replay     Replay a real session transcript against teatree       │
+│                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1163,20 +1165,63 @@ Usage: t3 eval run [OPTIONS] [NAME]
  as the baseline for its model — the reference the later model-regression
  diff compares a candidate against.
 
+ ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the
+ CI job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+ transcripts produced on the subscription via an in-session sub-agent (run
+ ``t3 eval prepare-subscription`` first for the prompts + expected paths).
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                       TEXT     Report format: text or json.         │
-│                                         [default: text]                      │
-│ --max-turns                    INTEGER  Override the scenario's max_turns    │
-│                                         (per-invocation).                    │
-│ --persist      --no-persist             Persist this run into the            │
-│                                         run-history ledger.                  │
-│                                         [default: persist]                   │
-│ --baseline                              Mark the persisted run as the        │
-│                                         baseline for its model.              │
-│ --help                                  Show this message and exit.          │
+│ --format                            TEXT     Report format: text or json.    │
+│                                              [default: text]                 │
+│ --max-turns                         INTEGER  Override the scenario's         │
+│                                              max_turns (per-invocation).     │
+│ --persist           --no-persist             Persist this run into the       │
+│                                              run-history ledger.             │
+│                                              [default: persist]              │
+│ --baseline                                   Mark the persisted run as the   │
+│                                              baseline for its model.         │
+│ --backend                           TEXT     Execution backend: 'sdk'        │
+│                                              (metered claude -p, reserved    │
+│                                              for CI with ANTHROPIC_API_KEY)  │
+│                                              or 'subscription' (grade        │
+│                                              subscription-produced           │
+│                                              transcripts; see `t3 eval       │
+│                                              prepare-subscription`).         │
+│                                              [default: sdk]                  │
+│ --transcript-dir                    PATH     Directory of <scenario>.jsonl   │
+│                                              transcripts for the             │
+│                                              'subscription' backend          │
+│                                              (default: cwd).                 │
+│ --help                                       Show this message and exit.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval prepare-subscription`
+
+```
+Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
+
+ Emit the per-scenario prompts for a LOCAL subscription eval run.
+
+ The eval CLI is a plain process with no in-session ``Agent`` tool, so it
+ cannot itself drive a subscription-covered turn. This command prints, per
+ scenario, the agent definition, prompt, and the transcript path the
+ ``subscription`` backend will read — so an operator (or an in-session
+ ``/loop`` driver) runs each prompt via an in-session sub-agent with
+ ``--output-format stream-json``, saves it to that path, then grades with
+ ``t3 eval run --backend subscription``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH  Where the operator will save each              │
+│                               <scenario>.jsonl transcript (default: cwd).    │
+│ --format                TEXT  Manifest format: text or json. [default: text] │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
