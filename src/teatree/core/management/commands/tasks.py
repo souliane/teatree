@@ -245,6 +245,7 @@ class Command(TyperCommand):
             typer.Option(help="Scope to the current Claude session and group pending / claimed / done."),
         ] = False,
     ) -> list[TaskRow]:
+        """List the teatree tasks queue (not your Claude TODO list)."""
         Task.objects.reap_stale_claims()
         if session:
             return self._list_session_todos(status=status, execution_target=execution_target)
@@ -427,7 +428,7 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
         console.print("[dim]No tasks.[/dim]")
         return
 
-    table = Table(title=f"Tasks ({len(rows)})", show_lines=False)
+    table = Table(title=f"teatree tasks ({len(rows)})", show_lines=False)
     table.add_column("ID", justify="right", style="bold")
     table.add_column("Ticket", justify="right")
     table.add_column("Status")
