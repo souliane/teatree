@@ -31,6 +31,7 @@ def _run(
     state_dir: Path,
     statusline_file: Path | None = None,
     registry_dir: Path | None = None,
+    cpu: tuple[Path, int] | None = None,
 ) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
@@ -38,6 +39,10 @@ def _run(
         env["TEATREE_STATUSLINE_FILE"] = str(statusline_file)
     if registry_dir is not None:
         env["T3_LOOP_REGISTRY_DIR"] = str(registry_dir)
+    if cpu is not None:
+        loadavg_file, ncpu = cpu
+        env["TEATREE_STATUSLINE_LOADAVG_FILE"] = str(loadavg_file)
+        env["TEATREE_STATUSLINE_NCPU"] = str(ncpu)
     return subprocess.run(
         [str(SCRIPT)],
         input=json.dumps(payload),
@@ -386,6 +391,86 @@ class TestFreshnessInlineRefresh:
         result = _run({"model": {"display_name": "Claude Opus"}}, state_dir=state_dir, statusline_file=sl)
         plain = _strip_ansi(result.stdout)
         assert "old=5" in plain
+
+
+class TestCpuSegment:
+    """CPU load indicator in the resource group, normalized by core count.
+
+    The 1-minute load average is read cheaply (a single non-delayed read) and
+    divided by the core count so it reads as a percentage comparable to the RAM
+    and disk indicators, colored by the same green/yellow/red thresholds.
+    """
+
+    def test_renders_cpu_segment_in_resource_group(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        loadavg = tmp_path / "loadavg"
+        loadavg.write_text("4.00 3.10 2.50 1/420 99\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-cpu", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            cpu=(loadavg, 8),
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # 4.00 / 8 cores = 50%.
+        assert "cpu=50%" in plain, plain
+        # The CPU indicator sits in the resource group alongside ram/disk.
+        assert plain.index("cpu=") > plain.index("ram="), plain
+
+    def test_cpu_segment_colors_red_when_overloaded(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        loadavg = tmp_path / "loadavg"
+        loadavg.write_text("16.00 12.00 9.00\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-cpu-hot", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            cpu=(loadavg, 8),
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # 16.00 / 8 = 200% → over the red threshold.
+        assert "cpu=200%" in plain, plain
+        assert "\033[1;31m" in result.stdout, "expected red SGR for an overloaded CPU"
+
+    def test_cpu_segment_omitted_when_source_unavailable(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        missing = tmp_path / "no-such-loadavg"
+
+        result = _run(
+            {"session_id": "s-no-cpu", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            cpu=(missing, 8),
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "cpu=" not in plain, plain
+        # The rest of the statusline still renders.
+        assert "model=Claude Opus" in plain, plain
+
+    def test_cpu_segment_omitted_when_loadavg_empty(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        loadavg = tmp_path / "loadavg"
+        loadavg.write_text("\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-empty-cpu", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            cpu=(loadavg, 8),
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "cpu=" not in plain, plain
+        assert "model=Claude Opus" in plain, plain
 
 
 class TestLoopOwnerBadge:
