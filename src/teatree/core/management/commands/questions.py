@@ -8,6 +8,11 @@ populated when availability=away (BLUEPRINT §17.1 invariant 9):
     user answer; writes a :class:`DeferredQuestionAudit` row.
 * ``t3 questions dismiss <id> [--reason ...]`` — dismiss a question
     the user no longer wants to answer; writes an audit row.
+* ``t3 questions resurface`` — re-post the pending backlog to the
+    user's Slack DM (the away→present drain): returning from away never
+    silently swallows questions. Reuses :func:`teatree.core.notify.notify_user`
+    so each question is delivered at-most-once (idempotent ``BotPing``
+    ledger) and routed through the per-overlay bot.
 
 The list/answer/dismiss flow is the chat-only operator's parallel of
 the interactive ``AskUserQuestion`` reply — the user resolves at their
@@ -15,6 +20,7 @@ own pace; the agent reads pending questions back via the same model
 on its next turn.
 """
 
+import json
 from typing import Annotated
 
 import typer
@@ -22,11 +28,28 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.notify import NotifyKind, notify_user
 
 
 def _format_row(row: DeferredQuestion) -> str:
     age = row.created_at.isoformat() if row.created_at is not None else "?"
     return f"  #{row.pk} [{row.status}] {age}\n     {row.question}"
+
+
+def _resurface_text(row: DeferredQuestion) -> str:
+    lines = [f"*Pending question #{row.pk}* (deferred while you were away):", row.question]
+    try:
+        options = json.loads(row.options_json) if row.options_json else []
+    except (ValueError, TypeError):
+        options = []
+    for i, opt in enumerate(options, 1):
+        if not isinstance(opt, dict):
+            continue
+        label = opt.get("label", "")
+        desc = opt.get("description", "")
+        lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
+    lines.append(f"\n_Answer with_ `t3 questions answer {row.pk} <text>`")
+    return "\n".join(lines)
 
 
 class Command(TyperCommand):
@@ -137,3 +160,51 @@ class Command(TyperCommand):
             self.stderr.write(str(exc))
             raise SystemExit(2) from exc
         return f"dismissed #{row.pk}."
+
+    @command()
+    def resurface(
+        self,
+        user_id: Annotated[
+            str,
+            typer.Option("--user-id", help="Slack user id to DM (defaults to the configured user)."),
+        ] = "",
+        overlay: Annotated[
+            str,
+            typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay bot routing)."),
+        ] = "",
+    ) -> str:
+        """Re-post the pending backlog to the user's Slack DM (away→present drain).
+
+        Idempotent per question (the ``BotPing`` ledger dedupes the
+        per-question idempotency key), so re-running on every present-mode
+        tick never double-posts. Fails open: a delivery failure for one
+        question is recorded on its ``BotPing`` row and never aborts the
+        drain or the surrounding loop.
+        """
+        import os  # noqa: PLC0415
+
+        rows = list(DeferredQuestion.pending())
+        if not rows:
+            return "no pending questions to resurface."
+
+        previous_overlay = os.environ.get("T3_OVERLAY_NAME")
+        if overlay:
+            os.environ["T3_OVERLAY_NAME"] = overlay
+        delivered = 0
+        try:
+            for row in rows:
+                if notify_user(
+                    _resurface_text(row),
+                    kind=NotifyKind.QUESTION,
+                    idempotency_key=f"resurface-deferred-question-{row.pk}",
+                    user_id=user_id or None,
+                ):
+                    delivered += 1
+        finally:
+            if overlay:
+                if previous_overlay is None:
+                    os.environ.pop("T3_OVERLAY_NAME", None)
+                else:
+                    os.environ["T3_OVERLAY_NAME"] = previous_overlay
+
+        return f"resurfaced {delivered}/{len(rows)} pending question(s)."

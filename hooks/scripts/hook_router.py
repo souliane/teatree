@@ -6140,6 +6140,42 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
     return False
 
 
+_AWAY_MIRROR_SUFFIX = "away-question-mirror"
+
+
+def _away_mirror_key(questions: list[dict], session_id: str) -> str:
+    """Stable hash of the question payload + session — the idempotency key."""
+    blob = json.dumps([questions, session_id], sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _mirror_away_question_to_slack(questions: list[dict], session_id: str) -> None:
+    """Post an away-mode question to the user's Slack DM, exactly once.
+
+    The away-mode handler runs FIRST and denies, short-circuiting the
+    PreToolUse chain before ``handle_mirror_question_to_slack`` would
+    run — so without this the away-mode question never reaches Slack
+    (the user reads Slack, not ``t3 questions list``). Idempotent by a
+    stable hash of the question payload + session recorded in a STATE_DIR
+    marker file, so a harness retry of the same tool call does not
+    double-post. Fail-open: any Slack/IO error is swallowed so the deny
+    is never blocked and the loop never wedges.
+    """
+    if not questions:
+        return
+    slack_cfg = _slack_config_from_toml()
+    if slack_cfg is None:
+        return
+    key = _away_mirror_key(questions, session_id)
+    marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
+    if key in _read_lines(marker):
+        return
+    _perform_slack_post(slack_cfg, questions)
+    with contextlib.suppress(OSError):
+        _ensure_state_dir()
+        _append_line(marker, key)
+
+
 # ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
 
 
@@ -6200,14 +6236,18 @@ def _resolved_away_mode() -> bool:
 def handle_route_away_mode_question(data: dict) -> bool:
     """Convert an ``AskUserQuestion`` to a ``DeferredQuestion`` when availability=away.
 
-    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` so the
-    routing decision precedes the Slack mirror (the colleague should
-    not be paged for a question the agent already converted). Returns
-    ``True`` with a ``permissionDecision=deny`` and a friendly reason
-    that names the recorded row so the agent narrates the conversion
-    correctly. The denied tool_use block still appears in the transcript,
-    so the §807 structured-question Stop gate ``_last_assistant_turn``
-    detects ``used_question_tool=True`` and lets the turn complete.
+    Runs FIRST in the PreToolUse chain for ``AskUserQuestion`` and denies,
+    short-circuiting the chain before the present-mode
+    ``handle_mirror_question_to_slack`` (the last handler) would run. So
+    this handler is the only place that can mirror an away-mode question
+    to the user's Slack DM — and it does, between recording the row and
+    emitting the deny (the user reads Slack, not ``t3 questions list``).
+    Returns ``True`` with a ``permissionDecision=deny`` and a friendly
+    reason that names the recorded row so the agent narrates the
+    conversion correctly. The denied tool_use block still appears in the
+    transcript, so the §807 structured-question Stop gate
+    ``_last_assistant_turn`` detects ``used_question_tool=True`` and lets
+    the turn complete.
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
@@ -6228,6 +6268,8 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # Teatree unavailable — fail open so the user is never blocked
         # by a hook crash. The standard interactive flow then runs.
         return False
+    with contextlib.suppress(Exception):
+        _mirror_away_question_to_slack(questions, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
         f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "
