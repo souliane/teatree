@@ -83,6 +83,18 @@ _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
     }
 )
 
+# Wrapper-opener characters a ``gh``/``glab`` command word can hide behind:
+# a subshell ``(gh ...)`` or a brace group ``{gh ...}``. The lexer keeps the
+# opener attached to the following word (``(gh``), so the first token's value
+# starts with the opener.
+_WRAP_OPENERS: Final[frozenset[str]] = frozenset({"(", "{"})
+
+# Substitution markers that introduce a ``gh``/``glab`` command word inside a
+# command substitution ``$(gh ...)`` / ``echo $(glab ...)`` or a backtick
+# ``\`gh ...\``. These can appear anywhere in a token (incl. wholly inside one
+# quoted token, ``--body "$(gh ...)"``), so the whole token value is scanned.
+_SUBST_MARKERS: Final[tuple[str, ...]] = ("$(gh", "$(glab", "`gh", "`glab")
+
 
 def is_git_commit_command(command: str) -> bool:
     """Return True iff the first command segment is a ``git commit``.
@@ -144,6 +156,39 @@ def _segment_is_raw_rest(words: list[str]) -> bool:
     fail closed on the whole command.
     """
     return words[0] in {"gh", "glab"} and len(words) >= _RAW_REST_WORD_COUNT and words[1] == "api"
+
+
+def _command_has_wrapped_gh_glab(command: str) -> bool:
+    r"""Return True iff any token is a ``gh``/``glab`` reached through a wrapper.
+
+    A subshell ``(gh ...)``, brace group ``{gh ...}``, command substitution
+    ``$(gh ...)`` / ``echo $(glab ...)``, or backtick ``\`gh ...\``` hides a
+    ``gh``/``glab`` command word the segment parser does NOT recognise as a
+    top-level posting verb, so it evades the "do ALL posting segments target a
+    private repo?" check and a PUBLIC post can hide behind a private one. This
+    detects the wrapper so the carve-out can fail closed.
+
+    A BARE top-level ``gh``/``glab`` token (the normal recognised segment) does
+    NOT trip this -- a wrap opener must actually have been stripped, or a
+    substitution marker be present, so a legitimate private post is never
+    over-blocked. Prose like ``--body "see (gh issue 5)"`` is one quoted token
+    whose first char is not an opener and which carries no ``$(``/backtick
+    marker, so it stays allowed.
+    """
+    for token in tokenize(command):
+        if token.kind is not TokenKind.WORD:
+            continue
+        value = token.value
+        bare = value
+        stripped = False
+        while bare and bare[0] in _WRAP_OPENERS:
+            bare = bare[1:]
+            stripped = True
+        if stripped and bare in {"gh", "glab"}:
+            return True
+        if any(marker in value for marker in _SUBST_MARKERS):
+            return True
+    return False
 
 
 def is_gh_glab_posting_command(command: str) -> bool:
@@ -273,6 +318,12 @@ def posting_command_targets_private_repo(
 
     Fail-closed rules:
 
+    - ANY ``gh``/``glab`` reached through a subshell ``(...)``, brace group,
+        command substitution ``$(...)``, or backticks => False. The structural
+        segment scan cannot resolve a wrapped invocation's target, so its mere
+        presence blocks the whole command -- otherwise a PUBLIC post hidden in
+        ``... && (gh ... --repo PUBLIC ...)`` would leak behind a private
+        segment.
     - No posting segment => False (nothing eligible to downgrade).
     - ANY raw ``gh api`` / ``glab api`` segment => False. Raw REST can target
         an arbitrary surface, so its mere presence blocks the whole command.
@@ -280,6 +331,8 @@ def posting_command_targets_private_repo(
         known-private repo. One public/unknown target blocks the whole command
         -- a ``... && gh issue create --repo PUBLIC`` half would leak.
     """
+    if _command_has_wrapped_gh_glab(command):
+        return False
     segments = _command_segments(command)
     if any(_segment_is_raw_rest(words) for words in segments):
         return False

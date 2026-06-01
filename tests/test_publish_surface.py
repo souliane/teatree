@@ -782,6 +782,24 @@ _MUST_ALLOW: tuple[_CorpusRow, ...] = (
     _CorpusRow("A5", f"cd sub && gh pr create --repo {_PRIV_SLUG} --body x", _TERM, _PRIV_REMOTE),
     _CorpusRow("A6", f'git commit -m "{_TERM}"', _TERM, _PRIV_REMOTE),
     _CorpusRow("A7", f'glab mr create --repo {_PRIV_SLUG} --description "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow(
+        "A8",
+        f'gh issue create --repo {_PRIV_SLUG} --body "see (gh issue 5) and glab notes here"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A9",
+        f'gh issue create --repo {_PRIV_SLUG} --title "refs (gh issue 5) glab note" --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh issue create --repo {_PRIV_SLUG} --body ok2",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 # must-DENY: the load-bearing under-block guards. A public/unknown target, a
@@ -812,6 +830,45 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
     _CorpusRow(
         "D12",
         f'git commit -m "{_TERM}" && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D13",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && (gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D14",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& echo $(gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D15",
+        f"cd /tmp && gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& (gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}")',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D16",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && echo `gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}`",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D17",
+        f'gh issue create --repo {_PRIV_SLUG} --body "$(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D18",
+        f"glab issue create --repo {_PRIV_SLUG} --description ok "
+        f"&& (glab issue create --repo {_PUBLIC_SLUG} --description {_TERM})",
         _TERM,
         _PRIV_REMOTE,
     ),
