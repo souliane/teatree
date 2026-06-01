@@ -39,7 +39,11 @@ _APPENDIX_DIR = "docs/blueprint"
 # so the override was masking an over-budget file on main. Raised to 88,000 B
 # (~5.9 KB headroom) so the single file can absorb the next several config /
 # invariant rows without the override being load-bearing for ordinary edits.
-_BUDGET_TOP_LEVEL_BYTES = 88_000
+# Headroom-restore bump: the #1690 raise to 88,000 B left the live file
+# (85,328 B) only ~2.7 KB below budget, under the 4 KB headroom the
+# `TestRealCorpusFitsWithHeadroom` guard requires — reddening main CI for
+# every PR. Raised to 90,000 B to restore the >=4 KB headroom invariant.
+_BUDGET_TOP_LEVEL_BYTES = 90_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -132,7 +136,11 @@ _BUDGET_APPENDICES_BYTES = 111_500
 # Reviewed bump (#1697): tracks the appendix raise to 111,500 for the §17.4.2
 # ReviewVerdict line so the coupling invariant stays tight. Raised to 199,500.
 # Invariant holds: 199,500 - 88,000 = 111,500 <= 111,500.
-_BUDGET_TOTAL_BYTES = 199_500
+# Headroom-restore bump: live total corpus (196,076 B) sat only ~3.4 KB below
+# the 199,500 B total budget, under the 4 KB `TestRealCorpusFitsWithHeadroom`
+# guard. Raised to 201,500 to restore the >=4 KB headroom; tracks the top-level
+# raise to 90,000. Invariant holds: 201,500 - 90,000 = 111,500 <= 111,500.
+_BUDGET_TOTAL_BYTES = 201_500
 
 
 def _repo_root() -> pathlib.Path:

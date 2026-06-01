@@ -103,11 +103,18 @@ class ReviewSkillRun(TypedDict, total=False):
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):
-    """Durable record of a `ship` defense-in-depth currency refusal (#940)."""
+    """Durable record of a `ship` defense-in-depth currency refusal (#940).
+
+    Recorded only on a real merge conflict (conflict-only gate): the
+    branch trails ``target`` by ``behind`` commits AND the merge would
+    conflict in ``conflicting_paths``. Being behind alone never produces
+    this record.
+    """
 
     branch: str
     target: str
     behind: int
+    conflicting_paths: list[str]
 
 
 class DodE2EOverride(TypedDict, total=False):
