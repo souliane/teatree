@@ -693,7 +693,7 @@ class TestGitHubCodeHost:
 
     def test_list_issue_comments_returns_payload(self) -> None:
         notes = [{"id": 1, "body": "x"}]
-        with patch.object(github_mod, "_gh_api_get", return_value=notes) as mock_get:
+        with patch.object(github_mod, "_gh_api_get_paginated", return_value=notes) as mock_get:
             host = GitHubCodeHost()
             result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
         assert result == notes
@@ -703,6 +703,23 @@ class TestGitHubCodeHost:
         host = GitHubCodeHost()
         result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/pull/7")
         assert result == []
+
+    def test_list_issue_comments_paginates_beyond_the_first_page(self) -> None:
+        # A busy issue with >100 comments: a non-paginated GET silently caps at
+        # GitHub's default page size, so a ``## Test Plan`` note past the first
+        # page goes unseen and the evidence-poster duplicates it every run.
+        page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
+        page_two = [{"id": 100, "body": "## Test Plan"}]
+        slurped_pages = json.dumps([page_one, page_two])
+        with patch.object(github_mod, "_run_gh") as mock_run:
+            mock_run.return_value = MagicMock(stdout=slurped_pages)
+            host = GitHubCodeHost()
+            result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
+        argv = mock_run.call_args.args
+        assert "--paginate" in argv
+        assert "--slurp" in argv
+        assert result == [*page_one, *page_two]
+        assert {"id": 100, "body": "## Test Plan"} in result
 
     def test_update_issue_comment_patches_comment_endpoint(self) -> None:
         with patch.object(github_mod, "_gh_api_patch", return_value={"id": 99}) as mock_patch:

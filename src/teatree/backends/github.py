@@ -448,8 +448,7 @@ class GitHubCodeHost:
             return []
 
         repo = f"{match['owner']}/{match['repo']}"
-        data = _gh_api_get(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
-        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
+        return _gh_api_get_paginated(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
         """Edit an existing GitHub issue comment in place.
