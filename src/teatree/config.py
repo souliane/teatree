@@ -48,6 +48,68 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
+# Friendly aliases accepted by ``Speed.parse`` and normalised to a canonical
+# tier. Module-level (not a class attribute) so ``StrEnum`` does not try to
+# treat the mapping as an enum member.
+_SPEED_ALIASES: dict[str, str] = {
+    "low": "slow",
+    "normal": "medium",
+    "high": "full",
+}
+
+
+class Speed(StrEnum):
+    """How much parallel work the orchestrator drives at once.
+
+    A single dial spanning sequential to burst throughput. Orthogonal to
+    :class:`Mode` and :class:`Autonomy` (which govern *whether* a publishing
+    action may proceed); ``speed`` governs *how many* threads of work run
+    concurrently — it never relaxes a safety gate.
+
+    Tiers (``SLOW`` < ``MEDIUM`` < ``FULL`` < ``BOOST``, default ``MEDIUM``):
+
+    *   :attr:`SLOW` — at most one implementation worker in flight at a time
+        (the cold-review reviewer still runs separately). The cautious dial
+        for a fragile tree or a constrained host.
+    *   :attr:`MEDIUM` — the conservative baseline: NO orchestrator fan-out.
+        Throughput comes only from the intrinsic loop, the PR sweep, and the
+        per-overlay ``max_concurrent_auto_starts`` auto-start cap.
+    *   :attr:`FULL` — arm ``/loop /t3:speed boost`` so each wave re-classifies
+        the backlog and fans out a burst, sustained across waves.
+    *   :attr:`BOOST` — one parallel-backlog-blast wave (the former
+        ``/t3:full-speed`` behaviour), clamped to ``max_concurrent_auto_starts``.
+
+    A no-arg ``/t3:speed`` invocation means "go full" regardless of the
+    persisted baseline; the persisted value is the resting dial the loop
+    reads. Opt in via ``[teatree] speed = "full"`` in ``~/.teatree.toml``,
+    the ``T3_SPEED`` environment variable, or ``t3 teatree speed set <level>``.
+    """
+
+    SLOW = "slow"
+    MEDIUM = "medium"
+    FULL = "full"
+    BOOST = "boost"
+
+    @classmethod
+    def parse(cls, value: str) -> "Speed":
+        """Parse a speed string, accepting friendly aliases; typos raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default (:attr:`MEDIUM`)
+        is applied by the caller when the setting is absent, so this validates
+        only explicit values and a typo never silently changes throughput.
+        ``low``/``normal``/``high`` map onto ``slow``/``medium``/``full``.
+        """
+        normalised = value.strip().lower()
+        normalised = _SPEED_ALIASES.get(normalised, normalised)
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            aliases = ", ".join(sorted(_SPEED_ALIASES))
+            msg = f"Invalid speed {value!r}; valid values: {valid} (aliases: {aliases})"
+            raise ValueError(msg) from exc
+
+
 class Autonomy(StrEnum):
     """The single per-overlay trust switch collapsing the three user-approval gates.
 
@@ -247,6 +309,7 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
+    "speed": Speed.parse,
     "branch_prefix": str,
     "privacy": str,
     "contribute": bool,
@@ -306,6 +369,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 # global setting. Mapped to ``(UserSettings field, parser)``.
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
+    "T3_SPEED": ("speed", Speed.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
@@ -348,6 +412,15 @@ class UserSettings:
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
+    # How much parallel work the orchestrator drives at once. The
+    # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
+    # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
+    # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
+    # /t3:speed loop; ``boost`` runs a single parallel-blast wave. Orthogonal
+    # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
+    # governs *how many* threads run) and never relaxes a safety gate.
+    # Per-overlay overridable; ``T3_SPEED`` env wins over both.
+    speed: Speed = Speed.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # Training-wheel for `auto` overlays: when true, the loop autonomously
@@ -699,6 +772,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
         autonomy=_resolve_autonomy(teatree),
+        speed=_resolve_speed(teatree),
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
@@ -792,6 +866,18 @@ def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:
     """
     raw = teatree.get("autonomy")
     return Autonomy.parse(raw) if raw is not None else Autonomy.BABYSIT
+
+
+def _resolve_speed(teatree: dict[str, Any]) -> Speed:
+    """Resolve the global ``speed`` dial from a ``[teatree]`` toml table.
+
+    Absent → the conservative :attr:`Speed.MEDIUM`; a typo raises via
+    :meth:`Speed.parse` (never a silent throughput change). The per-overlay
+    override and the ``T3_SPEED`` env var are applied later in
+    :func:`get_effective_settings`.
+    """
+    raw = teatree.get("speed")
+    return Speed.parse(raw) if raw is not None else Speed.MEDIUM
 
 
 def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:
