@@ -412,9 +412,11 @@ class TestTaskWorkflow(TestCase):
         review_task = Task.objects.get(ticket=ticket, phase="reviewing")
         assert review_task.status == Task.Status.PENDING
 
+        # reviewing is loop-dispatched → INTERACTIVE (subscription-covered),
+        # so the in-session slot claims it from the interactive queue.
         claimed_id = cast(
             "int",
-            call_command("tasks", "claim", execution_target="headless", claimed_by="review-agent"),
+            call_command("tasks", "claim", execution_target="interactive", claimed_by="review-agent"),
         )
         assert claimed_id == review_task.id
 

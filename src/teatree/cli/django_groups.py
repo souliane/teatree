@@ -126,11 +126,19 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("claim", "Claim the next available task."),
             ("complete", "Mark a claimed task COMPLETED for work finished out-of-band."),
             ("create", "Enqueue the next-phase task for a ticket."),
-            ("list", "List tasks with optional filters."),
+            ("list", "List tasks with optional filters; --session scopes to the current Claude session's todos."),
             ("start", "Claim and run the next interactive task in the current terminal."),
             ("work-next-sdk", "Claim and execute an headless task."),
             ("work-next-user-input", "Claim and execute a user input task."),
         ],
+    ),
+    "queue": DjangoGroup(
+        "Background-task DB queue (inspect, expire stale jobs).",
+        [
+            ("status", "Print the queue breakdown by status and READY jobs by task name (read-only)."),
+            ("expire-stale", "Retire READY jobs older than the threshold to FAILED so a drainer never runs them."),
+        ],
+        core_dispatch=True,
     ),
     "followup": DjangoGroup(
         "Follow-up snapshots.",
@@ -194,6 +202,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
             ("comment", "Post a comment to an issue or work item by its URL."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
+        ],
+        core_dispatch=True,
+    ),
+    "review": DjangoGroup(
+        "Persist + look up cold-review verdicts per MR.",
+        [
+            ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
         ],
         core_dispatch=True,
     ),

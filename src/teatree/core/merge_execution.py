@@ -1080,7 +1080,16 @@ def record_merge_and_advance(
     :func:`assert_merge_preconditions` (the retry detects "already merged
     at ``reviewed_sha``" and runs this hook idempotently instead of
     re-issuing the merge). Returns the resulting ticket state.
+
+    The atomic block is wrapped in :func:`retry_on_locked` (#1520): a transient
+    ``database is locked`` from a concurrent canonical-DB writer must not abort
+    the merge keystone mid-flight. A retry re-opens the transaction, re-reads
+    the CLEAR ``select_for_update``-locked, and re-asserts the single-use
+    guard, so it consumes the CLEAR exactly once and never double-merges (the
+    irreversible GitHub merge already ran before this hook; only this
+    idempotent DB write retries).
     """
+    from teatree.core.db_retry import retry_on_locked  # noqa: PLC0415
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
     if not isinstance(clear, MergeClear):  # pragma: no cover - guarded by caller
@@ -1088,58 +1097,62 @@ def record_merge_and_advance(
         raise MergePreconditionError(msg)
 
     merge_audit_model = apps.get_model("core", "MergeAudit")
-    with transaction.atomic():
-        locked = MergeClear.objects.select_for_update().get(pk=clear.pk)
-        # Re-assert single-use UNDER the row lock. ``assert_merge_preconditions``
-        # checked ``is_actionable()`` unlocked; two concurrent executors that
-        # both passed it must not both consume — exactly one wins this
-        # serialized re-check, the loser raises ``MergeReplayError`` and
-        # writes no audit / does not advance the FSM.
-        if locked.consumed_at is not None:
-            msg = (
-                f"MergeClear {locked.pk} ({locked.slug}#{locked.pr_id}) was already "
-                f"consumed at {locked.consumed_at.isoformat()} — concurrent double-merge "
-                f"refused under the row lock (§17.4.3 single-use replay defence)"
+
+    def _consume_and_advance() -> str:
+        with transaction.atomic():
+            locked = MergeClear.objects.select_for_update().get(pk=clear.pk)
+            # Re-assert single-use UNDER the row lock. ``assert_merge_preconditions``
+            # checked ``is_actionable()`` unlocked; two concurrent executors that
+            # both passed it must not both consume — exactly one wins this
+            # serialized re-check, the loser raises ``MergeReplayError`` and
+            # writes no audit / does not advance the FSM.
+            if locked.consumed_at is not None:
+                msg = (
+                    f"MergeClear {locked.pk} ({locked.slug}#{locked.pr_id}) was already "
+                    f"consumed at {locked.consumed_at.isoformat()} — concurrent double-merge "
+                    f"refused under the row lock (§17.4.3 single-use replay defence)"
+                )
+                raise MergeReplayError(msg)
+            locked.consumed_at = timezone.now()
+            locked.save(update_fields=["consumed_at"])
+            merge_audit_model.objects.create(
+                clear=locked,
+                merged_sha=merged_sha,
+                required_checks_status=required_checks_status,
             )
-            raise MergeReplayError(msg)
-        locked.consumed_at = timezone.now()
-        locked.save(update_fields=["consumed_at"])
-        merge_audit_model.objects.create(
-            clear=locked,
-            merged_sha=merged_sha,
-            required_checks_status=required_checks_status,
-        )
-        ticket = locked.ticket
-        if ticket is None:
-            return ""
-        # Bind the phase attestation to the merged HEAD/workstream it was
-        # earned against (the §17.6 enforcement candidate (7), absorbed
-        # here): the canonical phase session records the SHA that actually
-        # landed, so a later stale-workstream attestation cannot be reused
-        # against a different HEAD.
-        session = ticket.resolve_phase_session(agent_id="merge-loop")
-        session.visit_phase("merged", agent_id=f"merge-loop@{merged_sha[:12]}")
-        # #1343: state-complete reconcile. An authorised, audited PR-merge
-        # is the authority — every pre-merged state (NOT_STARTED through
-        # IN_REVIEW, plus SHIPPED) must advance to MERGED. RETROSPECTED/
-        # DELIVERED are past MERGED and stay where they are; IGNORED is
-        # abandoned. The original ``state in {in_review, merged}`` guard
-        # left STARTED tickets visibly stuck on the statusline after their
-        # PR merged (#1324 follow-up). The FSM source-set on
-        # ``reconcile_merged`` is the single source of truth — catching
-        # ``TransitionNotAllowed`` lets the source list evolve in one
-        # place (the model) without a parallel guard here.
-        try:
-            ticket.reconcile_merged()
-        except TransitionNotAllowed:
-            logger.info(
-                "merge keystone: ticket %s state=%s is past MERGED; FSM unchanged",
-                ticket.pk,
-                ticket.state,
-            )
-        else:
-            ticket.save()
-        return ticket.state
+            ticket = locked.ticket
+            if ticket is None:
+                return ""
+            # Bind the phase attestation to the merged HEAD/workstream it was
+            # earned against (the §17.6 enforcement candidate (7), absorbed
+            # here): the canonical phase session records the SHA that actually
+            # landed, so a later stale-workstream attestation cannot be reused
+            # against a different HEAD.
+            session = ticket.resolve_phase_session(agent_id="merge-loop")
+            session.visit_phase("merged", agent_id=f"merge-loop@{merged_sha[:12]}")
+            # #1343: state-complete reconcile. An authorised, audited PR-merge
+            # is the authority — every pre-merged state (NOT_STARTED through
+            # IN_REVIEW, plus SHIPPED) must advance to MERGED. RETROSPECTED/
+            # DELIVERED are past MERGED and stay where they are; IGNORED is
+            # abandoned. The original ``state in {in_review, merged}`` guard
+            # left STARTED tickets visibly stuck on the statusline after their
+            # PR merged (#1324 follow-up). The FSM source-set on
+            # ``reconcile_merged`` is the single source of truth — catching
+            # ``TransitionNotAllowed`` lets the source list evolve in one
+            # place (the model) without a parallel guard here.
+            try:
+                ticket.reconcile_merged()
+            except TransitionNotAllowed:
+                logger.info(
+                    "merge keystone: ticket %s state=%s is past MERGED; FSM unchanged",
+                    ticket.pk,
+                    ticket.state,
+                )
+            else:
+                ticket.save()
+            return ticket.state
+
+    return retry_on_locked(_consume_and_advance)
 
 
 def merge_ticket_pr(

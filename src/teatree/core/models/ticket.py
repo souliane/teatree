@@ -50,6 +50,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         AUTHOR = "author", "Author"
         REVIEWER = "reviewer", "Reviewer"
 
+    class Kind(models.TextChoices):
+        FEATURE = "feature", "Feature"
+        FIX = "fix", "Fix"
+
     # #808: the ship reconcile is PHASE-DRIVEN / state-complete, not an
     # enumerated source allow-list. The shipping gate already verified the
     # aggregated cross-session phase ledger (the single source of truth)
@@ -101,6 +105,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     repos = models.JSONField(default=list, blank=True)
     state = FSMField(max_length=32, choices=State.choices, default=State.NOT_STARTED)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.AUTHOR)
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.FEATURE)
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
     short_description = models.CharField(max_length=80, blank=True, default="")
@@ -423,16 +428,23 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         )
 
     def schedule_shipping(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a shipping task. Headless under auto mode; interactive otherwise."""
+        """Create an INTERACTIVE shipping task; approval gating rides the reason.
+
+        Shipping is a loop-dispatched phase (``(author, shipping)`` →
+        ``t3:shipper``), so it runs as an in-session sub-agent
+        (subscription-covered), never a metered ``claude -p`` — regardless of
+        auto mode. Auto mode no longer changes the execution *target*; it only
+        changes the *approval posture* the in-session shipper reads from
+        ``execution_reason`` (auto = push without waiting; otherwise = gate for
+        user approval first).
+        """
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
         session = Session.objects.create(ticket=self, agent_id="shipping")
         if _auto_ship_enabled():
-            target = Task.ExecutionTarget.HEADLESS
-            reason = "Auto-scheduled shipping — auto mode, push will proceed headlessly"
+            reason = "Auto-scheduled shipping — auto mode, push will proceed without waiting for approval"
         else:
-            target = Task.ExecutionTarget.INTERACTIVE
             reason = (
                 "Auto-scheduled shipping — gated for user approval "
                 '(set teatree.mode = "auto" or T3_AUTO_SHIP=true to skip)'
@@ -441,7 +453,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             ticket=self,
             session=session,
             phase="shipping",
-            execution_target=target,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
             execution_reason=reason,
             parent_task=parent_task,
         )
@@ -629,7 +641,18 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        pass
+        """Reach DELIVERED (done).
+
+        For a ``kind=fix`` ticket the Definition of Done requires a validated
+        FixRecord: ``check_fix_record_dod`` raises :class:`FixRecordDodError`
+        (an ``InvalidTransitionError`` subclass) so the loop's outer atomic
+        rolls the advance back and the ticket stays RETROSPECTED — merged on
+        the forge, but not yet *done*. A manifestation patch with no stated
+        root cause cannot reach DELIVERED. Feature tickets pass unconditionally.
+        """
+        from teatree.core.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
+
+        check_fix_record_dod(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:

@@ -4,12 +4,13 @@ The exit-point sibling of :mod:`teatree.core.clone_guard` (#948, the
 entry-point pre-investigation gate). #948 covers "do not begin
 investigating against a stale repo"; #940 covers "do not let the cold
 reviewer attest, or ``ship`` push, a feature branch whose target has
-moved past the branch point". A stale base poisons every check that
-runs after it — visual QA, the reviewer's SHA attestation, and the
-release pipeline all certify a tree that is missing target-branch
-fixes.
+moved past the branch point". A target-branch move only poisons the
+work when the two diverging edits actually *conflict*; a behind-but-
+mergeable branch is safe to clear and squash-merge — GitHub re-applies
+the branch's diff onto the current target at merge time.
 
-The gate fetches the target branch, then either:
+The ship-side gate (:func:`require_current_branch`) fetches the target,
+then either:
 
 * **auto-merges** the target into the feature branch on a zero-conflict
     fast-forward (``MergeOutcome.ZERO_CONFLICT``); the caller records the
@@ -20,6 +21,13 @@ The gate fetches the target branch, then either:
     a half-merged tree that the next step would silently push.
 * **no-ops** when the branch is already current
     (``MergeOutcome.ALREADY_CURRENT``).
+
+The CLEAR-side gate (:func:`sha_conflicts_with_target`) is
+**conflict-only**: it predicts — without mutating the worktree, via
+``git merge-tree --write-tree`` — whether merging the target into the
+reviewed SHA would conflict, and refuses *only* on a real conflict. A
+branch that is merely behind but conflict-free is allowed: blocking it
+would impose a rebase/update-branch ritual that adds no safety.
 
 A failed fetch is inconclusive — same posture as :mod:`clone_guard`: do
 not block when the network is down.
@@ -105,26 +113,69 @@ def _rev_count(repo: str, range_spec: str) -> int:
         return 0
 
 
-def sha_behind_target(repo: str, reviewed_sha: str, target: str = "origin/main") -> BranchStaleness | None:
-    """Return staleness when ``reviewed_sha``'s merge-base is behind ``target``.
+@dataclass(frozen=True, slots=True)
+class MergeConflict:
+    """One conflict-only CLEAR-gate finding: the reviewed SHA would not merge.
 
-    Used by the ``ticket clear`` pre-flight (#940): refuse to issue a
-    CLEAR for a SHA whose merge-base trails the target branch — the
-    cold reviewer would be attesting a tree that is missing
-    target-branch fixes, and the release pipeline would certify the
-    stale base.
+    ``reviewed_sha`` and ``target`` are behind by ``behind_count``
+    commits AND merging the two produces real (textual) conflicts in
+    ``conflicting_paths``. A behind-but-mergeable SHA never yields this
+    finding — being behind alone is not a merge blocker.
+    """
+
+    reviewed_sha: str
+    target: str
+    behind_count: int
+    conflicting_paths: tuple[str, ...]
+
+
+def _merge_tree_conflicts(repo: str, reviewed_sha: str, target: str) -> tuple[str, ...] | None:
+    """Predict conflicts of merging ``target`` into ``reviewed_sha``, no mutation.
+
+    Uses ``git merge-tree --write-tree`` (git ≥ 2.38): a pure object-DB
+    merge that never touches the index or worktree, so it is safe to run
+    against an arbitrary reviewed SHA while another branch is checked
+    out. Per its exit-code protocol, ``0`` ⇒ clean (``()``); ``1`` ⇒
+    conflicts, where the output's first line is the tree oid and the
+    rest are the conflicting paths; any other code (bad object, old git)
+    is inconclusive and returns ``None`` so the caller fails open — same
+    posture as a failed fetch.
+    """
+    rc, out = _git(repo, "merge-tree", "--write-tree", "--name-only", reviewed_sha, target)
+    if rc == 0:
+        return ()
+    if rc != 1:
+        return None
+    return tuple(line for line in out.splitlines()[1:] if line.strip())
+
+
+def sha_conflicts_with_target(repo: str, reviewed_sha: str, target: str = "origin/main") -> MergeConflict | None:
+    """Return a finding only when ``reviewed_sha`` would *conflict* with ``target``.
+
+    The CLEAR-side, conflict-only gate (#940, relaxed): the reviewed SHA
+    is blocked from CLEAR **only** if it both trails ``target`` and the
+    merge produces real conflicts an automatic squash-merge could not
+    resolve. A branch that is merely behind but conflict-free returns
+    ``None`` — it clears and squash-merges without a rebase, because
+    GitHub re-applies its diff onto the live target at merge time and
+    the merge-time live-CI re-check still guards correctness.
+
+    Inconclusive cases (failed fetch, merge-tree unsupported) return
+    ``None`` so the gate fails open — same posture as :mod:`clone_guard`.
     """
     if not _fetch_target(repo, target):
         return None
     behind = _rev_count(repo, f"{reviewed_sha}..{target}")
     if behind <= 0:
         return None
-    return BranchStaleness(
-        branch=reviewed_sha,
+    conflicts = _merge_tree_conflicts(repo, reviewed_sha, target)
+    if not conflicts:
+        return None
+    return MergeConflict(
+        reviewed_sha=reviewed_sha,
         target=target,
         behind_count=behind,
-        base_oid=_rev_parse(repo, reviewed_sha),
-        target_oid=_rev_parse(repo, target),
+        conflicting_paths=conflicts,
     )
 
 
