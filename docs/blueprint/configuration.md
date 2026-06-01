@@ -96,6 +96,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | Key | Why overridable |
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
+| `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Safety floor untouched |
 | `branch_prefix` | Different prefix conventions per project |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
@@ -125,6 +126,9 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `gate_fail_open` | NEVER-LOCKOUT switch (default `false`): `true` flips every over-deny gate to fail-open. PUBLIC-egress gate excluded. See BLUEPRINT §17 invariant 10. |
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 
+`notify_on_behalf` is NOT in this registry — it is derived (read-only),
+set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
+
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into
 `load_config().user` directly. Adding a new overridable key is a
@@ -137,10 +141,13 @@ mode = "interactive"         # global default
 branch_prefix = "ac"
 
 [overlays.t3-teatree]
-mode = "auto"                # auto-mode for the t3-teatree dogfooding overlay
+autonomy = "full"            # single-author dogfooding: one switch collapses the gates + pins mode = auto
+
+[overlays.t3-client]
+autonomy = "notify"          # collaborative: autonomous + DM per on-behalf action, keeps CLEAR merge gate
 
 [overlays.client-project]
-mode = "interactive"         # stay gated on client code
+mode = "interactive"         # stay gated on client code (autonomy defaults to babysit)
 privacy = "strict"
 ```
 

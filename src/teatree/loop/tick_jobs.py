@@ -17,7 +17,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import Mode, discover_active_overlay, discover_overlays, load_config, workspace_dir
+from teatree.config import (
+    Autonomy,
+    Mode,
+    discover_active_overlay,
+    discover_overlays,
+    get_effective_settings,
+    load_config,
+    workspace_dir,
+)
 from teatree.core.clone_paths import find_clone_path
 
 if TYPE_CHECKING:
@@ -323,10 +331,15 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
 
     Repo list comes from ``overlay.metadata.get_followup_repos()``. Returns
     ``None`` when the overlay has no Python class or no repos configured.
-    ``solo_overlay`` opts the scanner into the dogfood bypass (#1309) when the
-    user has declared this overlay end-to-end-trusted (``mode = "auto"`` +
-    ``require_human_approval_to_merge = false``); on every other overlay the
-    CLEAR contract is preserved as-is.
+    ``solo_overlay`` opts the scanner into the single-author dogfood bypass
+    (#1309) — a direct ``gh pr merge`` that skips the per-diff CLEAR — ONLY
+    when the overlay's ``autonomy`` resolves to ``full`` (#1668). The
+    ``notify`` tier collapses the same merge gates (``mode = auto`` +
+    ``require_human_approval_to_merge = false``) but is a COLLABORATIVE
+    surface: it must keep the CLEAR path so the user's MR merges only after a
+    colleague approval and the agent never self-approves its own MR. Gating
+    on the resolved ``autonomy`` (not the collapsed gate values) is what keeps
+    the bypass exclusive to ``full``.
     """
     overlay = backend.overlay
     if overlay is None:
@@ -341,7 +354,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     else:
         notifier = NullMergeNotifier()
     settings = _effective_settings_for_overlay(backend.name)
-    solo_overlay = settings.mode == Mode.AUTO and not settings.require_human_approval_to_merge
+    solo_overlay = settings.autonomy is Autonomy.FULL
     return PrSweepScanner(
         repos=repos,
         api=GhPrApiClient(token=github_token),
@@ -703,20 +716,18 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
 
 
 def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
-    """Resolve :class:`UserSettings` honouring this overlay's ``[overlays.<name>]`` overrides.
+    """Resolve :class:`UserSettings` for *overlay_name*, autonomy collapse applied.
 
-    Mirrors ``get_effective_settings()`` but resolves the active overlay
-    explicitly by name (the scanner-builder loops over every registered
-    overlay, not just the one in ``T3_OVERLAY_NAME``). Falls back to the
-    global ``[teatree]`` values when no per-overlay override is set.
+    Thin wrapper over :func:`teatree.config.get_effective_settings` resolving a
+    NAMED overlay — the scanner-builders fan out over every registered overlay,
+    so they resolve by name rather than via ``T3_OVERLAY_NAME``. Routing through
+    that resolver (not a bare ``replace``) is what makes the ``autonomy``
+    collapse (#1668) visible to the loop's auto-merge / codex consumers;
+    skipping it left a ``full``/``notify`` overlay's merge autonomy a silent
+    no-op in the loop. Kept as a module-local indirection so the existing call
+    sites and the builder tests that patch this name stay unchanged.
     """
-    from dataclasses import replace  # noqa: PLC0415
-
-    base = load_config().user
-    for entry in discover_overlays():
-        if entry.name == overlay_name and entry.overrides:
-            return replace(base, **entry.overrides)
-    return base
+    return get_effective_settings(overlay_name)
 
 
 def _gitlab_approvals_enabled() -> bool:

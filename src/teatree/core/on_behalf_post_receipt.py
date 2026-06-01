@@ -46,16 +46,22 @@ def notify_user_on_behalf_post(
     converts the ``[label](url)`` form to Slack ``<url|label>``.
     ``summary`` is the one-line description of what was posted.
 
-    Suppressed (early return, no DM) when ``notify_on_post_on_behalf``
-    resolves false — the post already happened and the caller already
-    published; this only controls the after-receipt visibility DM.
+    Suppressed (early return, no DM) only when BOTH the user-facing
+    ``notify_on_post_on_behalf`` toggle (#949) AND the autonomy-derived
+    ``notify_on_behalf`` (the ``notify`` tier's forced DM, #1668) resolve
+    false — the post already happened and the caller already published;
+    this only controls the after-receipt visibility DM. The ``notify``
+    autonomy tier drives ``notify_on_behalf = True``, so its on-behalf
+    actions always DM the user through this one canonical egress regardless
+    of the #949 toggle, without adding a parallel notifier.
 
     Never raises into the caller and never fails or rolls back the post:
     ``notify_user`` already wraps every transport failure into a
     NOOP/FAILED ``BotPing`` row (the audit scanner re-DMs on drift), so
     a misconfigured Slack backend cannot break a legitimate publish.
     """
-    if not get_effective_settings().notify_on_post_on_behalf:
+    settings = get_effective_settings()
+    if not (settings.notify_on_post_on_behalf or settings.notify_on_behalf):
         return
 
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
