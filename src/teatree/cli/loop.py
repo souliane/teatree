@@ -224,7 +224,11 @@ def start_command(
         " --json` until it returns nothing. Each call atomically claims ONE pending"
         " unit (#786 WS1 — no separate post-spawn claim step, no double-dispatch);"
         " for the returned entry call the Agent tool with subagent_type=entry.subagent,"
-        " description=entry.execution_reason, and a prompt that includes entry.issue_url."
+        " model=entry.model (omit to inherit the default tier), description=entry.execution_reason,"
+        " and a prompt that includes entry.issue_url and instructs the sub-agent to load the"
+        " skills in entry.skill_bundle first. When the sub-agent returns, record its JSON result"
+        " envelope back with `t3 <overlay> tasks record-attempt entry.task_id '<result-json>'`"
+        " so the task completes and the ticket advances. Subscription-covered: never `claude -p`."
     )
 
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():

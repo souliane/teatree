@@ -132,18 +132,16 @@ def _is_loop_dispatched(instance: Task) -> bool:
     """True when the loop is the SOLE dispatcher for this task's ``(role, phase)``.
 
     A task whose ``(ticket.role, phase)`` has a registered phase agent is
-    dispatched per-phase by the loop (``loop_dispatch`` ``claim-next`` →
-    the phase sub-agent). Auto-enqueuing ``execute_headless_task`` for it
-    too would run the same task TWICE (the loop spawns the agent AND a
-    ``db_worker`` drains the queue). Gating the auto-enqueue here makes the
-    loop the single dispatcher for loop-dispatched phase tasks. A task with
-    NO registered phase agent (a free-form/headless-only phase) is NOT
-    loop-dispatched, so it still rides the ``execute_headless_task`` path —
-    never zero dispatch.
+    dispatched per-phase by the in-session ``/loop`` slot (``loop_dispatch``
+    ``claim-next`` → the phase sub-agent via the ``Agent`` tool). Such a task
+    now defaults to INTERACTIVE at creation (``Task.save`` chokepoint), so the
+    ``execution_target`` guard below already skips it; this remains as
+    defense-in-depth for a row that reaches HEADLESS some other way, so a
+    queue drainer never shells a metered ``claude -p`` for loop phase work. A
+    pair with NO registered agent is free-form headless and still rides the
+    ``execute_headless_task`` path — never zero dispatch.
     """
-    from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
-
-    return bool(subagent_for_phase(instance.ticket.role, instance.phase))
+    return Task.loop_dispatched(role=instance.ticket.role, phase=instance.phase)
 
 
 def _auto_enqueue_headless_task(
@@ -151,11 +149,13 @@ def _auto_enqueue_headless_task(
     instance: Task,
     **_kwargs: object,
 ) -> None:
-    """Auto-enqueue headless tasks for execution when created or re-routed.
+    """Auto-enqueue HEADLESS tasks for execution when created or re-routed.
 
-    Loop-dispatched phase tasks (those with a registered phase agent) are
-    skipped — the loop is their sole dispatcher (see ``_is_loop_dispatched``)
-    so a ``db_worker`` draining the queue never double-runs them.
+    Loop-dispatched phase tasks (those with a registered phase agent) default
+    to INTERACTIVE at creation and so fail the ``execution_target`` guard;
+    ``_is_loop_dispatched`` stays as a belt-and-braces skip for any HEADLESS
+    row of such a pair, so a ``db_worker`` draining the queue never
+    double-runs (or meters) loop phase work.
     """
     if instance.execution_target != Task.ExecutionTarget.HEADLESS:
         return

@@ -172,9 +172,10 @@ class TestTicketTransitions(TestCase):
         ticket.test()
         ticket.save()
 
-        # test() auto-schedules a reviewing task
+        # test() auto-schedules a reviewing task; reviewing is loop-dispatched
+        # ((author, reviewing) → t3:reviewer) so it runs in-session.
         task = ticket.tasks.get(phase="reviewing")
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert task.session.agent_id == "review"
         assert ticket.state == Ticket.State.TESTED
 

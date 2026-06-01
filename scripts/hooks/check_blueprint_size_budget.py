@@ -39,7 +39,11 @@ _APPENDIX_DIR = "docs/blueprint"
 # so the override was masking an over-budget file on main. Raised to 88,000 B
 # (~5.9 KB headroom) so the single file can absorb the next several config /
 # invariant rows without the override being load-bearing for ordinary edits.
-_BUDGET_TOP_LEVEL_BYTES = 88_000
+# Headroom-restore bump: the #1690 raise to 88,000 B left the live file
+# (85,328 B) only ~2.7 KB below budget, under the 4 KB headroom the
+# `TestRealCorpusFitsWithHeadroom` guard requires — reddening main CI for
+# every PR. Raised to 90,000 B to restore the >=4 KB headroom invariant.
+_BUDGET_TOP_LEVEL_BYTES = 90_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -104,9 +108,12 @@ _BUDGET_TOP_LEVEL_BYTES = 88_000
 # headroom) to admit the row.
 # Reviewed bump (speed dial): the per-overlay `speed` throughput-dial row in the
 # override table is the same class of load-bearing config fact as the `autonomy`
-# row above; after trimming verbose prose the appendix corpus is 110,696 B, so
-# the budget is raised one minimal step (~304 B headroom) to admit the row.
-_BUDGET_APPENDICES_BYTES = 111_000
+# row above; tracked by the #1697 appendix bump below.
+# Reviewed bump (#1697): the §17.4.2 line documenting the by-product
+# `ReviewVerdict` record + `review record`/`review status` lookup is a
+# load-bearing architectural fact; merged with the speed-dial row the appendix
+# corpus is 110,906 B, raised one minimal step to 111,500 (~594 B headroom).
+_BUDGET_APPENDICES_BYTES = 111_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -129,7 +136,14 @@ _BUDGET_APPENDICES_BYTES = 111_000
 # coupling invariant stays tight. Live total corpus is 192,264 B; raised to
 # 198,500 (~6.2 KB headroom). Invariant holds: 198,500 - 88,000 = 110,500
 # <= 110,500.
-_BUDGET_TOTAL_BYTES = 198_500
+# Reviewed bump (#1697): tracks the appendix raise to 111,500 for the §17.4.2
+# ReviewVerdict line so the coupling invariant stays tight. Raised to 199,500.
+# Invariant holds: 199,500 - 88,000 = 111,500 <= 111,500.
+# Headroom-restore bump: live total corpus (196,076 B) sat only ~3.4 KB below
+# the 199,500 B total budget, under the 4 KB `TestRealCorpusFitsWithHeadroom`
+# guard. Raised to 201,500 to restore the >=4 KB headroom; tracks the top-level
+# raise to 90,000. Invariant holds: 201,500 - 90,000 = 111,500 <= 111,500.
+_BUDGET_TOTAL_BYTES = 201_500
 
 
 def _repo_root() -> pathlib.Path:

@@ -115,7 +115,7 @@ T3_REPO="$HOME/workspace/<your-username>/teatree"  # teatree repo path
 T3_CONTRIBUTE=true                           # allow retro to modify core skills
 T3_PUSH=false                                # gate pushes behind an explicit prompt
 T3_AUTO_PUSH_FORK=false                      # auto-push to fork when T3_PUSH=true and origin ≠ T3_UPSTREAM
-T3_AUTO_SHIP=false                           # when true, shipping tasks are headless; default gates push on user approval
+T3_AUTO_SHIP=false                           # when true, the in-session shipper pushes without waiting for approval; default gates push on user approval
 T3_PRIVACY=strict                            # block commits with PII
 ```
 

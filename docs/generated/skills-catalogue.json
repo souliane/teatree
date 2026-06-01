@@ -117,6 +117,10 @@
       "summary": "Ticket intake and kickoff \u2014 from zero to ready-to-code"
     },
     {
+      "name": "todos",
+      "summary": "List the current session's tasks/todos \u2014 terse, grouped pending / in_progress / completed, with clickable refs"
+    },
+    {
       "name": "update",
       "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
     },
