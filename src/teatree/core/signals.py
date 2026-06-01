@@ -128,15 +128,40 @@ def _add_approval_reaction_on_transition(
         logger.exception("Failed to mark ReviewAssignment approved for PR %s", instance.pk)
 
 
+def _is_loop_dispatched(instance: Task) -> bool:
+    """True when the loop is the SOLE dispatcher for this task's ``(role, phase)``.
+
+    A task whose ``(ticket.role, phase)`` has a registered phase agent is
+    dispatched per-phase by the loop (``loop_dispatch`` ``claim-next`` →
+    the phase sub-agent). Auto-enqueuing ``execute_headless_task`` for it
+    too would run the same task TWICE (the loop spawns the agent AND a
+    ``db_worker`` drains the queue). Gating the auto-enqueue here makes the
+    loop the single dispatcher for loop-dispatched phase tasks. A task with
+    NO registered phase agent (a free-form/headless-only phase) is NOT
+    loop-dispatched, so it still rides the ``execute_headless_task`` path —
+    never zero dispatch.
+    """
+    from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
+
+    return bool(subagent_for_phase(instance.ticket.role, instance.phase))
+
+
 def _auto_enqueue_headless_task(
     sender: type,  # noqa: ARG001
     instance: Task,
     **_kwargs: object,
 ) -> None:
-    """Auto-enqueue headless tasks for execution when created or re-routed."""
+    """Auto-enqueue headless tasks for execution when created or re-routed.
+
+    Loop-dispatched phase tasks (those with a registered phase agent) are
+    skipped — the loop is their sole dispatcher (see ``_is_loop_dispatched``)
+    so a ``db_worker`` draining the queue never double-runs them.
+    """
     if instance.execution_target != Task.ExecutionTarget.HEADLESS:
         return
     if instance.status != Task.Status.PENDING:
+        return
+    if _is_loop_dispatched(instance):
         return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 

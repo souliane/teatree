@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from teatree.config import get_effective_settings
-from teatree.core.phases import normalize_phase
+from teatree.core.phases import normalize_phase, subagent_for_phase
 from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,6 @@ _AGENT_BY_KIND: dict[str, str] = {
     # ``RedCardSignal`` row id so the orchestrator can stamp the filed
     # issue URL back onto the row via ``RedCardSignal.link_issue``.
     "red_card.signal": "t3:orchestrator",
-    "pending_task": "t3:orchestrator",
     # #1554: a newly-claimed auto-implement issue routes to the orchestrator
     # as a MAKER-side kickoff — it starts the normal maker pipeline for the
     # claimed issue. It issues no MergeClear and gains no new merge authority
@@ -295,6 +294,27 @@ def _dispatch_answering(signal: ScanSignal) -> list[DispatchAction]:
     ]
 
 
+def _dispatch_pending_task(signal: ScanSignal) -> list[DispatchAction] | None:
+    """Route a ``pending_task`` signal to its PHASE's own agent (per-phase dispatch).
+
+    The ``PendingTasksScanner`` emits one ``pending_task`` per pending row,
+    carrying the row's ``phase`` and ``ticket_role``. The agent is resolved
+    through the single canonical ``(role, phase) → agent`` authority
+    (``subagent_for_phase``): coding → t3:coder, testing → t3:tester,
+    reviewing → t3:reviewer, shipping → t3:shipper. No author phase falls
+    through to a single chaining orchestrator — that is the shadowing this
+    restores. A pair with no registered agent (free-form phase, or a missing
+    role) returns ``None`` so it falls through to the statusline fallback for
+    operator triage rather than being misrouted.
+    """
+    role = str(signal.payload.get("ticket_role", ""))
+    phase = str(signal.payload.get("phase", ""))
+    agent = subagent_for_phase(role, phase)
+    if not agent:
+        return None
+    return [DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload)]
+
+
 def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     """Payload-conditional special cases that precede the generic lookups.
 
@@ -302,20 +322,33 @@ def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     through to the ``_AGENT_BY_KIND`` / ``_MECHANICAL_BY_KIND`` / statusline
     chain. Keeping these here keeps ``_dispatch_one`` flat.
     """
+    if signal.kind == "pending_task":
+        return _dispatch_pending_task(signal)
     if signal.kind in {"slack.mention", "slack.dm"}:
         pr_url = _slack_pr_url(signal)
         if pr_url:
             return _review_request_dispatch(signal, pr_url)
     if signal.kind == "incoming_event.task_needed":
-        pr_url = _task_pr_url(signal)
-        if pr_url:
-            return _review_request_dispatch(signal, pr_url)
+        return _dispatch_incoming_task(signal)
     if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
         return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
     if signal.kind == "codex_review.dispatch":
         return _codex_review_dispatch(signal)
-    phase = normalize_phase(str(signal.payload.get("phase", "")))
-    if signal.kind == "incoming_event.task_needed" and phase == "answering":
+    return None
+
+
+def _dispatch_incoming_task(signal: ScanSignal) -> list[DispatchAction] | None:
+    """Route an ``incoming_event.task_needed`` signal (#219, #670).
+
+    A carried PR/MR URL means a review request regardless of the
+    classifier's phase, so it precedes the ``answering`` fallback. An
+    ``answering`` phase with no URL routes to the answerer; everything else
+    falls through (``None``) to the statusline.
+    """
+    pr_url = _task_pr_url(signal)
+    if pr_url:
+        return _review_request_dispatch(signal, pr_url)
+    if normalize_phase(str(signal.payload.get("phase", ""))) == "answering":
         return _dispatch_answering(signal)
     return None
 
