@@ -1,0 +1,16 @@
+import pytest
+
+
+class TestParser:
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("red", Color.RED),
+            ("green", Color.GREEN),
+            ("blue", Color.BLUE),
+            ("yellow", Color.YELLOW),
+            ("purple", Color.PURPLE),
+        ],
+    )
+    def test_parses_color(self, name, expected):
+        assert parse(name) == expected

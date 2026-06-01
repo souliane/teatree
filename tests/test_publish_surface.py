@@ -946,12 +946,12 @@ class TestCarveOutApplies:
             is False
         )
 
-    # SAFETY TEST: an unresolvable ``-C`` dir falls closed. The effective
-    # worktree does not resolve to a repo with a known-private origin, so the
-    # commit stays hard-blocked (fail-closed preserved).
-    def test_git_dash_c_nonexistent_dir_stays_hard_blocked(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    # A ``-C`` dir that is not inside ANY git repo is a genuinely-unresolvable
+    # LOCAL commit: git itself rejects a commit outside a repo, so it cannot
+    # leak. The commit BODY fails OPEN (downgrade), never over-blocking a
+    # legitimate local commit -- distinct from a resolvable-PUBLIC target,
+    # which still hard-blocks (see the ``-C <public repo>`` test below).
+    def test_git_dash_c_dir_not_in_any_repo_fails_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         ambient_cwd = _repo_with_remote(
             tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
@@ -961,6 +961,27 @@ class TestCarveOutApplies:
             publish_surface.carve_out_applies(
                 "Bash",
                 'git -C /nonexistent/worktree commit -m "acmewidget"',
+                "acmewidget",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # SAFETY TEST: a ``-C`` dir that RESOLVES to a PUBLIC repo stays
+    # hard-blocked. Fail-open is ONLY for a dir inside no repo at all, never
+    # for a resolvable-public target.
+    def test_git_dash_c_public_repo_stays_hard_blocked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        public_worktree = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(
+            tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {public_worktree} commit -m "acmewidget"',
                 "acmewidget",
                 ambient_cwd,
                 config_path=cfg,

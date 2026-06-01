@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from teatree.config import OverlayEntry
 
 import teatree.cli.agent as _agent
+import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 from teatree.cli import (
@@ -27,6 +28,9 @@ from teatree.cli import (
 )
 from teatree.cli import (
     skill_ref_tools as _skill_ref_tools,  # noqa: F401  (side-effect: registers validate-skill-refs onto tool_app)
+)
+from teatree.cli import (
+    test_shape_tools as _test_shape_tools,  # noqa: F401  (side-effect: registers test-shape onto tool_app)
 )
 from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
@@ -118,6 +122,7 @@ app.command()(_info.startoverlay)
 app.command()(_info.docs)
 app.command()(_agent.agent)
 app.command()(_sessions.sessions)
+app.command()(_cost.cost)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")

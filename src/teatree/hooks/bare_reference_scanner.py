@@ -188,7 +188,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
         command = tool_input.get("command", "")
         if not _is_publish_command(command):
             return None
-        payload = _extract_bash_payload(command)
+        payload = _extract_bash_payload(command, fail_closed_body_file=True)
         return _exempt_trailing_title_suffix(payload, _extract_title_fragments(command))
     return _extract_slack_mcp_payload(tool_name, tool_input)
 

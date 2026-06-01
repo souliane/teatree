@@ -18,9 +18,11 @@ The module is pure detection. The PreToolUse hook in
 ``stdout`` / ``permissionDecision`` JSON.
 
 Override via the ``--allow-banned-term`` flag in the first command
-segment, or ``ALLOW_BANNED_TERM=1`` in the tool-input env mapping —
-mirroring the quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape
-hatch.
+segment, a leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in
+the first segment (``ALLOW_BANNED_TERM=1 glab ...``), the
+``ALLOW_BANNED_TERM=1`` process env var, or ``ALLOW_BANNED_TERM=1`` in the
+tool-input env mapping — mirroring the quote-scanner's ``--quote-ok`` /
+``QUOTE_OK=1`` escape hatch.
 """
 
 import os
@@ -29,12 +31,21 @@ from pathlib import Path
 from typing import TypedDict
 
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
+from teatree.hooks._command_parser import extract_secret_scan_text as _extract_secret_scan_text
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
+from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 _OVERRIDE_FLAG = "--allow-banned-term"
 _OVERRIDE_ENV = "ALLOW_BANNED_TERM"
+
+# What a fail-closed sentinel surfaces as in the block message: an unresolvable
+# body source (a relative-path / chmod-000 / absent ``--body-file`` to a PUBLIC
+# repo) cannot be scanned, so it BLOCKS rather than slips through unread --
+# mirroring ``quote_scanner`` / ``bare_reference_scanner``, which both treat the
+# same sentinel as a fail-closed finding.
+_UNRESOLVED_BODY_TERM = "<unresolved publish body>"
 
 # How long to wait for the shell scanner before failing open. A hook that
 # hangs blocks the user, so the budget is deliberately tight.
@@ -84,7 +95,42 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     command = tool_input.get("command", "")
     if not _is_publish_command(command):
         return None
-    return _extract_bash_payload(command)
+    return _extract_bash_payload(command, fail_closed_body_file=True)
+
+
+def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
+    """Return EVERY surface a secret must be blocked on, regardless of destination.
+
+    A secret leaks on ALL surfaces -- a body, a title, a short ``-t`` flag, a
+    ``gh api`` field, a ``git -C`` commit subject -- so this widens beyond
+    :func:`extract_publish_payload` (body only) and is scanned with
+    :func:`publish_surface.contains_secret` BEFORE the destination skip can
+    short-circuit. Empty for a non-Bash tool.
+    """
+    if tool_name != "Bash":
+        return ""
+    return _extract_secret_scan_text(tool_input.get("command", ""))
+
+
+def _has_leading_env_override(command: str) -> bool:
+    """Return True iff the first segment starts with ``ALLOW_BANNED_TERM=1``.
+
+    The Claude Code harness forwards a ``Bash`` command verbatim and lets
+    NEITHER an inline ``env`` block reach the gate NOR ``glab``/``gh`` accept
+    a ``--allow-banned-term`` flag (they reject the unknown flag). The one
+    spelling the agent CAN reliably emit is a leading inline env assignment
+    on the command itself — ``ALLOW_BANNED_TERM=1 glab mr note ...`` — which
+    bash applies to the command's environment. This honours that token when
+    it leads the FIRST command segment, so a chained second command cannot
+    smuggle the override past the gate.
+    """
+    for word in _first_segment_words(command):
+        name, sep, value = word.partition("=")
+        if not sep:
+            return False  # first non-assignment token: command name reached
+        if name == _OVERRIDE_ENV:
+            return value.strip() == "1"
+    return False
 
 
 def has_override(tool_name: str, tool_input: ToolInput) -> bool:
@@ -92,7 +138,12 @@ def has_override(tool_name: str, tool_input: ToolInput) -> bool:
 
     The ``--allow-banned-term`` flag is honoured only when it appears as a
     token in the FIRST command segment (anything after a command-separator
-    metacharacter is a separate command and must not bypass the gate).
+    metacharacter is a separate command and must not bypass the gate). A
+    leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in the first
+    segment (``ALLOW_BANNED_TERM=1 glab ...``) is ALSO honoured: the harness
+    forwards neither an inline ``env`` block nor a ``--allow-banned-term``
+    flag glab/gh would accept, so the leading env-assignment is the spelling
+    that actually reaches the gate.
 
     ``ALLOW_BANNED_TERM=1`` is honoured from the process environment
     (``os.environ``). The Claude Code PreToolUse payload for a ``Bash``
@@ -106,6 +157,8 @@ def has_override(tool_name: str, tool_input: ToolInput) -> bool:
     if tool_name == "Bash":
         command = tool_input.get("command", "")
         if _OVERRIDE_FLAG in _first_segment_words(command):
+            return True
+        if _has_leading_env_override(command):
             return True
     if os.environ.get(_OVERRIDE_ENV, "").strip() == "1":
         return True
@@ -122,11 +175,31 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     exit means a banned term was found; the matched term is parsed back
     out of the script's ``BANNED TERM in <file>:`` report.
 
+    A body the parser could not resolve carries the fail-closed sentinel
+    (``FAIL_CLOSED_SENTINEL``). It is recognised EXPLICITLY as a match and
+    BLOCKS -- the sentinel is not a configured banned term, so delegating it
+    to ``check-banned-terms.sh`` would return clean and a PUBLIC file-body post
+    whose body the gate cannot read would slip through unread. The two sibling
+    scanners (``quote_scanner``, ``bare_reference_scanner``) already block on
+    this same sentinel; this closes the banned-terms parity gap.
+
     Fails open (returns ``None``) on a missing config, a missing script,
     or any subprocess error — a crashing gate is worse than no scan.
     """
     if not text:
         return None
+    if _is_fail_closed_sentinel(text):
+        return _UNRESOLVED_BODY_TERM
+    return _run_shell_scanner(text, config_path)
+
+
+def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
+    """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
+
+    Writes ``text`` to a temp file and invokes the shell scanner exactly as the
+    pre-commit hook does. Fails open (``None``) on a missing config / script or
+    any subprocess error.
+    """
     cfg = config_path if config_path is not None else resolve_config()
     if cfg is None or not cfg.is_file():
         return None

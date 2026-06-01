@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0047_merge_0046_reviewverdict_0046_ticket_kind"),
+        ("core", "0048_taskattempt_cache_read_tokens_and_more"),
     ]
 
     operations = [

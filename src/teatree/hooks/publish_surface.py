@@ -57,6 +57,13 @@ detection failure.
 
 Secrets (API keys, tokens) are blocked on EVERY surface regardless of
 the carve-out -- see :func:`contains_secret`.
+
+The companion :mod:`teatree.hooks.publish_destination` reuses the
+repo-target helpers here (``_extract_repo_flag``, the eligible-verb
+sets) plus ``slug_for_cwd`` / ``_config_path`` from
+:mod:`teatree.hooks._repo_visibility` to make the banned-terms /
+bare-reference gates DESTINATION-AWARE: those gates scan only PUBLIC
+targets and skip a publish whose destination is provably internal.
 """
 
 import os
@@ -65,7 +72,6 @@ from pathlib import Path
 from typing import Final
 
 from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
-from teatree.hooks._command_parser import first_segment_words
 
 # Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
 # structural purity primitives (segment splitting, per-token classification)
@@ -74,6 +80,7 @@ from teatree.hooks._command_parser import first_segment_words
 # ``publish_surface`` names.
 slug_for_cwd = _repo_visibility.slug_for_cwd
 effective_repo_dir = _commit_repo_dir.effective_repo_dir
+git_root_for_dir = _commit_repo_dir.git_root_for_dir
 UNRESOLVABLE_REPO_DIR = _commit_repo_dir.UNRESOLVABLE_REPO_DIR
 _command_segments = _gh_glab_hiding.command_segments
 _segment_is_pure_gh_glab_post = _gh_glab_hiding.segment_is_pure_gh_glab_post
@@ -158,16 +165,28 @@ def _strip_git_global_prefix(words: list[str]) -> list[str]:
     return ["git", *rest[i:]]
 
 
-def is_git_commit_command(command: str) -> bool:
-    """Return True iff the first command segment is a ``git commit``.
+def _words_are_git_commit(words: list[str]) -> bool:
+    """Return True iff ``words`` (after env / git global-flag prefix) is ``git commit``."""
+    stripped = _strip_git_global_prefix(words)
+    return len(stripped) >= _COMMIT_WORD_COUNT and stripped[0] == "git" and stripped[1] == "commit"
 
-    A leading inline env assignment (``FOO=1 git commit``) and ``git``
-    global worktree flags (``git -C <dir> commit``, ``--git-dir``,
-    ``--work-tree``) are skipped so the command still resolves to the
-    ``commit`` verb.
+
+def is_git_commit_command(command: str) -> bool:
+    """Return True iff the command's effective first action is a ``git commit``.
+
+    A leading inline env assignment (``FOO=1 git commit``) and ``git`` global
+    worktree flags (``git -C <dir> commit``, ``--git-dir``, ``--work-tree``)
+    are skipped so the command still resolves to the ``commit`` verb. A
+    leading ``cd <dir>`` / ``pushd <dir>`` navigation prefix is also skipped
+    (``cd <worktree> && git commit ...``): the ambient hook cwd is often the
+    workspace root, so the in-command ``cd`` is what pins the commit to its
+    repo, and the dispatch must reach the commit path for that shape.
     """
-    words = _strip_git_global_prefix(first_segment_words(command))
-    return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
+    for words in _command_segments(command):
+        if words and words[0] in {"cd", "pushd"}:
+            continue
+        return _words_are_git_commit(words)
+    return False
 
 
 def _segment_is_posting_verb(words: list[str]) -> bool:
@@ -478,17 +497,54 @@ def carve_out_applies(
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
 
+def _commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
+    r"""Return True iff the commit BODY's repo target makes it downgrade-eligible.
+
+    The repo the commit lands in is resolved by :func:`effective_repo_dir` --
+    a leading ``cd``/``pushd`` prefix, then ``--git-dir`` else the ``-C``-
+    adjusted dir, never ``--work-tree`` -- when the command carries such a
+    flag/prefix, else the ambient ``cwd``. From that dir the nearest enclosing
+    ``.git`` root is walked up to (:func:`git_root_for_dir`) so a commit run
+    from a SUBDIR of a worktree still resolves to the worktree's repo.
+
+    Three target states, distinguished explicitly:
+
+    - the enclosing repo is known-PRIVATE => downgrade-eligible (True);
+    - the enclosing repo is resolvable but PUBLIC / unknown-visibility =>
+        hard-block (False) -- a commit in the public ``souliane/teatree``
+        clone keeps the banned-term block, never weakened;
+    - NO commit dir is resolvable at all (no ``cd``/``-C``/``--git-dir``, no
+        ambient cwd, or the resolved dir is not inside ANY git repo) =>
+        FAIL-OPEN (True). A bare ``git commit`` whose hook cwd is the
+        workspace root is a purely LOCAL operation: it cannot leak, and git
+        itself rejects a commit outside a repo, so the banned-term block here
+        only over-blocked a legitimate private commit. The fail-open is for
+        the COMMIT BODY only; the chained-segment proof still runs separately.
+
+    The :data:`UNRESOLVABLE_REPO_DIR` sentinel (a ``-C`` value carrying a
+    substitution marker) is the one case that hard-blocks rather than
+    fail-opens: it is a value the gate cannot pin down, not a proven non-repo.
+    """
+    repo_dir = effective_repo_dir(command)
+    if repo_dir == UNRESOLVABLE_REPO_DIR:
+        return False
+    commit_target = Path(repo_dir) if repo_dir else cwd
+    if commit_target is None:
+        return True
+    repo_root = git_root_for_dir(commit_target)
+    if repo_root is None:
+        return True
+    return commit_targets_private_repo(repo_root, config_path=config_path)
+
+
 def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
     r"""Return True iff a ``git commit`` command may downgrade to warn.
 
     The first segment is the ``git commit`` (:func:`is_git_commit_command`),
-    whose body is private-repo-eligible only when the repo the commit LANDS in
-    is known-private. That repo is resolved by :func:`effective_repo_dir` (the
-    ``--git-dir`` else the ``-C``-adjusted dir, never ``--work-tree``) when the
-    command carries such a flag, else the ambient ``cwd`` -- so a sub-agent's
-    ``git -C <private-worktree> commit`` downgrades even though the ambient hook
-    cwd has reset away from the worktree, while a ``git -C <public> commit``
-    stays hard-blocked.
+    whose body downgrade-eligibility is decided by
+    :func:`_commit_target_downgrades` (private repo, or a genuinely-
+    unresolvable LOCAL commit that cannot leak), while a resolvable PUBLIC
+    target stays hard-blocked.
 
     Every CHAINED segment must additionally be PROVABLY publish-inert with
     respect to that body: either a pure private ``gh``/``glab`` post
@@ -497,17 +553,15 @@ def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pa
     (:func:`_segment_is_publish_inert` -- no forge tool, no execution-transport
     or substitution construct anywhere). A chained ``&& gh ... --repo PUBLIC``,
     a ``&& sh -c "gh ... PUBLIC"``, or any other publishing construct that is
-    not a proven pure private post fails the proof and the hard-block stands.
+    not a proven pure private post fails the proof and the hard-block stands --
+    the fail-open for an unresolvable commit body NEVER relaxes a chained
+    public post.
 
     This mirrors the posting-path inversion: the commit downgrades only when
     the WHOLE chain is provably good, never by failing to detect a hidden
     public post.
     """
-    repo_dir = effective_repo_dir(command)
-    if repo_dir == UNRESOLVABLE_REPO_DIR:
-        return False
-    commit_target = Path(repo_dir) if repo_dir else cwd
-    if not commit_targets_private_repo(commit_target, config_path=config_path):
+    if not _commit_target_downgrades(command, cwd, config_path=config_path):
         return False
     for words in _command_segments(command):
         if is_git_commit_command(" ".join(words)):

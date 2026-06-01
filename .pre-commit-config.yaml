@@ -214,6 +214,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
+      - id: test-shape
+        name: Test-shape report (near-duplicate tests + ratio regression, advisory)
+        language: system
+        entry: uv run python scripts/hooks/check_test_shape.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
 
   # Phase 7b - Quality gate guard
   - repo: local

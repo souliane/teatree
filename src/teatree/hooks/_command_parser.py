@@ -23,6 +23,12 @@ closed via a sentinel string that downstream scanning treats as a HIGH
 match. A missing ``gh``/``glab`` ``--body-file`` is the one exception:
 an absent drafted PR/issue body is "needs-inline", not a leak, so it
 contributes no payload rather than a fail-closed HIGH (#126).
+
+Publish-surface DETECTION (which command shapes are a publish at all) lives
+in :mod:`teatree.hooks._publish_detection`: the contiguous-substring catalogue
+here plus the token-aware ``api`` / ``git commit`` / opaque-forge-transport
+classifiers there, so an interspersed persistent flag cannot break detection
+(#1672). This module owns body / title / secret-surface EXTRACTION.
 """
 
 import json
@@ -30,6 +36,12 @@ import re
 from pathlib import Path
 from typing import Final
 
+from teatree.hooks._publish_detection import (
+    command_has_opaque_forge_transport,
+    command_has_token_aware_publish_surface,
+    extract_title_fragments,
+    segment_word_lists,
+)
 from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands, tokenize
 
 # ── Publish-surface substring catalogues ────────────────────────────
@@ -136,11 +148,22 @@ def _is_t3_publish_invocation(joined: str) -> bool:
 
 
 def is_publish_command(command: str) -> bool:
-    """Return True iff the Bash command would publish to an external surface."""
+    """Return True iff the Bash command would publish to an external surface.
+
+    The contiguous substring catalogue (:data:`_BASH_PUBLISH_SUBSTRINGS`)
+    catches the common spellings; the token-aware per-segment checks
+    (:func:`_publish_detection.command_has_token_aware_publish_surface`) catch
+    the spellings an interspersed persistent flag breaks -- ``gh``/``glab api``
+    after a ``--hostname``/``-X`` flag, ``git [global-flags] commit`` after a
+    ``-C``/``--git-dir`` flag -- so the body reaches the scanner regardless of
+    flag ordering.
+    """
     joined = normalize_for_substring_match(command)
     if any(needle in joined for needle in _BASH_PUBLISH_SUBSTRINGS):
         return True
-    return _is_t3_publish_invocation(joined)
+    if _is_t3_publish_invocation(joined):
+        return True
+    return command_has_token_aware_publish_surface(command)
 
 
 # ── Body-flag and curl regexes (heredoc only — flag args are token-aware) ─
@@ -199,16 +222,6 @@ _BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset(
 
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
-
-# Title-bearing flags. ``gh``/``glab`` accept ``--title``/``-t``; the value
-# is the forge-rendered TITLE, a surface distinct from the body. Used by
-# :func:`extract_title_fragments` so a gate can treat a title differently
-# from a description (#1544).
-_TITLE_LONG_FLAG: Final[str] = "--title"
-_TITLE_SHORT_FLAG: Final[str] = "-t"
-# Short flags that carry the git-commit message. The FIRST occurrence is
-# the subject line; later ones are body paragraphs.
-_GIT_COMMIT_MESSAGE_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message"})
 
 # Long options for ``gh api`` / ``glab api`` field assignments.
 _API_FIELD_LONG_FLAGS: Final[frozenset[str]] = frozenset({"--field", "--raw-field"})
@@ -357,7 +370,12 @@ def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
 
 
 def _walk_body_file_flags(
-    words: list[str], payloads: list[str], *, is_git: bool, heredoc_files: dict[str, str]
+    words: list[str],
+    payloads: list[str],
+    *,
+    is_git: bool,
+    heredoc_files: dict[str, str],
+    fail_closed_body_file: bool,
 ) -> None:
     """Extract ``--body-file``/``--file``/``-F`` style file payloads.
 
@@ -370,20 +388,25 @@ def _walk_body_file_flags(
     redirect earlier in the same command to its body, so a ``-F <path>``
     reference resolves to the in-command heredoc when the file does not
     exist on disk yet (#126).
+
+    ``fail_closed_body_file`` decides what an UNREADABLE ``gh``/``glab`` body
+    file does — ``True`` (the destination-aware gates) appends the fail-closed
+    sentinel, ``False`` (the quote scanner) appends nothing (#126). The git
+    ``-F`` commit-message path always fails closed regardless.
     """
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=False)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=fail_closed_body_file)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = _attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files, fail_closed=False)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=fail_closed_body_file)
                 break
         if attached is not None:
             i += 1
@@ -411,19 +434,15 @@ def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str
     in the same command was unreadable at PreToolUse scan time (the hook
     runs BEFORE the file is created).
 
-    ``fail_closed`` selects what an unresolvable path does:
-
-    * ``True`` (``git commit -F <path>``) — append the fail-closed
-        sentinel. A commit message cannot be amended post-push without a
-        force-push we do not permit, so an unreadable commit-message file
-        must hard-block, matching the #1207 rationale.
-    * ``False`` (``gh``/``glab`` ``--body-file`` / ``--description-file``
-        / ``--file``) — append NOTHING. A drafted PR/issue body file that
-        does not exist at scan time is "needs-inline", not a leak: there
-        is nothing to scan, and a public post that genuinely carries a
-        quote still reaches the gate via its inline ``--body`` text.
-        Treating an absent draft file as a HIGH match denied every such
-        publish (#126).
+    ``fail_closed`` selects what an unresolvable path does. ``True`` appends
+    the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
+    always uses it (#1207), as does a ``gh``/``glab`` body file for the
+    destination-aware banned-terms / bare-reference scanners, so a PUBLIC post
+    whose body the gate cannot read hard-blocks rather than slip through unread
+    (a destination-internal post is skipped before the payload is scanned, so
+    the sentinel never over-blocks it). ``False`` appends NOTHING — the quote
+    scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
+    "needs-inline", not a fail-closed HIGH (#126).
     """
     content = _read_file_arg(path)
     if content is None:
@@ -505,7 +524,9 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
     return first, second
 
 
-def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_files: dict[str, str]) -> None:
+def _walk_command_segment(
+    segment: list[Token], payloads: list[str], heredoc_files: dict[str, str], *, fail_closed_body_file: bool
+) -> None:
     """Route a single command segment to the right argument walkers."""
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
@@ -514,7 +535,13 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_fil
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads)
-    _walk_body_file_flags(words, payloads, is_git=(first == "git"), heredoc_files=heredoc_files)
+    _walk_body_file_flags(
+        words,
+        payloads,
+        is_git=(first == "git"),
+        heredoc_files=heredoc_files,
+        fail_closed_body_file=fail_closed_body_file,
+    )
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, payloads)
@@ -522,84 +549,10 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_fil
         _walk_curl_args(words, payloads)
 
 
-# ── Title / commit-subject extraction (#1544) ───────────────────────
-
-
-def _forge_title_value(words: list[str]) -> str | None:
-    """Return the ``--title``/``-t`` value of a ``gh``/``glab`` segment.
-
-    Handles space-separated (``--title "x"``), equals (``--title=x``), and
-    attached short (``-tx``) forms. ``None`` when the segment carries no
-    title flag.
-    """
-    i = 0
-    n = len(words)
-    while i < n:
-        word = words[i]
-        if word in {_TITLE_LONG_FLAG, _TITLE_SHORT_FLAG} and i + 1 < n:
-            return words[i + 1]
-        attached = _attached_value(word, _TITLE_LONG_FLAG + "=")
-        if attached is not None:
-            return attached
-        if word != _TITLE_SHORT_FLAG:
-            attached = _attached_value(word, _TITLE_SHORT_FLAG)
-            if attached is not None:
-                return attached
-        i += 1
-    return None
-
-
-def _git_commit_subject(words: list[str]) -> str | None:
-    """Return the SUBJECT line of a ``git commit`` segment.
-
-    The subject is the first physical line of the first ``-m``/``--message``
-    value (later ``-m`` values are body paragraphs). ``None`` when the
-    segment carries no inline message.
-    """
-    i = 0
-    n = len(words)
-    while i < n:
-        word = words[i]
-        if word in _GIT_COMMIT_MESSAGE_FLAGS and i + 1 < n:
-            return words[i + 1].split("\n", 1)[0]
-        attached = _attached_value(word, "--message=")
-        if attached is not None:
-            return attached.split("\n", 1)[0]
-        attached = _attached_value(word, "-m")
-        if attached is not None:
-            return attached.split("\n", 1)[0]
-        i += 1
-    return None
-
-
-def extract_title_fragments(command: str) -> list[str]:
-    """Return the TITLE / commit-SUBJECT fragments the command publishes.
-
-    A title (``gh``/``glab`` ``--title``) or git-commit subject is a forge
-    surface distinct from a description body: the forge auto-links a
-    trailing ``(#NNNN)``/``(!NNNN)`` reference there. A gate that wants to
-    treat that conventional suffix differently from a body reads these
-    fragments instead of the flattened body blob (#1544).
-    """
-    fragments: list[str] = []
-    for segment in split_commands(tokenize(command)):
-        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
-        first, _ = _first_two_words(segment)
-        if first in {"gh", "glab"}:
-            title = _forge_title_value(words)
-            if title is not None:
-                fragments.append(title)
-        elif first == "git":
-            subject = _git_commit_subject(words)
-            if subject is not None:
-                fragments.append(subject)
-    return fragments
-
-
 # ── Body extraction ─────────────────────────────────────────────────
 
 
-def extract_bash_payload(command: str) -> str:
+def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False) -> str:
     r"""Concatenate every body-like fragment the command surface carries.
 
     The command is tokenized once via :mod:`teatree.hooks._shell_lexer`
@@ -613,17 +566,75 @@ def extract_bash_payload(command: str) -> str:
     ``-d @file`` references) fail closed via the sentinel. A ``-F <path>``
     reference whose file is written by a ``> path <<EOF … EOF`` redirect
     in the same command resolves to that heredoc body instead (#126).
+
+    ``fail_closed_body_file`` controls an UNREADABLE ``gh``/``glab`` body
+    file: ``False`` (default, the quote scanner) keeps the #126 behaviour
+    (an absent draft body contributes nothing); ``True`` (the
+    destination-aware banned-terms / bare-reference gates) appends the
+    fail-closed sentinel so a PUBLIC file-body post whose body the gate
+    cannot read hard-blocks instead of slipping through unread.
     """
     parts: list[str] = []
     heredoc_files = _heredoc_file_bodies(command)
     tokens = tokenize(command)
     for segment in split_commands(tokens):
-        _walk_command_segment(segment, parts, heredoc_files)
+        _walk_command_segment(segment, parts, heredoc_files, fail_closed_body_file=fail_closed_body_file)
     # Heredocs still need to be parsed against the raw command — the
     # lexer treats them as regular content since heredoc bodies live on
     # subsequent physical lines. The regex below tolerates that shape.
     parts.extend(match.group(2) for match in _HEREDOC_RE.finditer(command))
+    # A forge call hidden inside an interpreter / wrapper argument
+    # (``sh -c "gh ... --body X"``, ``eval``, ``ssh host gh``, ``xargs gh``)
+    # carries its body in an opaque token the walkers cannot descend into; the
+    # destination-aware gates fail closed on it so an unscannable public post
+    # hard-blocks rather than slips through unread.
+    if fail_closed_body_file and command_has_opaque_forge_transport(command):
+        parts.append(FAIL_CLOSED_SENTINEL)
     return "\n".join(parts)
+
+
+# ── Secret-scan surfaces (#1672) ────────────────────────────────────
+
+
+def _api_field_values(words: list[str]) -> list[str]:
+    """Return EVERY ``-f``/``-F``/``--field``/``--raw-field`` field VALUE.
+
+    The body extractor keeps only ``body=`` assignments; a secret can equally
+    live in a ``-f title=`` or any other field of a ``gh api`` / ``glab api``
+    call, so the secret scan reads every field value (the part after ``=``)
+    regardless of field name. Bare values (no ``=``) are kept as-is.
+    """
+    field_flags = _API_FIELD_SHORT_FLAGS | _API_FIELD_LONG_FLAGS
+    values: list[str] = []
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in field_flags and i + 1 < n:
+            values.append(words[i + 1].partition("=")[2] or words[i + 1])
+            i += 2
+            continue
+        i += 1
+    return values
+
+
+def extract_secret_scan_text(command: str) -> str:
+    """Concatenate EVERY surface a secret must be blocked on, regardless of destination.
+
+    A secret leaks on ALL surfaces (a title, a short ``-t`` flag, a
+    ``gh api -f title=`` field), not only the description body the carve-out
+    is about. This widens the secret check beyond :func:`extract_bash_payload`
+    to also cover the title / commit-subject fragments
+    (:func:`extract_title_fragments`) and every ``gh``/``glab api`` field value
+    (:func:`_api_field_values`), so :func:`publish_surface.contains_secret`
+    sees them before the destination skip can short-circuit a scan.
+    """
+    parts = [extract_bash_payload(command, fail_closed_body_file=False)]
+    parts.extend(extract_title_fragments(command))
+    for words in segment_word_lists(command):
+        if words[0] in {"gh", "glab"}:
+            parts.extend(_api_field_values(words))
+    return "\n".join(part for part in parts if part)
 
 
 # ── Quote-OK override detection ─────────────────────────────────────

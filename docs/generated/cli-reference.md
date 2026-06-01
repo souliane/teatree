@@ -16,6 +16,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
+│ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
+│                 credit.                                                      │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
@@ -126,6 +128,19 @@ Usage: t3 sessions [OPTIONS]
 │ --limit    -n      INTEGER  Max sessions to show [default: 20]               │
 │ --all      -a               Show sessions from all projects                  │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 cost`
+
+```
+Usage: t3 cost [OPTIONS]
+
+ Show cycle-to-date SDK-equivalent spend vs the monthly credit.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the structured report as JSON.                          │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1351,6 +1366,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      §17.6 gate 12, #836).                                   │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
+│ test-shape           Conservative test-shape check: near-duplicate tests +   │
+│                      test:source ratio regression.                           │
 │ label-issues         Suggest labels for unlabeled open issues by             │
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
@@ -1628,6 +1645,32 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
 │                           this plugin's agents/).                            │
 │ --json                    Emit machine-readable JSON.                        │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool test-shape`
+
+```
+Usage: t3 tool test-shape [OPTIONS]
+
+ Conservative test-shape check: near-duplicate tests + test:source ratio
+ regression.
+
+ Baseline-ratchet (fails only on regression past the committed baseline),
+ report-first (advisory ``warn`` by default; ``block`` is opt-in). A CI /
+ report check, never a PreToolUse gate — it can never lock the agent's tools.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --root                    PATH  Repo root to analyse (default: cwd)          │
+│ --json                          Emit machine-readable JSON.                  │
+│ --update-baseline               Rewrite the committed test:source baseline   │
+│                                 to the current measurement.                  │
+│ --allow-regression              With --update-baseline, permit writing a     │
+│                                 WORSE ratio than the committed baseline (an  │
+│                                 intentional, reviewed drop). Refused by      │
+│                                 default so the ratchet cannot silently       │
+│                                 loosen.                                      │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

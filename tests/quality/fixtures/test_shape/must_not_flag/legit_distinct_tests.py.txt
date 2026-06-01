@@ -1,0 +1,20 @@
+class TestReport:
+    def test_empty_report_has_no_findings(self):
+        report = build_report(test_files=[], source_files=[], config=cfg)
+        assert not report.has_findings
+
+    def test_block_mode_blocks_on_findings(self):
+        report = build_report(test_files=[dup], source_files=[src], config=block_cfg)
+        assert report.should_block
+        assert report.mode is Mode.BLOCK
+
+    def test_warn_mode_never_blocks(self):
+        report = build_report(test_files=[dup], source_files=[src], config=warn_cfg)
+        if report.has_findings:
+            assert not report.should_block
+
+    def test_summary_lines_render_each_cluster(self):
+        report = build_report(test_files=[dup], source_files=[src], config=warn_cfg)
+        lines = report.summary_lines()
+        for cluster in report.duplicate_clusters:
+            assert any(cluster.path in line for line in lines)

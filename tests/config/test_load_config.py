@@ -217,6 +217,22 @@ def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
     assert load_config(config_path).user.loop_cadence_seconds == 300
 
 
+def test_billing_cycle_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    user = load_config(config_path).user
+    assert user.billing_cycle_anchor_day == 0
+    assert user.sdk_monthly_credit_usd == pytest.approx(200.0)
+
+
+def test_billing_cycle_anchor_and_credit_override(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\nbilling_cycle_anchor_day = 15\nsdk_monthly_credit_usd = 100.0\n")
+    user = load_config(config_path).user
+    assert user.billing_cycle_anchor_day == 15
+    assert user.sdk_monthly_credit_usd == pytest.approx(100.0)
+
+
 class TestIssueImplementerSettings:
     """Config surface for the opt-in, default-OFF issue-implementer loop (#1548).
 

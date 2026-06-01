@@ -1,0 +1,17 @@
+def test_happy_path_returns_parsed_value():
+    assert parse("red") == Color.RED
+
+
+def test_raises_on_empty_input():
+    with pytest.raises(ValueError, match="empty"):
+        parse("")
+
+
+def test_raises_on_unknown_color():
+    with pytest.raises(LookupError):
+        parse("octarine")
+
+
+def test_strips_whitespace_before_parsing():
+    for candidate in ("  red  ", "\tred\n", " red"):
+        assert parse(candidate) == Color.RED
