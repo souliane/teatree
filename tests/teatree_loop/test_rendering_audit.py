@@ -340,7 +340,7 @@ class TestPendingTaskGrouping:
         actions = [_pending_task(i) for i in range(1, 51)]
         zones = zones_for(actions, colorize=False)
         lines = [item if isinstance(item, str) else item.text for item in zones.in_flight]
-        task_lines = [ln for ln in lines if "work queue:" in ln]
+        task_lines = [ln for ln in lines if "teatree tasks:" in ln]
         assert len(task_lines) == 1, repr(lines)
         assert "pending: 50" in task_lines[0], repr(task_lines[0])
 
@@ -382,7 +382,7 @@ class TestPendingTaskGrouping:
         ]
         zones = zones_for(actions, colorize=False)
         lines = [item if isinstance(item, str) else item.text for item in zones.in_flight]
-        task_lines = [ln for ln in lines if "work queue:" in ln]
+        task_lines = [ln for ln in lines if "teatree tasks:" in ln]
         assert len(task_lines) == 2, repr(lines)
         assert any("overlay-a" in ln and "pending: 2" in ln for ln in task_lines), repr(task_lines)
         assert any("overlay-b" in ln and "pending: 1" in ln for ln in task_lines), repr(task_lines)

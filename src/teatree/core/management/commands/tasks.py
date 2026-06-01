@@ -177,7 +177,7 @@ class Command(TyperCommand):
         status: Annotated[str | None, typer.Option(help="Filter by status")] = None,
         execution_target: Annotated[str | None, typer.Option(help="Filter by execution target")] = None,
     ) -> list[TaskRow]:
-        """List the teatree loop work-unit queue (not your Claude TODO list)."""
+        """List the teatree tasks queue (not your Claude TODO list)."""
         Task.objects.reap_stale_claims()
         qs = Task.objects.all().order_by("pk")
         if status:
@@ -290,7 +290,7 @@ def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -
         console.print("[dim]No tasks.[/dim]")
         return
 
-    table = Table(title=f"Work queue ({len(rows)})", show_lines=False)
+    table = Table(title=f"teatree tasks ({len(rows)})", show_lines=False)
     table.add_column("ID", justify="right", style="bold")
     table.add_column("Ticket", justify="right")
     table.add_column("Status")

@@ -256,7 +256,7 @@ def _is_pending_task(payload: Payload) -> bool:
     that waste vertical space and leak the raw phase token (``short_describe``
     / ``dogfood_smoke`` / ``architectural_review``) where a description
     would go. The classifier intercepts these and collapses each overlay's
-    rows to one ``work queue: <status>: N`` line, grouped by status.
+    rows to one ``teatree tasks: <status>: N`` line, grouped by status.
     """
     return isinstance(payload.get("task_id"), int) and isinstance(payload.get("phase"), str)
 
@@ -265,17 +265,17 @@ def _emit_pending_task_summaries(
     c: _ClassifiedActions,
     status_counts: dict[str, dict[str, int]],
 ) -> None:
-    """Append one ``work queue: <status>: N · …`` line per overlay (grouped by status).
+    """Append one ``teatree tasks: <status>: N · …`` line per overlay (grouped by status).
 
     No individual task id or phase is listed — the raw phase token never
     surfaces as a pseudo-description, and the ~50-row dump collapses to a
-    single compact line per overlay. The label is ``work queue`` (the loop's
-    claimable work-unit queue), distinct from the session's Claude TODO list.
+    single compact line per overlay. The label is ``teatree tasks`` (the loop's
+    claimable task queue), distinct from the session's Claude TODO list.
     """
     for overlay, by_status in sorted(status_counts.items()):
         prefix = f"[{overlay}] " if overlay else ""
         parts = [f"{status}: {count}" for status, count in sorted(by_status.items())]
-        c.other.append(("in_flight", StatuslineEntry(text=f"{prefix}work queue: {' · '.join(parts)}")))
+        c.other.append(("in_flight", StatuslineEntry(text=f"{prefix}teatree tasks: {' · '.join(parts)}")))
 
 
 def _classify_one(c: _ClassifiedActions, action: DispatchAction, identity: _CanonicalIdentity) -> None:
