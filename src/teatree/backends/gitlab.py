@@ -189,8 +189,7 @@ class GitLabCodeHost:
         if project is None:
             return []
         endpoint = f"projects/{project.project_id}/issues?state=opened&search={quote_plus(query)}&per_page=100"
-        data = self._client.get_json(endpoint)
-        return data if isinstance(data, list) else []
+        return self._client.get_json_paginated(endpoint)
 
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict:
         project = self._resolve_project(repo)
@@ -376,10 +375,9 @@ class GitLabCodeHost:
         if project is None:
             return []
 
-        data = self._client.get_json(
+        return self._client.get_json_paginated(
             f"projects/{project.project_id}/issues/{int(match['iid'])}/notes?per_page=100",
         )
-        return cast("list[RawAPIDict]", data) if isinstance(data, list) else []
 
     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
         """Edit an existing note on a GitLab issue or work item in place.
