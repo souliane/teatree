@@ -73,7 +73,7 @@ class TestEvalRun:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
@@ -92,7 +92,7 @@ class TestEvalRun:
             patch("teatree.cli.eval.find_spec", return_value=specs[0]),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "alpha"])
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--no-persist"])
         assert result.exit_code == 0
         assert "alpha" in result.output
         assert "PASS beta" not in result.output
@@ -162,7 +162,7 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "run", "--format", "json", "--no-persist"])
         assert result.exit_code == 0
         # Other pytest plugins (e.g. inline-snapshot) can write banners to
         # stdout during the test session; isolate the JSON document by
@@ -187,7 +187,7 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 1
         assert "FAIL alpha" in result.output
 
@@ -206,6 +206,6 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9"])
+            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9", "--no-persist"])
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
