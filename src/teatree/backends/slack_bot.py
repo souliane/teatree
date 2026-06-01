@@ -41,6 +41,7 @@ re-probed on the next call so a transient failure that recovers
 resolves correctly.
 """
 
+import threading
 from typing import cast
 
 import httpx
@@ -79,6 +80,43 @@ def _is_bot_authored(msg: RawAPIDict, bot_id: str) -> bool:
 def _is_thread_root(msg: RawAPIDict) -> bool:
     thread_ts = msg.get("thread_ts")
     return isinstance(thread_ts, str) and bool(thread_ts) and thread_ts == msg.get("ts")
+
+
+class _TickFanoutQueue:
+    """Thread-safe inbound event buffer read non-destructively within a tick.
+
+    The Socket Mode receiver calls :meth:`enqueue`; every scanner that
+    shares one backend calls :meth:`snapshot` in the same tick. A
+    destructive drain would let whichever scanner runs first consume the
+    batch and leave the others with nothing — for DMs and reactions that
+    means the RED CARD scanner falls back to degraded polling and can miss
+    a real signal (#1655). :meth:`snapshot` instead returns a copy, so each
+    of the concurrently-scheduled scanners observes the same events.
+
+    The defined clear point is the first :meth:`enqueue` after any
+    :meth:`snapshot`: a fresh event begins a new tick's batch and drops the
+    already-served one, bounding the buffer at one tick's worth of events.
+    Re-serving the same batch across consecutive no-arrival ticks is
+    idempotent — the consuming scanners dedup on Slack ``ts`` / ``event_ts``
+    in their persistence layer.
+    """
+
+    def __init__(self) -> None:
+        self._events: list[RawAPIDict] = []
+        self._served = False
+        self._lock = threading.Lock()
+
+    def enqueue(self, event: RawAPIDict) -> None:
+        with self._lock:
+            if self._served:
+                self._events = []
+                self._served = False
+            self._events.append(event)
+
+    def snapshot(self) -> list[RawAPIDict]:
+        with self._lock:
+            self._served = True
+            return list(self._events)
 
 
 class SlackBotBackend:
@@ -136,12 +174,14 @@ class SlackBotBackend:
         # ``conversations.info`` then reused by the token-selection policy.
         self._ext_shared_cache: dict[str, bool] = {}
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
-        # tick the loop scanner drains them via ``fetch_mentions`` /
+        # tick the loop scanners read them via ``fetch_mentions`` /
         # ``fetch_dms`` / ``fetch_reactions``; the receiver calls
         # ``enqueue_mention`` / ``enqueue_dm`` / ``enqueue_reaction``.
-        self._mentions: list[RawAPIDict] = []
-        self._dms: list[RawAPIDict] = []
-        self._reactions: list[RawAPIDict] = []
+        # Reads are non-destructive within a tick so the three scanners that
+        # share one backend each see the same batch (#1655).
+        self._mentions = _TickFanoutQueue()
+        self._dms = _TickFanoutQueue()
+        self._reactions = _TickFanoutQueue()
 
     @property
     def app_token(self) -> str:
@@ -182,15 +222,15 @@ class SlackBotBackend:
 
     def enqueue_mention(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``app_mention`` event into the inbound queue."""
-        self._mentions.append(event)
+        self._mentions.enqueue(event)
 
     def enqueue_dm(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``message.im`` event into the inbound queue."""
-        self._dms.append(event)
+        self._dms.enqueue(event)
 
     def enqueue_reaction(self, event: RawAPIDict) -> None:
         """Push a Socket Mode ``reaction_added`` event into the inbound queue."""
-        self._reactions.append(event)
+        self._reactions.enqueue(event)
 
     def _post(self, method: str, payload: SlackPayload, *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
@@ -289,20 +329,28 @@ class SlackBotBackend:
         )
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
-        """Drain queued Socket Mode mentions and return them in order.
+        """Return queued Socket Mode mentions in order, non-destructively.
 
         ``since`` is accepted for protocol compatibility but ignored — the
         Socket Mode receiver delivers events in real time, so the queue
-        only ever holds events that arrived after the previous tick.
+        only ever holds events that arrived after the previous tick. The
+        read is a snapshot so every scanner sharing this backend sees the
+        same batch within a tick; the buffer rolls on the next enqueue
+        (#1655).
         """
         _ = since
-        events, self._mentions = self._mentions, []
-        return events
+        return self._mentions.snapshot()
 
     def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
         """Return new DMs from the user, including thread replies.
 
-        Drains the Socket Mode queue first (populated by a running receiver).
+        Reads the Socket Mode queue first (populated by a running
+        receiver). The read is non-destructive within a tick so the three
+        scanners that share one backend — ``SlackDmInboundScanner``,
+        ``SlackMentionsScanner``, ``RedCardScanner`` — each see the same
+        batch instead of racing a destructive drain that left the losers on
+        degraded polling and could miss a RED CARD (#1655).
+
         When the queue is empty, falls back to polling
         ``conversations.history`` on the bot's DM channel with the
         configured user, then for every top-level bot message also polls
@@ -317,9 +365,9 @@ class SlackBotBackend:
         Only messages FROM the user are returned (bot's own messages are
         filtered out).
         """
-        if self._dms:
-            events, self._dms = self._dms, []
-            return events
+        queued = self._dms.snapshot()
+        if queued:
+            return queued
         if not self._user_id or not self._bot_token:
             return []
         channel = self.open_dm(self._user_id)
@@ -379,15 +427,17 @@ class SlackBotBackend:
         return replies
 
     def fetch_reactions(self, *, since: str = "") -> list[RawAPIDict]:
-        """Drain queued Socket Mode ``reaction_added`` events.
+        """Return queued Socket Mode ``reaction_added`` events, non-destructively.
 
         ``since`` is accepted for protocol compatibility but ignored — the
         Socket Mode receiver delivers events in real time so the queue
-        only holds events that arrived after the previous tick.
+        only holds events that arrived after the previous tick. The read is
+        a snapshot so ``SlackReviewIntentScanner`` and ``RedCardScanner``
+        each see the same batch within a tick rather than the first one
+        draining it (#1655); the buffer rolls on the next enqueue.
         """
         _ = since
-        events, self._reactions = self._reactions, []
-        return events
+        return self._reactions.snapshot()
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         """Fetch a single message by ``(channel, ts)``.
