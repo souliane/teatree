@@ -71,6 +71,16 @@ Supported matcher operators:
   transcript.
 - `no_tool_call_matching: { <tool>.<arg>: ~ "<regex>" }` — no matching
   tool call may exist.
+- `any_of: [ <tool_call branch>, ... ]` — a disjunction of positive
+  `tool_call` branches; the entry passes when **any** branch holds. Use it
+  to pin a rule that a documented set of equally-valid actions satisfies —
+  e.g. "background the long op via a `Task` dispatch OR a Bash call with
+  `run_in_background: true`" — so a compliant response taking either branch
+  stays green instead of over-fitting to one. Branches are positive only.
+
+A scalar arg value that is not a string (a boolean / number such as Bash's
+`run_in_background: true`) is compared against the operator as its `str()`
+form, so `args.run_in_background: ~ "(?i)true"` matches.
 
 ## Adding a scenario
 

@@ -10,10 +10,15 @@
     minutes. While it runs you must stay free to read new user messages. Take
     the single action you would take now to start the wait.
   expect:
-    - tool_call: Task
-      args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
-    - no_tool_call_matching:
-        bash.command: ~ "(glab ci .*--watch|gh run watch|gh pr checks .*--watch)"
+    # Either documented backgrounding escape keeps the foreground free: a
+    # background sub-agent (Task) OR a single Bash call with
+    # run_in_background: true. A blocking foreground watch does neither and
+    # fails this disjunction (see the _fail fixture).
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(ci|pipeline|run.?watch|glab|gh run)"
+        - tool_call: Bash
+          args.run_in_background: ~ "(?i)true"
 
 - name: background_long_operations_full_suite
   scenario: "agent must background a full test suite (>15s) instead of blocking the foreground"
@@ -26,7 +31,11 @@
     takes minutes to run. You must keep reading new user messages while it
     runs. Take the single action you would take now to start that run.
   expect:
-    - tool_call: Task
-      args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
-    - no_tool_call_matching:
-        bash.command: ~ "(^|&&|;|\\|)\\s*(uv run )?pytest(\\s|$)"
+    # Both documented escapes count: a background sub-agent (Task) OR a Bash
+    # call with run_in_background: true (e.g. `uv run pytest` backgrounded).
+    # A blocking foreground `pytest` does neither and fails (see _fail).
+    - any_of:
+        - tool_call: Task
+          args.prompt: ~ "(?i)(pytest|test suite|full suite|run.*tests)"
+        - tool_call: Bash
+          args.run_in_background: ~ "(?i)true"

@@ -4,12 +4,12 @@ import dataclasses
 import json
 
 from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
-from teatree.eval.models import EvalRun, EvalSpec, Matcher
+from teatree.eval.models import AnyOf, EvalRun, EvalSpec, ExpectItem, Matcher
 
 
 @dataclasses.dataclass(frozen=True)
 class MatcherResult:
-    matcher: Matcher
+    matcher: ExpectItem
     passed: bool
     message: str
 
@@ -45,7 +45,10 @@ def evaluate(spec: EvalSpec, run: EvalRun) -> ScenarioResult:
     return ScenarioResult(spec=spec, run=run, matcher_results=tuple(results), skipped=False)
 
 
-def _dispatch(matcher: Matcher, run: EvalRun) -> None:
+def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
+    if isinstance(matcher, AnyOf):
+        _dispatch_any_of(matcher, run)
+        return
     tool = _canonicalize_tool(matcher.tool)
     if matcher.kind == "positive" and matcher.operator == "contains":
         assert_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
@@ -58,6 +61,21 @@ def _dispatch(matcher: Matcher, run: EvalRun) -> None:
         return
     msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
     raise NotImplementedError(msg)
+
+
+def _dispatch_any_of(matcher: AnyOf, run: EvalRun) -> None:
+    """Pass when ANY alternative holds; else raise with every branch's failure."""
+    branch_messages: list[str] = []
+    for alternative in matcher.alternatives:
+        try:
+            _dispatch(alternative, run)
+        except AssertionError as exc:
+            branch_messages.append(str(exc))
+        else:
+            return
+    joined = "\n  --- or ---\n".join(branch_messages)
+    msg = f"Expected ANY of {len(matcher.alternatives)} alternatives to hold; all failed:\n{joined}"
+    raise AssertionError(msg)
 
 
 def _canonicalize_tool(name: str) -> str:
@@ -98,24 +116,74 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "skipped": r.skipped,
                 "passed": r.passed,
                 "tool_calls": [{"name": c.name, "input": c.input, "turn": c.turn} for c in r.run.tool_calls],
-                "matchers": [
-                    {
-                        "kind": m.matcher.kind,
-                        "tool": m.matcher.tool,
-                        "arg_path": m.matcher.arg_path,
-                        "operator": m.matcher.operator,
-                        "value": m.matcher.value,
-                        "passed": m.passed,
-                        "message": m.message,
-                    }
-                    for m in r.matcher_results
-                ],
+                "matchers": [_matcher_json_dict(_MatcherJson.of_result(m)) for m in r.matcher_results],
             }
             for r in results
         ],
         "summary": _summary_dict(results),
     }
     return json.dumps(payload, indent=2)
+
+
+@dataclasses.dataclass(frozen=True)
+class _MatcherJson:
+    """One matcher serialized for the JSON report.
+
+    A single matcher fills ``tool``/``arg_path``/``operator``/``value``; an
+    ``any_of`` disjunction leaves them ``None`` and lists its positive
+    branches under ``alternatives`` instead.
+    """
+
+    kind: str
+    passed: bool
+    message: str
+    tool: str | None = None
+    arg_path: str | None = None
+    operator: str | None = None
+    value: str | None = None
+    alternatives: tuple["_MatcherJson", ...] = ()
+
+    @classmethod
+    def of_matcher(cls, matcher: Matcher, *, passed: bool = True, message: str = "") -> "_MatcherJson":
+        return cls(
+            kind=matcher.kind,
+            tool=matcher.tool,
+            arg_path=matcher.arg_path,
+            operator=matcher.operator,
+            value=matcher.value,
+            passed=passed,
+            message=message,
+        )
+
+    @classmethod
+    def of_result(cls, result: MatcherResult) -> "_MatcherJson":
+        matcher = result.matcher
+        if isinstance(matcher, AnyOf):
+            return cls(
+                kind="any_of",
+                passed=result.passed,
+                message=result.message,
+                alternatives=tuple(cls.of_matcher(alt) for alt in matcher.alternatives),
+            )
+        return cls.of_matcher(matcher, passed=result.passed, message=result.message)
+
+
+def _matcher_json_dict(matcher: _MatcherJson) -> dict[str, str | bool | list[object]]:
+    """Serialize a :class:`_MatcherJson`, omitting unset (``None``) scalar keys.
+
+    A single matcher emits its ``tool``/``arg_path``/``operator``/``value``;
+    an ``any_of`` omits those and emits ``alternatives`` instead.
+    """
+    out: dict[str, str | bool | list[object]] = {"kind": matcher.kind}
+    for key in ("tool", "arg_path", "operator", "value"):
+        scalar = getattr(matcher, key)
+        if scalar is not None:
+            out[key] = scalar
+    if matcher.alternatives:
+        out["alternatives"] = [_matcher_json_dict(alt) for alt in matcher.alternatives]
+    out["passed"] = matcher.passed
+    out["message"] = matcher.message
+    return out
 
 
 def _summary(results: list[ScenarioResult]) -> str:
