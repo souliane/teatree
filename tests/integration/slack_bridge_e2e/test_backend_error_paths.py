@@ -43,11 +43,11 @@ class TestSlackBotBackendErrorPathsE2E:
         assert backend.fetch_dms() == snapshot([])
 
     def test_fetch_dms_drained_queue_short_circuits_rest(self, transport: FakeSlackTransport) -> None:
-        """RED if the Socket-Mode queue drain branch is removed.
+        """RED if the Socket-Mode queue read branch is removed.
 
-        Guard: removing ``if self._dms: events, self._dms = self._dms, []; return events``
-        makes a queued event invisible and the backend falls through to
-        REST polling — the queue contract is broken.
+        Guard: skipping the ``self._dms.snapshot()`` short-circuit makes a
+        queued event invisible and the backend falls through to REST
+        polling — the queue contract is broken.
         """
         backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
         backend.enqueue_dm({"ts": "1.0", "user": "U_HUMAN", "text": "queued"})
@@ -290,18 +290,20 @@ class TestSlackBotBackendErrorPathsE2E:
         """RED if the mention queue contract is broken.
 
         Socket Mode pushes mentions into ``enqueue_mention``;
-        ``fetch_mentions`` drains them. The two methods are paired and
-        their queue is the cross-thread handoff for inbound mentions.
+        ``fetch_mentions`` reads them non-destructively within a tick so
+        every scanner sharing the backend sees the same batch (#1655). The
+        buffer rolls on the next enqueue.
         """
         _ = transport  # ensure no HTTP call happens
         backend = SlackBotBackend(bot_token="xoxb-bot")
         backend.enqueue_mention({"ts": "1.0", "user": "U", "text": "@bot hi"})
 
         events = backend.fetch_mentions()
+        again = backend.fetch_mentions()
 
         assert len(events) == 1
         assert events[0]["text"] == "@bot hi"
-        assert backend.fetch_mentions() == snapshot([])
+        assert again == events
 
     def test_collect_user_dms_handles_non_thread_bot_message(self, transport: FakeSlackTransport) -> None:
         """RED if the bot-authored filter in ``_collect_user_dms`` is dropped on non-thread-root posts.

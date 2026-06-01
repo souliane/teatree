@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from itertools import starmap
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from teatree.core.availability import Resolution
     from teatree.core.managers import OwnershipStatus
 
 # ANSI palette — modern terminals (iTerm2, Kitty, WezTerm, Ghostty,
@@ -178,50 +180,23 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
     return target
 
 
-def availability_anchor(mode: str, queued: int) -> str:
-    """Return the anchors-zone segment for the availability mode (#58).
+def availability_segment(resolution: "Resolution") -> str:
+    """Return the ``loop running`` line's availability segment (#58, #1678).
 
-    Renders ``mode=away · N queued`` when ``mode`` is ``away`` AND there
-    is at least one deferred question waiting; ``mode=away`` alone when
-    no queue; an empty string in ``present`` mode (the default mode is
-    not interesting enough to warrant a dedicated anchor line).
+    Renders ``availability: <present|away> (<source>)`` so the user reads the
+    currently-resolved availability and which layer decided it (override /
+    schedule / default) at a glance, as one ``·``-separated segment of the
+    ``loop running …`` line.
+
+    The ``availability:`` label is deliberately distinct from the config
+    ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
+    ``mode=away`` form collided with. An unrecognised mode renders nothing.
     """
-    if mode != "away":
+    from teatree.core.availability import MODE_AWAY, MODE_PRESENT  # noqa: PLC0415
+
+    if resolution.mode not in {MODE_PRESENT, MODE_AWAY}:
         return ""
-    if queued > 0:
-        return f"mode=away · {queued} queued"
-    return "mode=away"
-
-
-def _configured_overlay_names() -> list[str]:
-    """Return the sorted names of every configured overlay.
-
-    Thin discovery seam so :func:`overlays_anchor` stays a pure formatter —
-    tests stub this rather than registering real overlays. Production reads
-    the unified entry-point + ``~/.teatree.toml`` discovery in
-    :func:`teatree.core.overlay_loader.get_all_overlay_names`.
-    """
-    from teatree.core.overlay_loader import get_all_overlay_names  # noqa: PLC0415
-
-    return sorted(get_all_overlay_names())
-
-
-def overlays_anchor() -> list[str]:
-    """Return the single configured-overlays summary line, or ``[]``.
-
-    Surfaces the user's multi-overlay context (``overlays: a · b · c``)
-    directly, rather than leaving overlays to appear only implicitly when a
-    ticket or PR happens to carry an ``[ov]`` prefix. Returns ``[]`` when no
-    overlay is configured. Fails open: any discovery error degrades to ``[]``
-    so a broken config can never blank the statusline.
-    """
-    try:
-        names = _configured_overlay_names()
-    except Exception:  # noqa: BLE001
-        return []
-    if not names:
-        return []
-    return [f"overlays: {' · '.join(names)}"]
+    return f"availability: {resolution.mode} ({resolution.source})"
 
 
 def _live_loop_leases() -> list[tuple[str, datetime | None]]:
@@ -240,6 +215,51 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     lease_model = apps.get_model("core", "LoopLease")
     rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
     return [(row.name, row.acquired_at) for row in rows]
+
+
+# The per-mini-loop next-fire reader lives up-stack in
+# :func:`teatree.loops.schedule.mini_loop_schedules` because resolving it
+# needs the mini-loop registry and ``[loops]`` config, both of which live in
+# :mod:`teatree.loops` — and the tach module graph forbids
+# :mod:`teatree.loop` from importing :mod:`teatree.loops` (the dependency
+# points the other way). Mirroring the ``jobs_builder`` seam in
+# :func:`teatree.loop.tick.run_tick`, the live entry point (the ``loop_tick``
+# management command) injects the real reader via
+# :func:`set_mini_loop_schedules_reader`; absent injection (a quiet machine,
+# a unit test) the default reader returns ``[]`` and the mini-loop chunks are
+# simply omitted — never an import-direction violation, never a crash.
+type MiniLoopSchedulesReader = Callable[[], list[tuple[str, datetime | None]]]
+
+
+def _empty_mini_loop_schedules() -> list[tuple[str, datetime | None]]:
+    return []
+
+
+_mini_loop_schedules_reader: MiniLoopSchedulesReader = _empty_mini_loop_schedules
+
+
+def set_mini_loop_schedules_reader(reader: MiniLoopSchedulesReader | None) -> None:
+    """Install the up-stack mini-loop next-fire reader (``None`` resets to empty).
+
+    Called once by the ``loop_tick`` management command — the only place
+    allowed to bridge :mod:`teatree.loops` into the statusline without
+    violating the tach module graph.
+    """
+    global _mini_loop_schedules_reader  # noqa: PLW0603
+    _mini_loop_schedules_reader = reader or _empty_mini_loop_schedules
+
+
+def _mini_loop_schedules() -> list[tuple[str, datetime | None]]:
+    """Return ``(loop_name, next_fire_at)`` for every enabled mini-loop.
+
+    Delegates to the injected reader (:func:`set_mini_loop_schedules_reader`).
+    Each domain mini-loop (``dispatch``, ``tickets``, ``review``, ``ship``,
+    ``inbox``, ``resource_pressure``, …) is a cron with its own cadence: its
+    ``next_fire_at`` is the cadence-ledger ``last_fired_at`` plus the loop's
+    resolved cadence, or ``None`` when the loop has never fired (the renderer
+    surfaces that as ``due``).
+    """
+    return _mini_loop_schedules_reader()
 
 
 # Per-loop cadence resolution (#1400). Each named loop ticks on its own
@@ -302,64 +322,93 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     return "action_needed", f"loop-owner=session {short8} (NOT this session)"
 
 
-def live_loops_anchor() -> list[str]:
-    """Return the single dedicated loop line for the dashboard (#1400, #130).
+def _live_lease_chunks() -> list[str]:
+    """Return one ``<short-name> <next-tick>`` chunk per live infra LoopLease.
 
-    Single line, prepended at the top of the statusline so the user's
-    "are the loops live, when do they tick, and am I blocked?" question is
-    answered with one glance:
-
-        ``loop running · my-prs 11m · tickets 11m · waiting: 2 questions``
-
-    Shape:
-
-    *   ``loop running`` — the leading state word. The line is only ever
-        rendered when at least one loop is live; when none is, the function
-        returns ``[]`` and the line is silenced entirely (no ``idle`` line
-        is shown). The foreign-hijack case is NOT shown here — it is RED and
-        routed to the action line by :func:`loop_owner_anchor`.
-    *   one ``<short-name> <next-tick>`` chunk per live
-        :class:`~teatree.core.models.LoopLease`. ``<short-name>`` is the
-        lease name with its ``loop-`` prefix stripped (``loop-my-prs`` →
-        ``my-prs``); ``<next-tick>`` is the RELATIVE whole-minute
-        countdown to that loop's next tick (``11m``), never a clock time.
-        Each loop has its own cadence (:func:`_cadence_for_loop`), so a
-        fast reactive loop and a slow self-improve loop show different
-        countdowns. The chunk is name-only when the lease has no recorded
-        ``acquired_at`` yet; ``due`` replaces the duration when overdue.
-    *   ``waiting: <subject>`` — appended ONLY when the loop is blocked on
-        the user (there are unresolved :class:`DeferredQuestion` rows), so
-        the dashboard surfaces "the loop is held, you owe it an answer"
-        without the user hunting for it.
-
-    Returns ``[]`` when no loop is live — silences the line entirely on
-    a quiet machine. Fails open: any DB / import error degrades to ``[]``
-    (or, for the ``waiting:`` clause specifically, drops just the clause)
-    so a broken read can never blank the statusline.
+    The ``loop-owner`` lease is excluded: it is a session-ownership token,
+    not a work loop, and its countdown is meaningless in the shared zones
+    file (every terminal would show the same ``owner Nm`` chunk regardless
+    of which session is actually the owner). The per-session owner badge in
+    ``statusline.sh`` replaces that signal with a context-aware you ✓ /
+    owner·pid / unclaimed display. Fails open to ``[]`` on any read error.
     """
     try:
         leases = _live_loop_leases()
     except Exception:  # noqa: BLE001
         return []
-    if not leases:
+    return [_loop_chunk(name, acquired_at) for name, acquired_at in leases if name != "loop-owner"]
+
+
+def live_loops_anchor() -> list[str]:
+    """Return the single dedicated loop line for the dashboard (#1400, #130).
+
+    Single line, prepended at the top of the statusline so the user's
+    "which loops are running, when does each tick next, and am I blocked?"
+    question is answered with one glance:
+
+        ``loop running · tick 11m · dispatch 2m · tickets 4m · news 18m · waiting: 2 questions``
+
+    Shape:
+
+    *   ``loop running`` — the leading state word. The line is only ever
+        rendered when at least one loop or cron is active; when none is, the
+        function returns ``[]`` and the line is silenced entirely (no
+        ``idle`` line is shown). The foreign-hijack case is NOT shown here —
+        it is RED and routed to the action line by :func:`loop_owner_anchor`.
+    *   one ``<short-name> <next-tick>`` chunk per live infra
+        :class:`~teatree.core.models.LoopLease` (``tick``,
+        ``self-improve``, ``slack-answer``) — see :func:`_live_lease_chunks`.
+    *   one ``<name> <next-tick>`` chunk per ENABLED domain mini-loop /
+        cron (``dispatch``, ``tickets``, ``review``, ``ship``, ``inbox``,
+        ``resource_pressure``, …) — see :func:`mini_loops_anchor`. Every
+        chunk's ``<next-tick>`` is the RELATIVE whole-minute countdown to
+        THAT loop's own next fire (``2m``), derived live from its own
+        cadence and last-fired instant — not one shared constant — so a
+        fast 60s cron and a slow 1h cron show different countdowns and the
+        whole line counts down across renders. ``due`` replaces the
+        duration when a loop is overdue or has never fired.
+    *   ``availability: <present|away> (<source>)`` — the currently-resolved
+        availability, read live at render time (:func:`_availability_segment`)
+        so the user always sees the present/away value and which layer decided
+        it, never a cached one.
+    *   ``waiting: <subject>`` — appended ONLY when the loop is blocked on
+        the user (there are unresolved :class:`DeferredQuestion` rows), so
+        the dashboard surfaces "the loop is held, you owe it an answer"
+        without the user hunting for it.
+
+    Returns ``[]`` when neither an infra lease nor an enabled mini-loop is
+    active — silences the line entirely on a quiet machine. Fails open: any
+    DB / import error degrades to ``[]`` (or, for an individual segment,
+    drops just that segment) so a broken read can never blank the statusline.
+    """
+    chunks = [*_live_lease_chunks(), *mini_loops_anchor()]
+    if not chunks:
         return []
 
-    # Exclude the loop-owner lease: it is a session-ownership token, not a
-    # work loop, and its countdown is meaningless in the shared zones file
-    # (every terminal would show the same "owner Nm" chunk regardless of
-    # which session is actually the owner). The per-session owner badge in
-    # statusline.sh replaces that signal with a context-aware you ✓ /
-    # owner·pid / unclaimed display.
-    leases = [(name, acquired_at) for name, acquired_at in leases if name != "loop-owner"]
-    if not leases:
-        return []
-
-    chunks = list(starmap(_loop_chunk, leases))
     parts = ["loop running", *chunks]
+    availability = _availability_segment()
+    if availability:
+        parts.append(availability)
     waiting = _waiting_clause()
     if waiting:
         parts.append(waiting)
     return [" · ".join(parts)]
+
+
+def _availability_segment() -> str:
+    """Return the live availability segment for the loop line, or ``""``.
+
+    Reads :func:`teatree.core.availability.resolve_mode` at render time so the
+    segment reflects the currently-resolved availability, never a cached value.
+    Fails open to ``""`` (no segment) on any read error so a broken
+    availability config never blanks the loop line.
+    """
+    try:
+        from teatree.core.availability import resolve_mode  # noqa: PLC0415
+
+        return availability_segment(resolve_mode())
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _waiting_clause() -> str:
@@ -414,15 +463,57 @@ def _next_tick_minutes(name: str, acquired_at: datetime | None) -> str:
         cadence = _cadence_for_loop(name)
     except Exception:  # noqa: BLE001
         return ""
+    return _relative_minutes(acquired_at + timedelta(seconds=cadence))
+
+
+def _relative_minutes(next_fire_at: datetime) -> str:
+    """Return the relative whole-minute countdown to *next_fire_at* (``11m`` / ``due``).
+
+    ``due`` once the instant is in the past — the loop fires on the
+    orchestrator's next tick. Always derived from the live clock at render
+    time so the value counts down across successive renders rather than
+    freezing on a cached string.
+    """
     from django.utils import timezone  # noqa: PLC0415
 
-    now = timezone.now()
-    next_tick_at = acquired_at + timedelta(seconds=cadence)
-    delta_seconds = int((next_tick_at - now).total_seconds())
+    delta_seconds = int((next_fire_at - timezone.now()).total_seconds())
     if delta_seconds <= 0:
         return "due"
     minutes = max(1, round(delta_seconds / _SECONDS_PER_MINUTE))
     return f"{minutes}m"
+
+
+def _mini_loop_chunk(name: str, next_fire_at: datetime | None) -> str:
+    """Render one ``<name> <next-tick>`` chunk for an enabled mini-loop.
+
+    ``due`` when the loop has never fired (no marker → ``next_fire_at`` is
+    ``None``) or is already overdue; otherwise the relative whole-minute
+    countdown derived live from ``next_fire_at``.
+    """
+    tick = "due" if next_fire_at is None else _relative_minutes(next_fire_at)
+    return f"{name} {tick}"
+
+
+def mini_loops_anchor() -> list[str]:
+    """Return one ``<name> <next-tick>`` chunk per enabled domain mini-loop.
+
+    Companion to :func:`live_loops_anchor`: where that renders the infra
+    leases (``loop-tick`` and friends), this renders every enabled domain
+    cron from :func:`teatree.loops.registry.iter_loops` — ``dispatch``,
+    ``tickets``, ``review``, ``ship``, ``inbox``, ``resource_pressure``, … —
+    each with its own next-tick countdown derived from the cadence ledger
+    (:func:`_mini_loop_schedules`), never a shared constant. The two anchors
+    compose into the single ``loop running · …`` line in
+    :func:`combined_loops_chunks`.
+
+    Returns ``[]`` when no mini-loop is enabled, or fails open to ``[]`` on
+    any DB / config read error so a broken ledger never blanks the line.
+    """
+    try:
+        schedules = _mini_loop_schedules()
+    except Exception:  # noqa: BLE001
+        return []
+    return list(starmap(_mini_loop_chunk, schedules))
 
 
 _SECONDS_PER_MINUTE = 60
@@ -472,11 +563,12 @@ def statusline_for_slack(*, path: Path | None = None) -> str:
 __all__ = [
     "StatuslineEntry",
     "StatuslineZones",
-    "availability_anchor",
+    "availability_segment",
     "default_path",
     "live_loops_anchor",
     "loop_owner_anchor",
-    "overlays_anchor",
+    "mini_loops_anchor",
     "render",
+    "set_mini_loop_schedules_reader",
     "statusline_for_slack",
 ]

@@ -1,5 +1,7 @@
 """Tests for MessagingBackend implementations (Noop, Slack)."""
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 
 import httpx
@@ -243,7 +245,7 @@ def test_slack_fetch_mentions_drains_enqueued_events() -> None:
     second = backend.fetch_mentions()
 
     assert [e["ts"] for e in first] == ["1.0", "2.0"]
-    assert second == []
+    assert [e["ts"] for e in second] == ["1.0", "2.0"]
 
 
 def test_slack_fetch_dms_drains_enqueued_events() -> None:
@@ -253,7 +255,70 @@ def test_slack_fetch_dms_drains_enqueued_events() -> None:
     drained = backend.fetch_dms()
 
     assert [e["ts"] for e in drained] == ["3.0"]
-    assert backend.fetch_dms() == []
+    assert [e["ts"] for e in backend.fetch_dms()] == ["3.0"]
+
+
+def test_slack_fetch_dms_non_destructive_across_scanners_in_tick() -> None:
+    backend = SlackBotBackend(bot_token="")
+    backend.enqueue_dm({"text": "red card", "ts": "9.0", "channel": "D1"})
+
+    slack_dm_inbound = backend.fetch_dms()
+    slack_mentions = backend.fetch_dms()
+    red_card = backend.fetch_dms()
+
+    assert [e["ts"] for e in slack_dm_inbound] == ["9.0"]
+    assert [e["ts"] for e in slack_mentions] == ["9.0"]
+    assert [e["ts"] for e in red_card] == ["9.0"]
+
+
+def test_slack_fetch_reactions_non_destructive_across_scanners_in_tick() -> None:
+    backend = SlackBotBackend(bot_token="")
+    backend.enqueue_reaction({"reaction": "no_entry_sign", "event_ts": "9.1"})
+
+    review_intent = backend.fetch_reactions()
+    red_card = backend.fetch_reactions()
+
+    assert [e["event_ts"] for e in review_intent] == ["9.1"]
+    assert [e["event_ts"] for e in red_card] == ["9.1"]
+
+
+def test_slack_fetch_mentions_non_destructive_across_scanners_in_tick() -> None:
+    backend = SlackBotBackend(bot_token="")
+    backend.enqueue_mention({"text": "@bot", "ts": "9.2"})
+
+    mentions_scanner = backend.fetch_mentions()
+    review_intent = backend.fetch_mentions()
+
+    assert [e["ts"] for e in mentions_scanner] == ["9.2"]
+    assert [e["ts"] for e in review_intent] == ["9.2"]
+
+
+def test_slack_fetch_dms_concurrent_consumers_each_see_event() -> None:
+    backend = SlackBotBackend(bot_token="")
+    backend.enqueue_dm({"text": "dm", "ts": "9.3"})
+
+    barrier = threading.Barrier(3)
+
+    def consume() -> list[str]:
+        barrier.wait()
+        return [str(e["ts"]) for e in backend.fetch_dms()]
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda _: consume(), range(3)))
+
+    assert all(r == ["9.3"] for r in results)
+
+
+def test_slack_fetch_dms_new_enqueue_rolls_batch() -> None:
+    backend = SlackBotBackend(bot_token="")
+    backend.enqueue_dm({"text": "first tick", "ts": "10.0"})
+
+    assert [e["ts"] for e in backend.fetch_dms()] == ["10.0"]
+
+    backend.enqueue_dm({"text": "second tick", "ts": "11.0"})
+
+    assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
+    assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
 
 
 def test_slack_exposes_app_token_and_user_id() -> None:

@@ -126,3 +126,32 @@ class TestRepoRoot:
         importlib.reload(gate)
         # The gate lives in scripts/hooks/, so root is two parents up.
         assert (gate._repo_root() / "BLUEPRINT.md").exists()
+
+
+class TestRealCorpusFitsWithHeadroom:
+    """The single-file BLUEPRINT.md fits its budget without the override.
+
+    USER VETO: BLUEPRINT.md stays one file. The top-level budget must sit
+    comfortably above the live file so it can grow as a single document and
+    ``BLUEPRINT_SIZE_OVERRIDE`` is not load-bearing for ordinary edits.
+    """
+
+    _MIN_TOP_LEVEL_HEADROOM = 4_000
+
+    def test_top_level_budget_above_live_file_with_headroom(self) -> None:
+        root = gate._repo_root()
+        size = (root / "BLUEPRINT.md").stat().st_size
+        assert size <= gate._BUDGET_TOP_LEVEL_BYTES
+        assert gate._BUDGET_TOP_LEVEL_BYTES - size >= self._MIN_TOP_LEVEL_HEADROOM
+
+    def test_total_budget_above_live_corpus_with_headroom(self) -> None:
+        root = gate._repo_root()
+        top = (root / "BLUEPRINT.md").stat().st_size
+        appendices = gate._appendix_total(root)
+        total = top + appendices
+        assert total <= gate._BUDGET_TOTAL_BYTES
+        assert gate._BUDGET_TOTAL_BYTES - total >= self._MIN_TOP_LEVEL_HEADROOM
+
+    def test_total_budget_admits_full_top_level_plus_appendices(self) -> None:
+        slack = gate._BUDGET_TOTAL_BYTES - gate._BUDGET_TOP_LEVEL_BYTES
+        assert slack <= gate._BUDGET_APPENDICES_BYTES
