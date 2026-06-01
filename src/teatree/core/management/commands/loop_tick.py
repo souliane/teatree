@@ -163,10 +163,15 @@ class Command(TyperCommand):
         # heartbeat — no renew(), no background timer, #54 doctrine), and
         # a non-owner SKIPs HERE, before any scanner/DM-drain/dispatch. An
         # anonymous caller (session_id=="") with a live owner also SKIPs;
-        # first run / no owner auto-claims for free via the CAS (matches
-        # the hook-layer "no owner → you are owner"). `loop-owner` is
-        # NEVER released — its TTL + per-tick re-claim is its sole
-        # lifecycle (unlike `loop-tick`, released in the finally below).
+        # with no live owner it RUNS the tick (won=True) but WITHOUT writing
+        # the owner row — so a pure-cron / no-session deployment still ticks
+        # while the phantom "owned by nobody but not expired" row that let a
+        # fresh session hijack the loop can never form (#1073). Liveness is
+        # pid-anchored: an alive owner_pid is protected past the TTL, so an
+        # owner that is busy past one tick interval is not hijacked. `loop-
+        # owner` is NEVER released — its TTL fallback + per-tick re-claim is
+        # its sole lifecycle (unlike `loop-tick`, released in the finally
+        # below).
         import os as _os  # noqa: PLC0415
 
         session_id = current_session_id()
