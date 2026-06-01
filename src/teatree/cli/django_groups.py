@@ -196,6 +196,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "review": DjangoGroup(
+        "Persist + look up cold-review verdicts per MR.",
+        [
+            ("record", "Persist a cold-review verdict for a PR at an exact reviewed SHA."),
+            ("status", "Report whether an MR is safe to approve at its current head (read-only)."),
+        ],
+        core_dispatch=True,
+    ),
     "availability": DjangoGroup(
         "24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).",
         [
