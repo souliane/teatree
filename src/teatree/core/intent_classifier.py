@@ -30,6 +30,10 @@ _NOISE_SLACK_EVENT_TYPES = {"team_join", "channel_left", "channel_joined", "user
 Verdict = tuple[str, float, str]
 
 
+def _as_dict(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def classify_event(event: IncomingEvent) -> IntentClassification:
     """Classify *event* and persist (or refresh) its ``IntentClassification``."""
     existing = IntentClassification.objects.filter(event=event).first()
@@ -64,7 +68,7 @@ def _verdict_from_ci(_event: IncomingEvent) -> Verdict:
 
 def _verdict_from_gitlab(event: IncomingEvent) -> Verdict | None:
     payload = event.payload_json or {}
-    action = (payload.get("object_attributes") or {}).get("action")
+    action = _as_dict(payload.get("object_attributes")).get("action")
     if action in _APPROVAL_ACTIONS_GITLAB:
         return IntentClassification.Intent.APPROVAL, 0.95, "gitlab mr approved"
     if (payload.get("object_kind") or "") in _STATUS_OBJECT_KINDS:
@@ -74,7 +78,7 @@ def _verdict_from_gitlab(event: IncomingEvent) -> Verdict | None:
 
 def _verdict_from_github(event: IncomingEvent) -> Verdict | None:
     payload = event.payload_json or {}
-    review_state = (payload.get("review") or {}).get("state")
+    review_state = _as_dict(payload.get("review")).get("state")
     if review_state in _APPROVAL_STATES_GITHUB:
         return IntentClassification.Intent.APPROVAL, 0.95, "github review approved"
     if payload.get("workflow_run") or payload.get("check_run"):
@@ -84,7 +88,7 @@ def _verdict_from_github(event: IncomingEvent) -> Verdict | None:
 
 def _verdict_from_slack(event: IncomingEvent) -> Verdict | None:
     payload = event.payload_json or {}
-    slack_event_type = ((payload.get("event") or {}).get("type")) or ""
+    slack_event_type = _as_dict(payload.get("event")).get("type") or ""
     if slack_event_type in _NOISE_SLACK_EVENT_TYPES or not (event.body or "").strip():
         return IntentClassification.Intent.NOISE, 0.95, "slack noise event"
     return None
