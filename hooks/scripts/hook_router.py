@@ -4847,7 +4847,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
 
 
 def _claim_session_handover(session_id: str) -> str | None:
-    """Claim an unclaimed session hand-off for *session_id*, or ``None`` (#1701).
+    """Claim an unclaimed session hand-off for *session_id*, or ``None``.
 
     The zero-copy-paste takeover: a fresh / non-owner session picks up a
     hand-off targeted AT it or parked for "next session" from the
@@ -4956,11 +4956,11 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
 
     #845: a ``source == "compact"`` resume reads back the PreCompact durable
     snapshot (the only post-compaction event whose ``additionalContext`` the
-    harness honours). #1701: a fresh / non-owner session claims an unclaimed
-    hand-off (targeted at it, or parked for "next session") and injects the
-    handing session's full durable state — ``claim_next`` excludes the
-    session's own hand-off, so a same-session compact resume never re-injects
-    its own snapshot. #980: surfaces the harness auto-compact kill-switch
+    harness honours). Session hand-off: a fresh / non-owner session claims an
+    unclaimed hand-off (targeted at it, or parked for "next session") and
+    injects the handing session's full durable state — ``claim_next`` excludes
+    the session's own hand-off, so a same-session compact resume never
+    re-injects its own snapshot. #980: surfaces the harness auto-compact kill-switch
     advisory when the env-var combo would silently disable auto-compaction.
     """
     if source == "compact":

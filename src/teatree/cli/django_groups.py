@@ -165,7 +165,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         core_dispatch=True,
     ),
     "handover": DjangoGroup(
-        "Hand all current work from this session to another session (#1701).",
+        "Hand all current work from this session to another session.",
         [
             ("create", "Hand this session's full durable state to the loop owner, a named session, or next."),
             ("whoami", "Print this Claude session's own id."),

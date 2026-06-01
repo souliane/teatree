@@ -74,7 +74,7 @@ def register(loop_app: typer.Typer) -> None:
         slot: str = typer.Option("loop-owner", "--slot", help="Loop-owner slot name (default: loop-owner)."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Show which session owns the loop-owner slot AND this session's own id (#1073/#1701)."""
+        """Show which session owns the loop-owner slot AND this session's own id (#1073)."""
         _delegate("owner", slot=slot, json_output=json_output)
 
     @loop_app.command("whoami")
@@ -82,7 +82,7 @@ def register(loop_app: typer.Typer) -> None:
         *,
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Print this Claude session's own id — what a hand-off ``--to`` targets (#1701)."""
+        """Print this Claude session's own id — what a hand-off ``--to`` targets."""
         _delegate("whoami", slot=None, json_output=json_output)
 
     @loop_app.command("release")

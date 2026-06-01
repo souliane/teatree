@@ -1,4 +1,4 @@
-"""SessionStart picks up an unclaimed session hand-off and injects it (#1701).
+"""SessionStart picks up an unclaimed session hand-off and injects it.
 
 The zero-copy-paste takeover: a fresh / non-owner session claims a hand-off
 (targeted AT it, or parked for "next session") on SessionStart and injects

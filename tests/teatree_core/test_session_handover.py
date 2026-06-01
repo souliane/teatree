@@ -1,4 +1,4 @@
-"""Tests for the session-to-session hand-off model + manager (#1701).
+"""Tests for the session-to-session hand-off model + manager.
 
 Covers the single-claim CAS (to the loop owner, to an explicit id, parked
 for next session), the no-self-claim invariant, and the explicit-target

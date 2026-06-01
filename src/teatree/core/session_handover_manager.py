@@ -1,4 +1,4 @@
-"""Manager/queryset for :class:`SessionHandover` rows (#1701).
+"""Manager/queryset for :class:`SessionHandover` rows.
 
 Split out of ``teatree.core.managers`` (mirrors the ``loop_lease_manager``
 split) so the session-handover concern — creating a hand-off and the

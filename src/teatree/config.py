@@ -336,7 +336,7 @@ class OverlayEntry:
 
 
 def _default_handover_mirror_path() -> Path:
-    """Human-readable mirror of the latest session hand-off (#1701).
+    """Human-readable mirror of the latest session hand-off.
 
     ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`` — XDG
     *state* (not data) because a hand-off is regenerable transient session
@@ -646,7 +646,7 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
-    # #1701 Human-readable mirror of the latest session hand-off. The
+    # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new
     # session. Default ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/

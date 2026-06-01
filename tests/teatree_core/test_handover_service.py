@@ -1,4 +1,4 @@
-"""Tests for the session hand-off service (#1701).
+"""Tests for the session hand-off service.
 
 Covers reuse of the PreCompact snapshot file as the payload, target
 resolution (explicit id, live loop owner, parked-for-next), and the XDG

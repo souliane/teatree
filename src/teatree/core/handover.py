@@ -1,4 +1,4 @@
-"""Session-to-session work hand-off (#1701).
+"""Session-to-session work hand-off.
 
 Reuses the durable-state snapshot the PreCompact hook already builds (active
 tickets, worktree paths/branches, in-flight sub-agents, open PRs,

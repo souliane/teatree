@@ -61,7 +61,7 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
     from teatree.core.models import LoopLease  # noqa: PLC0415
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
-    # #1701: surface THIS session's own id alongside the owner, so a session
+    # Surface THIS session's own id alongside the owner, so a session
     # always knows whether IT is the owner — not just who the owner is.
     you = current_session_id()
     status = LoopLease.objects.ownership_status(slot)
@@ -88,7 +88,7 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
 
 
 def _whoami(*, json_output: bool, stdout_write) -> None:  # noqa: ANN001
-    """Print this Claude session's own id — the hand-off ``--to`` target (#1701)."""
+    """Print this Claude session's own id — the hand-off ``--to`` target."""
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
     session_id = current_session_id()
@@ -150,7 +150,7 @@ class Command(TyperCommand):
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Print this Claude session's own id (#1701)."""
+        """Print this Claude session's own id."""
         _whoami(json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="release")

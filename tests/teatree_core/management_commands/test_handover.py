@@ -1,4 +1,4 @@
-"""Tests for ``t3 <overlay> handover`` and ``t3 loop whoami`` commands (#1701)."""
+"""Tests for ``t3 <overlay> handover`` and ``t3 loop whoami`` commands."""
 
 import json
 import os

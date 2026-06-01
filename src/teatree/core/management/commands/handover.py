@@ -1,4 +1,4 @@
-"""``t3 <overlay> handover`` — hand all current work to another session (#1701).
+"""``t3 <overlay> handover`` — hand all current work to another session.
 
 Reuses the PreCompact durable-state snapshot as the hand-off payload and
 the ``loop-owner`` slot for the default target. ``create`` persists a
@@ -22,7 +22,7 @@ from teatree.loop.session_identity import current_session_id
 
 
 class Command(TyperCommand):
-    help = "Hand all current work from this session to another session (#1701)."
+    help = "Hand all current work from this session to another session."
 
     @initialize()
     def init(self) -> None:

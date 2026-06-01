@@ -1,4 +1,4 @@
-"""Durable session-to-session work handover (#1701).
+"""Durable session-to-session work handover.
 
 A :class:`SessionHandover` row carries one session's full durable-state
 snapshot (the same payload the PreCompact hook already builds: active

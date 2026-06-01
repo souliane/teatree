@@ -17,7 +17,7 @@ metadata:
 
 Two distinct hand-offs share this skill:
 
-- **Session → session** (#1701): move all of THIS Claude session's in-flight work to another session (or to "whatever session starts next") with a single command, zero copy-paste. The receiving session picks it up automatically on start.
+- **Session → session**: move all of THIS Claude session's in-flight work to another session (or to "whatever session starts next") with a single command, zero copy-paste. The receiving session picks it up automatically on start.
 - **Claude → another runtime**: switch away from Claude (e.g. to Codex) without losing the thread, gated on five-hour usage telemetry.
 
 ## Session → session hand-off
