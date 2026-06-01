@@ -11,17 +11,28 @@ mystery):
 
 1. **Manual override** (unexpired) — recorded on disk by
     ``t3 availability away|present|auto`` and read here. ``auto`` clears
-    the override so the schedule decides again.
-2. **Cron-window schedule** — any active cron expression in
+    the override so the schedule decides again. A deliberate ``away``
+    override (a holiday) is authoritative — it wins over everything below.
+2. **Live presence beats a schedule-derived ``away``** — a
+    ``UserPromptSubmit`` recorded within :data:`PRESENCE_FRESHNESS` is
+    direct evidence the user is at the keyboard *now*. The cron schedule
+    is only a heuristic guess about reachability; a fresh prompt is
+    ground truth, so it overrides a schedule that would otherwise mute a
+    demonstrably-present user (the #58-era bug: a user actively typing
+    outside their configured work hours had their ``AskUserQuestion``
+    calls silently deferred). It only *upgrades* a schedule ``away`` to
+    ``present`` — it never downgrades, and it never overrides an explicit
+    manual override.
+3. **Cron-window schedule** — any active cron expression in
     ``[teatree.availability].windows`` evaluated in the configured
     timezone means ``present``; otherwise ``away``.
-3. **Default** — ``present`` when no windows are configured (the
+4. **Default** — ``present`` when no windows are configured (the
     conservative default: an agent without an availability config is
     present, never silently muted).
 
-The override file is written via ``tmp.replace`` (atomic) so a torn
-write never leaves a half-encoded JSON document; readers tolerating a
-read race re-resolve cleanly.
+The override and presence files are written via ``tmp.replace`` (atomic)
+so a torn write never leaves a half-encoded document; readers tolerating
+a read race re-resolve cleanly.
 """
 
 import json
@@ -31,7 +42,7 @@ import tempfile
 import tomllib
 import warnings
 import zoneinfo
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
@@ -48,6 +59,13 @@ logger = logging.getLogger(__name__)
 MODE_PRESENT = "present"
 MODE_AWAY = "away"
 _VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY})
+
+# How recently a ``UserPromptSubmit`` must have landed for the user to count
+# as demonstrably present. A live prompt within this window upgrades a
+# schedule-derived ``away`` to ``present`` — long enough to bridge a normal
+# pause between prompts, short enough that a user who walked away an hour ago
+# is correctly treated as away by the schedule.
+PRESENCE_FRESHNESS = timedelta(minutes=15)
 
 # A query landing exactly on a fire instant counts as inside that fire's span.
 _CRON_EPSILON = timedelta(microseconds=1)
@@ -67,6 +85,11 @@ _CADENCE_SAMPLE = 6
 def override_path() -> Path:
     """Location of the durable availability-override JSON file."""
     return DATA_DIR / "availability_override.json"
+
+
+def presence_path() -> Path:
+    """Location of the durable live-presence heartbeat file."""
+    return DATA_DIR / "availability_presence"
 
 
 def _validated_timezone(tz: str) -> str:
@@ -200,7 +223,7 @@ class Resolution:
     """The resolved availability mode plus the source that decided it."""
 
     mode: str
-    source: str  # "override" | "schedule" | "default"
+    source: str  # "override" | "live" | "schedule" | "default"
 
 
 _MISSING_OVERRIDE: object = object()
@@ -211,12 +234,20 @@ def resolve_mode(
     now: datetime | None = None,
     schedule: Schedule | None = None,
     override: object = _MISSING_OVERRIDE,
+    presence: datetime | object | None = _MISSING_OVERRIDE,
 ) -> Resolution:
     """Resolve the effective mode at *now* by the §17.1 invariant 9 precedence.
 
-    Override → schedule → default. Each layer is independently testable
-    by passing it explicitly; the production path reads override from
-    :func:`load_override` and schedule from :func:`load_schedule`.
+    Override → live presence (upgrade-only) → schedule → default. Each layer
+    is independently testable by passing it explicitly; the production path
+    reads override from :func:`load_override`, schedule from
+    :func:`load_schedule`, and the live-presence heartbeat from
+    :func:`last_presence`.
+
+    Live presence only ever upgrades a schedule-derived ``away`` to
+    ``present`` — direct evidence (a recent ``UserPromptSubmit``) beats the
+    schedule's heuristic guess about reachability. It never downgrades a
+    present schedule and never overrides an explicit manual override.
     """
     moment = now or datetime.now(tz=UTC)
     eff_override = load_override() if override is _MISSING_OVERRIDE else override
@@ -224,8 +255,12 @@ def resolve_mode(
         return Resolution(mode=eff_override.mode, source="override")
     eff_schedule = schedule if schedule is not None else load_schedule()
     if eff_schedule.windows:
-        mode = MODE_PRESENT if eff_schedule.is_present_at(moment) else MODE_AWAY
-        return Resolution(mode=mode, source="schedule")
+        if eff_schedule.is_present_at(moment):
+            return Resolution(mode=MODE_PRESENT, source="schedule")
+        eff_presence = PRESENCE.last_seen() if presence is _MISSING_OVERRIDE else presence
+        if isinstance(eff_presence, datetime) and moment - eff_presence <= PRESENCE_FRESHNESS:
+            return Resolution(mode=MODE_PRESENT, source="live")
+        return Resolution(mode=MODE_AWAY, source="schedule")
     return Resolution(mode=MODE_PRESENT, source="default")
 
 
@@ -350,6 +385,73 @@ def clear_override(path: Path | None = None) -> bool:
     return True
 
 
+class PresenceHeartbeat:
+    """The durable live-presence signal — a prompt proves the user is here.
+
+    Groups the stamp/read concern so the resolver and the
+    ``UserPromptSubmit`` hook share one cohesive seam. The file location is
+    injected as :attr:`locate` (the module singleton :data:`PRESENCE`
+    resolves it lazily through :func:`presence_path`, so a test repointing
+    ``availability.presence_path`` is honoured); a test may also construct a
+    heartbeat with an explicit locator.
+    """
+
+    def __init__(self, locate: Callable[[], Path] = presence_path) -> None:
+        self.locate = locate
+
+    def record(self, *, now: datetime | None = None) -> Path:
+        """Stamp the heartbeat atomically via ``tmp.replace``.
+
+        Called from the ``UserPromptSubmit`` hook on every prompt the user
+        submits. :meth:`last_seen` reads the stamp and :func:`resolve_mode`
+        uses it to upgrade a schedule-derived ``away`` to ``present``.
+        """
+        moment = now or datetime.now(tz=UTC)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        target = self.locate()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_str = tempfile.mkstemp(prefix=".presence-", suffix=".tmp", dir=str(target.parent))
+        tmp_path = Path(tmp_str)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(moment.isoformat())
+                fh.write("\n")
+            tmp_path.replace(target)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        return target
+
+    def last_seen(self) -> datetime | None:
+        """Read the heartbeat, if present and well-formed.
+
+        A malformed or unreadable stamp returns ``None`` rather than
+        raising — the resolver then ignores live presence and falls through
+        to the schedule, so a corrupt heartbeat never blocks the user from
+        being correctly classified by their cron windows.
+        """
+        target = self.locate()
+        if not target.is_file():
+            return None
+        try:
+            raw = target.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        try:
+            stamp = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=UTC)
+        return stamp
+
+
+PRESENCE = PresenceHeartbeat()
+
+
 def pending_questions_count(*, using: str | None = None) -> int:
     """Number of unresolved :class:`DeferredQuestion` rows (for statusline)."""
     return DeferredQuestion.pending(using=using).count()
@@ -363,7 +465,10 @@ def iter_pending_questions(*, using: str | None = None) -> Iterable[DeferredQues
 __all__ = [
     "MODE_AWAY",
     "MODE_PRESENT",
+    "PRESENCE",
+    "PRESENCE_FRESHNESS",
     "Override",
+    "PresenceHeartbeat",
     "Resolution",
     "Schedule",
     "clear_override",
@@ -372,6 +477,7 @@ __all__ = [
     "load_schedule",
     "override_path",
     "pending_questions_count",
+    "presence_path",
     "resolve_mode",
     "write_override",
 ]

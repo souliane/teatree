@@ -12,10 +12,13 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core import availability
 from teatree.core.availability import (
     MODE_AWAY,
     MODE_PRESENT,
+    PRESENCE_FRESHNESS,
     Override,
+    PresenceHeartbeat,
     Schedule,
     clear_override,
     load_override,
@@ -29,6 +32,14 @@ def override_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     target = tmp_path / "availability_override.json"
     monkeypatch.setattr("teatree.core.availability.override_path", lambda: target)
     return target
+
+
+@pytest.fixture
+def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PresenceHeartbeat:
+    target = tmp_path / "availability_presence"
+    heartbeat = PresenceHeartbeat(locate=lambda: target)
+    monkeypatch.setattr(availability, "PRESENCE", heartbeat)
+    return heartbeat
 
 
 class TestScheduleFromToml:
@@ -263,3 +274,113 @@ class TestResolveMode:
         # Passing None means "ignore any disk override".
         resolution = resolve_mode(override=None)
         assert resolution.source != "override"
+
+
+class TestPresenceHeartbeat:
+    def test_record_then_load_round_trips(self, presence: PresenceHeartbeat) -> None:
+        presence.record()
+        loaded = presence.last_seen()
+        assert loaded is not None
+        assert datetime.now(tz=UTC) - loaded < timedelta(seconds=5)
+
+    def test_load_returns_none_when_absent(self, presence: PresenceHeartbeat) -> None:
+        assert presence.last_seen() is None
+
+    def test_load_returns_none_on_corrupt_file(self, presence: PresenceHeartbeat) -> None:
+        target = presence.locate()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not a timestamp", encoding="utf-8")
+        assert presence.last_seen() is None
+
+    def test_load_returns_none_on_empty_file(self, presence: PresenceHeartbeat) -> None:
+        target = presence.locate()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("   \n", encoding="utf-8")
+        assert presence.last_seen() is None
+
+    def test_record_writes_atomically(self, presence: PresenceHeartbeat) -> None:
+        target = presence.record()
+        leftovers = [p for p in target.parent.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+    def test_record_accepts_explicit_now(self, presence: PresenceHeartbeat) -> None:
+        moment = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+        presence.record(now=moment)
+        assert presence.last_seen() == moment
+
+    def test_record_naive_now_is_assumed_utc(self, presence: PresenceHeartbeat) -> None:
+        naive = datetime(2026, 6, 2, 22, 0)  # noqa: DTZ001 — deliberately naive for the guard test.
+        presence.record(now=naive)
+        loaded = presence.last_seen()
+        assert loaded == naive.replace(tzinfo=UTC)
+
+
+class TestLivePresenceOverridesScheduleAway:
+    SCHEDULE = Schedule(timezone="UTC", windows=("* 9-16 * * 1-5",))
+    # Tuesday 22:00 UTC — outside the 09-16 work window, so the schedule
+    # alone would resolve to away. The bug: a user actively typing here was
+    # silently muted and their AskUserQuestion calls deferred.
+    EVENING = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+
+    def test_recent_prompt_beats_schedule_away(self, presence: PresenceHeartbeat) -> None:
+        presence.record(now=self.EVENING - timedelta(minutes=2))
+        resolution = resolve_mode(now=self.EVENING, schedule=self.SCHEDULE, override=None)
+        assert resolution.mode == MODE_PRESENT
+        assert resolution.source == "live"
+
+    def test_stale_prompt_does_not_beat_schedule_away(self, presence: PresenceHeartbeat) -> None:
+        presence.record(now=self.EVENING - PRESENCE_FRESHNESS - timedelta(minutes=1))
+        resolution = resolve_mode(now=self.EVENING, schedule=self.SCHEDULE, override=None)
+        assert resolution.mode == MODE_AWAY
+        assert resolution.source == "schedule"
+
+    def test_no_presence_signal_leaves_schedule_away(self, presence: PresenceHeartbeat) -> None:
+        resolution = resolve_mode(now=self.EVENING, schedule=self.SCHEDULE, override=None)
+        assert resolution.mode == MODE_AWAY
+        assert resolution.source == "schedule"
+
+    def test_live_presence_does_not_change_schedule_present(self, presence: PresenceHeartbeat) -> None:
+        # Inside the window the schedule already says present; live presence
+        # must not relabel the source (the schedule decided correctly).
+        presence.record(now=self.EVENING)
+        monday_10 = datetime(2026, 6, 1, 10, 0, tzinfo=UTC)
+        resolution = resolve_mode(now=monday_10, schedule=self.SCHEDULE, override=None)
+        assert resolution.mode == MODE_PRESENT
+        assert resolution.source == "schedule"
+
+    def test_explicit_away_override_beats_live_presence(self, override_file: Path, presence: PresenceHeartbeat) -> None:
+        # A deliberate holiday `away` override is authoritative even when the
+        # user walks up and types — the override expresses explicit intent.
+        future = self.EVENING + timedelta(hours=2)
+        write_override(MODE_AWAY, until=future)
+        presence.record(now=self.EVENING - timedelta(minutes=1))
+        resolution = resolve_mode(now=self.EVENING, schedule=self.SCHEDULE)
+        assert resolution.mode == MODE_AWAY
+        assert resolution.source == "override"
+
+    def test_explicit_presence_param_overrides_disk(self, presence: PresenceHeartbeat) -> None:
+        # The disk heartbeat is stale, but an explicit fresh presence param
+        # still upgrades — each layer is independently testable.
+        presence.record(now=self.EVENING - PRESENCE_FRESHNESS - timedelta(hours=1))
+        resolution = resolve_mode(
+            now=self.EVENING,
+            schedule=self.SCHEDULE,
+            override=None,
+            presence=self.EVENING - timedelta(minutes=1),
+        )
+        assert resolution.mode == MODE_PRESENT
+        assert resolution.source == "live"
+
+    def test_explicit_none_presence_ignores_disk(self, presence: PresenceHeartbeat) -> None:
+        # Passing presence=None means "ignore any disk heartbeat".
+        presence.record(now=self.EVENING - timedelta(minutes=1))
+        resolution = resolve_mode(now=self.EVENING, schedule=self.SCHEDULE, override=None, presence=None)
+        assert resolution.mode == MODE_AWAY
+        assert resolution.source == "schedule"
+
+    def test_live_presence_irrelevant_with_no_schedule(self, presence: PresenceHeartbeat) -> None:
+        # No windows -> default present already; presence does not relabel.
+        presence.record(now=self.EVENING)
+        resolution = resolve_mode(now=self.EVENING, schedule=Schedule(), override=None)
+        assert resolution.mode == MODE_PRESENT
+        assert resolution.source == "default"
