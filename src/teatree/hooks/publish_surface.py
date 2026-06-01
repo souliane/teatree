@@ -99,24 +99,33 @@ _RAW_REST_WORD_COUNT: Final[int] = 2
 _GIT_GLOBAL_DIR_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--git-dir", "--work-tree"})
 
 # Eligible ``gh`` sub-command pairs: (tool, verb) where "tool" is the
-# second word (pr/issue) and "verb" is the third word (create/comment).
+# second word (pr/issue) and "verb" is the third word. ``edit`` rewrites an
+# existing PR/issue body/title on the resolved target repo -- the same
+# single-repo, structured surface as ``create``/``comment``, so it is eligible
+# for the private-repo carve-out (#1594 covered only create/comment).
 # ``gh api`` is NOT in this set -- raw REST can target arbitrary surfaces.
 _GH_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
     {
         ("pr", "create"),
         ("pr", "comment"),
+        ("pr", "edit"),
         ("issue", "create"),
         ("issue", "comment"),
+        ("issue", "edit"),
     }
 )
 
-# Eligible ``glab`` sub-command pairs. ``glab api`` is NOT in this set.
+# Eligible ``glab`` sub-command pairs. ``update`` is the glab equivalent of
+# ``gh ... edit`` (rewrites an existing MR/issue description on the resolved
+# target). ``glab api`` is NOT in this set.
 _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
     {
         ("mr", "create"),
         ("mr", "note"),
+        ("mr", "update"),
         ("issue", "create"),
         ("issue", "note"),
+        ("issue", "update"),
     }
 )
 
@@ -164,9 +173,9 @@ def is_git_commit_command(command: str) -> bool:
 def _segment_is_posting_verb(words: list[str]) -> bool:
     """Return True iff ``words`` is an eligible ``gh``/``glab`` posting verb.
 
-    Eligible: ``gh pr create``, ``gh pr comment``, ``gh issue create``,
-    ``gh issue comment``, ``glab mr create``, ``glab mr note``,
-    ``glab issue create``, ``glab issue note``.
+    Eligible: the ``create``/``comment``/``edit`` ``gh`` and
+    ``create``/``note``/``update`` ``glab`` verbs on ``pr``/``mr``/``issue``
+    (see :data:`_GH_ELIGIBLE_VERBS` / :data:`_GLAB_ELIGIBLE_VERBS`).
     """
     if len(words) < _POSTING_WORD_COUNT:
         return False
@@ -191,13 +200,13 @@ def _segment_is_raw_rest(words: list[str]) -> bool:
 def is_gh_glab_posting_command(command: str) -> bool:
     """Return True iff ANY command segment is an eligible ``gh``/``glab`` posting verb.
 
-    Eligible: ``gh pr create``, ``gh pr comment``, ``gh issue create``,
-    ``gh issue comment``, ``glab mr create``, ``glab mr note``,
-    ``glab issue create``, ``glab issue note``.
+    Eligible: the ``create``/``comment``/``edit`` ``gh`` and
+    ``create``/``note``/``update`` ``glab`` verbs on ``pr``/``mr``/``issue``
+    (see :data:`_GH_ELIGIBLE_VERBS` / :data:`_GLAB_ELIGIBLE_VERBS`).
 
     NOT eligible: ``gh api`` / ``glab api`` (raw REST -- can target any
     surface), ``gh repo view``, ``glab mr list``, or anything that is not
-    a structured create-or-comment verb against a single repo target.
+    a structured create/comment/edit verb against a single repo target.
 
     Every segment is inspected (not just the first), so a posting verb
     behind a leading ``cd ... &&`` / env-assignment prefix is still seen.
