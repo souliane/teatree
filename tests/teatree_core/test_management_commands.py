@@ -857,7 +857,7 @@ class TestTasksListCommand(TestCase):
         buf = StringIO()
         _render_tasks_table(rows, stream=buf)
         out = buf.getvalue()
-        assert "Tasks (1)" in out
+        assert "Work queue (1)" in out
         assert "ID" in out
         assert "Ticket" in out
         assert "Phase" in out
