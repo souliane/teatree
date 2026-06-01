@@ -4695,10 +4695,13 @@ Usage: t3 teatree questions [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ record   Record a deferred question (used by the PreToolUse away-mode hook). │
-│ list     List pending deferred questions, oldest first.                      │
-│ answer   Resolve a pending question with a user answer.                      │
-│ dismiss  Dismiss a pending question without answering it.                    │
+│ record     Record a deferred question (used by the PreToolUse away-mode      │
+│            hook).                                                            │
+│ list       List pending deferred questions, oldest first.                    │
+│ answer     Resolve a pending question with a user answer.                    │
+│ dismiss    Dismiss a pending question without answering it.                  │
+│ resurface  Re-post the pending backlog to the user's Slack DM (away→present  │
+│            drain).                                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4766,6 +4769,28 @@ Usage: t3 teatree questions dismiss [OPTIONS] QUESTION_ID
 │                         [default: no longer relevant]                        │
 │ --resolver        TEXT  Identity of the resolver (audit trail).              │
 │ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree questions resurface`
+
+```
+Usage: t3 teatree questions resurface [OPTIONS]
+
+ Re-post the pending backlog to the user's Slack DM (away→present drain).
+
+ Idempotent per question (the ``BotPing`` ledger dedupes the
+ per-question idempotency key), so re-running on every present-mode
+ tick never double-posts. Fails open: a delivery failure for one
+ question is recorded on its ``BotPing`` row and never aborts the
+ drain or the surrounding loop.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --user-id        TEXT  Slack user id to DM (defaults to the configured       │
+│                        user).                                                │
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay bot     │
+│                        routing).                                             │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

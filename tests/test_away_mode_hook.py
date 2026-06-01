@@ -12,6 +12,7 @@ complete*, just converted at the PreToolUse layer).
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -106,6 +107,64 @@ class TestPresentModeDoesNotIntercept:
         assert result is False
         assert _stdout(capsys) == {}
         assert DeferredQuestion.objects.count() == 0
+
+
+class TestAwayModeMirrorsToSlack:
+    """In away mode the question must ALSO reach the user's Slack DM (#182).
+
+    The user reads Slack, not the CLI. The away-mode handler runs FIRST
+    and denies, short-circuiting the PreToolUse chain before the present-
+    mode ``handle_mirror_question_to_slack`` would run — so the away-mode
+    handler is the only place that can mirror an away-mode question to
+    Slack. Without this the question is recorded durably but never
+    surfaces to the user until they happen to run ``t3 questions list``.
+    """
+
+    def test_away_question_posts_to_slack_and_still_denies(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            result = handle_route_away_mode_question(
+                _ask_payload("Ship it?", options=[{"label": "Yes"}, {"label": "No"}], session_id="s-1")
+            )
+        assert result is True
+        out = _stdout(capsys)
+        assert out["permissionDecision"] == "deny"
+        mock_post.assert_called_once()
+        slack_cfg, questions = mock_post.call_args.args
+        assert slack_cfg == ("tok/ref", "U1")
+        assert questions[0]["question"] == "Ship it?"
+
+    def test_slack_post_is_idempotent_across_retries(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            handle_route_away_mode_question(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+            capsys.readouterr()  # drain
+            handle_route_away_mode_question(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
+        assert mock_post.call_count == 1
+
+    def test_slack_post_failure_does_not_block_the_deny(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_perform_slack_post", side_effect=RuntimeError("slack down")),
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            result = handle_route_away_mode_question(_ask_payload("Ship it?", session_id="s-1"))
+        assert result is True
+        out = _stdout(capsys)
+        assert out["permissionDecision"] == "deny"
+        assert DeferredQuestion.objects.count() == 1
 
 
 class TestSection807InteropGate:
