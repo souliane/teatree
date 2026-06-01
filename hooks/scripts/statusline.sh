@@ -10,10 +10,11 @@
 #     this hook builds carries NO loop/tick info (#130): loop state has
 #     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
-#     5-hour and 7-day rate-limit usage, skills loaded this session, and a
-#     per-session loop-owner badge — the latter populated by hook_router.py
-#     into ${state_dir}/<session_id>.skills and from loop-registry.json
-#     respectively. The loop-owner badge shows "you ✓" (green) when this
+#     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
+#     summary of this session's Claude TODO list (TodoWrite), and a
+#     per-session loop-owner badge — the skills and TODO summaries are
+#     populated by hook_router.py into ${state_dir}/<session_id>.skills and
+#     ${state_dir}/<session_id>.todos, the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
 #     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
 #     different session owns it, or "unclaimed" (dim) when the registry has
 #     no live owner. Unlike the shared loop line, this badge is resolved
@@ -48,10 +49,30 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
 fi
 
 skills=""
+todos_done=""
+todos_total=""
+todos_wip=""
 if [ -n "$session_id" ]; then
     skills_file="$state_dir/${session_id}.skills"
     if [ -r "$skills_file" ]; then
         skills=$(paste -sd ' ' "$skills_file")
+    fi
+    # This session's Claude TODO list (TodoWrite), persisted by hook_router.py
+    # as one ``- [status] content`` line per todo. Rendered as a fixed-width
+    # ``TODO done/total ✓ · Nwip`` summary — never item content, so width is
+    # bounded no matter how many todos exist. Distinct from the loop work
+    # queue (rendered Python-side); this is the current session's checklist.
+    todos_file="$state_dir/${session_id}.todos"
+    if [ -r "$todos_file" ]; then
+        _total=$(grep -c '^- \[' "$todos_file" 2>/dev/null || true)
+        _total=${_total:-0}
+        if [ "$_total" -gt 0 ] 2>/dev/null; then
+            _done=$(grep -c '^- \[completed\]' "$todos_file" 2>/dev/null || true)
+            _wip=$(grep -c '^- \[in_progress\]' "$todos_file" 2>/dev/null || true)
+            todos_total="$_total"
+            todos_done="${_done:-0}"
+            todos_wip="${_wip:-0}"
+        fi
     fi
 fi
 
@@ -198,6 +219,21 @@ if [ -n "$skills" ]; then
         _colored_skills="${_colored_skills}${_MAG}${_p}${_RST}"
     done
     _skills_segment="${_LBL}skills:${_RST} ${_colored_skills}"
+fi
+
+# Compact Claude-TODO summary: ``TODO done/total ✓`` plus ``· Nwip`` only when
+# work is in progress. Dimmed when every item is complete. Never lists item
+# content, so the segment width is bounded regardless of list size.
+_todo_segment=""
+if [ -n "$todos_total" ] && [ "$todos_total" -gt 0 ] 2>/dev/null; then
+    if [ "$todos_done" = "$todos_total" ]; then
+        _todo_segment="${_DIM}TODO ${todos_done}/${todos_total} ✓${_RST}"
+    else
+        _todo_segment="${_LBL}TODO${_RST} ${_GRN}${todos_done}${_RST}${_LBL}/${todos_total} ✓${_RST}"
+        if [ "$todos_wip" -gt 0 ] 2>/dev/null; then
+            _todo_segment="${_todo_segment}${isep}${_YLW}${todos_wip}▸${_RST}"
+        fi
+    fi
 fi
 
 # Loop / tick info is intentionally NOT built here (#130). The single
@@ -361,6 +397,16 @@ for _g in g_context g_usage g_updates g_resource; do
         header="${header}${gsep}${_val}"
     fi
 done
+
+# The compact Claude-TODO summary is its own header group: short, fixed-width,
+# and per-session, so it rides the header without crowding skills onto a line.
+if [ -n "$_todo_segment" ]; then
+    if [ -z "$header" ]; then
+        header="$_todo_segment"
+    else
+        header="${header}${gsep}${_todo_segment}"
+    fi
+fi
 
 # Skills inline only when ≤ 4 are loaded — otherwise they get their own line
 # below so the main header stays readable in narrow terminals.
