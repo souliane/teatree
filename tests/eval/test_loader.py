@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
+from teatree.eval.models import AnyOf
 
 _MINIMAL = (
     "- name: example\n"
@@ -215,3 +216,45 @@ class TestLoadEvalYaml:
         with pytest.raises(EvalSpecError) as exc:
             load_eval_yaml(_write(tmp_path, body))
         assert "expect" in str(exc.value) or "mapping" in str(exc.value)
+
+
+class TestAnyOfMatcher:
+    def test_parses_any_of_disjunction_of_positive_branches(self, tmp_path: Path) -> None:
+        body = (
+            "- name: anyof\n"
+            "  scenario: background the long op either way\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - any_of:\n"
+            "        - tool_call: Task\n"
+            '          args.prompt: ~ "pytest"\n'
+            "        - tool_call: Bash\n"
+            '          args.run_in_background: ~ "(?i)true"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        item = spec.matchers[0]
+        assert isinstance(item, AnyOf)
+        assert len(item.alternatives) == 2
+        assert item.alternatives[0].tool == "Task"
+        assert item.alternatives[1].arg_path == "run_in_background"
+        assert all(alt.kind == "positive" for alt in item.alternatives)
+
+    def test_rejects_empty_any_of(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  expect:\n    - any_of: []\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "any_of" in str(exc.value)
+
+    def test_rejects_negative_branch_in_any_of(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - any_of:\n"
+            "        - no_tool_call_matching:\n"
+            '            bash.command: ~ "x"\n'
+        )
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "tool_call" in str(exc.value)

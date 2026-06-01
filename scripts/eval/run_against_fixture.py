@@ -25,7 +25,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.eval.loader import load_eval_yaml
-from teatree.eval.models import EvalSpec
+from teatree.eval.models import AnyOf, EvalSpec, ExpectItem
 from teatree.eval.report import evaluate
 from teatree.eval.runner import ClaudePRunner
 
@@ -90,11 +90,17 @@ def main() -> int:
     if not matched:
         for m in result.matcher_results:
             label = "PASS" if m.passed else "FAIL"
-            print(f"  matcher[{label}] {m.matcher.kind} {m.matcher.tool}.{m.matcher.arg_path} {m.matcher.operator}")
+            print(f"  matcher[{label}] {_describe(m.matcher)}")
             if not m.passed and m.message:
                 for line in m.message.splitlines():
                     print(f"    {line}")
     return 0 if matched else 1
+
+
+def _describe(matcher: ExpectItem) -> str:
+    if isinstance(matcher, AnyOf):
+        return "any_of[" + " | ".join(_describe(alt) for alt in matcher.alternatives) + "]"
+    return f"{matcher.kind} {matcher.tool}.{matcher.arg_path} {matcher.operator}"
 
 
 if __name__ == "__main__":

@@ -19,6 +19,20 @@ def _get_arg(call: EvalToolCall, arg_path: str) -> object:
     return value
 
 
+def _as_text(value: object) -> str | None:
+    """Comparable string form of an arg value, or ``None`` if not scalar.
+
+    A string compares as itself. A boolean / number (e.g. Bash's
+    ``run_in_background: true``) compares as its ``str()`` form so a matcher
+    can pin it. Containers and ``None`` are not matchable.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool | int | float):
+        return str(value)
+    return None
+
+
 def _format_calls(run: EvalRun) -> str:
     if not run.tool_calls:
         return "  (no tool calls captured)"
@@ -29,8 +43,8 @@ def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, subst
     for call in run.tool_calls:
         if call.name != tool_name:
             continue
-        value = _get_arg(call, arg_path)
-        if isinstance(value, str) and substring in value:
+        value = _as_text(_get_arg(call, arg_path))
+        if value is not None and substring in value:
             return
     msg = (
         f"Expected a {tool_name} tool call with {arg_path} containing {substring!r}, "
@@ -44,8 +58,8 @@ def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex
     for call in run.tool_calls:
         if call.name != tool_name:
             continue
-        value = _get_arg(call, arg_path)
-        if isinstance(value, str) and pattern.search(value):
+        value = _as_text(_get_arg(call, arg_path))
+        if value is not None and pattern.search(value):
             return
     msg = (
         f"Expected a {tool_name} tool call with {arg_path} matching regex {regex!r}, "
@@ -59,8 +73,8 @@ def assert_no_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, re
     for call in run.tool_calls:
         if call.name != tool_name:
             continue
-        value = _get_arg(call, arg_path)
-        if isinstance(value, str) and pattern.search(value):
+        value = _as_text(_get_arg(call, arg_path))
+        if value is not None and pattern.search(value):
             msg = (
                 f"Did not expect any {tool_name} tool call with {arg_path} matching {regex!r}, "
                 f"but found:\n  - {call.name}({call.input!r})\nAll captured tool calls:\n{_format_calls(run)}"

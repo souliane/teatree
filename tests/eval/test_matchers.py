@@ -40,6 +40,25 @@ class TestAssertToolCallContains:
         assert "no tool calls captured" in str(exc_info.value)
 
 
+class TestScalarArgCoercion:
+    def test_matches_boolean_run_in_background_true(self) -> None:
+        # A Bash `run_in_background: true` arg is a bool, not a string; the
+        # matcher must compare its str() form so the documented backgrounding
+        # escape is pinnable.
+        run = _run([EvalToolCall(name="Bash", input={"command": "uv run pytest", "run_in_background": True}, turn=1)])
+        assert_tool_call_matching(run, "Bash", "run_in_background", "(?i)true")
+
+    def test_does_not_match_false_run_in_background(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": "ls", "run_in_background": False}, turn=1)])
+        with pytest.raises(AssertionError):
+            assert_tool_call_matching(run, "Bash", "run_in_background", "(?i)true")
+
+    def test_container_arg_is_not_matchable(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": ["a", "b"]}, turn=1)])
+        with pytest.raises(AssertionError):
+            assert_tool_call_matching(run, "Bash", "command", "a")
+
+
 class TestAssertToolCallMatching:
     def test_passes_when_pattern_present(self) -> None:
         run = _run([EvalToolCall(name="Bash", input={"command": "git worktree add ../wt-42 -b 42-fix main"}, turn=1)])
