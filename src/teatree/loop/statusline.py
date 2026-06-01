@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from teatree.core.availability import Resolution
     from teatree.core.managers import OwnershipStatus
 
 # ANSI palette — modern terminals (iTerm2, Kitty, WezTerm, Ghostty,
@@ -178,50 +179,23 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
     return target
 
 
-def availability_anchor(mode: str, queued: int) -> str:
-    """Return the anchors-zone segment for the availability mode (#58).
+def availability_segment(resolution: "Resolution") -> str:
+    """Return the ``loop running`` line's availability segment (#58, #1678).
 
-    Renders ``mode=away · N queued`` when ``mode`` is ``away`` AND there
-    is at least one deferred question waiting; ``mode=away`` alone when
-    no queue; an empty string in ``present`` mode (the default mode is
-    not interesting enough to warrant a dedicated anchor line).
+    Renders ``availability: <present|away> (<source>)`` so the user reads the
+    currently-resolved availability and which layer decided it (override /
+    schedule / default) at a glance, as one ``·``-separated segment of the
+    ``loop running …`` line.
+
+    The ``availability:`` label is deliberately distinct from the config
+    ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
+    ``mode=away`` form collided with. An unrecognised mode renders nothing.
     """
-    if mode != "away":
+    from teatree.core.availability import MODE_AWAY, MODE_PRESENT  # noqa: PLC0415
+
+    if resolution.mode not in {MODE_PRESENT, MODE_AWAY}:
         return ""
-    if queued > 0:
-        return f"mode=away · {queued} queued"
-    return "mode=away"
-
-
-def _configured_overlay_names() -> list[str]:
-    """Return the sorted names of every configured overlay.
-
-    Thin discovery seam so :func:`overlays_anchor` stays a pure formatter —
-    tests stub this rather than registering real overlays. Production reads
-    the unified entry-point + ``~/.teatree.toml`` discovery in
-    :func:`teatree.core.overlay_loader.get_all_overlay_names`.
-    """
-    from teatree.core.overlay_loader import get_all_overlay_names  # noqa: PLC0415
-
-    return sorted(get_all_overlay_names())
-
-
-def overlays_anchor() -> list[str]:
-    """Return the single configured-overlays summary line, or ``[]``.
-
-    Surfaces the user's multi-overlay context (``overlays: a · b · c``)
-    directly, rather than leaving overlays to appear only implicitly when a
-    ticket or PR happens to carry an ``[ov]`` prefix. Returns ``[]`` when no
-    overlay is configured. Fails open: any discovery error degrades to ``[]``
-    so a broken config can never blank the statusline.
-    """
-    try:
-        names = _configured_overlay_names()
-    except Exception:  # noqa: BLE001
-        return []
-    if not names:
-        return []
-    return [f"overlays: {' · '.join(names)}"]
+    return f"availability: {resolution.mode} ({resolution.source})"
 
 
 def _live_loop_leases() -> list[tuple[str, datetime | None]]:
@@ -327,6 +301,10 @@ def live_loops_anchor() -> list[str]:
         fast reactive loop and a slow self-improve loop show different
         countdowns. The chunk is name-only when the lease has no recorded
         ``acquired_at`` yet; ``due`` replaces the duration when overdue.
+    *   ``availability: <present|away> (<source>)`` — the currently-resolved
+        availability, read live at render time (:func:`_availability_segment`)
+        so the user always sees the present/away value and which layer decided
+        it, never a cached one.
     *   ``waiting: <subject>`` — appended ONLY when the loop is blocked on
         the user (there are unresolved :class:`DeferredQuestion` rows), so
         the dashboard surfaces "the loop is held, you owe it an answer"
@@ -334,8 +312,8 @@ def live_loops_anchor() -> list[str]:
 
     Returns ``[]`` when no loop is live — silences the line entirely on
     a quiet machine. Fails open: any DB / import error degrades to ``[]``
-    (or, for the ``waiting:`` clause specifically, drops just the clause)
-    so a broken read can never blank the statusline.
+    (or, for an individual segment, drops just that segment) so a broken
+    read can never blank the statusline.
     """
     try:
         leases = _live_loop_leases()
@@ -356,10 +334,29 @@ def live_loops_anchor() -> list[str]:
 
     chunks = list(starmap(_loop_chunk, leases))
     parts = ["loop running", *chunks]
+    availability = _availability_segment()
+    if availability:
+        parts.append(availability)
     waiting = _waiting_clause()
     if waiting:
         parts.append(waiting)
     return [" · ".join(parts)]
+
+
+def _availability_segment() -> str:
+    """Return the live availability segment for the loop line, or ``""``.
+
+    Reads :func:`teatree.core.availability.resolve_mode` at render time so the
+    segment reflects the currently-resolved availability, never a cached value.
+    Fails open to ``""`` (no segment) on any read error so a broken
+    availability config never blanks the loop line.
+    """
+    try:
+        from teatree.core.availability import resolve_mode  # noqa: PLC0415
+
+        return availability_segment(resolve_mode())
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _waiting_clause() -> str:
@@ -472,11 +469,10 @@ def statusline_for_slack(*, path: Path | None = None) -> str:
 __all__ = [
     "StatuslineEntry",
     "StatuslineZones",
-    "availability_anchor",
+    "availability_segment",
     "default_path",
     "live_loops_anchor",
     "loop_owner_anchor",
-    "overlays_anchor",
     "render",
     "statusline_for_slack",
 ]

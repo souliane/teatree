@@ -183,6 +183,22 @@ class TestOwnershipStatus(TestCase):
         )
         assert LoopLease.objects.ownership_status("loop-owner").is_live is False
 
+    def test_alive_pid_owner_past_ttl_reports_live(self) -> None:
+        """A non-empty session with an alive owner_pid is_live past its TTL (pid-anchored)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is True
+
+    def test_dead_pid_expired_is_not_live(self) -> None:
+        """A dead owner_pid + expired TTL is not live (no over-block of the snapshot)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="dead", ttl_seconds=1, owner_pid=999999)
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is False
+
 
 class TestSessionIdentity(TestCase):
     def test_reads_claude_session_id(self) -> None:

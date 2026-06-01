@@ -79,6 +79,7 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["loop running · tick"], repr(lines)
@@ -90,6 +91,7 @@ class TestConsolidatedLoopAnchor:
         with (
             patch("teatree.loop.statusline._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
         assert lines == ["loop running · tick due"], repr(lines)
