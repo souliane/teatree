@@ -800,6 +800,18 @@ _MUST_ALLOW: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    _CorpusRow(
+        "A11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh issue view 5 --repo {_PRIV_SLUG}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "A12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && gh pr comment 5 --repo {_PRIV_SLUG} --body ok2",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 # must-DENY: the load-bearing under-block guards. A public/unknown target, a
@@ -869,6 +881,92 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         "D18",
         f"glab issue create --repo {_PRIV_SLUG} --description ok "
         f"&& (glab issue create --repo {_PUBLIC_SLUG} --description {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    # L1-L13: the wrapper / process-substitution / wrapper-word under-block
+    # leaks the prefix-strip guard missed. A bare ``gh`` token whose segment's
+    # words[0] is the opener/wrapper-word evades the recognised-segment scan, so
+    # a PUBLIC-targeting post hides behind the private one. The count invariant
+    # (more gh/glab command-words than recognised gh/glab segments) fails closed.
+    _CorpusRow(
+        "L1",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && ( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && (  gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && (\tgh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && $( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L5",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& echo $( gh issue create --repo {_PUBLIC_SLUG} --body {_TERM} )",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L6",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && {{ gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}; }}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L7",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && cat <(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L8",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && tee >(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L9",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && cat =(gh issue create --repo {_PUBLIC_SLUG} --body {_TERM})",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L10",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok && eval gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L11",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok | xargs gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L12",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& env FOO=x gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "L13",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f"&& command gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}",
         _TERM,
         _PRIV_REMOTE,
     ),

@@ -83,16 +83,26 @@ _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
     }
 )
 
-# Wrapper-opener characters a ``gh``/``glab`` command word can hide behind:
-# a subshell ``(gh ...)`` or a brace group ``{gh ...}``. The lexer keeps the
-# opener attached to the following word (``(gh``), so the first token's value
-# starts with the opener.
-_WRAP_OPENERS: Final[frozenset[str]] = frozenset({"(", "{"})
+# Two-char group/subshell/process-substitution openers a ``gh``/``glab``
+# command word can hide behind. The lexer treats ``(``/``)``/``{`` as ordinary
+# word chars, so ``$(gh``/``<(gh``/``>(gh``/``=(gh`` arrive as one WORD token
+# with the opener attached. Stripped LONGEST-MATCH-FIRST so ``$(`` is consumed
+# as a unit, not as a stray ``$`` leaving ``(gh``.
+_MULTICHAR_OPENERS: Final[tuple[str, ...]] = ("$(", "<(", ">(", "=(")
+
+# Single-char group/subshell/backtick openers. A bare ``(gh``, ``{gh``, or
+# ``\`gh`` token strips down to ``gh``.
+_SINGLECHAR_OPENERS: Final[frozenset[str]] = frozenset({"(", "{", "`"})
+
+# Command words counted as a top-level ``gh``/``glab`` invocation.
+_GH_GLAB_WORDS: Final[frozenset[str]] = frozenset({"gh", "glab"})
 
 # Substitution markers that introduce a ``gh``/``glab`` command word inside a
 # command substitution ``$(gh ...)`` / ``echo $(glab ...)`` or a backtick
 # ``\`gh ...\``. These can appear anywhere in a token (incl. wholly inside one
-# quoted token, ``--body "$(gh ...)"``), so the whole token value is scanned.
+# quoted token, ``--body "$(gh ...)"``) where the count invariant alone misses
+# them (the whole substitution is one token), so the whole token value is
+# scanned for both ``gh`` and ``glab`` and both the ``$(`` and backtick forms.
 _SUBST_MARKERS: Final[tuple[str, ...]] = ("$(gh", "$(glab", "`gh", "`glab")
 
 
@@ -158,37 +168,88 @@ def _segment_is_raw_rest(words: list[str]) -> bool:
     return words[0] in {"gh", "glab"} and len(words) >= _RAW_REST_WORD_COUNT and words[1] == "api"
 
 
-def _command_has_wrapped_gh_glab(command: str) -> bool:
-    r"""Return True iff any token is a ``gh``/``glab`` reached through a wrapper.
+def _strip_leading_openers(value: str) -> str:
+    r"""Strip a leading run of group/subshell/procsub openers from a WORD token.
 
-    A subshell ``(gh ...)``, brace group ``{gh ...}``, command substitution
-    ``$(gh ...)`` / ``echo $(glab ...)``, or backtick ``\`gh ...\``` hides a
-    ``gh``/``glab`` command word the segment parser does NOT recognise as a
-    top-level posting verb, so it evades the "do ALL posting segments target a
-    private repo?" check and a PUBLIC post can hide behind a private one. This
-    detects the wrapper so the carve-out can fail closed.
+    The two-char openers (``$(``, ``<(``, ``>(``, ``=(``) are matched before the
+    single-char ones (``(``, ``{``, backtick) so ``$(`` is consumed as a unit,
+    not as a stray ``$`` that would leave ``(gh`` un-stripped. The run is
+    stripped repeatedly so a doubly-wrapped ``$((gh`` still reduces to ``gh``.
 
-    A BARE top-level ``gh``/``glab`` token (the normal recognised segment) does
-    NOT trip this -- a wrap opener must actually have been stripped, or a
-    substitution marker be present, so a legitimate private post is never
-    over-blocked. Prose like ``--body "see (gh issue 5)"`` is one quoted token
-    whose first char is not an opener and which carries no ``$(``/backtick
-    marker, so it stays allowed.
+    A bare ``gh`` strips nothing and is returned unchanged; ``(gh``, ``$(gh``,
+    ``<(gh``, ``{gh``, ``\`gh`` all reduce to ``gh``.
     """
-    for token in tokenize(command):
-        if token.kind is not TokenKind.WORD:
-            continue
-        value = token.value
-        bare = value
-        stripped = False
-        while bare and bare[0] in _WRAP_OPENERS:
-            bare = bare[1:]
-            stripped = True
-        if stripped and bare in {"gh", "glab"}:
-            return True
-        if any(marker in value for marker in _SUBST_MARKERS):
-            return True
-    return False
+    while value:
+        for opener in _MULTICHAR_OPENERS:
+            if value.startswith(opener):
+                value = value[len(opener) :]
+                break
+        else:
+            if value[0] in _SINGLECHAR_OPENERS:
+                value = value[1:]
+                continue
+            break
+    return value
+
+
+def _count_top_level_gh_glab_segments(command: str) -> int:
+    """Count segments whose ``words[0]`` is EXACTLY ``gh``/``glab`` (no stripping).
+
+    These are the invocations the segment parser recognises and the existing
+    ``all(target_private)`` check already evaluates. Leading inline env
+    assignments are stripped (mirroring :func:`_command_segments`), but NO
+    wrapper/env-command word is: ``env FOO=x gh ...``, ``eval gh ...``, and a
+    ``( gh ...)`` segment whose ``words[0]`` is the opener do NOT count -- that
+    asymmetry is what makes the count invariant fire on a hidden invocation.
+    """
+    return sum(1 for words in _command_segments(command) if words[0] in _GH_GLAB_WORDS)
+
+
+def _command_hides_gh_glab(command: str) -> bool:
+    r"""Return True iff a ``gh``/``glab`` invocation is hidden from the segment scan.
+
+    The carve-out's ``all(target_private)`` check only evaluates ``gh``/``glab``
+    invocations the segment parser recognises as top-level segments. An
+    invocation reached through a subshell ``( gh ...)`` / ``$( gh ...)``, a brace
+    group ``{ gh ...}``, a process substitution ``<(gh ...)`` / ``>(gh ...)`` /
+    ``=(gh ...)``, a command substitution ``$(gh ...)`` / ``\`gh ...\```, or a
+    wrapper word (``eval gh ...``, ``xargs gh ...``, ``env FOO=x gh ...``,
+    ``command gh ...``) is NOT a recognised segment, so a PUBLIC-targeting post
+    can hide behind a private one. This detects that hiding so the carve-out
+    fails closed (caller returns False => hard-block, no downgrade).
+
+    Two structurally-complete checks; either firing means a hidden invocation:
+
+    - **Substring marker:** any WORD token containing ``$(gh``/``$(glab`` or a
+        backtick immediately followed by ``gh``/``glab``. This catches the
+        in-ONE-token quoted substitution ``--body "$(gh ... PUB ...)"`` that the
+        count check alone misses (the whole substitution is one token).
+    - **Count invariant:** ``T > R`` where ``T`` is the number of WORD tokens
+        that, after stripping a leading run of opener prefixes
+        (:func:`_strip_leading_openers`), equal exactly ``gh``/``glab`` -- every
+        ``gh``/``glab`` command-word however it is wrapped -- and ``R`` is the
+        number of recognised top-level ``gh``/``glab`` segments
+        (:func:`_count_top_level_gh_glab_segments`). More command-words than
+        recognised segments means at least one is hidden in a
+        wrapper/procsub/quoted-subst the segment parser cannot resolve.
+
+    A single bare private post (``gh issue create --repo PRIV --body "see (gh
+    issue 5) and glab notes, cost $5"``) has ``T==R==1`` and no ``$(gh``/backtick
+    marker, so it is NOT over-blocked: the quoted prose is one token that strips
+    to neither ``gh`` nor ``glab``. A chained READ ``gh`` (``... && gh issue view
+    5``) is a recognised segment, so it counts toward both ``T`` and ``R`` and
+    does not trip the invariant.
+
+    Accepts a rare exotic over-block where ``gh`` is an option VALUE
+    (``--assignee gh`` => ``T==2, R==1`` => fail-closed). Over-block is the SAFE
+    failure for a privacy gate; fragile option-value parsing to avoid it is not
+    worth the bypass surface it would add.
+    """
+    tokens = [token for token in tokenize(command) if token.kind is TokenKind.WORD]
+    if any(marker in token.value for token in tokens for marker in _SUBST_MARKERS):
+        return True
+    total = sum(1 for token in tokens if _strip_leading_openers(token.value) in _GH_GLAB_WORDS)
+    return total > _count_top_level_gh_glab_segments(command)
 
 
 def is_gh_glab_posting_command(command: str) -> bool:
@@ -318,12 +379,14 @@ def posting_command_targets_private_repo(
 
     Fail-closed rules:
 
-    - ANY ``gh``/``glab`` reached through a subshell ``(...)``, brace group,
-        command substitution ``$(...)``, or backticks => False. The structural
-        segment scan cannot resolve a wrapped invocation's target, so its mere
-        presence blocks the whole command -- otherwise a PUBLIC post hidden in
-        ``... && (gh ... --repo PUBLIC ...)`` would leak behind a private
-        segment.
+    - ANY ``gh``/``glab`` hidden from the segment scan -- a count of
+        ``gh``/``glab`` command-words exceeding the recognised top-level
+        segments, or a ``$(gh``/backtick-``gh`` substitution marker => False
+        (:func:`_command_hides_gh_glab`). The segment scan cannot resolve a
+        wrapped/procsub/wrapper-word invocation's target, so its presence blocks
+        the whole command -- otherwise a PUBLIC post hidden in ``... && ( gh ...
+        --repo PUBLIC ...)`` or ``... && eval gh ... --repo PUBLIC`` would leak
+        behind a private segment.
     - No posting segment => False (nothing eligible to downgrade).
     - ANY raw ``gh api`` / ``glab api`` segment => False. Raw REST can target
         an arbitrary surface, so its mere presence blocks the whole command.
@@ -331,7 +394,7 @@ def posting_command_targets_private_repo(
         known-private repo. One public/unknown target blocks the whole command
         -- a ``... && gh issue create --repo PUBLIC`` half would leak.
     """
-    if _command_has_wrapped_gh_glab(command):
+    if _command_hides_gh_glab(command):
         return False
     segments = _command_segments(command)
     if any(_segment_is_raw_rest(words) for words in segments):
