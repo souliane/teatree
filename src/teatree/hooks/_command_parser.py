@@ -357,7 +357,12 @@ def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
 
 
 def _walk_body_file_flags(
-    words: list[str], payloads: list[str], *, is_git: bool, heredoc_files: dict[str, str]
+    words: list[str],
+    payloads: list[str],
+    *,
+    is_git: bool,
+    heredoc_files: dict[str, str],
+    fail_closed_body_file: bool,
 ) -> None:
     """Extract ``--body-file``/``--file``/``-F`` style file payloads.
 
@@ -370,20 +375,25 @@ def _walk_body_file_flags(
     redirect earlier in the same command to its body, so a ``-F <path>``
     reference resolves to the in-command heredoc when the file does not
     exist on disk yet (#126).
+
+    ``fail_closed_body_file`` decides what an UNREADABLE ``gh``/``glab`` body
+    file does — ``True`` (the destination-aware gates) appends the fail-closed
+    sentinel, ``False`` (the quote scanner) appends nothing (#126). The git
+    ``-F`` commit-message path always fails closed regardless.
     """
     i = 0
     n = len(words)
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=False)
+            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=fail_closed_body_file)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = _attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files, fail_closed=False)
+                _append_file_payload(attached, payloads, heredoc_files, fail_closed=fail_closed_body_file)
                 break
         if attached is not None:
             i += 1
@@ -411,19 +421,15 @@ def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str
     in the same command was unreadable at PreToolUse scan time (the hook
     runs BEFORE the file is created).
 
-    ``fail_closed`` selects what an unresolvable path does:
-
-    * ``True`` (``git commit -F <path>``) — append the fail-closed
-        sentinel. A commit message cannot be amended post-push without a
-        force-push we do not permit, so an unreadable commit-message file
-        must hard-block, matching the #1207 rationale.
-    * ``False`` (``gh``/``glab`` ``--body-file`` / ``--description-file``
-        / ``--file``) — append NOTHING. A drafted PR/issue body file that
-        does not exist at scan time is "needs-inline", not a leak: there
-        is nothing to scan, and a public post that genuinely carries a
-        quote still reaches the gate via its inline ``--body`` text.
-        Treating an absent draft file as a HIGH match denied every such
-        publish (#126).
+    ``fail_closed`` selects what an unresolvable path does. ``True`` appends
+    the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
+    always uses it (#1207), as does a ``gh``/``glab`` body file for the
+    destination-aware banned-terms / bare-reference scanners, so a PUBLIC post
+    whose body the gate cannot read hard-blocks rather than slip through unread
+    (a destination-internal post is skipped before the payload is scanned, so
+    the sentinel never over-blocks it). ``False`` appends NOTHING — the quote
+    scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
+    "needs-inline", not a fail-closed HIGH (#126).
     """
     content = _read_file_arg(path)
     if content is None:
@@ -505,7 +511,9 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
     return first, second
 
 
-def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_files: dict[str, str]) -> None:
+def _walk_command_segment(
+    segment: list[Token], payloads: list[str], heredoc_files: dict[str, str], *, fail_closed_body_file: bool
+) -> None:
     """Route a single command segment to the right argument walkers."""
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
@@ -514,7 +522,13 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], heredoc_fil
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads)
-    _walk_body_file_flags(words, payloads, is_git=(first == "git"), heredoc_files=heredoc_files)
+    _walk_body_file_flags(
+        words,
+        payloads,
+        is_git=(first == "git"),
+        heredoc_files=heredoc_files,
+        fail_closed_body_file=fail_closed_body_file,
+    )
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, payloads)
@@ -599,7 +613,7 @@ def extract_title_fragments(command: str) -> list[str]:
 # ── Body extraction ─────────────────────────────────────────────────
 
 
-def extract_bash_payload(command: str) -> str:
+def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False) -> str:
     r"""Concatenate every body-like fragment the command surface carries.
 
     The command is tokenized once via :mod:`teatree.hooks._shell_lexer`
@@ -613,12 +627,19 @@ def extract_bash_payload(command: str) -> str:
     ``-d @file`` references) fail closed via the sentinel. A ``-F <path>``
     reference whose file is written by a ``> path <<EOF … EOF`` redirect
     in the same command resolves to that heredoc body instead (#126).
+
+    ``fail_closed_body_file`` controls an UNREADABLE ``gh``/``glab`` body
+    file: ``False`` (default, the quote scanner) keeps the #126 behaviour
+    (an absent draft body contributes nothing); ``True`` (the
+    destination-aware banned-terms / bare-reference gates) appends the
+    fail-closed sentinel so a PUBLIC file-body post whose body the gate
+    cannot read hard-blocks instead of slipping through unread.
     """
     parts: list[str] = []
     heredoc_files = _heredoc_file_bodies(command)
     tokens = tokenize(command)
     for segment in split_commands(tokens):
-        _walk_command_segment(segment, parts, heredoc_files)
+        _walk_command_segment(segment, parts, heredoc_files, fail_closed_body_file=fail_closed_body_file)
     # Heredocs still need to be parsed against the raw command — the
     # lexer treats them as regular content since heredoc bodies live on
     # subsequent physical lines. The regex below tolerates that shape.

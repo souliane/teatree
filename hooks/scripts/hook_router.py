@@ -2148,6 +2148,38 @@ def handle_protect_default_branch(data: dict) -> bool:
 # ── PreToolUse: validate-mr-metadata ────────────────────────────────
 
 
+# A file-based MR description (``--description-file <path>`` / ``--body-file
+# <path>`` / glab's short ``-F <path>``). When the inline ``--description`` is
+# absent the validator reads the file so a real multi-line body delivered via
+# a file is not mis-read as an empty description (#1672 Facet 2). Quotes around
+# the path are optional.
+_MR_DESC_FILE_RE = re.compile(
+    r"(?:--description-file|--body-file)[ =]+['\"]?([^'\"\s]+)['\"]?|(?:^|\s)-F[ =]*['\"]?([^'\"\s]+)['\"]?",
+)
+
+
+def _read_mr_description_file(command: str) -> str:
+    """Return a file-based MR description body, or ``""`` if none/unreadable.
+
+    Mirrors the gate's file-body handling: a real multi-line description
+    delivered via ``--description-file`` / ``--body-file`` / glab ``-F`` is
+    read so the MR-metadata validator does not reject it as an empty
+    description (#1672). An unreadable file yields ``""`` (the validator then
+    treats the description as empty and rejects it, which is the correct
+    fail-closed verdict for a body the gate cannot see).
+    """
+    match = _MR_DESC_FILE_RE.search(command)
+    if match is None:
+        return ""
+    path = match.group(1) or match.group(2)
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     """Return ``(title, description)`` for an MR create/update, else ``None``.
 
@@ -2156,6 +2188,11 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
     validated *even if title/description are empty* — an empty/missing
     title is exactly the kind of bad metadata the pre-push gate must
     reject, not silently pass (#119).
+
+    A file-based description (``--description-file`` / ``--body-file`` /
+    glab ``-F``) is read when the inline ``--description`` is absent, so an
+    MR whose real multi-line body lives in a file is not mis-validated as an
+    empty description (#1672 Facet 2).
     """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
@@ -2167,7 +2204,8 @@ def _extract_mr_fields(data: dict) -> tuple[str, str] | None:
             return None
         title_match = re.search(r"""--title\s+['"]([^'"]+)['"]""", command)
         desc_match = re.search(r"""--description\s+['"]([^'"]+)['"]""", command)
-        return (title_match.group(1) if title_match else ""), (desc_match.group(1) if desc_match else "")
+        description = desc_match.group(1) if desc_match else _read_mr_description_file(command)
+        return (title_match.group(1) if title_match else ""), description
 
     if tool_name in _MR_TOOLS:
         return tool_input.get("title", ""), tool_input.get("description", "")
@@ -2890,6 +2928,13 @@ def handle_banned_terms_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
+_BANNED_TERMS_CREDENTIAL_DENY = (
+    "BLOCKED: a high-confidence secret (token / key / private-key block) was detected in the "
+    "publish payload. Secrets are blocked on every surface, including a private repo — remove "
+    "the credential before posting."
+)
+
+
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
@@ -2905,14 +2950,20 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
     command = tool_input.get("command", "")
     cwd_repo = _resolve_cwd_repo(data)
-    if (
-        payload is None
-        or banned_terms_scanner.has_override(tool_name, tool_input)
-        or (tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo))
-    ):
+    if payload is None:
         return False
 
-    term = banned_terms_scanner.scan_text(payload)
+    # A high-confidence secret leaks on EVERY surface, including an internal /
+    # private post the destination gate would otherwise SKIP and a command
+    # carrying the --allow-banned-term override. Block it before any skip or
+    # override short-circuit (#1672 secrets-always-blocked invariant).
+    if publish_surface.contains_secret(payload):
+        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
+
+    skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
+        tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo)
+    )
+    term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
 

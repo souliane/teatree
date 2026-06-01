@@ -86,7 +86,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     command = tool_input.get("command", "")
     if not _is_publish_command(command):
         return None
-    return _extract_bash_payload(command)
+    return _extract_bash_payload(command, fail_closed_body_file=True)
 
 
 def _has_leading_env_override(command: str) -> bool:
