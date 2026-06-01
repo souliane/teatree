@@ -87,7 +87,12 @@ _BUDGET_TOP_LEVEL_BYTES = 82_000
 # (`cli --> skill_ref_validator` + the module node) are an architectural fact;
 # the top-level corpus was at capacity, so the top-level + total budgets are
 # raised one minimal step.
-_BUDGET_APPENDICES_BYTES = 109_500
+# Reviewed bump (#1668): the per-overlay `autonomy` switch row (the single
+# trust switch collapsing the three approval gates + the derived-field note)
+# is a load-bearing config fact; after trimming the verbose prose the appendix
+# corpus is 110,045 B, so the budget is raised one minimal step (~455 B
+# headroom) to admit the row.
+_BUDGET_APPENDICES_BYTES = 110_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -103,7 +108,10 @@ _BUDGET_APPENDICES_BYTES = 109_500
 # Reviewed bump (skill-ref-validator): the new module's two dependency-graph
 # edges push the total to 191,057 B; raised to 191,500 (~443 B headroom).
 # Invariant holds: 191,500 - 82,000 = 109,500 <= 109,500.
-_BUDGET_TOTAL_BYTES = 191_500
+# Reviewed bump (#1668): tracks the appendix bump for the `autonomy` config-key
+# row; post-trim total corpus is 191,937 B, raised to 192,500 (~563 B
+# headroom). Invariant holds: 192,500 - 82,000 = 110,500 <= 110,500.
+_BUDGET_TOTAL_BYTES = 192_500
 
 
 def _repo_root() -> pathlib.Path:
