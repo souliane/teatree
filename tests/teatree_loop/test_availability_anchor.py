@@ -1,4 +1,4 @@
-"""Tests for the availability segment on the loop line (#58, #1676).
+"""Tests for the availability segment on the loop line (#58, #1678).
 
 The ``loop running · …`` line carries an ``availability: <present|away>
 (<source>)`` segment reflecting the currently-resolved availability, read

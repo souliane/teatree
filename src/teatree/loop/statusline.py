@@ -180,7 +180,7 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
 
 
 def availability_segment(resolution: "Resolution") -> str:
-    """Return the ``loop running`` line's availability segment (#58, #1676).
+    """Return the ``loop running`` line's availability segment (#58, #1678).
 
     Renders ``availability: <present|away> (<source>)`` so the user reads the
     currently-resolved availability and which layer decided it (override /

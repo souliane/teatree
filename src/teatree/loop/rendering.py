@@ -58,7 +58,7 @@ def zones_for(
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
     # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400);
-    # the live availability segment rides on that line (#1676).
+    # the live availability segment rides on that line (#1678).
     _populate_live_loops_anchor(zones)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
