@@ -17,16 +17,42 @@ operate on plain captured tool calls.
 
 ```bash
 t3 eval list                                # show available scenarios
-t3 eval run                                 # run all
+t3 eval run                                 # run all (persists to run-history)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
+t3 eval run --no-persist                    # run without recording to the ledger
+t3 eval run --baseline                      # record + mark this run as the baseline
 ```
 
 Each invocation shells out to `claude -p` in `--output-format stream-json`
 mode with a 120-second wall-clock watchdog and a `--max-budget-usd 0.10`
 circuit breaker. When `claude` is not on `PATH` the runner emits
 `SKIP <scenario>: claude binary not on PATH` and exits 0.
+
+## Run history and baselines
+
+Every `t3 eval run` is recorded into a durable ledger (`EvalRunRecord` +
+`EvalScenarioResult`, `src/teatree/core/models/eval_run.py`) unless
+`--no-persist` is given. One run row carries the model id and a UTC
+timestamp; one scenario-result row per scenario per trial carries the
+verdict (pass/fail/skip), the *trajectory* signal (captured tool calls) and
+the *side-effect* signal (terminal reason + error flag), plus the per-matcher
+detail — so a historical run is reconstructable without re-invoking the model.
+
+```bash
+t3 eval history                             # recent runs + per-scenario pass-rate
+t3 eval history --model haiku               # scope to one model
+t3 eval history --baseline                  # show the current baseline run(s)
+t3 eval history --mark-baseline <run-id>    # promote a run to baseline
+t3 eval history --format json               # JSON for tooling
+```
+
+The schema carries `trial` from the start (single-trial today) and the
+aggregation lives on the model — `EvalRunRecord.pass_rates()` and
+`EvalRunRecord.regression_diff(baseline=…, candidate=…)`. This is the data
+substrate the later model-regression mode (the "Geert deliverable") reads;
+that diff mode is **not** built yet (see `EVAL-BEST-SHAPE.md` for the roadmap).
 
 ## Scenario shape
 

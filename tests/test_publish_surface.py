@@ -276,6 +276,18 @@ class TestIsGhGlabPostingCommand:
     def test_glab_mr_note_is_eligible(self) -> None:
         assert publish_surface.is_gh_glab_posting_command("glab mr note 1 --message x") is True
 
+    def test_gh_pr_edit_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh pr edit 1 --body x") is True
+
+    def test_gh_issue_edit_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("gh issue edit 1 --body x") is True
+
+    def test_glab_mr_update_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab mr update 1 --description x") is True
+
+    def test_glab_issue_update_is_eligible(self) -> None:
+        assert publish_surface.is_gh_glab_posting_command("glab issue update 1 --description x") is True
+
     def test_gh_api_is_not_eligible(self) -> None:
         assert publish_surface.is_gh_glab_posting_command("gh api repos/owner/repo/issues") is False
 

@@ -221,3 +221,37 @@ class TestGateSkipsDestination:
         assert (
             publish_destination.gate_skips_destination("curl -d x https://example.com", None, config_path=cfg) is False
         )
+
+    @pytest.mark.parametrize(
+        "wrapper",
+        [
+            "make publish",
+            "npm run release",
+            "python deploy.py",
+            "./release.sh --notes x",
+            "bundle exec rake post",
+        ],
+        ids=["make", "npm", "python", "shell-script", "rake"],
+    )
+    def test_unrecognised_executable_chain_fails_closed(self, tmp_path: Path, wrapper: str) -> None:
+        # A chained UNRECOGNISED executable resolves to no destination and is not
+        # a recognised inert leader -- it can shell out to a public post with no
+        # forge token in its own argv. A leading provably-internal segment must
+        # NOT let it skip the whole command's leak scan (fail-closed).
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = f"gh pr create -R internalcorp/private-svc --body hi && {wrapper}"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+    @pytest.mark.parametrize(
+        "tail",
+        ["git push origin main", "cd /tmp && echo done", "echo released", ": noop"],
+        ids=["git-push", "cd-echo", "echo", "noop"],
+    )
+    def test_recognised_inert_local_chain_stays_skipped(self, tmp_path: Path, tail: str) -> None:
+        # Over-block guard: a recognised navigation / git-transport / local-only
+        # tail after an internal post is provably inert and must stay skip-safe,
+        # so the fail-closed leader check does not needlessly re-block ordinary
+        # local work chained off a legitimate internal publish.
+        cfg = _config(tmp_path, ["internalcorp"])
+        cmd = f'gh pr create -R internalcorp/private-svc --body "ok" && {tail}'
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True

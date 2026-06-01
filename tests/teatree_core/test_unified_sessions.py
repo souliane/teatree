@@ -95,10 +95,11 @@ class TestBuildUnifiedSessions(TestCase):
         """Regression for #500: badge must reflect Task.execution_target, not the linked Session.agent_id."""
         ticket = Ticket.objects.create(state=Ticket.State.STARTED)
         session = Session.objects.create(ticket=ticket, agent_id="claude-some-id")
+        # ``architectural_review`` has no registered agent → genuinely HEADLESS.
         task = Task.objects.create(
             ticket=ticket,
             session=session,
-            phase="coding",
+            phase="architectural_review",
             execution_target=Task.ExecutionTarget.HEADLESS,
         )
         task.claim(claimed_by="headless-worker")

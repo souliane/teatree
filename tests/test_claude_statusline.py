@@ -292,6 +292,139 @@ class TestSkillsNamespaceGrouping:
         assert "ac-django" in plain, plain
 
 
+class TestClaudeTodoSummary:
+    """The session's Claude TODO list renders as a compact ``TODO done/total`` line."""
+
+    def _write_todos(self, state_dir: Path, session_id: str, lines: list[str]) -> None:
+        body = "".join(f"{line}\n" for line in lines)
+        (state_dir / f"{session_id}.todos").write_text(body, encoding="utf-8")
+
+    def test_renders_compact_done_over_total(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_todos(
+            state_dir,
+            "s-todo",
+            [
+                "- [completed] Wire the parser",
+                "- [completed] Add the validator",
+                "- [in_progress] Render the summary",
+                "- [pending] Write the tests",
+            ],
+        )
+
+        result = _run(
+            {"session_id": "s-todo", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "TODO 2/4 ✓" in plain, plain
+        assert "1▸" in plain, plain
+        # No item content ever reaches the statusline.
+        assert "Wire the parser" not in plain, plain
+        assert "Render the summary" not in plain, plain
+
+    def test_omits_in_progress_marker_when_none_active(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_todos(
+            state_dir,
+            "s-no-wip",
+            ["- [completed] Done one", "- [pending] Not started", "- [pending] Also pending"],
+        )
+
+        result = _run(
+            {"session_id": "s-no-wip", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "TODO 1/3 ✓" in plain, plain
+        assert "▸" not in plain, plain
+
+    def test_all_complete_renders_full_count(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        self._write_todos(
+            state_dir,
+            "s-all-done",
+            ["- [completed] First", "- [completed] Second"],
+        )
+
+        result = _run(
+            {"session_id": "s-all-done", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "TODO 2/2 ✓" in plain, plain
+        assert "▸" not in plain, plain
+
+    def test_no_todo_segment_when_file_absent(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+
+        result = _run(
+            {"session_id": "s-none", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "TODO" not in _strip_ansi(result.stdout)
+
+    def test_no_todo_segment_when_file_empty(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / "s-empty.todos").write_text("", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "s-empty", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "TODO" not in _strip_ansi(result.stdout)
+
+    def test_many_items_stay_a_single_short_segment(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        lines = [f"- [completed] item {i}" for i in range(40)]
+        lines += [f"- [in_progress] item {i}" for i in range(40, 45)]
+        lines += [f"- [pending] item {i}" for i in range(45, 60)]
+        self._write_todos(state_dir, "s-many", lines)
+
+        result = _run(
+            {"session_id": "s-many", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        assert "TODO 40/60 ✓" in plain, plain
+        assert "5▸" in plain, plain
+        # Bounded width: the TODO summary occupies one short token, not 60 lines.
+        todo_segment = plain[plain.index("TODO") :].split("│")[0]
+        assert len(todo_segment) < 30, todo_segment
+        assert "item 0" not in plain, plain
+
+    def test_no_todo_segment_without_session_id(self, tmp_path: Path) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / ".todos").write_text("- [pending] rogue\n", encoding="utf-8")
+
+        result = _run(
+            {"model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "TODO" not in _strip_ansi(result.stdout)
+
+
 class TestFreshnessInlineRefresh:
     """statusline.sh recomputes ``behind`` inline when FETCH_HEAD is newer than the tick."""
 

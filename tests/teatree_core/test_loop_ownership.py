@@ -183,6 +183,22 @@ class TestOwnershipStatus(TestCase):
         )
         assert LoopLease.objects.ownership_status("loop-owner").is_live is False
 
+    def test_alive_pid_owner_past_ttl_reports_live(self) -> None:
+        """A non-empty session with an alive owner_pid is_live past its TTL (pid-anchored)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is True
+
+    def test_dead_pid_expired_is_not_live(self) -> None:
+        """A dead owner_pid + expired TTL is not live (no over-block of the snapshot)."""
+        LoopLease.objects.claim_ownership("loop-owner", session_id="dead", ttl_seconds=1, owner_pid=999999)
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+        assert LoopLease.objects.ownership_status("loop-owner").is_live is False
+
 
 class TestSessionIdentity(TestCase):
     def test_reads_claude_session_id(self) -> None:
@@ -376,11 +392,12 @@ class TestCrossSessionLoopHijackOnSqlite:
 
 
 class TestEvictStaleOwner(TestCase):
-    """``LoopLeaseQuerySet.evict_stale_owner`` decision table (#1604).
+    """``LoopLeaseQuerySet.evict_stale_owner`` decision table (#1604/#1675).
 
     Verifies INV1 (never evict a live foreign lease), INV4 (null pid →
-    KEEP), and the safe eviction paths: expired, dead pid, same-process
-    post-compaction.
+    KEEP), the pid-anchored no-hijack invariant (alive pid past TTL →
+    KEEP), and the safe eviction paths: truly-dead (expired TTL + null/
+    dead pid), dead pid, same-process post-compaction.
     """
 
     def test_expired_lease_is_evicted(self) -> None:
@@ -436,3 +453,46 @@ class TestEvictStaleOwner(TestCase):
         evicted = LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id="new", current_pid=None)
         assert evicted == 1
         assert LoopLease.objects.get(name="loop-owner").session_id == ""
+
+    def test_busy_foreign_owner_past_ttl_with_alive_pid_is_not_evicted(self) -> None:
+        """No-hijack invariant: lapsed TTL but ALIVE foreign pid → KEEP (pid-anchored).
+
+        The recurrence root cause: an alive-but-busy owner fires no Stop
+        self-pump, so its lease TTL-lapses while the process is still
+        alive. ``evict_stale_owner`` must treat liveness as pid-anchored
+        (consistent with ``claim_ownership`` / ``ownership_status``) — a
+        TTL-only ``is_live`` blanked the row to ``session_id=""``, letting
+        a fresh SessionStart see an unowned slot and steal the loop. Keep
+        the busy owner's claim so the loop is never hijacked.
+        """
+        LoopLease.objects.claim_ownership("loop-owner", session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+
+        evicted = LoopLease.objects.evict_stale_owner(
+            "loop-owner", keep_session_id="newcomer", current_pid=os.getpid() + 1
+        )
+        assert evicted == 0
+        assert LoopLease.objects.get(name="loop-owner").session_id == "busy"
+
+    def test_expired_lease_alive_pid_then_claim_does_not_hijack(self) -> None:
+        """End-to-end no-hijack: evict pass + newcomer claim leaves the busy owner in place.
+
+        Reproduces the full recurrence shape: a busy owner past its TTL
+        (alive pid), a fresh session runs the SessionStart eviction pass
+        and then attempts to claim. With the pid-anchored evict, the row
+        is never blanked, so the newcomer's anonymous-or-named claim is
+        blocked and the owner keeps the loop.
+        """
+        LoopLease.objects.claim_ownership("loop-owner", session_id="busy", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="loop-owner")
+        row.lease_expires_at = timezone.now() - timedelta(seconds=5)
+        row.save(update_fields=["lease_expires_at"])
+
+        LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id="newcomer", current_pid=os.getpid() + 1)
+        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="newcomer")
+
+        assert won is False
+        assert owner == "busy"
+        assert LoopLease.objects.get(name="loop-owner").session_id == "busy"

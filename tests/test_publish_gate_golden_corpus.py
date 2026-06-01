@@ -197,6 +197,21 @@ class TestMustDeny:
         cmd = 'glab mr create -R acme-internal/x --title ok && sh -c "gh pr create -R souliane/teatree --body acmecorp"'
         assert _verdict(cmd, None, config) == "block"
 
+    @pytest.mark.parametrize(
+        "wrapper",
+        ["make publish", "npm run release", "python deploy.py", "./release.sh"],
+        ids=["make", "npm", "python", "shell-script"],
+    )
+    def test_unrecognised_executable_chain_does_not_skip_scan(self, config: Path, wrapper: str) -> None:
+        # Vector 1 extension: a chained UNRECOGNISED build/script runner carries
+        # no literal forge token in its own argv yet can shell out to a public
+        # post. A leading provably-internal segment must NOT make the gate skip
+        # the whole command's leak scan -- the skip decision is the load-bearing
+        # safety boundary the scanner-visible ``_verdict`` cannot reach (it never
+        # sees the wrapper's opaque recipe), so the gate is asserted directly.
+        cmd = f"glab mr create -R acme-internal/x --title ok && {wrapper}"
+        assert publish_destination.gate_skips_destination(cmd, None, config_path=config) is False
+
     def test_raw_rest_with_interspersed_persistent_flag(self, config: Path) -> None:
         # Vector 2: an interspersed ``--hostname`` broke the contiguous ``gh api ``
         # substring, so the body was never extracted. Token-aware ``api``-position

@@ -545,7 +545,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -570,7 +570,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
             patch.object(Worktree, "save", autospec=True) as wt_save,
         ):
             result = ShipExecutor(ticket).run()
@@ -599,7 +599,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -619,7 +619,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push") as push,
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         ):
             result = ShipExecutor(ticket).run()
 
@@ -646,7 +646,7 @@ class TestShipReconcilesWorktreeBranch(TestCase):
             patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
-            patch("teatree.core.runners.ship.branch_behind_target", return_value=None),
+            patch("teatree.core.runners.ship.sha_conflicts_with_target", return_value=None),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             first = ShipExecutor(ticket).run()

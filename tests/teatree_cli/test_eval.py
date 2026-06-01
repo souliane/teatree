@@ -71,9 +71,9 @@ class TestEvalRun:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
@@ -90,9 +90,9 @@ class TestEvalRun:
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.cli.eval.find_spec", return_value=specs[0]),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "alpha"])
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--no-persist"])
         assert result.exit_code == 0
         assert "alpha" in result.output
         assert "PASS beta" not in result.output
@@ -143,7 +143,7 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--format", "yaml"])
         assert result.exit_code == 2
@@ -160,9 +160,9 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--format", "json"])
+            result = CliRunner().invoke(app, ["eval", "run", "--format", "json", "--no-persist"])
         assert result.exit_code == 0
         # Other pytest plugins (e.g. inline-snapshot) can write banners to
         # stdout during the test session; isolate the JSON document by
@@ -185,9 +185,9 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run"])
+            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
         assert result.exit_code == 1
         assert "FAIL alpha" in result.output
 
@@ -204,8 +204,56 @@ class TestTranscriptReplay:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9"])
+            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9", "--no-persist"])
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
+
+    def test_unknown_backend_exits_with_code_2(self) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "magic", "--no-persist"])
+        assert result.exit_code == 2
+        assert "unknown eval backend" in result.output
+
+    def test_subscription_backend_grades_a_saved_transcript(self, tmp_path: Path) -> None:
+        specs = [_spec("worktree_first")]
+        transcript = (Path(__file__).parents[1] / "eval" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
+        (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
+
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                ["eval", "run", "--backend", "subscription", "--transcript-dir", str(tmp_path), "--no-persist"],
+            )
+        assert result.exit_code == 0, result.output
+        assert "PASS worktree_first" in result.output
+
+
+class TestPrepareSubscription:
+    def test_emits_prompt_and_transcript_path(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "prepare-subscription", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "alpha" in result.output
+        assert str(tmp_path / "alpha.jsonl") in result.output
+
+    def test_json_format_lists_manifest(self, tmp_path: Path) -> None:
+        specs = [_spec("alpha")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(
+                app,
+                ["eval", "prepare-subscription", "--format", "json", "--transcript-dir", str(tmp_path)],
+            )
+        assert result.exit_code == 0, result.output
+        # An update banner ("[update] …") can precede stdout; isolate the JSON
+        # array by its indented-object opener rather than the first '['.
+        start = result.output.index("[\n")
+        end = result.output.rindex("]") + 1
+        manifest = json.loads(result.output[start:end])
+        assert manifest[0]["scenario"] == "alpha"
+        assert manifest[0]["transcript_path"] == str(tmp_path / "alpha.jsonl")

@@ -26,12 +26,12 @@ from django.utils import timezone
 
 
 class OwnershipStatus(NamedTuple):
-    """Read-only snapshot of a session-scoped loop-owner claim (#1073).
+    """Read-only snapshot of a session-scoped loop-owner claim (#1073/#1604).
 
-    ``is_live`` is the only predicate callers should branch on — it is
-    ``True`` iff a non-empty session holds an unexpired claim, mirroring
-    ``LoopLease.is_held`` but keyed on ``session_id`` rather than
-    ``owner``.
+    ``is_live`` is the predicate callers branch on. It is pid-anchored
+    (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
+    session holds a claim that is either unexpired OR whose ``owner_pid``
+    is still alive, keyed on ``session_id`` rather than ``owner``.
     """
 
     owner_session: str
@@ -143,35 +143,53 @@ class LoopLeaseQuerySet(models.QuerySet):
         return won == 1, current
 
     @staticmethod
-    def _live_foreign_owner_session(row: dict | None, session_id: str, now: datetime) -> str:
-        """The non-empty session of a live owner *other than* ``session_id``, or ``""``.
+    def _session_lease_is_live(
+        session_id: str, owner_pid: int | None, expires_at: datetime | None, now: datetime
+    ) -> bool:
+        """Whether a non-empty session's lease is live (pid-anchored, #1073/#1604).
 
-        A live owner is pid-anchored: its lease is unexpired
-        (``lease_expires_at > now``) OR its ``owner_pid`` is alive. The
-        same session refreshing its own claim is never "foreign". Returns
-        ``""`` when the slot is unowned, owned by ``session_id`` itself, or
-        owned by a dead+expired owner (reclaimable). ``pid_alive`` is
-        imported lazily and fails open to "alive unknown → not treated as
-        a blocking pid" only via the TTL check — a null pid relies solely
-        on TTL liveness.
+        The single liveness predicate shared by every caller so the three
+        (``claim_ownership``/``_live_foreign_owner_session``,
+        ``ownership_status``, and the foreign-owner block) can never drift.
+        A lease is live iff its ``session_id`` is non-empty AND either its
+        TTL is unexpired (``expires_at > now``) OR its ``owner_pid`` is
+        alive. ``pid_alive`` is imported lazily and on ``ImportError`` the
+        pid branch fails open to not-live (reclaimable) — safe because the
+        pid branch is only consulted once the TTL has already lapsed.
         """
-        owner_session = (row or {}).get("session_id") or ""
-        if not owner_session or owner_session == session_id:
-            return ""
-
-        expires_at = (row or {}).get("lease_expires_at")
+        if not session_id:
+            return False
         if expires_at is not None and expires_at > now:
-            return owner_session
-
-        owner_pid = (row or {}).get("owner_pid")
+            return True
         if owner_pid is None:
-            return ""
-
+            return False
         try:
             from teatree.utils.singleton import pid_alive  # noqa: PLC0415
         except ImportError:
+            return False
+        return pid_alive(owner_pid)
+
+    @classmethod
+    def _live_foreign_owner_session(cls, row: dict | None, session_id: str, now: datetime) -> str:
+        """The non-empty session of a live owner *other than* ``session_id``, or ``""``.
+
+        A live owner is pid-anchored via :meth:`_session_lease_is_live`: its
+        lease is unexpired (``lease_expires_at > now``) OR its ``owner_pid``
+        is alive. The same session refreshing its own claim is never
+        "foreign". Returns ``""`` when the slot is unowned, owned by
+        ``session_id`` itself, or owned by a dead/null-pid + expired owner
+        (reclaimable). A null ``owner_pid`` is decided by the TTL check
+        alone; a ``pid_alive`` ``ImportError`` fails open to reclaimable
+        (treated as not-live), which is safe because the pid branch is gated
+        behind an already-lapsed TTL.
+        """
+        owner_session = (row or {}).get("session_id") or ""
+        if owner_session == session_id:
             return ""
-        return owner_session if pid_alive(owner_pid) else ""
+        is_live = cls._session_lease_is_live(
+            owner_session, (row or {}).get("owner_pid"), (row or {}).get("lease_expires_at"), now
+        )
+        return owner_session if is_live else ""
 
     def evict_stale_owner(
         self,
@@ -180,15 +198,19 @@ class LoopLeaseQuerySet(models.QuerySet):
         keep_session_id: str,
         current_pid: int | None,
     ) -> int:
-        """Evict the ``name`` lease iff it is safe to do so (#1604).
+        """Evict the ``name`` lease iff it is safe to do so (#1604/#1675).
 
-        Decision table (INV1 / INV4 / #786 B1 backend-agnostic CAS):
+        Decision table (INV1 / INV4 / #786 B1 backend-agnostic CAS).
+        Liveness is PID-ANCHORED via :meth:`_session_lease_is_live` — the
+        same predicate ``claim_ownership`` and ``ownership_status`` use —
+        so an owner that is alive but BUSY past its tick TTL is a LIVE
+        owner here too and is never blanked:
 
-        - Expired / null expiry: EVICT (lease is already dead).
-        - Live + same session + matching pid: EVICT (post-compaction
-            same-process self-reclaim; session rotated its id).
+        - Dead (expired TTL **and** null/dead owner_pid): EVICT (truly dead).
+        - Live (unexpired TTL **or** alive owner_pid) + same pid: EVICT
+            (post-compaction same-process self-reclaim; session rotated its
+            id — the pid match is the safety condition, regardless of TTL).
         - Live + null owner_pid: KEEP (unknown process, INV4 bias).
-        - Live + dead owner_pid: EVICT.
         - Live + alive owner_pid != current_pid: KEEP (INV1, foreign lease).
 
         The final UPDATE re-asserts the safety condition in its ``WHERE``
@@ -209,20 +231,20 @@ class LoopLeaseQuerySet(models.QuerySet):
             return 0
 
         expires_at = row["lease_expires_at"]
-        is_live = expires_at is not None and expires_at > now
+        stored_pid = row["owner_pid"]
+        is_live = self._session_lease_is_live(row["session_id"], stored_pid, expires_at, now)
 
         if not is_live:
             return candidates.filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now)).update(
                 session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None
             )
 
-        stored_pid = row["owner_pid"]
         if stored_pid is None:
             return 0
 
         if current_pid is not None and stored_pid == current_pid:
             return (
-                self.filter(name=name, owner_pid=stored_pid, lease_expires_at__gt=now)
+                self.filter(name=name, owner_pid=stored_pid)
                 .exclude(session_id=keep_session_id)
                 .update(session_id="", owner_pid=None, acquired_at=None, lease_expires_at=None)
             )
@@ -254,17 +276,21 @@ class LoopLeaseQuerySet(models.QuerySet):
         return refreshed == 1
 
     def ownership_status(self, name: str) -> OwnershipStatus:
-        """Read-only snapshot of the named loop-owner claim (#1073).
+        """Read-only snapshot of the named loop-owner claim (#1073/#1604).
 
-        ``is_live`` is ``True`` iff a non-empty session holds an unexpired
-        claim. A missing row reports ``("", None, False)`` — unclaimed.
+        ``is_live`` is pid-anchored via :meth:`_session_lease_is_live`: it
+        is ``True`` iff a non-empty session holds a claim that is either
+        unexpired (``lease_expires_at > now``) OR whose ``owner_pid`` is
+        still alive — so the snapshot does not go blind during the busy-
+        owner-past-TTL window the #1604 fix targets. A missing row reports
+        ``("", None, False)`` — unclaimed.
         """
-        row = self.filter(name=name).values("session_id", "lease_expires_at").first()
+        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid").first()
         if row is None:
             return OwnershipStatus(owner_session="", expires_at=None, is_live=False)
         session = row["session_id"] or ""
         expires_at = row["lease_expires_at"]
-        is_live = bool(session) and expires_at is not None and expires_at > timezone.now()
+        is_live = self._session_lease_is_live(session, row["owner_pid"], expires_at, timezone.now())
         return OwnershipStatus(owner_session=session, expires_at=expires_at, is_live=is_live)
 
     def release_ownership(self, name: str, *, session_id: str) -> bool:

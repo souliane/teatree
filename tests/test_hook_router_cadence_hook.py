@@ -11,6 +11,7 @@ loader pointed at a tmp ``.teatree.toml``; only the clock-dependent
 tick-meta mtime is staged on disk.
 """
 
+import json
 import time
 from pathlib import Path
 
@@ -96,6 +97,70 @@ def test_enforce_loop_registration_uses_toml_cron_minutes(
     blocked = handle_enforce_loop_registration({"session_id": "s-1036", "tool_name": "Bash"})
     assert blocked is True
     assert "*/30 * * * *" in capsys.readouterr().out
+
+
+def test_loop_registration_exempts_subagents(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # NEVER-LOCKOUT: a sub-agent (non-empty agent_id) has no CronCreate tool, so
+    # a deny here is an unrecoverable lockout — every spawned coder/reviewer was
+    # killed in the incident. The same call WITHOUT agent_id must still block the
+    # main session, proving the exemption is exactly what unblocks the sub-agent.
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(router, "STATE_DIR", state)
+    (state / "sub.loop-pending").write_text("1", encoding="utf-8")
+
+    subagent = {"session_id": "sub", "tool_name": "Bash", "agent_id": "sub-1"}
+    assert handle_enforce_loop_registration(subagent) is False
+
+    main_session = {"session_id": "sub", "tool_name": "Bash"}
+    assert handle_enforce_loop_registration(main_session) is True
+
+
+def test_loop_registration_kill_switch_disables_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # NEVER-LOCKOUT: the durable [teatree] loop_registration_gate_enabled = false
+    # kill-switch disables the gate with no code edit, even with a pending marker.
+    # The autouse _isolate_env fixture already routes HOME (hence Path.home()) at
+    # tmp_path/home, so the config write lands where the gate reads it.
+    home = tmp_path / "home"
+    (home / ".teatree.toml").write_text("[teatree]\nloop_registration_gate_enabled = false\n", encoding="utf-8")
+
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(router, "STATE_DIR", state)
+    (state / "off.loop-pending").write_text("1", encoding="utf-8")
+
+    assert router._loop_registration_gate_enabled() is False
+    blocked = handle_enforce_loop_registration({"session_id": "off", "tool_name": "Bash"})
+    assert blocked is False
+
+
+def test_loop_registration_gate_enabled_defaults_true_without_config(tmp_path: Path) -> None:
+    # Fails OPEN to enabled on a missing/unset config so the nudge keeps working
+    # by default; only an explicit false disables it. HOME is the conftest-
+    # isolated tmp_path/home, which has no .teatree.toml.
+    assert router._loop_registration_gate_enabled() is True
+
+    (tmp_path / "home" / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
+    assert router._loop_registration_gate_enabled() is True
+
+
+def test_loop_registration_reason_is_ux_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # NEVER-LOCKOUT backstop: the deny reason starts with the LOOP REGISTRATION
+    # UX-gate prefix, so the repeated-denial circuit breaker auto-relaxes it
+    # instead of blocking forever.
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setattr(router, "STATE_DIR", state)
+    (state / "ux.loop-pending").write_text("1", encoding="utf-8")
+
+    blocked = handle_enforce_loop_registration({"session_id": "ux", "tool_name": "Bash"})
+    assert blocked is True
+    payload = capsys.readouterr().out
+    reason = json.loads(payload.strip())["permissionDecisionReason"]
+    assert reason.startswith("LOOP REGISTRATION")
+    assert router._deny_is_ux_gate(reason) is True
 
 
 def test_loop_cadence_seconds_falls_back_to_env_when_teatree_unimportable(

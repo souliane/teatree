@@ -23,6 +23,7 @@ from typing import ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.db_retry import retry_on_locked
 from teatree.core.models.ticket import Ticket
 
 # §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
@@ -241,17 +242,26 @@ class MergeClear(models.Model):
         # silently fail on a mixed-case input (#1162). ``is_commit_sha``
         # already lowercases for validation; persist the same form.
         normalized_sha = request.reviewed_sha.strip().lower()
-        with transaction.atomic():
-            return cls.objects.create(
-                ticket=request.ticket,
-                pr_id=request.pr_id,
-                slug=request.slug.strip(),
-                reviewed_sha=normalized_sha,
-                reviewer_identity=reviewer,
-                gh_verify_result=normalized_verify,
-                blast_class=normalized_blast,
-                human_authorizer=authorizer,
-            )
+
+        def _create() -> "MergeClear":
+            with transaction.atomic():
+                return cls.objects.create(
+                    ticket=request.ticket,
+                    pr_id=request.pr_id,
+                    slug=request.slug.strip(),
+                    reviewed_sha=normalized_sha,
+                    reviewer_identity=reviewer,
+                    gh_verify_result=normalized_verify,
+                    blast_class=normalized_blast,
+                    human_authorizer=authorizer,
+                )
+
+        # #1520: a transient ``database is locked`` from a concurrent
+        # canonical-DB writer must not abort CLEAR issuance (``ticket
+        # clear``). All validation above has already passed; the single
+        # row write retries on a momentary lock and surfaces a genuinely
+        # stuck lock after the cap.
+        return retry_on_locked(_create)
 
     def is_actionable(self) -> bool:
         """True iff every load-bearing field is populated and the CLEAR is unconsumed.

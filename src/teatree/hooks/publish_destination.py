@@ -40,6 +40,7 @@ from teatree.hooks.publish_surface import (
     _GLAB_ELIGIBLE_VERBS,
     _extract_repo_flag,
     _segment_is_publish_inert,
+    _strip_benign_prefix,
 )
 
 
@@ -77,6 +78,19 @@ _CURRENT_REPO_VERBS: Final[frozenset[tuple[str, str]]] = _GH_ELIGIBLE_VERBS | _G
 _API_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
     {"-f", "-F", "--field", "--raw-field", "-X", "--method", "--input", "-H", "--header"}
 )
+
+# Leading executables a no-destination chained segment may carry and still be
+# provably skip-safe: navigation / local-only / git-transport commands that
+# cannot themselves post a body to a forge issue/PR/MR surface. This is a
+# CLOSED POSITIVE allowlist, not a denylist of "publishing" tools: an
+# UNRECOGNISED leader (``make``, ``npm``, ``python``, ``./release.sh``, an
+# interpreter, an ``ssh``/``xargs`` wrapper) can shell out to ``gh``/``curl``
+# with no literal forge token in its own argv, so it is NOT provably inert and
+# the whole command fails closed (scans). ``git`` is included because a
+# ``git push`` carries commits to a git remote -- the COMMIT gate's surface,
+# not a forge body the destination skip governs -- mirroring the commit
+# chain's treatment of ``git push`` as publish-inert.
+_SKIP_INERT_LEADERS: Final[frozenset[str]] = frozenset({"cd", "pushd", "popd", "echo", "printf", "true", ":", "git"})
 
 
 def _api_url_arg(words: list[str]) -> str | None:
@@ -195,6 +209,32 @@ def _segment_carries_substitution_or_transport(words: list[str]) -> bool:
     return any(token_has_substitution_marker(token) or token_is_transport_construct(token) for token in words)
 
 
+def _segment_is_skip_inert(words: list[str]) -> bool:
+    """Return True iff a no-destination segment is PROVABLY safe to skip scanning.
+
+    A chained segment that resolves to no publish destination is skip-safe ONLY
+    when it is a recognised navigation / local-only / git-transport command --
+    its leading executable (after a benign ``cd <path>`` / ``VAR=value`` prefix)
+    is in the CLOSED :data:`_SKIP_INERT_LEADERS` allowlist -- AND it carries no
+    forge token or substitution/transport construct
+    (:func:`publish_surface._segment_is_publish_inert`).
+
+    The leader allowlist is the closed-enumeration half the destination skip
+    needs that ``_segment_is_publish_inert`` alone does not give: that predicate
+    only proves the ABSENCE of a literal ``gh``/``glab``/``curl`` token, so an
+    unrecognised executable (``make publish``, ``npm run release``,
+    ``python deploy.py``, ``./release.sh``) -- which can shell out to a public
+    post with no forge token in its own argv -- would otherwise pass it and let
+    a leading internal segment skip the whole command's leak scan. Requiring a
+    recognised inert leader fails closed on every such wrapper, mirroring the
+    prove-pure-or-fail-closed inversion rather than enumerating the wrappers.
+    """
+    rest = _strip_benign_prefix(words)
+    if not rest:
+        return True
+    return rest[0] in _SKIP_INERT_LEADERS and _segment_is_publish_inert(words)
+
+
 def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
     """Return the ``[teatree] internal_publish_namespaces`` allowlist (lower-cased).
 
@@ -290,21 +330,24 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
 
     - a publish segment whose destination resolves to a provably-INTERNAL
         repo/namespace, which carries no substitution/transport construct; or
-    - a segment that provably cannot publish a body to a forge at all
-        (:func:`publish_surface._segment_is_publish_inert` -- a ``cd``/``git
-        push``/``echo`` navigation/local segment that carries no
-        ``gh``/``glab``/``curl`` forge token and no transport construct).
+    - a segment that is PROVABLY a recognised navigation / local-only /
+        git-transport command (:func:`_segment_is_skip_inert` -- its leading
+        executable is in the closed ``_SKIP_INERT_LEADERS`` allowlist, e.g.
+        ``cd``/``echo``/``git push``, with no forge token or
+        substitution/transport construct).
 
     Every OTHER segment is NOT skip-safe and makes the whole command scan
     (fail-closed): a raw ``gh api`` / ``glab api`` call, a
     ``$(...)`` / process-substitution / redirection construct, a PUBLIC or
     unresolvable publish destination, and -- the closed inversion -- ANY
-    segment whose leading word is an unrecognised executable (an interpreter
-    ``sh``/``bash``/``eval``, an ``ssh``/``xargs`` wrapper, ...). Such a
-    segment resolves to no destination yet is not provably inert, so it could
-    run a hidden public post; skipping on the strength of a sibling internal
-    segment is exactly the leak this guards. This mirrors the commit chain's
-    prove-pure-or-fail-closed inversion rather than enumerating transports.
+    segment whose leading word is an UNRECOGNISED executable (an interpreter
+    ``sh``/``bash``/``eval``, an ``ssh``/``xargs`` wrapper, a build/script
+    runner ``make``/``npm``/``python``/``./release.sh``, ...). Such a segment
+    resolves to no destination and is not a recognised inert leader, so it
+    could shell out to a hidden public post with no forge token in its own
+    argv; skipping on the strength of a sibling internal segment is exactly the
+    leak this guards. This mirrors the commit chain's prove-pure-or-fail-closed
+    inversion rather than enumerating transports.
     """
     segments = command_segments(command)
     if not segments:
@@ -318,6 +361,6 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
             if is_public_destination(dest, config_path=config_path):
                 return False
             saw_internal_publish = True
-        elif not _segment_is_publish_inert(words):
+        elif not _segment_is_skip_inert(words):
             return False
     return saw_internal_publish
