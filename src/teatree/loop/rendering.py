@@ -48,8 +48,12 @@ def zones_for(actions: list[DispatchAction], *, colorize: bool | None = None) ->
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
-    _populate_availability_anchor(zones)
+    # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400),
+    # so live-loops is populated first; the away-mode availability anchor and
+    # the configured-overlays summary follow it.
     _populate_live_loops_anchor(zones)
+    _populate_availability_anchor(zones)
+    _populate_overlays_anchor(zones)
     c = _classify_actions(actions)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -80,6 +84,17 @@ def _populate_availability_anchor(zones: StatuslineZones) -> None:
         return
     if line:
         zones.anchors.append(line)
+
+
+def _populate_overlays_anchor(zones: StatuslineZones) -> None:
+    """Append the ``overlays: a · b · c`` configured-overlays summary line.
+
+    :func:`~teatree.loop.statusline.overlays_anchor` is itself fail-open, so
+    this wrapper exists only to do the append.
+    """
+    from teatree.loop.statusline import overlays_anchor  # noqa: PLC0415
+
+    zones.anchors.extend(overlays_anchor())
 
 
 def _populate_live_loops_anchor(zones: StatuslineZones) -> None:

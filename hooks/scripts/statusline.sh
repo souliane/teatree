@@ -139,10 +139,9 @@ if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
     [ -n "$g_context" ] && g_context="${g_context}${isep}"
     g_context="${g_context}${_LBL}ctx=${_RST}$(color_pct "$ctx_pct")"
 fi
-if [ -n "$_loop_owner_badge" ]; then
-    [ -n "$g_context" ] && g_context="${g_context}${isep}"
-    g_context="${g_context}${_loop_owner_badge}"
-fi
+# The per-session loop-owner badge does NOT go in g_context — it is
+# loop-specific info and belongs on the loop line region (appended after the
+# cat'd zones file below), so all loop state has one visual home.
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "empty" ]; then
     g_usage="${_LBL}5h=${_RST}$(color_pct "$five_hour_pct")$(format_reset_time "$five_hour_resets_at")"
 fi
@@ -152,17 +151,51 @@ if [ -n "$seven_day_pct" ] && [ "$seven_day_pct" != "empty" ]; then
 fi
 
 # Skills are kept aside and tacked on last (or on their own line — see below)
-# so they never push critical info off a narrow terminal.
+# so they never push critical info off a narrow terminal. Skills sharing a
+# ``<ns>:`` prefix collapse into one ``ns:{a,b,c}`` token so a long t3:* set
+# does not blow out the width; un-namespaced skills and lone-member namespaces
+# render verbatim. Namespace order and member order follow first appearance.
 _skills_segment=""
 _skill_count=0
 if [ -n "$skills" ]; then
-    _colored_skills=""
+    _ns_order=""
+    _ns_members=""
+    _plain_order=""
     for _s in $skills; do
-        # Skills already render as colored magenta tokens — a separator between
-        # them is visual noise. Use a single space.
-        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} "
-        _colored_skills="${_colored_skills}${_MAG}${_s}${_RST}"
         _skill_count=$((_skill_count + 1))
+        if [[ "$_s" == *:* ]]; then
+            _ns="${_s%%:*}"
+            _member="${_s#*:}"
+            case " $_ns_order " in
+                *" $_ns "*) ;;
+                *) _ns_order="${_ns_order}${_ns_order:+ }$_ns" ;;
+            esac
+            _ns_members="${_ns_members}${_ns_members:+$'\n'}${_ns}	${_member}"
+        else
+            _plain_order="${_plain_order}${_plain_order:+ }$_s"
+        fi
+    done
+
+    _colored_skills=""
+    for _ns in $_ns_order; do
+        _members=""
+        _member_count=0
+        while IFS=$'\t' read -r _k _v; do
+            [ "$_k" = "$_ns" ] || continue
+            _members="${_members}${_members:+,}$_v"
+            _member_count=$((_member_count + 1))
+        done <<< "$_ns_members"
+        if [ "$_member_count" -le 1 ]; then
+            _token="${_ns}:${_members}"
+        else
+            _token="${_ns}:{${_members}}"
+        fi
+        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} "
+        _colored_skills="${_colored_skills}${_MAG}${_token}${_RST}"
+    done
+    for _p in $_plain_order; do
+        [ -n "$_colored_skills" ] && _colored_skills="${_colored_skills} "
+        _colored_skills="${_colored_skills}${_MAG}${_p}${_RST}"
     done
     _skills_segment="${_LBL}skills:${_RST} ${_colored_skills}"
 fi
@@ -316,8 +349,44 @@ fi
 [ -n "$header" ] && printf '%s\n' "$header"
 [ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
 
-if [[ -r "$target" ]]; then
-    cat "$target"
+# The zones file holds the dedicated ``loop running · …`` line (and the
+# per-overlay anchors). The per-session loop-owner badge is appended to that
+# loop line so all loop state shares one visual home. If the zones file has no
+# ``loop running`` line (loops not currently live), the badge is still surfaced
+# on its own trailing line so per-session ownership context is never lost.
+_zones_body=""
+[[ -r "$target" ]] && _zones_body=$(cat "$target")
+# The production zones file is colorized: each anchor is wrapped as
+# ``\033[38;5;244m{text}\033[0m``, so the loop line starts with the CSI escape,
+# not ``l``. awk owns both the match decision and the append (its
+# ``sprintf("%c", 27)`` is a literal escape byte across awk implementations,
+# unlike grep's \x1b which only some greps interpret): it appends the badge to
+# the first ``loop running`` line whether or not a leading ANSI escape prefixes
+# it, placing it BEFORE any trailing reset so the badge rides the same visible
+# line in both colorized and NO_COLOR paths, and exits non-zero when there is
+# no loop line so the shell falls back to a trailing badge line.
+if [ -n "$_loop_owner_badge" ] && [ -n "$_zones_body" ]; then
+    if ! printf '%s\n' "$_zones_body" | awk -v badge="${isep}${_loop_owner_badge}" '
+        function esc() { return sprintf("%c", 27) }
+        $0 ~ ("(^|" esc() "\\[[0-9;]*m)loop running") && !appended {
+            reset = esc() "[0m"
+            if (substr($0, length($0) - length(reset) + 1) == reset) {
+                printf "%s%s%s\n", substr($0, 1, length($0) - length(reset)), badge, reset
+            } else {
+                printf "%s%s\n", $0, badge
+            }
+            appended = 1
+            next
+        }
+        { print }
+        END { exit(appended ? 0 : 1) }
+    '; then
+        printf '%s\n' "$_loop_owner_badge"
+    fi
+elif [ -n "$_zones_body" ]; then
+    printf '%s\n' "$_zones_body"
+elif [ -n "$_loop_owner_badge" ]; then
+    printf '%s\n' "$_loop_owner_badge"
 fi
 
 # Chain extra statusline scripts from [teatree] statusline_chain in

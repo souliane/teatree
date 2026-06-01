@@ -132,7 +132,12 @@ class TestActiveTicketAnchors:
             ],
             colorize=False,
         )
-        assert zones.anchors == [], repr(zones.anchors)
+        # The configured-overlays summary line may be present; the audit here
+        # is that no TICKET anchor row surfaces for the noise states.
+        text = _blob(zones.anchors)
+        assert "#1" not in text, repr(text)
+        assert "#2" not in text, repr(text)
+        assert "#3" not in text, repr(text)
 
     def test_anchor_dedupes_repeat_signals_for_the_same_ticket(self) -> None:
         """Duplicate ``ticket.active`` signals must collapse to one ref.
@@ -155,7 +160,9 @@ class TestActiveTicketAnchors:
         """
         url = "https://gitlab.example.com/g/p/-/merge_requests/42"
         zones = zones_for([_active("42", "coded", issue_url=url)], colorize=False)
-        assert zones.anchors == []
+        # The configured-overlays summary line may be present; the stale PR
+        # ticket itself must not surface as an anchor.
+        assert "#42" not in _blob(zones.anchors)
 
     def test_anchor_shows_pr_backed_ticket_when_pr_is_live(self) -> None:
         url = "https://gitlab.example.com/g/p/-/merge_requests/42"
