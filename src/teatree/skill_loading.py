@@ -210,6 +210,7 @@ class SkillLoadingPolicy:
         trigger_index: TriggerIndex | None = None,
         companion_skills: list[str] | None = None,
         pr_review_companion: str = "",
+        review_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         lifecycle_skill = self.lifecycle_for_phase(phase)
         ordered = self._base_detected_skills(
@@ -222,13 +223,17 @@ class SkillLoadingPolicy:
         if lifecycle_skill:
             ordered.append(lifecycle_skill)
         # #1135: a reviewer sub-agent dispatch (phase resolving to the
-        # ``review`` lifecycle skill) also loads the project's review-quality
-        # companion. Sub-agents do not auto-load skills, so the caller
-        # (``run_headless`` via ``resolve_skill_bundle``) inlines the
-        # companion's SKILL.md content into the dispatched prompt via
-        # ``_read_skill_contents_scoped``.
-        if lifecycle_skill == "review" and pr_review_companion:
-            ordered.append(pr_review_companion)
+        # ``review`` lifecycle skill) also loads the project's review skills.
+        # Sub-agents do not auto-load skills, so the caller (``run_headless``
+        # via ``resolve_skill_bundle``) inlines those SKILL.md bodies into the
+        # dispatched prompt via ``_read_skill_contents_scoped``. ``review_skills``
+        # (the overlay's full deduped review set) supersedes the single
+        # ``pr_review_companion`` when supplied.
+        if lifecycle_skill == "review":
+            if review_skills:
+                ordered.extend(review_skills)
+            elif pr_review_companion:
+                ordered.append(pr_review_companion)
         resolved = self._resolve_with_companions(ordered, trigger_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),

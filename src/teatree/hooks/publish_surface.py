@@ -35,7 +35,19 @@ repo (``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then CWD), with
 at least one posting segment. The structural half (per-token purity) lives in
 :mod:`teatree.hooks._gh_glab_hiding`.
 
-``commit_targets_private_repo`` decides whether the commit's resolved CWD repo
+``effective_repo_dir`` resolves the dir whose repo a ``git commit`` LANDS in,
+so the commit's private-repo decision uses that repo, not the ambient hook
+cwd: the ``--git-dir`` repo if specified, else the repo discovered from the
+``-C``-adjusted working directory, falling back to the harness ``cwd`` for a
+plain ``git commit``. ``--work-tree`` only sets the working tree and NEVER
+selects the repo, so it is excluded -- a ``--git-dir <PUBLIC> --work-tree
+<PRIVATE>`` commit lands in the PUBLIC repo, and resolving the private
+work-tree would leak banned content to public history. A sub-agent's
+``git -C <worktree> commit`` runs from an ambient hook cwd that has reset away
+from the worktree, so resolving from the command's own flag is what keeps the
+carve-out from over-blocking that commit.
+
+``commit_targets_private_repo`` decides whether the commit's resolved repo
 is known-private. The "is this repo private?" question (offline
 ``[teatree] private_repos`` allowlist first, then a cached ``gh``/``glab``
 visibility probe) lives in :mod:`teatree.hooks._repo_visibility`. Detection
@@ -76,6 +88,14 @@ _COMMIT_WORD_COUNT: Final[int] = 2
 _POSTING_WORD_COUNT: Final[int] = 3
 _RAW_REST_WORD_COUNT: Final[int] = 2
 
+# Value-taking global ``git`` flags that sit BEFORE the sub-command verb:
+# ``-C <dir>``, ``--git-dir <dir>``, ``--work-tree <dir>``. The verb-finding
+# walk skips them as flag(+value) pairs so ``git --work-tree=x commit`` and
+# ``git --git-dir=x commit`` are still recognised as commits. These three
+# are recognised for VERB SKIPPING only -- repo identity is resolved
+# separately (git-dir/-C only, never --work-tree) by ``effective_repo_dir``.
+_GIT_GLOBAL_DIR_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--git-dir", "--work-tree"})
+
 # Eligible ``gh`` sub-command pairs: (tool, verb) where "tool" is the
 # second word (pr/issue) and "verb" is the third word (create/comment).
 # ``gh api`` is NOT in this set -- raw REST can target arbitrary surfaces.
@@ -99,16 +119,92 @@ _GLAB_ELIGIBLE_VERBS: Final[frozenset[tuple[str, str]]] = frozenset(
 )
 
 
+def _strip_git_global_prefix(words: list[str]) -> list[str]:
+    """Drop a leading env assignment and ``git`` global worktree flags.
+
+    Leaves ``words`` positioned so ``words[0]`` is the sub-command verb of
+    a ``git`` invocation. A leading inline env assignment (``FOO=1 git``)
+    and the value-taking global flags (``-C <dir>``, ``--git-dir <dir>``,
+    ``--work-tree <dir>``, plus their ``=`` forms) are skipped so
+    ``git -C <dir> commit`` resolves to the ``commit`` verb. ``words[0]``
+    must already be ``git`` for the global-flag skip to run.
+    """
+    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
+        words = words[1:]
+    if not words or words[0] != "git":
+        return words
+    rest = words[1:]
+    i = 0
+    while i < len(rest):
+        w = rest[i]
+        if w in _GIT_GLOBAL_DIR_FLAGS:
+            i += 2
+            continue
+        if any(w.startswith(flag + "=") for flag in _GIT_GLOBAL_DIR_FLAGS):
+            i += 1
+            continue
+        break
+    return ["git", *rest[i:]]
+
+
 def is_git_commit_command(command: str) -> bool:
     """Return True iff the first command segment is a ``git commit``.
 
-    A leading inline env assignment (``FOO=1 git commit``) is skipped so
-    the command name resolves to ``git``.
+    A leading inline env assignment (``FOO=1 git commit``) and ``git``
+    global worktree flags (``git -C <dir> commit``, ``--git-dir``,
+    ``--work-tree``) are skipped so the command still resolves to the
+    ``commit`` verb.
+    """
+    words = _strip_git_global_prefix(first_segment_words(command))
+    return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
+
+
+def _last_flag_value(words: list[str], flag: str) -> str | None:
+    """Return the LAST ``flag <value>`` / ``flag=<value>`` value, or ``None``.
+
+    ``git`` resolves a repeated global flag LAST-WINS, so this scans the
+    whole word list and keeps the final occurrence across both the
+    space-separated and ``=`` spellings.
+    """
+    found: str | None = None
+    i = 0
+    prefix = flag + "="
+    while i < len(words):
+        w = words[i]
+        if w == flag and i + 1 < len(words):
+            found = words[i + 1]
+            i += 2
+            continue
+        if w.startswith(prefix):
+            found = w[len(prefix) :]
+        i += 1
+    return found
+
+
+def effective_repo_dir(command: str) -> str | None:
+    """Return the dir whose repo a ``git`` command's commit LANDS in, or ``None``.
+
+    ``git`` selects a commit's repo as: the ``--git-dir``/``$GIT_DIR`` repo
+    if specified, otherwise the repo discovered from the effective working
+    directory, which ``-C <dir>`` changes. ``--work-tree`` only sets the
+    working tree and NEVER selects the repo, so it is excluded here -- a
+    ``--git-dir <PUBLIC> --work-tree <PRIVATE>`` commit lands in the PUBLIC
+    repo, and resolving the private work-tree would leak banned content to
+    public history. Repeated ``-C``/``--git-dir`` flags are LAST-WINS.
+
+    Resolution: ``--git-dir`` (last-wins) if present, resolved relative to
+    the ``-C``-adjusted cwd when relative; else the ``-C``-adjusted path
+    (last-wins ``-C``). ``None`` when neither flag is present, so the caller
+    falls back to the ambient cwd for a plain ``git commit``.
     """
     words = first_segment_words(command)
-    while words and _ENV_ASSIGNMENT_RE.fullmatch(words[0]):
-        words = words[1:]
-    return len(words) >= _COMMIT_WORD_COUNT and words[0] == "git" and words[1] == "commit"
+    dash_c = _last_flag_value(words, "-C")
+    git_dir = _last_flag_value(words, "--git-dir")
+    if git_dir is not None:
+        if dash_c is not None and not Path(git_dir).is_absolute():
+            return str(Path(dash_c) / git_dir)
+        return git_dir
+    return dash_c
 
 
 def _segment_is_posting_verb(words: list[str]) -> bool:
@@ -398,9 +494,12 @@ def carve_out_applies(
     - The tool is ``Bash``.
     - The payload was actually resolved (fail-closed sentinel => hard-block).
     - The payload carries no high-confidence secret (credentials always leak).
-    - The command is a ``git commit`` to a known-private CWD repo, OR a
-        structured ``gh``/``glab`` create-or-comment command whose RESOLVED
-        TARGET is positively known-private (--repo/-R first, CWD fallback).
+    - The command is a ``git commit`` to a known-private repo (resolved
+        from the dir whose repo the commit LANDS in -- ``--git-dir`` else the
+        ``-C``-adjusted cwd, never ``--work-tree`` -- when present, else the
+        CWD), OR a structured ``gh``/``glab`` create-or-comment command whose
+        RESOLVED TARGET is positively known-private (--repo/-R first, CWD
+        fallback).
 
     Ineligible regardless: ``gh api`` / ``glab api`` raw REST, ``curl``,
     Slack, and any non-structured verb. Public/unknown targets stay blocked.
@@ -420,7 +519,14 @@ def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pa
     r"""Return True iff a ``git commit`` command may downgrade to warn.
 
     The first segment is the ``git commit`` (:func:`is_git_commit_command`),
-    whose body is private-repo-eligible only when the CWD repo is known-private.
+    whose body is private-repo-eligible only when the repo the commit LANDS in
+    is known-private. That repo is resolved by :func:`effective_repo_dir` (the
+    ``--git-dir`` else the ``-C``-adjusted dir, never ``--work-tree``) when the
+    command carries such a flag, else the ambient ``cwd`` -- so a sub-agent's
+    ``git -C <private-worktree> commit`` downgrades even though the ambient hook
+    cwd has reset away from the worktree, while a ``git -C <public> commit``
+    stays hard-blocked.
+
     Every CHAINED segment must additionally be PROVABLY publish-inert with
     respect to that body: either a pure private ``gh``/``glab`` post
     (:func:`command_is_pure_private_gh_glab_post` over that segment), or a
@@ -434,7 +540,9 @@ def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pa
     the WHOLE chain is provably good, never by failing to detect a hidden
     public post.
     """
-    if not commit_targets_private_repo(cwd, config_path=config_path):
+    repo_dir = effective_repo_dir(command)
+    commit_target = Path(repo_dir) if repo_dir else cwd
+    if not commit_targets_private_repo(commit_target, config_path=config_path):
         return False
     for words in _command_segments(command):
         if is_git_commit_command(" ".join(words)):

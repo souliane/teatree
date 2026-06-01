@@ -621,12 +621,14 @@ def test_active_tickets_shown_in_anchors() -> None:
     ]
     zones = _zones_for(actions)
     anchor_texts = [a if isinstance(a, str) else a.text for a in zones.anchors]
-    assert len(anchor_texts) == 1
+    # Both tickets fold into exactly one overlay-tagged anchor line (the
+    # configured-overlays summary line is a separate, non-ticket anchor).
+    ticket_lines = [t for t in anchor_texts if "[acme]" in t]
+    assert len(ticket_lines) == 1
     # Terse format (#1377): state-group prefix dropped, all surviving items
     # render flat under the overlay tag.
-    assert "#123" in anchor_texts[0]
-    assert "#456" in anchor_texts[0]
-    assert "[acme]" in anchor_texts[0]
+    assert "#123" in ticket_lines[0]
+    assert "#456" in ticket_lines[0]
 
 
 def test_mechanical_actions_not_rendered_in_statusline() -> None:

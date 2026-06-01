@@ -46,15 +46,30 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 
 @task()
 def drain_headless_queue() -> dict[str, list[int]]:
-    """Auto-enqueue pending headless tasks for execution."""
-    pending = Task.objects.filter(
-        execution_target=Task.ExecutionTarget.HEADLESS,
-        status=Task.Status.PENDING,
-    ).values_list("pk", "phase")
+    """Auto-enqueue pending headless tasks for execution (safety net).
+
+    Loop-dispatched phase tasks (those whose ``(ticket.role, phase)`` has a
+    registered phase agent) are skipped — the loop is their sole dispatcher,
+    so draining them here would double-run them (the same guard the
+    ``_auto_enqueue_headless_task`` post_save applies). Only genuinely
+    headless tasks with no registered phase agent are drained.
+    """
+    from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
+
+    pending = (
+        Task.objects.filter(
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+        )
+        .select_related("ticket")
+        .only("pk", "phase", "ticket__role")
+    )
     enqueued: list[int] = []
-    for task_id, phase in pending:
-        execute_headless_task.enqueue(task_id, phase)
-        enqueued.append(task_id)
+    for task_obj in pending:
+        if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
+            continue
+        execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
+        enqueued.append(task_obj.pk)
     return {"enqueued": enqueued}
 
 

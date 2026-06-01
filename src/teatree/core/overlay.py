@@ -299,6 +299,28 @@ class OverlayConfig:
             return {**DEFAULT_TRANSITION_EMOJIS, **override}
         return dict(DEFAULT_TRANSITION_EMOJIS)
 
+    def get_review_companion_skills(self) -> list[str]:
+        """Return the skills a reviewer must hold, deduped and order-preserving.
+
+        ``[pr_review_companion, *companion_skills]``: the project's
+        review-quality bar (#1135) followed by the overlay's standing
+        companions. This is the single source of truth threaded through
+        :func:`active_overlay_review_skills` into both the reviewing-phase
+        skill bundle and the reviewing-phase system context, so a headless
+        reviewer receives the overlay's review conventions in full rather than
+        a demoted ``"available — load if needed"`` summary. An overlay
+        broadens the set by overriding this method; core stays
+        overlay-agnostic.
+        """
+        ordered = [self.pr_review_companion, *self.companion_skills]
+        seen: set[str] = set()
+        result: list[str] = []
+        for name in ordered:
+            if name and name not in seen:
+                seen.add(name)
+                result.append(name)
+        return result
+
 
 # ── Overlay metadata ─────────────────────────────────────────────────
 

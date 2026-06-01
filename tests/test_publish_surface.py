@@ -152,6 +152,81 @@ class TestIsGitCommitCommand:
         # Only the FIRST segment is the command under classification.
         assert publish_surface.is_git_commit_command('echo hi && git commit -m "x"') is False
 
+    def test_git_dash_c_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git -C /some/worktree commit -m "x"') is True
+
+    def test_git_git_dir_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --git-dir=/x/.git commit -m "x"') is True
+
+    def test_git_work_tree_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --work-tree=/x commit -m "x"') is True
+
+    def test_git_dash_c_separate_value_commit_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('git --git-dir /x/.git commit -m "x"') is True
+
+    def test_env_prefix_and_global_flags_combined_is_recognised(self) -> None:
+        assert publish_surface.is_git_commit_command('FOO=1 git -C /some/worktree commit -m "x"') is True
+
+    def test_git_dash_c_status_is_not_a_commit(self) -> None:
+        assert publish_surface.is_git_commit_command("git -C /some/worktree status") is False
+
+
+class TestEffectiveRepoDir:
+    """``effective_repo_dir`` resolves the dir whose repo the commit LANDS in.
+
+    ``git`` selects a commit's repo from ``--git-dir``/``$GIT_DIR`` if given,
+    else from the repo discovered at the ``-C``-adjusted working directory.
+    ``--work-tree`` only sets the working tree and NEVER selects the repo, so
+    it must not contribute repo identity here. A sub-agent's
+    ``git -C <worktree> commit`` runs from an ambient hook ``cwd`` that has
+    reset to ``~/workspace``, so the repo the commit lands in lives in the
+    command's own ``-C``/``--git-dir`` flags.
+    """
+
+    def test_dash_c_separate_value(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C /some/worktree commit -m x") == "/some/worktree"
+
+    def test_git_dir_separate_value(self) -> None:
+        assert publish_surface.effective_repo_dir("git --git-dir /x/.git commit -m x") == "/x/.git"
+
+    def test_git_dir_equals_form(self) -> None:
+        assert publish_surface.effective_repo_dir("git --git-dir=/x/.git commit -m x") == "/x/.git"
+
+    def test_absent_returns_none(self) -> None:
+        assert publish_surface.effective_repo_dir('git commit -m "x"') is None
+
+    def test_repeated_dash_c_last_wins(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C /first -C /second commit -m x") == "/second"
+
+    def test_repeated_git_dir_last_wins(self) -> None:
+        command = "git --git-dir=/first/.git --git-dir=/second/.git commit"
+        assert publish_surface.effective_repo_dir(command) == "/second/.git"
+
+    def test_work_tree_alone_never_selects_repo(self) -> None:
+        # ``--work-tree`` only sets the working tree; the repo is discovered
+        # from the (unchanged) cwd, so this resolver returns None and the
+        # caller falls back to the ambient cwd.
+        assert publish_surface.effective_repo_dir("git --work-tree=/some/worktree commit -m x") is None
+
+    def test_work_tree_does_not_override_git_dir(self) -> None:
+        # Repo identity comes from ``--git-dir`` regardless of where the
+        # ``--work-tree`` flag sits relative to it (order-independent).
+        assert publish_surface.effective_repo_dir("git --git-dir=/pub/.git --work-tree=/priv commit") == "/pub/.git"
+        assert publish_surface.effective_repo_dir("git --work-tree=/priv --git-dir=/pub/.git commit") == "/pub/.git"
+
+    def test_work_tree_does_not_override_dash_c(self) -> None:
+        assert publish_surface.effective_repo_dir("git -C /repo --work-tree=/priv commit") == "/repo"
+        assert publish_surface.effective_repo_dir("git --work-tree=/priv -C /repo commit") == "/repo"
+
+    def test_git_dir_wins_over_dash_c(self) -> None:
+        # ``--git-dir`` names the repo directly, overriding the repo that
+        # would otherwise be discovered from the ``-C``-adjusted cwd.
+        assert publish_surface.effective_repo_dir("git -C /work --git-dir=/repo/.git commit") == "/repo/.git"
+
+    def test_relative_git_dir_resolved_against_dash_c(self) -> None:
+        # A relative ``--git-dir`` is resolved against the ``-C``-adjusted cwd.
+        assert publish_surface.effective_repo_dir("git -C /work --git-dir=sub/.git commit") == "/work/sub/.git"
+
 
 class TestIsGhGlabPostingCommand:
     def test_gh_pr_create_is_eligible(self) -> None:
@@ -750,6 +825,188 @@ class TestCarveOutApplies:
                 "glab mr create --title x",
                 "acmewidget fix",
                 private_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # The over-block this fix targets: a sub-agent's ``git -C <private>
+    # commit`` runs from an ambient hook cwd that has reset away from the
+    # worktree. The carve-out must resolve the EFFECTIVE worktree from the
+    # command's own ``-C`` flag, not the wrong ambient cwd.
+    def test_git_dash_c_private_worktree_downgrades_despite_ambient_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # The ambient hook cwd is an UNRELATED dir with no private origin --
+        # simulating the sub-agent shell's reset to ~/workspace.
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {private_worktree} commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # SAFETY TEST: ``git -C <public-worktree> commit`` must STAY hard-blocked.
+    # The resolver reads the real dir's origin (public), so the carve-out does
+    # not apply -- widening must never let a public-repo commit downgrade.
+    def test_git_dash_c_public_worktree_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        public_worktree = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(
+            tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # No probe tool -> the public worktree's slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git -C {public_worktree} commit -m "acmewidget"',
+                "acmewidget",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # SAFETY TEST: an unresolvable ``-C`` dir falls closed. The effective
+    # worktree does not resolve to a repo with a known-private origin, so the
+    # commit stays hard-blocked (fail-closed preserved).
+    def test_git_dash_c_nonexistent_dir_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        ambient_cwd = _repo_with_remote(
+            tmp_path / "ambient", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git -C /nonexistent/worktree commit -m "acmewidget"',
+                "acmewidget",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    def test_plain_git_commit_in_private_cwd_still_downgrades(self, private_cfg: Path, private_repo: Path) -> None:
+        # No -C flag -> the cwd fallback is used unchanged. A plain ``git
+        # commit`` in a private worktree cwd still downgrades (no regression).
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                'git commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                private_repo,
+                config_path=private_cfg,
+            )
+            is True
+        )
+
+    def test_git_dash_c_secret_in_body_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A secret hard-blocks regardless of repo privacy or the -C target.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        body = "token is ghp_" + "a" * 36
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f"git -C {private_worktree} commit -F /tmp/msg",
+                body,
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # SAFETY TEST (the leak): ``--git-dir <PUBLIC> --work-tree <PRIVATE>``.
+    # The commit LANDS in the public git-dir; ``--work-tree`` only sets the
+    # working tree and never selects the repo. So the carve-out MUST NOT
+    # apply -- the banned term would egress to public history. Treating the
+    # three flags as interchangeable last-wins resolves the private work-tree
+    # and downgrades, which is the leak this fix closes.
+    def test_public_git_dir_private_work_tree_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        public_git_dir = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        private_work_tree = _repo_with_remote(
+            tmp_path / "priv", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git --git-dir={public_git_dir}/.git --work-tree={private_work_tree} commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # SAFETY TEST (order-independence): the same leak with ``--work-tree``
+    # BEFORE ``--git-dir`` must ALSO stay hard-blocked. Proves the fix is a
+    # model fix (repo identity comes from git-dir/-C only) not an ordering
+    # patch that depends on which flag appears last.
+    def test_private_work_tree_before_public_git_dir_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        public_git_dir = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        private_work_tree = _repo_with_remote(
+            tmp_path / "priv", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git --work-tree={private_work_tree} --git-dir={public_git_dir}/.git commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # The commit lands in the PRIVATE git-dir, so the carve-out correctly
+    # applies despite a PUBLIC work-tree -- ``--work-tree`` never selects the
+    # repo, and the git-dir's origin is what governs the privacy decision.
+    def test_private_git_dir_public_work_tree_downgrades(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        private_git_dir = _repo_with_remote(
+            tmp_path / "priv", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        public_work_tree = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.carve_out_applies(
+                "Bash",
+                f'git --git-dir={private_git_dir}/.git --work-tree={public_work_tree} commit -m "acmewidget refinery"',
+                "acmewidget refinery",
+                ambient_cwd,
                 config_path=cfg,
             )
             is True

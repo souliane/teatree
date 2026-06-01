@@ -44,6 +44,43 @@ _CANONICAL_TO_TRANSITION: dict[str, str] = {
 }
 
 
+#: The single source of truth mapping a ticket ``(role, phase)`` pair to the
+#: sub-agent the loop dispatches for it. Every author phase routes to its OWN
+#: phase agent — the loop is the per-phase dispatcher, never a single
+#: orchestrator that chains coder→tester→reviewer→shipper inline (BLUEPRINT
+#: §5.2 / §17.8 invariant 10: phase agents are invoked by the headless
+#: executor when a phase task is claimed; the orchestrator does synthesis and
+#: dispatch, not execution). Keyed on the canonical phase token so a task
+#: stored with any accepted spelling resolves through ``normalize_phase``.
+#: Adding ``("author", "planning"): "t3:planner"`` later is a one-line change.
+SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
+    ("reviewer", "reviewing"): "t3:reviewer",
+    ("author", "coding"): "t3:coder",
+    ("author", "testing"): "t3:tester",
+    ("author", "reviewing"): "t3:reviewer",
+    ("author", "shipping"): "t3:shipper",
+    ("author", "answering"): "t3:answerer",
+    ("author", "scanning_news"): "t3:scanning-news",
+}
+
+#: The chaining orchestrator must never be the target of an author phase
+#: dispatch — that is the shadowing the per-phase restoration removes. A
+#: conformance test asserts no author phase routes here.
+CHAINING_ORCHESTRATOR: str = "t3:orchestrator"
+
+
+def subagent_for_phase(role: str, phase: str) -> str:
+    """Return the sub-agent for a ticket ``(role, phase)`` pair, or ``""``.
+
+    ``phase`` is normalized so a task stored with a short-verb spelling
+    (``code``/``test``/``review``/``ship``) resolves the same as the
+    canonical gerund. An empty string means the pair has no registered
+    sub-agent (operator triage) — the single authority both the loop
+    dispatcher and the ``loop_dispatch`` command consult.
+    """
+    return SUBAGENT_BY_PHASE.get((role, normalize_phase(phase)), "")
+
+
 def normalize_phase(phase: str) -> str:
     """Return the canonical token for ``phase``.
 
