@@ -12,9 +12,14 @@ pre-commit gate that fails the commit until the regression is removed.
 
 Budget (bytes):
 
-- Top-level ``BLUEPRINT.md``:   80 000  (~78 KB)
-- ``docs/blueprint/`` corpus:  102 000  (~100 KB)
-- Combined corpus total:       182 000  (~178 KB)
+- Top-level ``BLUEPRINT.md``:    88 000  (~86 KB)
+- ``docs/blueprint/`` corpus:   110 500  (~108 KB)
+- Combined corpus total:        198 500  (~194 KB)
+
+BLUEPRINT.md is a SINGLE file by user decision — never split, never
+consolidate-by-splitting. The top-level budget is sized to sit
+comfortably above the live file so the doc can keep growing as one
+document without the override being load-bearing for ordinary edits.
 
 Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the check. Use only
 when a planned, reviewed addition deliberately grows the corpus and the
@@ -29,7 +34,12 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-_BUDGET_TOP_LEVEL_BYTES = 82_000
+# Single-file-by-user-veto bump: BLUEPRINT.md stays one document (never
+# split). The live file (82,114 B) had outgrown the prior 82,000 B budget,
+# so the override was masking an over-budget file on main. Raised to 88,000 B
+# (~5.9 KB headroom) so the single file can absorb the next several config /
+# invariant rows without the override being load-bearing for ordinary edits.
+_BUDGET_TOP_LEVEL_BYTES = 88_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -92,7 +102,11 @@ _BUDGET_TOP_LEVEL_BYTES = 82_000
 # is a load-bearing config fact; after trimming the verbose prose the appendix
 # corpus is 110,045 B, so the budget is raised one minimal step (~455 B
 # headroom) to admit the row.
-_BUDGET_APPENDICES_BYTES = 110_500
+# Reviewed bump (#1697): the §17.4.2 line documenting the by-product
+# `ReviewVerdict` record + `review record`/`review status` lookup is a
+# load-bearing architectural fact; the appendix corpus is 110,748 B, raised
+# one minimal step to 111,500 (~752 B headroom) to admit the line.
+_BUDGET_APPENDICES_BYTES = 111_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -111,7 +125,14 @@ _BUDGET_APPENDICES_BYTES = 110_500
 # Reviewed bump (#1668): tracks the appendix bump for the `autonomy` config-key
 # row; post-trim total corpus is 191,937 B, raised to 192,500 (~563 B
 # headroom). Invariant holds: 192,500 - 82,000 = 110,500 <= 110,500.
-_BUDGET_TOTAL_BYTES = 192_500
+# Single-file-by-user-veto bump: tracks the top-level raise to 88,000 B so the
+# coupling invariant stays tight. Live total corpus is 192,264 B; raised to
+# 198,500 (~6.2 KB headroom). Invariant holds: 198,500 - 88,000 = 110,500
+# <= 110,500.
+# Reviewed bump (#1697): tracks the appendix raise to 111,500 for the §17.4.2
+# ReviewVerdict line so the coupling invariant stays tight. Raised to 199,500.
+# Invariant holds: 199,500 - 88,000 = 111,500 <= 111,500.
+_BUDGET_TOTAL_BYTES = 199_500
 
 
 def _repo_root() -> pathlib.Path:

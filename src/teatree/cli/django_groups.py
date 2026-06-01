@@ -132,6 +132,14 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("work-next-user-input", "Claim and execute a user input task."),
         ],
     ),
+    "queue": DjangoGroup(
+        "Background-task DB queue (inspect, expire stale jobs).",
+        [
+            ("status", "Print the queue breakdown by status and READY jobs by task name (read-only)."),
+            ("expire-stale", "Retire READY jobs older than the threshold to FAILED so a drainer never runs them."),
+        ],
+        core_dispatch=True,
+    ),
     "followup": DjangoGroup(
         "Follow-up snapshots.",
         [

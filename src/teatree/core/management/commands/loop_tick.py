@@ -209,6 +209,16 @@ class Command(TyperCommand):
                 suffix=" — loop-tick lease held.",
             )
             return
+        from teatree.loop.statusline import set_mini_loop_schedules_reader  # noqa: PLC0415
+        from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
+
+        # Bridge the up-stack mini-loop next-fire reader into the statusline
+        # for the duration of this tick's render so the ``loop running · …``
+        # line shows every enabled cron with its own countdown (#1400). This
+        # command is the only place allowed to import :mod:`teatree.loops`
+        # into the statusline (tach graph); the reader is reset afterwards so
+        # the process-global seam never leaks past the tick.
+        set_mini_loop_schedules_reader(mini_loop_schedules)
         try:
             if overlay:
                 request = TickRequest(host=code_host_from_overlay(), messaging=messaging_from_overlay())
@@ -216,6 +226,7 @@ class Command(TyperCommand):
                 request = TickRequest(backends=iter_overlay_backends())
             report = run_tick(request, statusline_path=statusline_file, jobs_builder=_registry_jobs_builder)
         finally:
+            set_mini_loop_schedules_reader(None)
             LoopLease.objects.release("loop-tick", owner=owner)
 
         # #1107 Prong B — defense-in-depth safety net. We are PAST the

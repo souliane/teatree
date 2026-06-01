@@ -100,7 +100,7 @@ def _piggyback_self_improve() -> None:
 
 
 def run_piggyback_cycles() -> None:
-    """Run both reactive cycles, each isolated so one failure cannot mask the other.
+    """Run the reactive cycles, each isolated so one failure cannot mask the others.
 
     Called from ``loop_tick.Command.handle`` on the won-owner success path
     only. Each cycle's broad ``except`` mirrors the loop's existing
@@ -115,3 +115,9 @@ def run_piggyback_cycles() -> None:
         _piggyback_self_improve()
     except Exception as exc:  # noqa: BLE001 — a safety-net cycle must never fail the tick
         logger.warning("Tick-piggyback self-improve cycle failed: %s", exc)
+    try:
+        from teatree.loop.queue_drain import _piggyback_drain_queue  # noqa: PLC0415
+
+        _piggyback_drain_queue()
+    except Exception as exc:  # noqa: BLE001 — a safety-net cycle must never fail the tick
+        logger.warning("Tick-piggyback queue-drain cycle failed: %s", exc)

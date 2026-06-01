@@ -1132,6 +1132,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ list               List discovered eval scenarios.                           │
 │ run                Run one scenario by name, or all scenarios when no name   │
 │                    is given.                                                 │
+│ history            Show recent eval runs and per-scenario pass-rate over     │
+│                    time.                                                     │
 │ transcript-replay  Replay a real session transcript against teatree          │
 │                    behavioural invariants.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1156,14 +1158,49 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  Run one scenario by name, or all scenarios when no name is given.
 
+ Each run is recorded into the run-history ledger (``t3 eval history``)
+ unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
+ as the baseline for its model — the reference the later model-regression
+ diff compares a candidate against.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format           TEXT     Report format: text or json. [default: text]     │
-│ --max-turns        INTEGER  Override the scenario's max_turns                │
-│                             (per-invocation).                                │
-│ --help                      Show this message and exit.                      │
+│ --format                       TEXT     Report format: text or json.         │
+│                                         [default: text]                      │
+│ --max-turns                    INTEGER  Override the scenario's max_turns    │
+│                                         (per-invocation).                    │
+│ --persist      --no-persist             Persist this run into the            │
+│                                         run-history ledger.                  │
+│                                         [default: persist]                   │
+│ --baseline                              Mark the persisted run as the        │
+│                                         baseline for its model.              │
+│ --help                                  Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval history`
+
+```
+Usage: t3 eval history [OPTIONS]
+
+ Show recent eval runs and per-scenario pass-rate over time.
+
+ The data substrate the later model-regression diff reads. ``--baseline``
+ shows the current reference run per model; ``--mark-baseline <id>`` promotes
+ a run to baseline (demoting the prior baseline for that model).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit                INTEGER  Maximum number of recent runs to show.       │
+│                                 [default: 20]                                │
+│ --model                TEXT     Filter to one model's runs.                  │
+│ --format               TEXT     Report format: text or json. [default: text] │
+│ --baseline                      Show only the current baseline run(s) and    │
+│                                 their per-scenario pass-rate.                │
+│ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
+│                                 for its model, then show history.            │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2496,6 +2533,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ db            Database operations.                                           │
 │ pr            Pull request helpers.                                          │
 │ tasks         Async task queue.                                              │
+│ queue         Background-task DB queue (inspect, expire stale jobs).         │
 │ followup      Follow-up snapshots.                                           │
 │ standup       Auto-generated daily update (read-only).                       │
 │ checking      Terse 'what did I miss' report since the last check            │
@@ -3955,6 +3993,59 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 Usage: t3 teatree tasks work-next-user-input [OPTIONS]
 
  Claim and execute a user input task.
+```
+
+#### `t3 teatree queue`
+
+```
+Usage: t3 teatree queue [OPTIONS] COMMAND [ARGS]...
+
+ Background-task DB queue (inspect, expire stale jobs).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status        Print the queue breakdown by status and READY jobs by task     │
+│               name (read-only).                                              │
+│ expire-stale  Retire READY jobs older than the threshold to FAILED so a      │
+│               drainer never runs them.                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue status`
+
+```
+Usage: t3 teatree queue status [OPTIONS]
+
+ Print the queue breakdown by status, and READY jobs by task name.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree queue expire-stale`
+
+```
+Usage: t3 teatree queue expire-stale [OPTIONS]
+
+ Retire stale READY jobs to FAILED so a drainer never runs them.
+
+ Conservative: only READY jobs older than the threshold are touched.
+ FAILED is reversible — the row and its args are preserved — so an
+ operator can re-enqueue a wrongly-retired job.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --hours                      INTEGER  Expire READY jobs enqueued more than   │
+│                                       this many hours ago (default:          │
+│                                       T3_QUEUE_STALE_HOURS).                 │
+│                                       [default: 0]                           │
+│ --dry-run    --no-dry-run             Report what would be expired without   │
+│                                       mutating any rows.                     │
+│                                       [default: no-dry-run]                  │
+│ --help                                Show this message and exit.            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 #### `t3 teatree followup`
