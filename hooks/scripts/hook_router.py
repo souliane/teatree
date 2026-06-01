@@ -4736,6 +4736,78 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
         return
 
 
+def _claim_session_handover(session_id: str) -> str | None:
+    """Claim an unclaimed session hand-off for *session_id*, or ``None`` (#1701).
+
+    The zero-copy-paste takeover: a fresh / non-owner session picks up a
+    hand-off targeted AT it or parked for "next session" from the
+    ``SessionHandover`` DB table (the source of truth), marks it claimed so
+    it injects exactly once, and returns its payload to merge into the
+    SessionStart ``additionalContext``. Falls back to the XDG file mirror
+    when the DB is unreachable (a brand-new session whose process predates
+    a readable DB). Best-effort: any Django/DB error fails open to the file
+    fallback, then to ``None`` — a hand-off pickup must never block the
+    SessionStart directive.
+    """
+    payload = ""
+    from_session = ""
+    if _bootstrap_teatree_django():
+        try:
+            from teatree.core.models import SessionHandover  # noqa: PLC0415
+
+            claimed = SessionHandover.objects.claim_next(session_id)
+            if claimed is not None:
+                payload = claimed.payload
+                from_session = claimed.from_session
+        except Exception:  # noqa: BLE001 — never block SessionStart on a DB hiccup
+            payload = ""
+
+    if not payload:
+        payload, from_session = _claim_session_handover_from_file()
+    if not payload:
+        return None
+    origin = f" from session `{from_session}`" if from_session else ""
+    return (
+        f"SESSION HAND-OFF RECEIVED{origin} — another session handed its full "
+        "in-flight work to you. Read the durable-state snapshot below, then "
+        "resume that work (re-derive identity, worktrees, open PRs, and the "
+        "next action):\n\n" + payload
+    )
+
+
+def _claim_session_handover_from_file() -> tuple[str, str]:
+    """Read the XDG mirror as a one-shot hand-off fallback, renaming it on claim.
+
+    Returns ``(payload, from_session)`` or ``("", "")``. The mirror is the
+    bootstrap path for a brand-new session that cannot reach the DB. To keep
+    the file single-use (mirroring the DB ``claimed_at`` once-only contract)
+    the claimed file is renamed to ``latest.claimed.md`` so a re-fired
+    SessionStart does not re-inject it.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.config import load_config  # noqa: PLC0415
+
+        path = load_config().user.handover_mirror_path
+        text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+        if not text:
+            return "", ""
+        with contextlib.suppress(OSError):
+            path.replace(path.with_name("latest.claimed.md"))
+    except Exception:  # noqa: BLE001
+        return "", ""
+    else:
+        return text, ""
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
 def _autocompact_kill_switch_advisory() -> str | None:
     """Return the #980 advisory text when the harness kill-switch trips.
 
@@ -4764,6 +4836,36 @@ def _autocompact_kill_switch_advisory() -> str | None:
         if added:
             with contextlib.suppress(ValueError):
                 sys.path.remove(str(src_dir))
+
+
+def _merge_session_start_context(context: str, session_id: str, source: str) -> str:
+    """Prepend recovery snapshot + session hand-off, append the autocompact advisory.
+
+    All merged into the ONE SessionStart stdout write — a second chained
+    handler writing JSON would emit invalid concatenated JSON on stdout.
+
+    #845: a ``source == "compact"`` resume reads back the PreCompact durable
+    snapshot (the only post-compaction event whose ``additionalContext`` the
+    harness honours). #1701: a fresh / non-owner session claims an unclaimed
+    hand-off (targeted at it, or parked for "next session") and injects the
+    handing session's full durable state — ``claim_next`` excludes the
+    session's own hand-off, so a same-session compact resume never re-injects
+    its own snapshot. #980: surfaces the harness auto-compact kill-switch
+    advisory when the env-var combo would silently disable auto-compaction.
+    """
+    if source == "compact":
+        recovered = _recover_snapshot_context(session_id)
+        if recovered is not None:
+            context = f"{recovered}\n\n---\n\n{context}"
+
+    handover = _claim_session_handover(session_id)
+    if handover is not None:
+        context = f"{handover}\n\n---\n\n{context}"
+
+    advisory = _autocompact_kill_switch_advisory()
+    if advisory:
+        context = f"{context}\n\n---\n\n{advisory}"
+    return context
 
 
 def handle_session_start_bootstrap(data: dict) -> None:
@@ -4852,21 +4954,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     if emit_osc:
         _emit_osc_title()
 
-    # #845: SessionStart with source=="compact" is the ONLY post-compaction
-    # event whose additionalContext the harness reads. Merge the recovered
-    # snapshot into this single stdout write (a second chained handler
-    # writing JSON would emit invalid concatenated JSON on stdout).
-    if data.get("source") == "compact":
-        recovered = _recover_snapshot_context(session_id)
-        if recovered is not None:
-            context = f"{recovered}\n\n---\n\n{context}"
-
-    # #980: surface the harness auto-compact kill-switch advisory when the
-    # env-var combo would silently disable auto-compaction on this session.
-    # Same single stdout write — see the #845 note above.
-    advisory = _autocompact_kill_switch_advisory()
-    if advisory:
-        context = f"{context}\n\n---\n\n{advisory}"
+    context = _merge_session_start_context(context, session_id, data.get("source", ""))
 
     # #1452: the harness silently drops the legacy flat top-level
     # ``{"additionalContext": ...}`` form for SessionStart events; the

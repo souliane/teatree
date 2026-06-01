@@ -59,24 +59,45 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
 
 def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
     from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
+    # #1701: surface THIS session's own id alongside the owner, so a session
+    # always knows whether IT is the owner — not just who the owner is.
+    you = current_session_id()
     status = LoopLease.objects.ownership_status(slot)
     if json_output:
         stdout_write(
             json.dumps(
                 {
                     "slot": slot,
+                    "you": you,
                     "owner_session": status.owner_session,
+                    "you_are_owner": bool(you) and status.is_live and you == status.owner_session,
                     "expires_at": status.expires_at.isoformat() if status.expires_at else "",
                     "is_live": status.is_live,
                 },
                 indent=2,
             )
         )
-    elif status.is_live:
+        return
+    stdout_write(f"you are: {you or '(no session id)'}")
+    if status.is_live:
         stdout_write(f"OWNER {slot}: session {status.owner_session} (live until {status.expires_at.isoformat()}).")
     else:
         stdout_write(f"OWNER {slot}: unclaimed (no live owner).")
+
+
+def _whoami(*, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+    """Print this Claude session's own id — the hand-off ``--to`` target (#1701)."""
+    from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
+
+    session_id = current_session_id()
+    if json_output:
+        stdout_write(json.dumps({"session_id": session_id}, indent=2))
+    elif session_id:
+        stdout_write(session_id)
+    else:
+        stdout_write("(no Claude session id — not running inside a Claude Code session)")
 
 
 def _release(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
@@ -122,6 +143,15 @@ class Command(TyperCommand):
     ) -> None:
         """Show which session owns the loop-owner slot."""
         _owner(slot, json_output=json_output, stdout_write=self.stdout.write)
+
+    @command(name="whoami")
+    def whoami(
+        self,
+        *,
+        json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
+    ) -> None:
+        """Print this Claude session's own id (#1701)."""
+        _whoami(json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="release")
     def release(

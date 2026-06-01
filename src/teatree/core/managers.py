@@ -9,6 +9,7 @@ from django.utils import timezone
 from teatree.config import load_config
 from teatree.core.loop_lease_manager import LoopLeaseManager, LoopLeaseQuerySet, OwnershipStatus
 from teatree.core.models.errors import RedisSlotsExhaustedError
+from teatree.core.session_handover_manager import SessionHandoverManager, SessionHandoverQuerySet
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -20,6 +21,8 @@ __all__ = [
     "LoopLeaseQuerySet",
     "OwnershipStatus",
     "ReplyDispatchManager",
+    "SessionHandoverManager",
+    "SessionHandoverQuerySet",
     "SessionManager",
     "TaskManager",
     "TicketManager",

@@ -424,7 +424,7 @@ graph LR
 | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate |
 | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
 | `full-speed` | Parallel backlog blast — classify the actionable backlog, fan out autonomous-safe work across isolated worktrees, surface the rest |
-| `handover` | Use when the user wants to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
+| `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms. |
 | `retro` | Conversation retrospective and skill improvement |

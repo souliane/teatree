@@ -34,6 +34,7 @@ from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.session import Session
+from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.task import Task, TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -91,6 +92,7 @@ __all__ = [
     "SelfImproveFiring",
     "SelfUpdateMarker",
     "Session",
+    "SessionHandover",
     "Task",
     "TaskAttempt",
     "Ticket",
