@@ -48,6 +48,46 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class Autonomy(StrEnum):
+    """The single per-overlay trust switch collapsing the three user-approval gates.
+
+    Tiers (``FULL`` > ``NOTIFY`` > ``BABYSIT``, default ``BABYSIT``):
+
+    *   :attr:`BABYSIT` — every approval gate keeps its own value; the user
+        stays in the loop on merges, answers, and colleague-visible posts.
+    *   :attr:`NOTIFY` — autonomous, but every on-behalf action DMs the user
+        (derived ``notify_on_behalf``) and the user's MR merges only after a
+        colleague approval (per-diff CLEAR, never self-approve).
+    *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
+        ``solo_overlay`` merge bypass is reachable here only.
+
+    Both autonomous tiers collapse the three gates and pin ``mode = auto`` (see
+    :func:`_apply_autonomy`). An explicit per-gate value always wins. The
+    safety floor (privacy/leak gate, cold-review, CI-green, never-lockout,
+    substrate keystone) is out of scope and never touched.
+    """
+
+    BABYSIT = "babysit"
+    NOTIFY = "notify"
+    FULL = "full"
+
+    @classmethod
+    def parse(cls, value: str) -> "Autonomy":
+        """Parse an autonomy string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`BABYSIT`) is applied by the caller when the setting is
+        absent, so a typo never silently grants full autonomy.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid autonomy {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class OnBehalfPostMode(StrEnum):
     """Tri-state pre-gate over on-behalf colleague/customer posts (#960).
 
@@ -206,6 +246,7 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # generically via ``dataclasses.replace`` — no per-setting wiring needed.
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "mode": Mode.parse,
+    "autonomy": Autonomy.parse,
     "branch_prefix": str,
     "privacy": str,
     "contribute": bool,
@@ -306,6 +347,7 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     redis_db_count: int = 16
     mode: Mode = Mode.INTERACTIVE
+    autonomy: Autonomy = Autonomy.BABYSIT
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # Training-wheel for `auto` overlays: when true, the loop autonomously
@@ -388,6 +430,8 @@ class UserSettings:
     # Out of scope: internal orchestration writes (bot→user DMs, the
     # loop's own bookkeeping) — only colleague-visible on-behalf posts.
     notify_on_post_on_behalf: bool = True
+    # Derived under the ``notify`` tier by ``_apply_autonomy``; ORed with the field above.
+    notify_on_behalf: bool = False
     statusline_chain: list[str] = field(default_factory=list)
     # Usernames / handles that all map to the same human operator across
     # platforms (a GitHub login, a GitLab username, an internal handle).
@@ -654,6 +698,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         excluded_skills=excluded_skills,
         redis_db_count=int(teatree.get("redis_db_count", 16)),
         mode=mode,
+        autonomy=_resolve_autonomy(teatree),
         loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
         require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
         require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
@@ -738,6 +783,17 @@ def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceC
     return SlackVoiceClassifierMode.WARN
 
 
+def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:
+    """Resolve the global ``autonomy`` switch from a ``[teatree]`` toml table.
+
+    Absent → the conservative :attr:`Autonomy.BABYSIT`; a typo raises via
+    :meth:`Autonomy.parse` (never a silent grant of full autonomy). The
+    per-overlay override is applied later in :func:`get_effective_settings`.
+    """
+    raw = teatree.get("autonomy")
+    return Autonomy.parse(raw) if raw is not None else Autonomy.BABYSIT
+
+
 def _resolve_on_behalf_post_mode(teatree: dict[str, Any]) -> tuple[OnBehalfPostMode, bool]:
     """Resolve ``on_behalf_post_mode`` from a ``[teatree]`` toml table.
 
@@ -806,7 +862,7 @@ def worktrees_dir() -> Path:
     return load_config().user.worktrees_dir
 
 
-def get_effective_settings() -> UserSettings:
+def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     """Return the user settings with env and per-overlay overrides applied.
 
     Resolution per field (first match wins): ``T3_*`` env var (see
@@ -818,22 +874,125 @@ def get_effective_settings() -> UserSettings:
     ``get_overlay()``), then cwd-based discovery, then the single
     installed overlay.
 
+    ``overlay_name`` resolves a SPECIFIC named overlay instead of the active
+    one — the loop's scanner-builders fan out over every registered overlay,
+    not just the session's. In that mode the env layer is NOT applied (``T3_*``
+    vars target the active session's overlay, not an arbitrary named one); the
+    per-overlay ``[overlays.<name>]`` overrides and the autonomy collapse run
+    identically. This is the single resolver both paths share, so the loop's
+    auto-merge / codex consumers see the SAME ``autonomy`` posture the active
+    path exposes.
+
     To make an additional setting overridable, add it to
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or
     ``ENV_SETTING_OVERRIDES`` (env). The resolver picks it up generically
     via ``dataclasses.replace`` — no per-setting getter glue required.
     Callers read the effective value with ``get_effective_settings().X``.
+
+    As a final step, the single ``autonomy`` switch is applied: when
+    the effective autonomy resolves to :attr:`Autonomy.FULL` or
+    :attr:`Autonomy.NOTIFY`, the three user-in-the-loop approval gates
+    collapse to their autonomous value and ``mode`` is pinned to ``auto`` —
+    unless the user pinned a gate explicitly (an explicit per-gate value
+    always wins). The ``notify`` tier additionally derives
+    ``notify_on_behalf = True`` (forces the after-receipt DM on). See
+    :func:`_apply_autonomy`.
     """
-    base = load_config().user
+    config = load_config()
+    base = config.user
+    overrides = _overlay_overrides_by_name(overlay_name) if overlay_name is not None else _active_overlay_overrides()
+    settings = base if not overrides else replace(base, **overrides)
+    return _apply_autonomy(settings, hard_pinned=set(overrides), global_pinned=_global_pinned_fields(config))
+
+
+def _active_overlay_overrides() -> dict[str, Any]:
+    """Per-overlay overrides for the active overlay, with the env layer applied."""
     active = _active_overlay_entry()
     overrides: dict[str, Any] = dict(active.overrides) if active is not None else {}
     for env_var, (field_name, parser) in ENV_SETTING_OVERRIDES.items():
         raw = os.environ.get(env_var)
         if raw is not None:
             overrides[field_name] = parser(raw)
-    if not overrides:
-        return base
-    return replace(base, **overrides)
+    return overrides
+
+
+def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
+    """Per-overlay overrides for a NAMED overlay (no env layer — see caller)."""
+    for entry in discover_overlays():
+        if entry.name == overlay_name and entry.overrides:
+            return dict(entry.overrides)
+    return {}
+
+
+# User-approval gates only (never the safety floor); value each collapses to under an autonomous tier.
+_AUTONOMY_COLLAPSED_GATE_VALUES: dict[str, Any] = {
+    "on_behalf_post_mode": OnBehalfPostMode.IMMEDIATE,
+    "require_human_approval_to_merge": False,
+    "require_human_approval_to_answer": False,
+}
+
+# ``babysit`` is absent: it collapses nothing.
+_AUTONOMOUS_TIERS: frozenset[Autonomy] = frozenset({Autonomy.NOTIFY, Autonomy.FULL})
+
+
+def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:
+    """Names of settings explicitly set in the global ``[teatree]`` toml table.
+
+    A *global* explicit value is a deliberate per-gate opinion for the three
+    approval gates and still wins over the autonomy collapse — except for
+    ``mode``: a global ``[teatree] mode`` is a workspace-wide default, not a
+    statement about an autonomous overlay, so it must NOT defeat the autonomy
+    ``mode = auto`` pin (a common ``mode = "interactive"`` global would
+    otherwise leave a ``full``/``notify`` overlay half-autonomous — gates
+    relaxed but the merge path still gated on ``mode == AUTO``). A *per-overlay*
+    ``[overlays.<name>].mode`` arrives via the override layer (``hard_pinned``)
+    and DOES win — see :func:`_apply_autonomy`.
+    """
+    teatree = config.raw.get("teatree", {})
+    return set(teatree) if isinstance(teatree, dict) else set()
+
+
+def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
+    """Collapse the three approval gates for an autonomous tier (``full`` / ``notify``).
+
+    Both autonomous tiers fill only the gates the user left unpinned and pin
+    ``mode`` to ``auto`` (the merge-autonomy path is gated on ``mode == AUTO``,
+    so a ``full``/``notify`` overlay that forgot ``mode`` would otherwise be a
+    silent no-op). The ``notify`` tier additionally derives
+    ``notify_on_behalf = True`` so every on-behalf action DMs the user.
+    ``babysit`` is a no-op — every gate keeps its resolved value.
+
+    Pin precedence:
+
+    *   For the three approval gates, an explicit pin of EITHER kind
+        (``hard_pinned`` = env / per-overlay override, or ``global_pinned`` =
+        a global ``[teatree]`` key) wins — a deliberate opinion is never
+        silently overridden.
+    *   For ``mode`` only, a global ``[teatree] mode`` does NOT win (it is a
+        workspace default, not an opinion about this overlay); only a
+        ``hard_pinned`` per-overlay/env ``mode`` keeps the user's value. This
+        is the over-pin fix: a common global ``mode = "interactive"`` no longer
+        leaves an autonomous overlay half-collapsed.
+
+    The safety floor is untouched: only the keys in
+    :data:`_AUTONOMY_COLLAPSED_GATE_VALUES` (plus ``mode`` and the derived
+    ``notify_on_behalf``) are ever written here.
+    """
+    if settings.autonomy not in _AUTONOMOUS_TIERS:
+        return settings
+    gate_pinned = hard_pinned | global_pinned
+    relaxed: dict[str, Any] = {
+        field_name: value
+        for field_name, value in _AUTONOMY_COLLAPSED_GATE_VALUES.items()
+        if field_name not in gate_pinned
+    }
+    if "mode" not in hard_pinned:
+        relaxed["mode"] = Mode.AUTO
+    if settings.autonomy is Autonomy.NOTIFY and "notify_on_behalf" not in gate_pinned:
+        relaxed["notify_on_behalf"] = True
+    if not relaxed:
+        return settings
+    return replace(settings, **relaxed)
 
 
 def cadence_seconds() -> int:

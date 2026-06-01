@@ -6163,34 +6163,41 @@ def handle_mirror_question_to_slack(data: dict) -> bool:
 _AWAY_MIRROR_SUFFIX = "away-question-mirror"
 
 
-def _away_mirror_key(questions: list[dict], session_id: str) -> str:
-    """Stable hash of the question payload + session — the idempotency key."""
-    blob = json.dumps([questions, session_id], sort_keys=True, ensure_ascii=False)
+def _away_mirror_key(question: dict) -> str:
+    """Stable hash of the recorded question — the idempotency key.
+
+    The marker file is already namespaced by ``session_id`` (it is the
+    ``_state_file`` name), so the hash need not repeat the session.
+    """
+    blob = json.dumps(question, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _mirror_away_question_to_slack(questions: list[dict], session_id: str) -> None:
-    """Post an away-mode question to the user's Slack DM, exactly once.
+def _mirror_away_question_to_slack(question: dict, session_id: str) -> None:
+    """Post the recorded away-mode question to the user's Slack DM, exactly once.
 
     The away-mode handler runs FIRST and denies, short-circuiting the
     PreToolUse chain before ``handle_mirror_question_to_slack`` would
     run — so without this the away-mode question never reaches Slack
-    (the user reads Slack, not ``t3 questions list``). Idempotent by a
-    stable hash of the question payload + session recorded in a STATE_DIR
-    marker file, so a harness retry of the same tool call does not
-    double-post. Fail-open: any Slack/IO error is swallowed so the deny
-    is never blocked and the loop never wedges.
+    (the user reads Slack, not ``t3 questions list``). Mirrors only the
+    single recorded question (the one ``_record_deferred_question`` stored
+    and the user can answer), not the full payload — so the DM never shows
+    more rows than are answerable. Idempotent by a stable hash of that
+    question recorded in a session-namespaced STATE_DIR marker file, so a
+    harness retry of the same tool call does not double-post. Fail-open:
+    any Slack/IO error is swallowed so the deny is never blocked and the
+    loop never wedges.
     """
-    if not questions:
+    if not question:
         return
     slack_cfg = _slack_config_from_toml()
     if slack_cfg is None:
         return
-    key = _away_mirror_key(questions, session_id)
+    key = _away_mirror_key(question)
     marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
     if key in _read_lines(marker):
         return
-    _perform_slack_post(slack_cfg, questions)
+    _perform_slack_post(slack_cfg, [question])
     with contextlib.suppress(OSError):
         _ensure_state_dir()
         _append_line(marker, key)
@@ -6289,7 +6296,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # by a hook crash. The standard interactive flow then runs.
         return False
     with contextlib.suppress(Exception):
-        _mirror_away_question_to_slack(questions, str(data.get("session_id", "")))
+        _mirror_away_question_to_slack(first, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
         f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "

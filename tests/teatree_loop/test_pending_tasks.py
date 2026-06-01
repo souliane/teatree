@@ -24,6 +24,7 @@ class PendingTasksScannerTests(TestCase):
         assert len(signals) == 1
         assert signals[0].kind == "pending_task"
         assert signals[0].payload["phase"] == "reviewing"
+        assert signals[0].payload["status"] == Task.Status.PENDING
 
     def test_respects_limit(self) -> None:
         ticket = self._ticket("https://example.com/issues/2")

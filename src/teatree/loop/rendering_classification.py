@@ -37,6 +37,35 @@ _REVIEWER_SUMMARY_PREFIXES: tuple[str, ...] = ("Review needed:", "Approval dismi
 _TITLE_FALLBACK_LEN = 32
 
 
+type IdentityAliases = tuple[tuple[str, ...], ...]
+
+
+class _CanonicalIdentity:
+    """Maps each of one human's forge handles to a single canonical name.
+
+    Each group in *aliases* is one human's set of handles; the group's
+    first handle is that human's canonical display name. A handle outside
+    every group is its own canonical name.
+    """
+
+    def __init__(self, aliases: IdentityAliases) -> None:
+        self._canonical: dict[str, str] = {}
+        for group in aliases:
+            if not group:
+                continue
+            for handle in group:
+                self._canonical[handle] = group[0]
+
+    def of(self, handle: str) -> str:
+        return self._canonical.get(handle, handle)
+
+    def is_self_handoff(self, old_owner: str, new_owners: tuple[str, ...]) -> bool:
+        if not old_owner or not new_owners:
+            return False
+        canonical_old = self.of(old_owner)
+        return all(self.of(owner) == canonical_old for owner in new_owners)
+
+
 def _is_url(text: object) -> bool:
     return isinstance(text, str) and text.startswith(("http://", "https://"))
 
@@ -163,7 +192,13 @@ def _active_ticket_tuple(
     return (ticket_number, state, issue_url, title)
 
 
-def _classify_disposition(c: _ClassifiedActions, overlay: str, payload: Payload, reason: str) -> None:
+def _classify_disposition(
+    c: _ClassifiedActions,
+    overlay: str,
+    payload: Payload,
+    reason: str,
+    identity: _CanonicalIdentity,
+) -> None:
     """Route a ``reason``-bearing action into reassign or generic disposition buckets."""
     ref = _issue_ref_from(
         url=_str_field(payload, "url"),
@@ -174,8 +209,14 @@ def _classify_disposition(c: _ClassifiedActions, overlay: str, payload: Payload,
     old_owner = _str_field(payload, "old_owner")
     new_owners = _str_list_field(payload, "new_owners")
     if reason == "unassigned" and old_owner and new_owners:
+        if identity.is_self_handoff(old_owner, new_owners):
+            return
         c.reassign_refs.setdefault(overlay, []).append(
-            _ReassignRef(ref=ref, old_owner=old_owner, new_owners=new_owners),
+            _ReassignRef(
+                ref=ref,
+                old_owner=identity.of(old_owner),
+                new_owners=tuple(identity.of(owner) for owner in new_owners),
+            ),
         )
         return
     c.disposition_refs.setdefault(overlay, {}).setdefault(reason, []).append(ref)
@@ -205,7 +246,38 @@ def _emit_orphaned_summaries(
         c.other.append(("action_needed", StatuslineEntry(text=f"{prefix}{count} {label} operator review")))
 
 
-def _classify_one(c: _ClassifiedActions, action: DispatchAction) -> None:
+def _is_pending_task(payload: Payload) -> bool:
+    """True when *payload* belongs to a ``pending_task`` statusline fallback.
+
+    The ``PendingTasksScanner`` emits one ``pending_task`` per row; a phase
+    with no registered sub-agent falls through ``dispatch._dispatch_one``
+    to the ``in_flight`` statusline zone. Without collapse the renderer
+    prints one ``Task <id> (<phase>) <status>`` line per row — ~50 lines
+    that waste vertical space and leak the raw phase token (``short_describe``
+    / ``dogfood_smoke`` / ``architectural_review``) where a description
+    would go. The classifier intercepts these and collapses each overlay's
+    rows to one ``tasks: <status>: N`` line, grouped by status.
+    """
+    return isinstance(payload.get("task_id"), int) and isinstance(payload.get("phase"), str)
+
+
+def _emit_pending_task_summaries(
+    c: _ClassifiedActions,
+    status_counts: dict[str, dict[str, int]],
+) -> None:
+    """Append one ``tasks: <status>: N · …`` line per overlay (grouped by status).
+
+    No individual task id or phase is listed — the raw phase token never
+    surfaces as a pseudo-description, and the ~50-row dump collapses to a
+    single compact line per overlay.
+    """
+    for overlay, by_status in sorted(status_counts.items()):
+        prefix = f"[{overlay}] " if overlay else ""
+        parts = [f"{status}: {count}" for status, count in sorted(by_status.items())]
+        c.other.append(("in_flight", StatuslineEntry(text=f"{prefix}tasks: {' · '.join(parts)}")))
+
+
+def _classify_one(c: _ClassifiedActions, action: DispatchAction, identity: _CanonicalIdentity) -> None:
     """Route one statusline action into the right classified bucket.
 
     Pre-condition: ``action.kind == "statusline"``, not a slack user reply,
@@ -233,7 +305,7 @@ def _classify_one(c: _ClassifiedActions, action: DispatchAction) -> None:
         return
     reason = payload.get("reason")
     if isinstance(reason, str):
-        _classify_disposition(c, overlay, payload, reason)
+        _classify_disposition(c, overlay, payload, reason, identity)
         return
     if action.zone == "action_needed" and action.detail.startswith("Ready to start:"):
         c.ready_refs.setdefault(overlay, []).append(
@@ -256,9 +328,11 @@ def _classify_one(c: _ClassifiedActions, action: DispatchAction) -> None:
     c.other.append((action.zone, StatuslineEntry(text=f"{prefix}{action.detail}", url=url_str)))
 
 
-def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
+def _classify_actions(actions: list[DispatchAction], identity_aliases: IdentityAliases = ()) -> _ClassifiedActions:
     c = _ClassifiedActions()
+    identity = _CanonicalIdentity(identity_aliases)
     orphaned_counts: dict[str, int] = {}
+    pending_task_counts: dict[str, dict[str, int]] = {}
     for action in actions:
         if action.kind != "statusline":
             continue
@@ -274,8 +348,14 @@ def _classify_actions(actions: list[DispatchAction]) -> _ClassifiedActions:
         if action.zone == "action_needed" and _is_orphaned_task(payload):
             orphaned_counts[overlay] = orphaned_counts.get(overlay, 0) + 1
             continue
-        _classify_one(c, action)
+        if _is_pending_task(payload):
+            status = _str_field(payload, "status") or "pending"
+            by_status = pending_task_counts.setdefault(overlay, {})
+            by_status[status] = by_status.get(status, 0) + 1
+            continue
+        _classify_one(c, action, identity)
     _emit_orphaned_summaries(c, orphaned_counts)
+    _emit_pending_task_summaries(c, pending_task_counts)
     _dedup_classified(c)
     return c
 
