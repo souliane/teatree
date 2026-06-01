@@ -33,8 +33,14 @@ from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
+from teatree.hooks._publish_detection import segment_is_api_call as _segment_is_api_call
 from teatree.hooks._repo_visibility import _config_path, slug_for_cwd, slug_is_allowlisted_private
-from teatree.hooks.publish_surface import _GH_ELIGIBLE_VERBS, _GLAB_ELIGIBLE_VERBS, _extract_repo_flag
+from teatree.hooks.publish_surface import (
+    _GH_ELIGIBLE_VERBS,
+    _GLAB_ELIGIBLE_VERBS,
+    _extract_repo_flag,
+    _segment_is_publish_inert,
+)
 
 
 @dataclass(frozen=True)
@@ -176,16 +182,6 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
     return _destination_from_words(first_segment_words(command), cwd)
 
 
-def _segment_is_api_call(words: list[str]) -> bool:
-    """Return True iff ``words`` is a raw ``gh api`` / ``glab api`` REST call.
-
-    Raw REST can target any surface, so a command carrying such a segment is
-    never SKIPPED -- it is scanned, mirroring the carve-out's exclusion of
-    ``api`` from the eligible posting verbs.
-    """
-    return len(words) >= 2 and words[0] in {"gh", "glab"} and words[1] == "api"  # noqa: PLR2004
-
-
 def _segment_carries_substitution_or_transport(words: list[str]) -> bool:
     """Return True iff any token is a substitution marker or transport construct.
 
@@ -292,16 +288,23 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
 
     A segment is skip-safe when it is one of:
 
-    - a NON-publish navigation/inert segment (``cd``, ``git push``, ...) --
-        it resolves to no destination AND carries no substitution/transport
-        construct, so it cannot itself post to a public surface; or
     - a publish segment whose destination resolves to a provably-INTERNAL
-        repo/namespace and which carries no substitution/transport construct.
+        repo/namespace, which carries no substitution/transport construct; or
+    - a segment that provably cannot publish a body to a forge at all
+        (:func:`publish_surface._segment_is_publish_inert` -- a ``cd``/``git
+        push``/``echo`` navigation/local segment that carries no
+        ``gh``/``glab``/``curl`` forge token and no transport construct).
 
-    A segment that is a raw ``gh api`` / ``glab api`` call, carries a
-    ``$(...)`` / process-substitution / redirection construct, or resolves
-    to a PUBLIC or unresolvable publish destination is NOT skip-safe -- the
-    command is scanned.
+    Every OTHER segment is NOT skip-safe and makes the whole command scan
+    (fail-closed): a raw ``gh api`` / ``glab api`` call, a
+    ``$(...)`` / process-substitution / redirection construct, a PUBLIC or
+    unresolvable publish destination, and -- the closed inversion -- ANY
+    segment whose leading word is an unrecognised executable (an interpreter
+    ``sh``/``bash``/``eval``, an ``ssh``/``xargs`` wrapper, ...). Such a
+    segment resolves to no destination yet is not provably inert, so it could
+    run a hidden public post; skipping on the strength of a sibling internal
+    segment is exactly the leak this guards. This mirrors the commit chain's
+    prove-pure-or-fail-closed inversion rather than enumerating transports.
     """
     segments = command_segments(command)
     if not segments:
@@ -315,21 +318,6 @@ def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path 
             if is_public_destination(dest, config_path=config_path):
                 return False
             saw_internal_publish = True
-        elif _segment_is_forge_invocation(words):
+        elif not _segment_is_publish_inert(words):
             return False
     return saw_internal_publish
-
-
-def _segment_is_forge_invocation(words: list[str]) -> bool:
-    """Return True iff ``words`` is a ``gh``/``glab`` invocation (after cd/env).
-
-    A forge segment whose destination did NOT resolve (a flagless post with no
-    resolvable current repo, an unrecognised sub-command) is an UNRESOLVABLE
-    publish target -- the gate must scan it (fail-closed), never skip on the
-    strength of a sibling internal segment. A truly inert segment (``cd``,
-    ``git push``, ``echo``) is not a forge invocation and stays skip-safe.
-    """
-    rest = words
-    while rest and rest[0] == "cd":
-        rest = rest[2:]
-    return bool(rest) and rest[0] in {"gh", "glab"}

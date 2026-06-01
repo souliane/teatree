@@ -2947,18 +2947,21 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         return False
     tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
 
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
     command = tool_input.get("command", "")
     cwd_repo = _resolve_cwd_repo(data)
+
+    # A high-confidence secret leaks on EVERY surface -- a title, a short ``-t``
+    # flag, a ``gh api -f title=`` field, a ``git -C ... commit`` subject -- not
+    # only the description body, and on an internal post the destination gate
+    # would SKIP or a command carrying the --allow-banned-term override. Scan the
+    # WIDE surface set and block before the payload-None early-return and any skip
+    # / override short-circuit (#1672 secrets-always-blocked invariant).
+    if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
+        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
+
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
     if payload is None:
         return False
-
-    # A high-confidence secret leaks on EVERY surface, including an internal /
-    # private post the destination gate would otherwise SKIP and a command
-    # carrying the --allow-banned-term override. Block it before any skip or
-    # override short-circuit (#1672 secrets-always-blocked invariant).
-    if publish_surface.contains_secret(payload):
-        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
 
     skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
         tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo)

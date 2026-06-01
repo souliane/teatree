@@ -24,7 +24,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_banned_terms_pretool
-from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks import _command_parser, _repo_visibility, banned_terms_scanner
+from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
 @pytest.fixture
@@ -94,6 +95,52 @@ class TestScanText:
 
     def test_missing_config_returns_none(self, tmp_path: Path) -> None:
         assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+
+    def test_fail_closed_sentinel_blocks(self, config: Path) -> None:
+        # An unresolvable body (the sentinel) is not a configured term, so
+        # delegating it to check-banned-terms.sh would clear it; it must BLOCK,
+        # mirroring the quote / bare-reference sibling scanners.
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=config) is not None
+
+    def test_fail_closed_sentinel_blocks_even_without_config(self, tmp_path: Path) -> None:
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
+
+
+class TestExtractSecretScanSurfaces:
+    def test_title_long_flag_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f'gh pr create -R souliane/teatree --title "{secret}"')
+        assert secret in text
+
+    def test_short_title_flag_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f'gh pr create -R souliane/teatree -t "{secret}"')
+        assert secret in text
+
+    def test_api_non_body_field_secret_is_surfaced(self) -> None:
+        secret = "ghp_" + "A" * 40
+        text = _command_parser.extract_secret_scan_text(f"gh api repos/souliane/teatree/issues -f title={secret}")
+        assert secret in text
+
+
+class TestIsPublishCommandTokenAware:
+    def test_api_after_interspersed_persistent_flag(self) -> None:
+        assert _command_parser.is_publish_command("gh --hostname github.com api repos/o/r/issues -f body=x")
+
+    def test_api_after_interspersed_method_flag(self) -> None:
+        assert _command_parser.is_publish_command("gh -X POST api repos/o/r/issues -f body=x")
+
+    def test_git_c_commit_is_detected(self) -> None:
+        assert _command_parser.is_publish_command('git -C /some/dir commit -m "msg"')
+
+    def test_git_global_dir_commit_long_message_is_detected(self) -> None:
+        assert _command_parser.is_publish_command('git --git-dir=/x/.git --work-tree=/x commit --message "msg"')
+
+    def test_flagless_git_commit_is_not_a_publish_surface(self) -> None:
+        assert not _command_parser.is_publish_command("git -C /some/dir commit")
+
+    def test_plain_non_publish_command_stays_false(self) -> None:
+        assert not _command_parser.is_publish_command("git -C /some/dir status")
 
 
 class TestExtractPublishPayload:
