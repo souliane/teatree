@@ -102,7 +102,11 @@ _BUDGET_TOP_LEVEL_BYTES = 88_000
 # is a load-bearing config fact; after trimming the verbose prose the appendix
 # corpus is 110,045 B, so the budget is raised one minimal step (~455 B
 # headroom) to admit the row.
-_BUDGET_APPENDICES_BYTES = 110_500
+# Reviewed bump (#1697): the §17.4.2 line documenting the by-product
+# `ReviewVerdict` record + `review record`/`review status` lookup is a
+# load-bearing architectural fact; the appendix corpus is 110,748 B, raised
+# one minimal step to 111,500 (~752 B headroom) to admit the line.
+_BUDGET_APPENDICES_BYTES = 111_500
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -125,7 +129,10 @@ _BUDGET_APPENDICES_BYTES = 110_500
 # coupling invariant stays tight. Live total corpus is 192,264 B; raised to
 # 198,500 (~6.2 KB headroom). Invariant holds: 198,500 - 88,000 = 110,500
 # <= 110,500.
-_BUDGET_TOTAL_BYTES = 198_500
+# Reviewed bump (#1697): tracks the appendix raise to 111,500 for the §17.4.2
+# ReviewVerdict line so the coupling invariant stays tight. Raised to 199,500.
+# Invariant holds: 199,500 - 88,000 = 111,500 <= 111,500.
+_BUDGET_TOTAL_BYTES = 199_500
 
 
 def _repo_root() -> pathlib.Path:
