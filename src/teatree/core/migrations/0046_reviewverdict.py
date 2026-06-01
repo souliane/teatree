@@ -7,7 +7,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0044_looplease_owner_pid"),
+        ("core", "0045_evalrunrecord_evalscenarioresult"),
     ]
 
     operations = [

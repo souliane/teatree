@@ -88,6 +88,24 @@ class TestRecordContract(TestCase):
                 reviewer_identity="cold-reviewer",
             )
 
+    def test_maker_or_loop_reviewer_identity_is_refused(self) -> None:
+        # A verdict records an INDEPENDENT cold review; a maker/coding-agent/
+        # loop identity is a self-attestation and is refused, mirroring
+        # MergeClear.issue (§17.8 clause 3) so the read-side safe-to-approve
+        # check can never be satisfied by the author rubber-stamping itself.
+        for identity in ("maker", "coding-agent", "merge-loop", "maker:opus", "loop"):
+            with (
+                self.subTest(identity=identity),
+                pytest.raises(ReviewVerdictError, match="maker/coding-agent/loop role"),
+            ):
+                ReviewVerdict.record(
+                    pr_id=1,
+                    slug="souliane/teatree",
+                    reviewed_sha=_SHA,
+                    verdict="merge_safe",
+                    reviewer_identity=identity,
+                )
+
     def test_unknown_blast_class_is_refused(self) -> None:
         with pytest.raises(ReviewVerdictError, match="blast_class"):
             ReviewVerdict.record(
