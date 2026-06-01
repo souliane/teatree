@@ -105,6 +105,12 @@ _GH_GLAB_WORDS: Final[frozenset[str]] = frozenset({"gh", "glab"})
 # scanned for both ``gh`` and ``glab`` and both the ``$(`` and backtick forms.
 _SUBST_MARKERS: Final[tuple[str, ...]] = ("$(gh", "$(glab", "`gh", "`glab")
 
+# Shell interpreters whose ``-c`` argument is a command STRING bash hands to a
+# child shell. A ``gh``/``glab`` invocation inside that quoted string is one
+# WORD token that does not strip to ``gh``/``glab`` (the count invariant misses
+# it) and the segment's own ``words[0]`` is the shell, not gh/glab.
+_SHELL_WORDS: Final[frozenset[str]] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash"})
+
 
 def is_git_commit_command(command: str) -> bool:
     """Return True iff the first command segment is a ``git commit``.
@@ -205,6 +211,32 @@ def _count_top_level_gh_glab_segments(command: str) -> int:
     return sum(1 for words in _command_segments(command) if words[0] in _GH_GLAB_WORDS)
 
 
+def _shell_c_string_hides_gh_glab(words: list[str]) -> bool:
+    """Return True iff a shell ``-c`` command-string in ``words`` runs ``gh``/``glab``.
+
+    A ``sh``/``bash``/``zsh``/``dash``/``ksh``/``ash`` segment whose ``-c``-style
+    flag (any flag token containing ``c`` -- ``-c``, ``-lc``, ``-ic``, ...) is
+    followed by a command-string argument hands that STATIC substring to a child
+    shell. The argument is re-tokenized and any inner token that strips to
+    ``gh``/``glab`` (the same opener-strip used for the count invariant's T) means
+    a real gh/glab invocation is hidden behind the shell wrapper -> fail closed.
+
+    Scoped STRICTLY to the argument immediately following the ``-c`` flag -- a
+    prose ``--body "... gh ..."`` token elsewhere in a posting segment is NOT
+    re-tokenized, so an ordinary private post mentioning the word ``gh`` is not
+    over-blocked.
+    """
+    if not words or words[0] not in _SHELL_WORDS:
+        return False
+    for i, word in enumerate(words[1:-1], start=1):
+        if word.startswith("-") and "c" in word:
+            inner = tokenize(words[i + 1])
+            return any(
+                _strip_leading_openers(token.value) in _GH_GLAB_WORDS for token in inner if token.kind is TokenKind.WORD
+            )
+    return False
+
+
 def _command_hides_gh_glab(command: str) -> bool:
     r"""Return True iff a ``gh``/``glab`` invocation is hidden from the segment scan.
 
@@ -218,12 +250,22 @@ def _command_hides_gh_glab(command: str) -> bool:
     can hide behind a private one. This detects that hiding so the carve-out
     fails closed (caller returns False => hard-block, no downgrade).
 
-    Two structurally-complete checks; either firing means a hidden invocation:
+    Three structurally-complete checks; any firing means a hidden invocation:
 
     - **Substring marker:** any WORD token containing ``$(gh``/``$(glab`` or a
         backtick immediately followed by ``gh``/``glab``. This catches the
         in-ONE-token quoted substitution ``--body "$(gh ... PUB ...)"`` that the
         count check alone misses (the whole substitution is one token).
+    - **Shell ``-c`` command-string:** a ``sh``/``bash``/``zsh``/``dash``/``ksh``/
+        ``ash`` segment whose ``-c``-style flag is followed by a command-string
+        argument that, when re-tokenized, runs ``gh``/``glab``
+        (:func:`_shell_c_string_hides_gh_glab`). The inner verb lives wholly
+        inside the quoted ``-c`` argument -- one WORD token that does not strip to
+        ``gh``/``glab`` (T not raised) inside a ``sh`` segment (R not raised) --
+        so the count invariant alone misses ``... && sh -c "gh ... --repo PUBLIC
+        ..."``. Re-tokenization is scoped STRICTLY to the ``-c`` argument, never
+        an arbitrary token, so an ordinary private post whose ``--body`` prose
+        contains the word ``gh`` is not over-blocked.
     - **Count invariant:** ``T > R`` where ``T`` is the number of WORD tokens
         that, after stripping a leading run of opener prefixes
         (:func:`_strip_leading_openers`), equal exactly ``gh``/``glab`` -- every
@@ -244,9 +286,21 @@ def _command_hides_gh_glab(command: str) -> bool:
     (``--assignee gh`` => ``T==2, R==1`` => fail-closed). Over-block is the SAFE
     failure for a privacy gate; fragile option-value parsing to avoid it is not
     worth the bypass surface it would add.
+
+    Accepted static-analysis limitations -- these resolve the gh/glab verb at
+    RUNTIME, so a static gate that cannot execute the shell cannot see them, and
+    fragile heuristics for them are deliberately NOT attempted:
+
+    - **Variable indirection:** ``G=gh; "$G" issue create --repo PUBLIC ...`` --
+        the command word is a parameter expansion resolved when the shell runs.
+    - **Substitution producing the verb:** ``$(echo gh) issue create ...`` or the
+        backtick ``\`echo gh\` issue create ...`` -- the verb is the OUTPUT of an
+        inner command, not a static token.
     """
     tokens = [token for token in tokenize(command) if token.kind is TokenKind.WORD]
     if any(marker in token.value for token in tokens for marker in _SUBST_MARKERS):
+        return True
+    if any(_shell_c_string_hides_gh_glab(words) for words in _command_segments(command)):
         return True
     total = sum(1 for token in tokens if _strip_leading_openers(token.value) in _GH_GLAB_WORDS)
     return total > _count_top_level_gh_glab_segments(command)

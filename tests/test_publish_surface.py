@@ -812,6 +812,12 @@ _MUST_ALLOW: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    _CorpusRow(
+        "A13",
+        f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "date"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 # must-DENY: the load-bearing under-block guards. A public/unknown target, a
@@ -970,6 +976,41 @@ _MUST_DENY: tuple[_CorpusRow, ...] = (
         _TERM,
         _PRIV_REMOTE,
     ),
+    # S1-S4: the shell-string ``-c`` under-block the count invariant misses.
+    # The inner ``gh`` lives wholly inside the quoted ``-c`` argument, so it is
+    # ONE WORD token that does NOT strip to ``gh``/``glab`` (T not raised) and the
+    # ``sh``/``bash``/``zsh`` segment's words[0] is the shell, not gh/glab (R not
+    # raised), and there is no ``$(gh`` marker -- so the count check alone passes
+    # it. Re-tokenizing the ``-c`` argument and checking for an inner gh/glab
+    # command-word fails closed on all four shell + flag variants.
+    _CorpusRow(
+        "S1",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& sh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S2",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& bash -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S3",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& zsh -c "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "S4",
+        f"gh issue create --repo {_PRIV_SLUG} --body ok "
+        f'&& sh -lc "gh issue create --repo {_PUBLIC_SLUG} --body {_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
 )
 
 
@@ -1004,6 +1045,49 @@ class TestCarveOutGoldenCorpus:
     @pytest.mark.parametrize("row", _MUST_DENY, ids=lambda r: r.case)
     def test_must_deny_stays_hard_blocked(self, row: _CorpusRow, tmp_path: Path) -> None:
         assert self._verdict(row, tmp_path) is False, f"{row.case}: expected hard-block (carve-out must NOT apply)"
+
+
+class TestShellCStringHidesGhGlab:
+    """The scoped ``sh -c "gh ..."`` command-string fail-closed detector."""
+
+    @pytest.mark.parametrize("shell", ["sh", "bash", "zsh", "dash", "ksh", "ash"])
+    @pytest.mark.parametrize("flag", ["-c", "-lc", "-ic", "-xc"])
+    def test_inner_gh_in_c_string_fails_closed(self, shell: str, flag: str) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && {shell} {flag} "gh issue create --repo {_PUBLIC_SLUG}"'
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_inner_glab_in_c_string_fails_closed(self) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash -c "glab mr create --repo {_PUBLIC_SLUG}"'
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_shell_c_string_without_inner_gh_does_not_block(self) -> None:
+        assert publish_surface._command_hides_gh_glab('sh -c "date"') is False
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && sh -c "echo done"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_shell_segment_without_c_flag_does_not_block(self) -> None:
+        # ``sh script.sh gh`` -- no ``-c`` flag, so the command-string detector
+        # finds nothing to re-tokenize; the count invariant covers a real gh
+        # token elsewhere.
+        assert publish_surface._command_hides_gh_glab("sh script.sh") is False
+        # ``-e`` precedes the ``-c`` flag: a non-c flag is skipped before the
+        # ``-c`` argument is re-tokenized.
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body ok && bash -e -c "gh issue create --repo {_PUBLIC_SLUG}"'
+        assert publish_surface._command_hides_gh_glab(cmd) is True
+
+    def test_prose_body_with_literal_gh_word_does_not_over_block(self) -> None:
+        cmd = f'gh issue create --repo {_PRIV_SLUG} --body "run gh issue list later"'
+        assert publish_surface._command_hides_gh_glab(cmd) is False
+
+    def test_runtime_resolved_verbs_are_accepted_static_limits(self) -> None:
+        # Documented limitations: a static gate that cannot execute the shell
+        # cannot see a verb produced at runtime. These are NOT caught by design.
+        var_indirection = (
+            f'gh issue create --repo {_PRIV_SLUG} --body ok && G=gh; "$G" issue create --repo {_PUBLIC_SLUG}'
+        )
+        subst_verb = f"gh issue create --repo {_PRIV_SLUG} --body ok && $(echo gh) issue create --repo {_PUBLIC_SLUG}"
+        assert publish_surface._command_hides_gh_glab(var_indirection) is False
+        assert publish_surface._command_hides_gh_glab(subst_verb) is False
 
 
 class TestProbeEnvResolution:
