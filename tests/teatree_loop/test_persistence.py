@@ -31,7 +31,8 @@ class TestPersistReviewer(TestCase):
         assert len(created) == 1
         task = created[0]
         assert task.phase == "reviewing"
-        assert task.execution_target == Task.ExecutionTarget.HEADLESS
+        # reviewing is loop-dispatched → in-session (subscription-covered).
+        assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         ticket = task.ticket
         assert ticket.role == Ticket.Role.REVIEWER
         assert ticket.issue_url == "https://example.com/owner/repo/pull/42"

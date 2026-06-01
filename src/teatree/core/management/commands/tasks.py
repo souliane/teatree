@@ -76,14 +76,17 @@ class Command(TyperCommand):
         # #801 SSOT: canonical earliest+locked policy (was -pk-latest
         # else an unlocked raw create); non-blank agent_id on miss.
         session = ticket_obj.resolve_phase_session(agent_id="phase-handoff")
-        target = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
+        requested = Task.ExecutionTarget.INTERACTIVE if interactive else Task.ExecutionTarget.HEADLESS
         task = Task.objects.create(
             ticket=ticket_obj,
             session=session,
             phase=phase,
-            execution_target=target,
+            execution_target=requested,
             execution_reason=body,
         )
+        # ``Task.save`` routes a loop-dispatched phase to INTERACTIVE regardless
+        # of ``--interactive``, so report the persisted target, not the request.
+        target = task.execution_target
         self.stdout.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}, target={target}).")
         return {"task_id": task.pk, "ticket_id": ticket_obj.pk, "phase": phase, "execution_target": target}
 
@@ -170,6 +173,66 @@ class Command(TyperCommand):
                 )
             task.complete()
         self.stdout.write(f"Task {task_id} completed.")
+
+    @command(name="record-attempt")
+    def record_attempt(
+        self,
+        task_id: Annotated[int, typer.Argument(help="Task ID the in-session sub-agent ran.")],
+        result_json: Annotated[
+            str,
+            typer.Argument(help="The agent result envelope as JSON. Use '-' to read from stdin."),
+        ],
+        *,
+        agent_session_id: Annotated[
+            str,
+            typer.Option(help="Claude session id of the sub-agent, for resume context on follow-ups."),
+        ] = "",
+    ) -> None:
+        """Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path).
+
+        The ``/loop`` slot calls this after its ``Agent`` sub-agent returns: it
+        hands the same structured result envelope ``run_headless`` would have
+        parsed out of ``claude -p`` stdout, and this drives the Task to its
+        terminal state through the SHARED recorder — schema-key check, the
+        #1284 phase-evidence gate, then ``complete`` (auto-advancing the
+        ticket) or ``fail``. Pairs with ``t3 loop claim-next`` /
+        ``loop_dispatch spawn-claim``: claim → spawn → record-attempt. The task
+        must be ``claimed`` (the claim is the spawn boundary); recording onto a
+        finished task is rejected.
+        """
+        from teatree.agents.attempt_recorder import (  # noqa: PLC0415
+            AttemptUsage,
+            ResultEnvelopeError,
+            parse_result_envelope,
+            record_result_envelope,
+        )
+
+        payload = sys.stdin.read() if result_json == "-" else result_json
+        try:
+            result = parse_result_envelope(payload)
+        except ResultEnvelopeError as exc:
+            self.stderr.write(str(exc))
+            raise SystemExit(1) from None
+
+        try:
+            task = Task.objects.get(pk=task_id)
+        except Task.DoesNotExist:
+            self.stderr.write(f"Task {task_id} not found.")
+            raise SystemExit(1) from None
+
+        if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+            self.stderr.write(f"Task {task_id} is already '{task.status}'; cannot record an attempt.")
+            raise SystemExit(1)
+        if task.status != Task.Status.CLAIMED:
+            self.stderr.write(
+                f"Task {task_id} is '{task.status}', not 'claimed'. Claim it first "
+                "(`t3 loop claim-next` / `loop_dispatch spawn-claim`) before recording its attempt.",
+            )
+            raise SystemExit(1)
+
+        attempt = record_result_envelope(task, result, usage=AttemptUsage(agent_session_id=agent_session_id))
+        task.refresh_from_db()
+        self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")
 
     @command(name="list")
     def list_tasks(
