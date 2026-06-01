@@ -50,6 +50,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         AUTHOR = "author", "Author"
         REVIEWER = "reviewer", "Reviewer"
 
+    class Kind(models.TextChoices):
+        FEATURE = "feature", "Feature"
+        FIX = "fix", "Fix"
+
     # #808: the ship reconcile is PHASE-DRIVEN / state-complete, not an
     # enumerated source allow-list. The shipping gate already verified the
     # aggregated cross-session phase ledger (the single source of truth)
@@ -101,6 +105,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     repos = models.JSONField(default=list, blank=True)
     state = FSMField(max_length=32, choices=State.choices, default=State.NOT_STARTED)
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.AUTHOR)
+    kind = models.CharField(max_length=16, choices=Kind.choices, default=Kind.FEATURE)
     extra = models.JSONField(default=dict, blank=True)
     context = models.TextField(blank=True, default="")
     short_description = models.CharField(max_length=80, blank=True, default="")
@@ -636,7 +641,18 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        pass
+        """Reach DELIVERED (done).
+
+        For a ``kind=fix`` ticket the Definition of Done requires a validated
+        FixRecord: ``check_fix_record_dod`` raises :class:`FixRecordDodError`
+        (an ``InvalidTransitionError`` subclass) so the loop's outer atomic
+        rolls the advance back and the ticket stays RETROSPECTED — merged on
+        the forge, but not yet *done*. A manifestation patch with no stated
+        root cause cannot reach DELIVERED. Feature tickets pass unconditionally.
+        """
+        from teatree.core.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
+
+        check_fix_record_dod(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:
