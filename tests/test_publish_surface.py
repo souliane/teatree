@@ -23,17 +23,18 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
-from teatree.hooks import publish_surface
+from teatree.hooks import _repo_visibility, publish_surface
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
 class _FakeHomePath:
     """Drop-in for the module's ``Path`` that pins ``home()`` to a tmp dir.
 
-    Only ``publish_surface``'s ``Path(base)`` and ``Path.home()`` uses need
+    Only ``_repo_visibility``'s ``Path(base)`` and ``Path.home()`` uses need
     to resolve; everything else delegates to the real ``pathlib.Path``, so a
     test can relocate the cache root without globally patching
     ``pathlib.Path.home`` (which would break pytest's own tmp machinery).
@@ -180,8 +181,34 @@ class TestIsGhGlabPostingCommand:
     def test_git_commit_is_not_eligible(self) -> None:
         assert publish_surface.is_gh_glab_posting_command('git commit -m "x"') is False
 
-    def test_command_after_separator_does_not_count(self) -> None:
-        assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is False
+    def test_command_after_separator_is_now_seen(self) -> None:
+        # INTENTIONAL CHANGE (#1657): the carve-out must SEE a posting verb
+        # behind a leading prefix segment, else it over-blocks a legitimate
+        # private-repo post (the scanner already scans the whole payload).
+        # Previously asserted False (first-segment-only).
+        assert publish_surface.is_gh_glab_posting_command("echo hi && gh pr create --title x") is True
+
+    def test_prefixed_posting_segment_target_still_resolves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Seeing the verb behind a prefix must NOT lose target resolution:
+        # the explicit ``--repo`` of the posting segment still drives privacy,
+        # and a public target behind a ``cd`` prefix stays NOT-private.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.posting_command_targets_private_repo(
+                "cd /x && gh pr create --repo acmecorp-engineering/p --title x", None, config_path=cfg
+            )
+            is True
+        )
+        assert (
+            publish_surface.posting_command_targets_private_repo(
+                "cd /x && gh pr create --repo souliane/teatree --title x", None, config_path=cfg
+            )
+            is False
+        )
 
 
 class TestExtractRepoFlag:
@@ -327,14 +354,14 @@ class TestVisibilityCachePathCollision:
         (home / ".teatree").write_text("# shell-sourceable config FILE\n", encoding="utf-8")
         monkeypatch.delenv("T3_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+        monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
 
     def test_default_cache_root_avoids_home_teatree_config_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         home = tmp_path / "home"
         self._patch_home_with_teatree_file(home, monkeypatch)
-        root = publish_surface._cache_root()
+        root = _repo_visibility._cache_root()
         assert (home / ".teatree") not in root.parents
         assert root != home / ".teatree"
 
@@ -344,9 +371,9 @@ class TestVisibilityCachePathCollision:
         home = tmp_path / "home"
         self._patch_home_with_teatree_file(home, monkeypatch)
 
-        publish_surface._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
+        _repo_visibility._write_visibility_cache("gitlab.com/acme/secret", "PRIVATE")
 
-        assert publish_surface._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
+        assert _repo_visibility._read_visibility_cache("gitlab.com/acme/secret") == "PRIVATE"
         assert (home / ".cache" / "teatree" / "repo-visibility-cache.json").is_file()
 
     def test_cache_falls_back_when_xdg_cache_teatree_is_a_file(
@@ -357,11 +384,11 @@ class TestVisibilityCachePathCollision:
         (home / ".cache" / "teatree").write_text("not a dir\n", encoding="utf-8")
         monkeypatch.delenv("T3_DATA_DIR", raising=False)
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
-        monkeypatch.setattr(publish_surface, "Path", _FakeHomePath(home))
+        monkeypatch.setattr(_repo_visibility, "Path", _FakeHomePath(home))
 
-        publish_surface._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
+        _repo_visibility._write_visibility_cache("gitlab.com/acme/x", "PUBLIC")
 
-        assert publish_surface._read_visibility_cache("gitlab.com/acme/x") == "PUBLIC"
+        assert _repo_visibility._read_visibility_cache("gitlab.com/acme/x") == "PUBLIC"
         assert (home / ".teatree-data" / "repo-visibility-cache.json").is_file()
 
 
@@ -718,3 +745,177 @@ class TestCarveOutApplies:
             )
             is True
         )
+
+
+# Slugs used across the golden corpus: the PRIVATE namespace is injected into
+# the tmp allowlist; the PUBLIC slug is this repo, deliberately NOT allowlisted.
+_PRIV_NS = "acmecorp-engineering"
+_PRIV_SLUG = f"{_PRIV_NS}/acmecorp-product"
+_PUBLIC_SLUG = "souliane/teatree"
+_PRIV_REMOTE = f"git@gitlab.com:{_PRIV_SLUG}.git"
+_UNKNOWN_REMOTE = "git@github.com:some/unknown-repo.git"
+_TERM = "acmewidget"
+_FAKE_SECRET = "ghp_" + "a" * 36
+
+
+class _CorpusRow(NamedTuple):
+    """One golden-corpus case: command + body and the CWD remote.
+
+    The expected verdict is implicit in which tuple the row lives in
+    (``_MUST_ALLOW`` => downgrade, ``_MUST_DENY`` => hard-block), so there is
+    no boolean field to pass positionally.
+    """
+
+    case: str
+    command: str
+    payload: str
+    cwd_remote: str
+
+
+# must-ALLOW: a private-target post/commit downgrades to warn. These prove the
+# over-block is fixed -- prefixed / env / cd-prefixed posting verbs are seen.
+_MUST_ALLOW: tuple[_CorpusRow, ...] = (
+    _CorpusRow("A1", f'gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A2", f'cd /x && gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A3", f'ENV=1 gh issue create --repo {_PRIV_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A4", f'gh issue create --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A5", f"cd sub && gh pr create --repo {_PRIV_SLUG} --body x", _TERM, _PRIV_REMOTE),
+    _CorpusRow("A6", f'git commit -m "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("A7", f'glab mr create --repo {_PRIV_SLUG} --description "{_TERM}"', _TERM, _PRIV_REMOTE),
+)
+
+# must-DENY: the load-bearing under-block guards. A public/unknown target, a
+# raw-REST segment, a secret, a chained public posting segment, or the
+# commit-plus-public-post guard must ALL stay hard-blocked.
+_MUST_DENY: tuple[_CorpusRow, ...] = (
+    _CorpusRow("D1", f'cd /x && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"', _TERM, _PRIV_REMOTE),
+    _CorpusRow("D2", f"ENV=1 gh issue create --repo {_PUBLIC_SLUG} --body x", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D3", f"gh issue create --repo {_PUBLIC_SLUG}", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D4", f'gh issue create --body "{_TERM}"', _TERM, _UNKNOWN_REMOTE),
+    _CorpusRow("D5", f"gh api repos/{_PRIV_SLUG}/issues -f body={_TERM}", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D6", "glab api projects/x -X POST", _TERM, _PRIV_REMOTE),
+    _CorpusRow("D7", 'git commit -m "x"', f"body has {_FAKE_SECRET} embedded", _PRIV_REMOTE),
+    _CorpusRow("D8", f'gh issue create --repo {_PRIV_SLUG} --body "{_FAKE_SECRET}"', _FAKE_SECRET, _PRIV_REMOTE),
+    _CorpusRow(
+        "D9",
+        f"gh issue create --repo {_PRIV_SLUG} --body x && gh issue create --repo {_PUBLIC_SLUG} --body x",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow(
+        "D10",
+        f"gh issue create --repo {_PRIV_SLUG} && gh api repos/x/issues -f body=x",
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+    _CorpusRow("D11", f"gh issue create --repo {_PRIV_SLUG} --repo {_PUBLIC_SLUG}", _TERM, _PRIV_REMOTE),
+    _CorpusRow(
+        "D12",
+        f'git commit -m "{_TERM}" && gh issue create --repo {_PUBLIC_SLUG} --body "{_TERM}"',
+        _TERM,
+        _PRIV_REMOTE,
+    ),
+)
+
+
+class TestCarveOutGoldenCorpus:
+    """HERMETIC golden must-ALLOW / must-DENY corpus for the carve-out.
+
+    The binding durable artifact for the segment-scan over-block fix and the
+    under-block guards. Fully offline: ``gh``/``glab`` are ABSENT from PATH and
+    ``_PROBE_PATH_EXTRA`` is emptied, so any non-allowlisted slug resolves
+    NOT-private deterministically (no network). The PRIVATE namespace is
+    injected into the tmp allowlist; the PUBLIC slug is never allowlisted.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline_probe(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No gh/glab on PATH and no augmented-path fallback -> the probe finds
+        # no tool -> any non-allowlisted slug is NOT private (deterministic).
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "probebin"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        monkeypatch.delenv("GH_REPO", raising=False)
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def _verdict(self, row: _CorpusRow, tmp_path: Path) -> bool:
+        cfg = _config(tmp_path, [_PRIV_NS])
+        cwd = _repo_with_remote(tmp_path / "cwd", row.cwd_remote)
+        return publish_surface.carve_out_applies("Bash", row.command, row.payload, cwd, config_path=cfg)
+
+    @pytest.mark.parametrize("row", _MUST_ALLOW, ids=lambda r: r.case)
+    def test_must_allow_downgrades(self, row: _CorpusRow, tmp_path: Path) -> None:
+        assert self._verdict(row, tmp_path) is True, f"{row.case}: expected downgrade (carve-out applies)"
+
+    @pytest.mark.parametrize("row", _MUST_DENY, ids=lambda r: r.case)
+    def test_must_deny_stays_hard_blocked(self, row: _CorpusRow, tmp_path: Path) -> None:
+        assert self._verdict(row, tmp_path) is False, f"{row.case}: expected hard-block (carve-out must NOT apply)"
+
+
+class TestProbeEnvResolution:
+    """G2 — the probe resolves its tool against the augmented PATH.
+
+    The PreToolUse subprocess inherits a restricted PATH; a bare ``gh`` may not
+    resolve even though it is installed under a homebrew/local bin. The probe
+    augments PATH with ``_PROBE_PATH_EXTRA`` before ``shutil.which``, so a tool
+    absent from PATH but present in an extra dir still resolves PRIVATE.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_probe_resolves_tool_from_extra_path_not_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [])  # empty allowlist -> must use the probe
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/secret-repo.git")
+        # gh shim lives in an EXTRA dir, NOT on PATH (only git is on PATH).
+        extra_bin = tmp_path / "extra"
+        _make_gh_shim(extra_bin, "PRIVATE")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        # The extra dir holds the gh shim; the standard dirs let the shim's
+        # ``#!/usr/bin/env bash`` shebang resolve from the augmented probe env.
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", (str(extra_bin), "/usr/bin", "/bin"))
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is True
+
+    def test_visibility_unknown_returns_slug_when_probe_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [])  # not allowlisted
+        repo = _repo_with_remote(tmp_path / "r", _PRIV_REMOTE)
+        # No probe tool anywhere -> visibility is unknown in-hook.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        slug = publish_surface.visibility_unknown_for_block(
+            f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
+        )
+        assert slug == _PRIV_SLUG
+
+    def test_visibility_unknown_returns_none_when_allowlisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, [_PRIV_NS])  # allowlisted -> known private -> not "unknown"
+        repo = _repo_with_remote(tmp_path / "r", _PRIV_REMOTE)
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", ())
+        slug = publish_surface.visibility_unknown_for_block(
+            f"gh issue create --repo {_PRIV_SLUG} --body x", repo, config_path=cfg
+        )
+        assert slug is None
+
+    def test_visibility_unknown_returns_none_when_genuinely_public(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A genuinely PUBLIC target (probe resolves PUBLIC) is correctly
+        # blocked, not "unknown" -- emitting the add-to-allowlist hint there
+        # would be misleading, so no slug is returned.
+        cfg = _config(tmp_path, [])
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme/open-repo.git")
+        extra_bin = tmp_path / "extra"
+        _make_gh_shim(extra_bin, "PUBLIC")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "gitonly"))
+        monkeypatch.setattr(_repo_visibility, "_PROBE_PATH_EXTRA", (str(extra_bin), "/usr/bin", "/bin"))
+        slug = publish_surface.visibility_unknown_for_block(
+            "gh issue create --repo acme/open-repo --body x", repo, config_path=cfg
+        )
+        assert slug is None

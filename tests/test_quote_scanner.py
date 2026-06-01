@@ -21,7 +21,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
-from teatree.hooks import publish_surface, quote_scanner
+from teatree.hooks import _repo_visibility, quote_scanner
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, is_fail_closed_sentinel
 from teatree.hooks.quote_scanner import Finding, ScanResult, extract_publish_payload, has_quote_ok_override, scan_text
 
@@ -1043,7 +1043,7 @@ class TestPrivateRepoCarveOut:
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
         # An explicit --repo pointing at a public repo must never be carved out.
-        monkeypatch.setattr(publish_surface, "_probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {
             "tool_name": "Bash",
             "tool_input": {

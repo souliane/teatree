@@ -2014,7 +2014,7 @@ def _repo_root_is_teatree_managed(repo_root: str) -> bool:
     gate-over-deny class this whole change closes).
 
     Reuses :func:`_overlay_managed_repo_signals` (the same signal source
-    as the out-of-band-merge gate) and ``publish_surface._slug_for_cwd``
+    as the out-of-band-merge gate) and ``publish_surface.slug_for_cwd``
     so the slug shape matches the rest of the managed-repo machinery.
     """
     slugs, paths = _overlay_managed_repo_signals()
@@ -2034,7 +2034,7 @@ def _repo_root_is_teatree_managed(repo_root: str) -> bool:
             added = True
         from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface._slug_for_cwd(root_resolved).lower()  # noqa: SLF001
+        slug = publish_surface.slug_for_cwd(root_resolved).lower()
     except Exception:  # noqa: BLE001
         return False
     finally:
@@ -2882,12 +2882,21 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         return False
 
     command = tool_input.get("command", "")
-    if publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data)):
+    cwd_repo = _resolve_cwd_repo(data)
+    if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
             "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
         )
         return False
+
+    unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
+    if unknown_slug:
+        sys.stderr.write(
+            f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
+            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
+            "for a reliable offline carve-out.\n"
+        )
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
@@ -5785,7 +5794,7 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
 
     Returns ``True`` (managed — keep the keystone-merge block), ``False``
     (unmanaged — allow a raw merge), or ``None`` (cannot classify — the
-    caller fails safe and BLOCKS). Reuses ``publish_surface._slug_for_cwd``
+    caller fails safe and BLOCKS). Reuses ``publish_surface.slug_for_cwd``
     for slug resolution so the host/owner/repo shape matches the
     private-repo carve-out's.
     """
@@ -5802,7 +5811,7 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
             added = True
         from teatree.hooks import publish_surface  # noqa: PLC0415
 
-        slug = publish_surface._slug_for_cwd(cwd).lower()  # noqa: SLF001
+        slug = publish_surface.slug_for_cwd(cwd).lower()
     except Exception:  # noqa: BLE001
         return None
     finally:
