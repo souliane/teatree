@@ -32,7 +32,8 @@ from pathlib import Path
 from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._repo_visibility import _config_path, slug_for_cwd
+from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
+from teatree.hooks._repo_visibility import _config_path, slug_for_cwd, slug_is_allowlisted_private
 from teatree.hooks.publish_surface import _GH_ELIGIBLE_VERBS, _GLAB_ELIGIBLE_VERBS, _extract_repo_flag
 
 
@@ -135,6 +136,22 @@ def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Dest
     return None
 
 
+def _destination_from_words(words: list[str], cwd: Path | None) -> Destination | None:
+    """Resolve the publish destination of one command segment's word list.
+
+    The visibility-independent half of :func:`resolve_publish_destination`,
+    factored out so :func:`gate_skips_destination` can resolve a destination
+    PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
+    the first segment.
+    """
+    if not words or words[0] not in {"gh", "glab"}:
+        return None
+    explicit = _extract_repo_flag(words)
+    if explicit:
+        return Destination(slug=explicit, via="flag")
+    return _flagless_destination(words, words[0], cwd)
+
+
 def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destination | None:
     """Extract the target repo/namespace of a publish ``command``, or ``None``.
 
@@ -149,18 +166,37 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
         with no ``--repo`` flag -- the CURRENT repo, via the git remote of
         ``cwd``.
 
-    Returns ``None`` when the target cannot be determined (a non-publish
-    command, a ``curl``/Slack surface, a flagless API call, or a flagless
-    create with no resolvable git remote). ``None`` is the caller's signal
-    to treat the destination as PUBLIC and scan (fail-closed).
+    Resolves only the FIRST command segment; :func:`gate_skips_destination`
+    is the multi-segment predicate. Returns ``None`` when the target cannot
+    be determined (a non-publish command, a ``curl``/Slack surface, a
+    flagless API call, or a flagless create with no resolvable git remote).
+    ``None`` is the caller's signal to treat the destination as PUBLIC and
+    scan (fail-closed).
     """
-    words = first_segment_words(command)
-    if not words or words[0] not in {"gh", "glab"}:
-        return None
-    explicit = _extract_repo_flag(words)
-    if explicit:
-        return Destination(slug=explicit, via="flag")
-    return _flagless_destination(words, words[0], cwd)
+    return _destination_from_words(first_segment_words(command), cwd)
+
+
+def _segment_is_api_call(words: list[str]) -> bool:
+    """Return True iff ``words`` is a raw ``gh api`` / ``glab api`` REST call.
+
+    Raw REST can target any surface, so a command carrying such a segment is
+    never SKIPPED -- it is scanned, mirroring the carve-out's exclusion of
+    ``api`` from the eligible posting verbs.
+    """
+    return len(words) >= 2 and words[0] in {"gh", "glab"} and words[1] == "api"  # noqa: PLR2004
+
+
+def _segment_carries_substitution_or_transport(words: list[str]) -> bool:
+    """Return True iff any token is a substitution marker or transport construct.
+
+    A ``$(...)`` / backtick / process-substitution token, or a
+    redirection/here-doc/group-opener token, can run a SECOND command (a
+    public post) when the shell expands the line -- so the gate must NOT skip
+    and must scan instead. Mirrors the carve-out's fail-closed posture on
+    these constructs (a quoted flag value carrying ``$(...)`` still trips the
+    substitution check, since a public post can hide inside a body value).
+    """
+    return any(token_has_substitution_marker(token) or token_is_transport_construct(token) for token in words)
 
 
 def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
@@ -215,11 +251,19 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     """Return True iff ``dest`` should be treated as a PUBLIC publish target.
 
     FAIL-CLOSED classification: a destination is PUBLIC (the gate scans and
-    blocks) UNLESS it is PROVABLY internal. "Provably internal" means its
-    slug matches the ``[teatree] internal_publish_namespaces`` /
-    ``T3_INTERNAL_PUBLISH_NAMESPACES`` allowlist as a case-insensitive
-    prefix-segment match (``internalcorp`` matches ``internalcorp/svc`` and
-    ``host/internalcorp/svc`` but not ``other/internalcorp-public``).
+    blocks) UNLESS it is PROVABLY internal. A destination is internal when
+    EITHER allowlist matches its slug:
+
+    - the ``[teatree] internal_publish_namespaces`` /
+        ``T3_INTERNAL_PUBLISH_NAMESPACES`` allowlist, as a case-insensitive
+        prefix-SEGMENT match (``internalcorp`` matches ``internalcorp/svc``
+        and ``host/internalcorp/svc`` but not ``other/internalcorp-public``);
+    - the existing ``[teatree] private_repos`` allowlist that the
+        commit / pure-post carve-out already consults
+        (:func:`_repo_visibility.slug_is_allowlisted_private`, a
+        case-insensitive SUBSTRING match), so a user's CURRENT
+        ``private_repos`` config makes their private namespaces skip the
+        public-leak scan without maintaining a second allowlist.
 
     A ``None`` destination (unresolvable target) is PUBLIC -- detection
     failure never weakens the gate.
@@ -229,18 +273,63 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     slug = dest.slug.strip().lower()
     if not slug:
         return True
-    return not any(_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path))
+    if any(_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
+        return False
+    return not slug_is_allowlisted_private(slug, config_path)
 
 
 def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
     """Return True iff a publish-surface gate should SKIP scanning ``command``.
 
-    The banned-terms / bare-reference gates scan only PUBLIC targets. They
-    skip when the destination RESOLVES to a provably-internal namespace. A
-    ``None`` (unresolvable) destination, or a public one, is scanned --
-    fail-closed.
+    The banned-terms / bare-reference gates scan only PUBLIC targets. The
+    skip is the ALL-SEGMENTS inversion that mirrors
+    :func:`publish_surface.command_is_pure_private_gh_glab_post`: skip ONLY
+    when EVERY top-level segment is provably safe to skip and there is at
+    least one publish segment. A single public, unresolvable, ``api``, or
+    substitution/transport-carrying segment makes the WHOLE command scan
+    (fail-closed). Otherwise a chained or substituted public post hides
+    behind a leading internal segment and is never scanned.
+
+    A segment is skip-safe when it is one of:
+
+    - a NON-publish navigation/inert segment (``cd``, ``git push``, ...) --
+        it resolves to no destination AND carries no substitution/transport
+        construct, so it cannot itself post to a public surface; or
+    - a publish segment whose destination resolves to a provably-INTERNAL
+        repo/namespace and which carries no substitution/transport construct.
+
+    A segment that is a raw ``gh api`` / ``glab api`` call, carries a
+    ``$(...)`` / process-substitution / redirection construct, or resolves
+    to a PUBLIC or unresolvable publish destination is NOT skip-safe -- the
+    command is scanned.
     """
-    dest = resolve_publish_destination(command, cwd)
-    if dest is None:
+    segments = command_segments(command)
+    if not segments:
         return False
-    return not is_public_destination(dest, config_path=config_path)
+    saw_internal_publish = False
+    for words in segments:
+        if _segment_carries_substitution_or_transport(words) or _segment_is_api_call(words):
+            return False
+        dest = _destination_from_words(words, cwd)
+        if dest is not None:
+            if is_public_destination(dest, config_path=config_path):
+                return False
+            saw_internal_publish = True
+        elif _segment_is_forge_invocation(words):
+            return False
+    return saw_internal_publish
+
+
+def _segment_is_forge_invocation(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``gh``/``glab`` invocation (after cd/env).
+
+    A forge segment whose destination did NOT resolve (a flagless post with no
+    resolvable current repo, an unrecognised sub-command) is an UNRESOLVABLE
+    publish target -- the gate must scan it (fail-closed), never skip on the
+    strength of a sibling internal segment. A truly inert segment (``cd``,
+    ``git push``, ``echo``) is not a forge invocation and stays skip-safe.
+    """
+    rest = words
+    while rest and rest[0] == "cd":
+        rest = rest[2:]
+    return bool(rest) and rest[0] in {"gh", "glab"}
