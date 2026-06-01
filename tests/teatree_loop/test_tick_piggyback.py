@@ -251,6 +251,7 @@ class TestPiggybackCrashIsolation:
         with (
             patch.object(tick_piggyback, "_piggyback_slack_answer", _boom),
             patch.object(tick_piggyback, "_piggyback_self_improve", _ok),
+            patch("teatree.loop.queue_drain._piggyback_drain_queue", lambda: None),
             patch.object(tick_piggyback.logger, "warning") as warn,
         ):
             tick_piggyback.run_piggyback_cycles()
@@ -270,9 +271,29 @@ class TestPiggybackCrashIsolation:
         with (
             patch.object(tick_piggyback, "_piggyback_slack_answer", lambda: None),
             patch.object(tick_piggyback, "_piggyback_self_improve", _boom),
+            patch("teatree.loop.queue_drain._piggyback_drain_queue", lambda: None),
             patch.object(tick_piggyback.logger, "warning") as warn,
         ):
             tick_piggyback.run_piggyback_cycles()
 
         warn.assert_called_once()
         assert "self-improve cycle failed" in warn.call_args.args[0]
+
+    def test_queue_drain_cycle_raising_is_logged(self) -> None:
+        from teatree.loop import tick_piggyback  # noqa: PLC0415
+
+        msg = "drain exploded"
+
+        def _boom() -> None:
+            raise RuntimeError(msg)
+
+        with (
+            patch.object(tick_piggyback, "_piggyback_slack_answer", lambda: None),
+            patch.object(tick_piggyback, "_piggyback_self_improve", lambda: None),
+            patch("teatree.loop.queue_drain._piggyback_drain_queue", _boom),
+            patch.object(tick_piggyback.logger, "warning") as warn,
+        ):
+            tick_piggyback.run_piggyback_cycles()
+
+        warn.assert_called_once()
+        assert "queue-drain cycle failed" in warn.call_args.args[0]
