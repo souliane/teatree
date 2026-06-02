@@ -326,6 +326,10 @@ jobs:
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval regression
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
+      # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
+      # explicitly. LOCAL `t3 eval run` defaults to the subscription backend (no API
+      # spend); CI is the budgeted exception. (`--trials` already forces the sdk
+      # runner, so the flag is the explicit, debuggable statement of that intent.)
       - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
         if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@v3
@@ -333,4 +337,4 @@ jobs:
           timeout_minutes: 30
           max_attempts: 3
           retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any
+          command: uv run t3 eval run --trials 3 --require any --backend sdk
