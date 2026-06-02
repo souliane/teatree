@@ -1,10 +1,20 @@
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab_payloads import (
+    WORK_ITEM_CONVERT_MUTATION,
+    WORK_ITEM_ID_QUERY,
+    WORK_ITEM_SET_PARENT_MUTATION,
+    WORK_ITEM_TYPE_ID_QUERY,
+    mutation_errors,
+    work_item_global_id,
+    work_item_type_global_id,
+)
 from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
 from teatree.types import RawAPIDict
 
@@ -13,6 +23,14 @@ _MR_URL_RE = re.compile(r"^/(?P<path>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
 # GitLab serves the same iid under both /-/issues/<iid> and /-/work_items/<iid>;
 # the notes API endpoint is identical for either.
 _ISSUE_OR_WORKITEM_URL_RE = re.compile(r"^/(?P<path>.+?)/-/(?:issues|work_items)/(?P<iid>\d+)/?$")
+
+
+@dataclass(frozen=True)
+class _SubContext:
+    repo: str
+    project_path: str
+    parent_gid: str
+    type_gid: str
 
 
 _GITLAB_MR_STATE_MAP: dict[str, PrOpenState] = {
@@ -178,6 +196,91 @@ class GitLabCodeHost:
         if labels:
             payload["labels"] = ",".join(labels)
         return self._client.post_json(f"projects/{project.project_id}/issues", payload) or {}
+
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> RawAPIDict:
+        """Create a child work item under the parent at *parent_url*.
+
+        GitLab forbids an Issue→Issue parent link, so the child is created as a
+        plain issue, converted to *child_type* (default ``Task``) via
+        ``workItemConvert``, then linked under the parent via ``workItemUpdate``
+        with ``hierarchyWidget.parentId``. The returned dict carries the child's
+        ``web_url`` and ``iid``; any failed hop returns ``{"error": ...}`` and
+        leaves the partially-created child as a non-linked issue.
+        """
+        context = self._resolve_sub_context(parent_url, child_type)
+        if not isinstance(context, _SubContext):
+            return context
+
+        created = self.create_issue(repo=context.repo, title=title, body=body, labels=labels)
+        if "error" in created:
+            return created
+        child_iid = created.get("iid")
+        if not isinstance(child_iid, int):
+            return {"error": f"Child issue creation returned no iid: {created}"}
+
+        child_gid = self._work_item_gid(context.project_path, child_iid)
+        if child_gid is None:
+            return {"error": f"Could not resolve created child work item: {created.get('web_url')}"}
+
+        nest_error = self._convert_and_link(child_gid, context, child_type)
+        return nest_error or created
+
+    def _resolve_sub_context(self, parent_url: str, child_type: str) -> "_SubContext | RawAPIDict":
+        match = _ISSUE_OR_WORKITEM_URL_RE.match(urlparse(parent_url).path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {parent_url}"}
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+        parent_gid = self._work_item_gid(project.path_with_namespace, int(match["iid"]))
+        if parent_gid is None:
+            return {"error": f"Could not resolve parent work item: {parent_url}"}
+        type_gid = self._work_item_type_gid(project.path_with_namespace, child_type)
+        if type_gid is None:
+            return {"error": f"Unknown work item type: {child_type}"}
+        return _SubContext(
+            repo=match["path"],
+            project_path=project.path_with_namespace,
+            parent_gid=parent_gid,
+            type_gid=type_gid,
+        )
+
+    def _convert_and_link(self, child_gid: str, context: "_SubContext", child_type: str) -> RawAPIDict | None:
+        convert_errors = self._run_work_item_mutation(
+            WORK_ITEM_CONVERT_MUTATION,
+            {"id": child_gid, "typeId": context.type_gid},
+            "workItemConvert",
+        )
+        if convert_errors:
+            return {"error": f"Convert to {child_type} failed: {'; '.join(convert_errors)}"}
+        link_errors = self._run_work_item_mutation(
+            WORK_ITEM_SET_PARENT_MUTATION,
+            {"id": child_gid, "parentId": context.parent_gid},
+            "workItemUpdate",
+        )
+        if link_errors:
+            return {"error": f"Parent link failed: {'; '.join(link_errors)}"}
+        return None
+
+    def _work_item_gid(self, project_path: str, iid: int) -> str | None:
+        data = self._client.graphql(WORK_ITEM_ID_QUERY, {"projectPath": project_path, "iid": str(iid)})
+        return work_item_global_id(data)
+
+    def _work_item_type_gid(self, project_path: str, type_name: str) -> str | None:
+        data = self._client.graphql(WORK_ITEM_TYPE_ID_QUERY, {"projectPath": project_path})
+        return work_item_type_global_id(data, type_name)
+
+    def _run_work_item_mutation(self, mutation: str, variables: RawAPIDict, field: str) -> list[str]:
+        data = self._client.graphql(mutation, variables)
+        return mutation_errors(data, field)
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
         """Return open issues on *repo* whose title/description match *query*.
