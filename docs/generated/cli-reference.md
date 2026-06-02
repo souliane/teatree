@@ -288,8 +288,7 @@ Usage: t3 banned-terms [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ scan-tree  Scan every git-tracked file for committed high-confidence brand   │
-│            names.                                                            │
+│ scan-tree  Scan every git-tracked file for committed banned terms.           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -298,7 +297,7 @@ Usage: t3 banned-terms [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 banned-terms scan-tree [OPTIONS]
 
- Scan every git-tracked file for committed high-confidence brand names.
+ Scan every git-tracked file for committed banned terms.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo-root        PATH  Repository root to scan (defaults to the current    │
