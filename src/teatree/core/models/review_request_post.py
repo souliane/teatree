@@ -1,6 +1,6 @@
 """Audit row for bot review-request posts in the review channel (#1038).
 
-One row per MR posted to ``#the-review-team`` so the fibonacci nag
+One row per MR posted to the review channel so the fibonacci nag
 scanner can detect "already posted" MRs and escalate the cadence
 (+1/+2/+3/+5 days) without re-discovering the original message.
 
