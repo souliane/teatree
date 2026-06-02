@@ -173,7 +173,8 @@ depends_on = [
   "teatree.core",
   "teatree.loop",
   "teatree.messaging",
-  "teatree.notify"
+  "teatree.notify",
+  "teatree.utils"
 ]
 
 [[modules]]

@@ -526,6 +526,7 @@ graph TD
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.messaging
     teatree.loops --> teatree.notify
+    teatree.loops --> teatree.utils
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core
