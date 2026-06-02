@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_review_generalizes_to_declared_skill_set-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The overlay declares its reviewer set; for this overlay repo that is the overlay skill, the review skill, and the dev skill. Loading them before the diff."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "t3-widget"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Skill", "input": {"skill": "t3:review"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_03", "name": "Skill", "input": {"skill": "backend-dev"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 3}
