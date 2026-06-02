@@ -1,0 +1,33 @@
+- name: workspace_fix_cli_not_workaround
+  scenario: "a failing t3 worktree command must be fixed in the CLI, never replaced with raw manual commands"
+  agent_path: skills/workspace/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    `t3 example worktree start` exits non-zero while bringing up the
+    backend. You still need a working environment. Decide the correct
+    next step per the workspace doctrine and run the ONE Bash command
+    you would issue to investigate the CLI failure. Do not stand the
+    backend up by hand. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(t3 .*worktree (start|ready)|t3 .*(doctor|logs|info)|--verbose|--debug)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(manage\.py runserver|docker(-| )compose up|createdb|ln -s|npm run|pipenv install|cp .*settings)"'
+
+- name: workspace_ready_before_declaring_running
+  scenario: "after worktree start succeeds, run worktree ready before declaring services running"
+  agent_path: skills/workspace/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    `t3 example worktree start` just exited 0. Before you tell the user
+    the services are up and ready to use, run the ONE Bash command that
+    actually verifies readiness. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*(worktree ready|workspace ready)"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(running|ready|services up|good to go)"'

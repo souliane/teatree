@@ -218,6 +218,70 @@ class TestLoadEvalYaml:
         assert "expect" in str(exc.value) or "mapping" in str(exc.value)
 
 
+class TestJudgeBlock:
+    def test_parses_judge_with_rubric_and_defaults(self, tmp_path: Path) -> None:
+        body = (
+            "- name: judged\n"
+            "  scenario: needs a judge\n"
+            "  prompt: do\n"
+            "  judge:\n"
+            "    rubric: The explanation is faithful to the diff.\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge is not None
+        assert spec.judge.rubric == "The explanation is faithful to the diff."
+        assert spec.judge.model == "haiku"
+        assert spec.judge.max_output_tokens == 512
+        assert spec.matchers == ()
+
+    def test_judge_overrides_model_and_tokens(self, tmp_path: Path) -> None:
+        body = (
+            "- name: judged\n"
+            "  scenario: needs a judge\n"
+            "  prompt: do\n"
+            "  judge:\n"
+            "    rubric: r\n"
+            "    model: sonnet\n"
+            "    max_output_tokens: 128\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge.model == "sonnet"
+        assert spec.judge.max_output_tokens == 128
+
+    def test_judge_and_matchers_coexist(self, tmp_path: Path) -> None:
+        body = (
+            "- name: both\n"
+            "  scenario: matcher plus judge\n"
+            "  prompt: do\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+            "  judge:\n"
+            "    rubric: r\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.judge is not None
+        assert len(spec.matchers) == 1
+
+    def test_rejects_empty_rubric(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  judge:\n    rubric: '   '\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "rubric" in str(exc.value)
+
+    def test_rejects_bad_max_output_tokens(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n  judge:\n    rubric: r\n    max_output_tokens: 0\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "max_output_tokens" in str(exc.value)
+
+    def test_missing_both_expect_and_judge_rejected(self, tmp_path: Path) -> None:
+        body = "- name: bad\n  scenario: bad\n  prompt: do\n"
+        with pytest.raises(EvalSpecError) as exc:
+            load_eval_yaml(_write(tmp_path, body))
+        assert "expect" in str(exc.value)
+
+
 class TestAnyOfMatcher:
     def test_parses_any_of_disjunction_of_positive_branches(self, tmp_path: Path) -> None:
         body = (

@@ -9,7 +9,15 @@ merge-time gate refuses it independently of the issue-time gate.
 import factory
 from factory.django import DjangoModelFactory
 
-from teatree.core.models import ImplementedIssueMarker, MergeClear, ReviewVerdict, Ticket
+from teatree.core.models import (
+    EvalRunRecord,
+    EvalScenarioResult,
+    EvalVerdict,
+    ImplementedIssueMarker,
+    MergeClear,
+    ReviewVerdict,
+    Ticket,
+)
 
 _FORTY_HEX = "c" * 40
 
@@ -74,3 +82,30 @@ class ImplementedIssueMarkerFactory(DjangoModelFactory[ImplementedIssueMarker]):
     class Params:
         ticket_created = factory.Trait(state=ImplementedIssueMarker.State.TICKET_CREATED)
         abandoned = factory.Trait(state=ImplementedIssueMarker.State.ABANDONED)
+
+
+class EvalRunRecordFactory(DjangoModelFactory[EvalRunRecord]):
+    class Meta:
+        model = EvalRunRecord
+
+    model = "haiku"
+    git_sha = _FORTY_HEX
+
+    class Params:
+        baseline = factory.Trait(is_baseline=True)
+
+
+class EvalScenarioResultFactory(DjangoModelFactory[EvalScenarioResult]):
+    class Meta:
+        model = EvalScenarioResult
+
+    run = factory.SubFactory(EvalRunRecordFactory)
+    scenario_name = factory.Sequence(lambda n: f"scenario_{n}")
+    model = "haiku"
+    verdict = EvalVerdict.PASS
+    score = 1.0
+    trials = 1
+
+    class Params:
+        failing = factory.Trait(verdict=EvalVerdict.FAIL, score=0.0)
+        was_skipped = factory.Trait(verdict=EvalVerdict.SKIP, score=0.0)
