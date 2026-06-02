@@ -47,12 +47,12 @@ class JudgeSpec:
     Present only when a scenario's pass/fail is not cleanly matcher-gradeable
     (e.g. "the explanation is faithful to the diff", "the tone is non-blaming").
     A judge model reads the captured transcript and the ``rubric`` and returns
-    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to a cheap tier)
-    and ``max_output_tokens`` caps the judge's reply — both are cost controls.
+    a PASS/FAIL verdict. ``model`` is the judge tier (defaults to the Sonnet run
+    tier) and ``max_output_tokens`` caps the judge's reply — both cost controls.
     """
 
     rubric: str
-    model: str = "haiku"
+    model: str = "claude-sonnet-4-6"
     max_output_tokens: int = 512
 
 
@@ -66,7 +66,7 @@ class EvalSpec:
     prompt: str
     matchers: tuple[ExpectItem, ...]
     source_path: Path
-    model: str = "haiku"
+    model: str = "claude-sonnet-4-6"
     max_turns: int = 4
     tools: tuple[str, ...] = ("Bash",)
     judge: JudgeSpec | None = None

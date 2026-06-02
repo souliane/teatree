@@ -31,9 +31,9 @@ class TestLoadEvalYaml:
         assert spec.scenario == "example scenario"
         assert spec.prompt == "do the thing"
 
-    def test_defaults_model_to_haiku(self, tmp_path: Path) -> None:
+    def test_defaults_model_to_sonnet(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
-        assert spec.model == "haiku"
+        assert spec.model == "claude-sonnet-4-6"
 
     def test_defaults_max_turns_to_four(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
@@ -230,7 +230,7 @@ class TestJudgeBlock:
         spec = load_eval_yaml(_write(tmp_path, body))[0]
         assert spec.judge is not None
         assert spec.judge.rubric == "The explanation is faithful to the diff."
-        assert spec.judge.model == "haiku"
+        assert spec.judge.model == "claude-sonnet-4-6"
         assert spec.judge.max_output_tokens == 512
         assert spec.matchers == ()
 

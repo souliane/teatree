@@ -428,7 +428,7 @@ class TestEvalPersistAndHistory:
             result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["runs"][0]["passed"] == 1
-        assert payload["runs"][0]["model"] == "haiku"
+        assert payload["runs"][0]["model"] == "claude-sonnet-4-6"
 
     def test_mark_baseline_promotes_run(self) -> None:
         specs = [_spec("alpha")]

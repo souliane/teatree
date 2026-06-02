@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-ticket_asks_when_design_decision_needed-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "What is the target export latency and which export path is in scope?"}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
