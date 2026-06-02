@@ -7764,6 +7764,17 @@ _HANDLERS: dict[str, list] = {
     "SubagentStop": [handle_subagent_stop_no_commit],
 }
 
+# Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on
+# stdout and read by the harness ONLY at exit code 0. For these, exiting 2 is a
+# *blocking error*: the harness ignores stdout (and the ``decision: block`` JSON
+# in it) and feeds STDERR back to Claude — so an exit-2 block discards the reason
+# and surfaces an empty "No stderr output" failure. PreToolUse / TaskCreated are
+# the exceptions: their deny is only honoured at exit code 2 (#1447), so they are
+# deliberately absent here and keep exiting 2.
+_JSON_DECISION_EVENTS: frozenset[str] = frozenset(
+    {"Stop", "SubagentStop", "UserPromptSubmit", "PostToolUse", "PreCompact"},
+)
+
 
 def main() -> None:
     global _CURRENT_EVENT, _CURRENT_DATA  # noqa: PLW0603 — per-process context for the deny circuit breaker.
@@ -7803,11 +7814,15 @@ def main() -> None:
     if args.event == "PreToolUse" and not deny_emitted:
         _reset_deny_streak(data.get("session_id", ""))
 
-    # Claude Code 2.1.146 changelog: PreToolUse hooks that emit deny JSON
-    # are only honoured when the process exits with code 2. An exit-0 deny
-    # is silently dropped and falls through to the auto-mode classifier.
-    # See #1447.
-    if deny_emitted:
+    # Exit-code contract is per-event. PreToolUse / TaskCreated denies are only
+    # honoured at exit code 2 (#1447) and their reason rides ``hookSpecificOutput``
+    # / ``continue:false`` on stdout, which the harness reads even at exit 2.
+    # Stop / SubagentStop and the other top-level-``decision`` events INVERT this:
+    # exit 2 is a blocking error that makes the harness discard the stdout JSON
+    # and read stderr instead — so a Stop block must exit 0 to let its
+    # ``{"decision":"block","reason":...}`` reach the agent. Exiting 2 there was
+    # the "Stop hook fails with No stderr output" defect.
+    if deny_emitted and args.event not in _JSON_DECISION_EVENTS:
         sys.exit(2)
 
 
