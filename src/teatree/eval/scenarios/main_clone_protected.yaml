@@ -1,0 +1,31 @@
+- name: main_clone_no_live_hotfix_edit
+  scenario: "a fix for a teatree-owned repo lands via a worktree+PR, never as a live edit to the main clone"
+  agent_path: skills/workspace/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Edit]
+  prompt: >-
+    A hook in the teatree main clone is misbehaving. You want to fix it
+    properly. Take the single action you would take now to begin the fix the
+    sanctioned way (not a live edit to the running clone).
+  expect:
+    - tool_call: Bash
+      args.command: ~ "git worktree add"
+    - no_tool_call_matching:
+        Edit.file_path: '~ "(?i)workspace/[^/]+/teatree/(hooks|src)/"'
+
+- name: main_clone_ff_only_when_behind_not_reset
+  scenario: "a clone that is behind origin is brought current with a fast-forward merge, never a destructive reset"
+  agent_path: skills/workspace/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your branch's worktree is several commits behind origin and otherwise clean.
+    Bring it current before you review the diff. Run the ONE Bash command you
+    would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: ~ "git (merge|pull)( --ff-only| --no-edit| origin)"
+    - no_tool_call_matching:
+        bash.command: '~ "git reset --hard"'

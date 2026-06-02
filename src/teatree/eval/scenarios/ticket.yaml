@@ -1,0 +1,15 @@
+- name: ticket_fetch_via_cli_not_mcp
+  scenario: "ticket intake fetches an issue with the CLI (glab/gh/t3 tool) before reaching for an MCP service"
+  agent_path: skills/ticket/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The user handed you a GitLab issue URL to start work on. Run the ONE
+    Bash command you would issue to fetch the issue's full context for
+    intake. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab issue view|gh issue view|t3 tool )"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(skip|too hard|ignore).*pdf"'

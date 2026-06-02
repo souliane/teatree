@@ -13,6 +13,7 @@ from teatree.core.models import EvalRunRecord
 
 class HistoryPassRate(TypedDict):
     scenario: str
+    model: str
     passed: int
     total: int
     pass_rate: float
@@ -23,6 +24,7 @@ class HistoryRun(TypedDict):
     started_at: str
     model: str
     suite: str
+    git_sha: str
     is_baseline: bool
     total: int
     passed: int
@@ -45,13 +47,16 @@ def _run_dict(run: EvalRunRecord) -> HistoryRun:
         started_at=run.started_at.isoformat(),
         model=run.model,
         suite=run.suite,
+        git_sha=run.git_sha,
         is_baseline=run.is_baseline,
         total=run.total,
         passed=run.passed,
         failed=run.failed,
         skipped=run.skipped,
         pass_rates=[
-            HistoryPassRate(scenario=r.scenario_name, passed=r.passed, total=r.total, pass_rate=r.pass_rate)
+            HistoryPassRate(
+                scenario=r.scenario_name, model=r.model, passed=r.passed, total=r.total, pass_rate=r.pass_rate
+            )
             for r in run.pass_rates()
         ],
     )
@@ -71,5 +76,8 @@ def render_history_text(runs: list[EvalRunRecord]) -> str:
             f"#{run.pk} {run.started_at.isoformat()} model={run.model}{tag} "
             f"— {run.passed} passed, {run.failed} failed, {run.skipped} skipped (of {run.total})"
         )
-        lines.extend(f"    {r.scenario_name}: {r.passed}/{r.total} ({r.pass_rate:.0%})" for r in run.pass_rates())
+        lines.extend(
+            f"    {r.scenario_name}{f' [{r.model}]' if r.model else ''}: {r.passed}/{r.total} ({r.pass_rate:.0%})"
+            for r in run.pass_rates()
+        )
     return "\n".join(lines)

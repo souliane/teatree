@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-merge_burst_reconcile_skips_already_merged-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh pr view 1707 --json state,mergedAt,mergeStateStatus", "description": "state"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

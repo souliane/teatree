@@ -1151,6 +1151,10 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       eval run.                                              │
 │ history               Show recent eval runs and per-scenario pass-rate over  │
 │                       time.                                                  │
+│ trigger-qa            Validate every skill's trigger keywords against the    │
+│                       must-fire/must-not-fire corpus.                        │
+│ regression            Run the deterministic regression corpus over the real  │
+│                       gate/checker code paths.                               │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1175,13 +1179,18 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  Run one scenario by name, or all scenarios when no name is given.
 
- Each run is recorded into the run-history ledger (``t3 eval history``)
- unless ``--no-persist`` is given. ``--baseline`` marks the persisted run
- as the baseline for its model — the reference the later model-regression
- diff compares a candidate against.
+ With ``--trials k`` each scenario runs ``k`` times and the verdict is
+ aggregated by ``--require`` (``any`` = pass@k, ``all`` = pass^k). ``--models``
+ runs the suite once per model and renders a comparison matrix. A single trial
+ against the default backend is the legacy behavior.
 
- ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the
- CI job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
+ Each run is recorded into the run-history ledger (``t3 eval history``) unless
+ ``--no-persist`` is given. ``--baseline`` marks the persisted run as the
+ baseline for its model — the reference ``--gate-regressions`` compares a
+ later candidate run against (a regression exits non-zero).
+
+ ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the CI
+ job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
  transcripts produced on the subscription via an in-session sub-agent (run
  ``t3 eval prepare-subscription`` first for the prompts + expected paths).
 
@@ -1189,28 +1198,55 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                            TEXT     Report format: text or json.    │
-│                                              [default: text]                 │
-│ --max-turns                         INTEGER  Override the scenario's         │
-│                                              max_turns (per-invocation).     │
-│ --persist           --no-persist             Persist this run into the       │
-│                                              run-history ledger.             │
-│                                              [default: persist]              │
-│ --baseline                                   Mark the persisted run as the   │
-│                                              baseline for its model.         │
-│ --backend                           TEXT     Execution backend: 'sdk'        │
-│                                              (metered claude -p, reserved    │
-│                                              for CI with ANTHROPIC_API_KEY)  │
-│                                              or 'subscription' (grade        │
-│                                              subscription-produced           │
-│                                              transcripts; see `t3 eval       │
-│                                              prepare-subscription`).         │
-│                                              [default: sdk]                  │
-│ --transcript-dir                    PATH     Directory of <scenario>.jsonl   │
-│                                              transcripts for the             │
-│                                              'subscription' backend          │
-│                                              (default: cwd).                 │
-│ --help                                       Show this message and exit.     │
+│ --format                              TEXT     Report format: text or json.  │
+│                                                [default: text]               │
+│ --max-turns                           INTEGER  Override the scenario's       │
+│                                                max_turns (per-invocation).   │
+│ --trials                              INTEGER  Re-run each scenario this     │
+│                                                many times (pass@k).          │
+│                                                [default: 1]                  │
+│ --require                             TEXT     With --trials > 1: 'any'      │
+│                                                (pass@k) or 'all' (pass^k     │
+│                                                regression gate).             │
+│                                                [default: any]                │
+│ --models                              TEXT     Comma-separated model matrix  │
+│                                                (e.g. opus,sonnet,haiku);     │
+│                                                runs the suite once per       │
+│                                                model.                        │
+│ --persist             --no-persist             Persist this run into the     │
+│                                                run-history ledger (read back │
+│                                                via `t3 eval history`).       │
+│                                                [default: persist]            │
+│ --baseline                                     Mark the persisted run as the │
+│                                                baseline for its model.       │
+│ --gate-regressions                             Diff this run against each    │
+│                                                model's current baseline; any │
+│                                                regression exits non-zero.    │
+│ --judge               --no-judge               Grade scenarios that opt in   │
+│                                                (a `judge:` block) with an    │
+│                                                LLM judge in addition to      │
+│                                                matchers.                     │
+│                                                [default: no-judge]           │
+│ --judge-budget                        INTEGER  Max number of LLM-judge calls │
+│                                                per run (cost cap).           │
+│                                                [default: 20]                 │
+│ --backend                             TEXT     Execution backend for a       │
+│                                                single-trial run: 'sdk'       │
+│                                                (metered claude -p, reserved  │
+│                                                for CI with                   │
+│                                                ANTHROPIC_API_KEY) or         │
+│                                                'subscription' (grade         │
+│                                                subscription-produced         │
+│                                                transcripts; see `t3 eval     │
+│                                                prepare-subscription`).       │
+│                                                --trials and --models always  │
+│                                                use the sdk runner.           │
+│                                                [default: sdk]                │
+│ --transcript-dir                      PATH     Directory of <scenario>.jsonl │
+│                                                transcripts for the           │
+│                                                'subscription' backend        │
+│                                                (default: cwd).               │
+│ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1247,9 +1283,9 @@ Usage: t3 eval history [OPTIONS]
 
  Show recent eval runs and per-scenario pass-rate over time.
 
- The data substrate the later model-regression diff reads. ``--baseline``
- shows the current reference run per model; ``--mark-baseline <id>`` promotes
- a run to baseline (demoting the prior baseline for that model).
+ The data substrate the model-regression diff reads. ``--baseline`` shows the
+ current reference run per model; ``--mark-baseline <id>`` promotes a run to
+ baseline (demoting the prior baseline for that model).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --limit                INTEGER  Maximum number of recent runs to show.       │
@@ -1261,6 +1297,43 @@ Usage: t3 eval history [OPTIONS]
 │ --mark-baseline        INTEGER  Mark the run with this id as the baseline    │
 │                                 for its model, then show history.            │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval trigger-qa`
+
+```
+Usage: t3 eval trigger-qa [OPTIONS]
+
+ Validate every skill's trigger keywords against the must-fire/must-not-fire
+ corpus.
+
+ Deterministic and free — no ``claude -p`` invocation. An under-trigger
+ (in-scope prompt that does not fire) or over-trigger (control prompt that
+ does fire) exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval regression`
+
+```
+Usage: t3 eval regression [OPTIONS]
+
+ Run the deterministic regression corpus over the real gate/checker code paths.
+
+ Layer-1 (deterministic, free, no ``claude`` run): each check calls the real
+ function for a recurring failure class (branch-currency §940, the
+ bare-reference gate, the substrate-merge and maker≠checker floors, the
+ pid-anchored loop lease, the migration-graph leaf count) on a must-block and
+ a must-allow input. Any violated invariant exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-update_uses_t3_update_not_raw_git-noop-15", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
