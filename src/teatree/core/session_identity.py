@@ -26,6 +26,13 @@ dead (131 user DMs reacted/answered never). The precedence is now:
 
     ``CLAUDE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
 
+The durable session *pid* (the loop-owner lease anchor) resolves with a
+parallel precedence so an env-restricted subprocess that cannot read the
+registry still gets the long-lived session pid rather than the transient
+tick-shell pid (#1722):
+
+    ``T3_LOOP_SESSION_PID`` → loop-registry → ``None``
+
 The registry fallback is correct-not-hack: ``loop-registry.json``'s
 ``t3-loop-tick-owner`` record IS the durable owner-identity source that
 ``_session_owns_loop`` (the gate consumers) already trust; making the
@@ -95,6 +102,22 @@ def _session_id_from_loop_registry() -> str:
     return (owner or {}).get("session_id") or ""
 
 
+def _coerce_pid(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        pid = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        pid = int(value)
+    else:
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_from_loop_registry() -> int | None:
+    return _coerce_pid((_owner_record_from_loop_registry() or {}).get("pid"))
+
+
 def current_session_pid() -> int | None:
     """The owning *session* process pid, or ``None`` when not resolvable (#1073).
 
@@ -110,19 +133,23 @@ def current_session_pid() -> int | None:
     the 30-min TTL lapses for a busy/idle owner, a fresh SessionStart
     finds "no live owner" and STEALS the loop.
 
-    The ``SessionStart`` hook already records the durable session pid in
-    the same ``loop-registry.json`` record this module reads for the
-    session id (``hook_router._tick_owner_record`` stores ``os.getppid()``
-    of the SessionStart hook, whose parent IS the persistent session
-    process). Reading the pid from that record anchors the lease on the
-    long-lived session, so a busy owner past TTL stays protected and only
-    a genuinely-dead session (or ``--take-over``) releases the loop.
+    Precedence mirrors :func:`current_session_id`:
+
+        ``T3_LOOP_SESSION_PID`` env → loop-registry owner record → ``None``
+
+    The Stop self-pump exports ``T3_LOOP_SESSION_PID`` (the durable session
+    pid, the same value ``SessionStart`` records in the registry) into the
+    tick command, so the env path resolves the durable pid even in an
+    env-restricted subprocess where the loop registry is unreadable. The
+    registry path is the lower-precedence fallback: the ``SessionStart``
+    hook records the durable session pid alongside the session id
+    (``hook_router._tick_owner_record`` stores ``os.getppid()`` of the
+    SessionStart hook, whose parent IS the persistent session process).
+    Without either source the resolver returns ``None`` so the caller
+    decides its own no-fallback outcome rather than silently anchoring on
+    the transient tick-shell pid.
     """
-    owner = _owner_record_from_loop_registry()
-    if owner is None:
-        return None
-    pid = owner.get("pid")
-    return int(pid) if isinstance(pid, int) or (isinstance(pid, str) and pid.isdigit()) else None
+    return _coerce_pid(os.environ.get("T3_LOOP_SESSION_PID")) or _pid_from_loop_registry()
 
 
 def current_session_id() -> str:

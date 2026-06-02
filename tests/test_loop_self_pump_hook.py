@@ -90,21 +90,23 @@ class TestLoopSelfPump:
     def test_pump_directive_tags_tick_with_owner_session_id(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The self-pump tick command carries the owner session id (#1073 follow-up).
+        """The self-pump tick command carries the owner session id and pid (#1073/#1722).
 
-        The owner's tick must claim under its real session id (and record
-        its pid) instead of resolving to ``""`` in a Bash subprocess
-        (#1107). Prefixing the emitted ``t3 loop tick`` with
-        ``T3_LOOP_SESSION_ID=<session>`` guarantees the re-claim heartbeat
-        keeps the lease anchored to the owner.
+        The owner's tick must claim under its real session id AND its
+        durable session pid instead of resolving the id to ``""`` and the
+        pid to ``os.getppid()`` of the torn-down Bash subprocess (#1107/
+        #1722). Exporting both ``T3_LOOP_SESSION_ID`` and
+        ``T3_LOOP_SESSION_PID`` keeps the re-claim heartbeat anchored to the
+        owner even when the tick subprocess cannot read the loop registry.
         """
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 7, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
+        monkeypatch.setattr(os, "getppid", lambda: 4242)
         handle_loop_self_pump({"session_id": "owner-1"})
 
         reason = _decision(capsys)["reason"]
-        assert "T3_LOOP_SESSION_ID=owner-1 t3 loop tick" in reason
+        assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loop tick" in reason
 
     def test_owner_with_no_pending_work_does_not_block(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
