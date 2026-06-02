@@ -60,9 +60,10 @@ def zones_for(
     """
     colorize = colorize_enabled(colorize=colorize)
     zones = StatuslineZones()
-    # The dedicated ``loop running · …`` line must stay line 1 (#130/#1400);
-    # the live availability segment rides on that line (#1678).
-    _populate_live_loops_anchor(zones)
+    # The dedicated loop line must stay line 1 (#130/#1400) — statusline.sh
+    # prepends the per-session loop-owner badge to it; the live availability
+    # segment rides on that line too (#1678).
+    _populate_live_loops_anchor(zones, colorize=colorize)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
@@ -95,20 +96,21 @@ def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, Statusli
             zone_list.append(f"(+{overflow} more)")
 
 
-def _populate_live_loops_anchor(zones: StatuslineZones) -> None:
+def _populate_live_loops_anchor(zones: StatuslineZones, *, colorize: bool = False) -> None:
     """Append one anchor line per live :class:`LoopLease` row (#1163).
 
     Multi-loop visibility: the user runs ``loop-tick``, ``loop-owner``,
     ``loop-self-improve``, ``loop-slack-answer``, ``loop-slot`` in parallel
     — surfacing each gives the at-a-glance count the prior single
-    ``loop-owner=…`` anchor hid.
+    ``loop-owner=…`` anchor hid. *colorize* threads the per-loop recency
+    coloring into :func:`~teatree.loop.statusline.live_loops_anchor`.
 
     :func:`~teatree.loop.statusline.live_loops_anchor` is itself fail-open,
     so this wrapper exists only to do the append.
     """
     from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
 
-    zones.anchors.extend(live_loops_anchor())
+    zones.anchors.extend(live_loops_anchor(colorize=colorize))
 
 
 def cost_chip_lines() -> list[str]:
