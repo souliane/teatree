@@ -1485,3 +1485,70 @@ def test_build_default_jobs_skips_codex_review_when_overlay_has_no_repos() -> No
     with patch("teatree.loop.tick_jobs._effective_settings_for_overlay", return_value=auto_settings):
         jobs = build_default_jobs(backends=[backend])
     assert not [j for j in jobs if j.scanner.name == "codex_review"]
+
+
+@dataclass(slots=True)
+class _MaintenanceScanner:
+    """A stand-in for a maintenance scanner ``sweep_phase`` routes aside."""
+
+    name: str
+    out: list[ScanSignal]
+
+    def scan(self) -> list[ScanSignal]:
+        return self.out
+
+
+def test_run_tick_still_dispatches_sweep_scanner_signals_after_the_split(tmp_path: Path) -> None:
+    """#1796: moving ``pr_sweep`` to ``sweep_phase`` must not drop its signal.
+
+    The maintenance scanners run in their own slice now, but their signals
+    must still merge before dispatch — behaviour is unchanged.
+    """
+    sweep = _MaintenanceScanner(name="pr_sweep", out=[ScanSignal(kind="pr_sweep.merged", summary="merged !1")])
+    world = _FixedScanner(name="my_prs", out=[ScanSignal(kind="my_pr.open", summary="open")])
+    statusline = tmp_path / "statusline.txt"
+    report = run_tick(TickRequest(scanners=[sweep, world]), statusline_path=statusline)
+    assert report.signal_count == 2
+    assert {s.kind for s in report.signals} == {"pr_sweep.merged", "my_pr.open"}
+
+
+class TestRunTickOrchestrateIsDormant(django.test.TestCase):
+    """#1796: ``run_tick`` wires ``orchestrate_phase`` but never claims (dormant)."""
+
+    def test_run_tick_at_full_speed_does_not_claim_pending_tasks(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="d")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+
+        scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch(
+                "teatree.loop.phases.orchestrate.get_effective_settings",
+                return_value=UserSettings(speed=Speed.FULL),
+            ),
+        ):
+            run_tick(TickRequest(scanners=[scanner]), statusline_path=Path(d) / "sl.txt")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING
+
+    def test_run_tick_survives_an_orchestrate_phase_error(self) -> None:
+        import tempfile  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch("teatree.loop.tick.orchestrate_phase", side_effect=RuntimeError("config blew up")),
+        ):
+            sl = Path(d) / "sl.txt"
+            report = run_tick(TickRequest(scanners=[scanner]), statusline_path=sl)
+            assert sl.exists()
+            assert report.signal_count == 1
