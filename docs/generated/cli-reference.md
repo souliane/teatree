@@ -2081,8 +2081,10 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ stop                Print the slot id to stop in the Claude Code session.    │
 │ claim               Claim the session-scoped loop-owner slot for this Claude │
 │                     session (#1073).                                         │
-│ owner               Show which session currently owns the loop-owner slot    │
-│                     (#1073).                                                 │
+│ owner               Show which session owns the loop-owner slot AND this     │
+│                     session's own id (#1073).                                │
+│ whoami              Print this Claude session's own id — what a hand-off     │
+│                     ``--to`` targets.                                        │
 │ release             Release this session's loop-owner claim (#1073).         │
 │ claim-next          Atomically claim the oldest pending dispatchable Task,   │
 │                     then emit it.                                            │
@@ -2260,13 +2262,26 @@ Usage: t3 loop claim [OPTIONS]
 ```
 Usage: t3 loop owner [OPTIONS]
 
- Show which session currently owns the loop-owner slot (#1073).
+ Show which session owns the loop-owner slot AND this session's own id (#1073).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
 │                     [default: loop-owner]                                    │
 │ --json              Emit JSON.                                               │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop whoami`
+
+```
+Usage: t3 loop whoami [OPTIONS]
+
+ Print this Claude session's own id — what a hand-off ``--to`` targets.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2701,6 +2716,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ standup       Auto-generated daily update (read-only).                       │
 │ checking      Terse 'what did I miss' report since the last check            │
 │               (read-only).                                                   │
+│ handover      Hand all current work from this session to another session.    │
 │ lifecycle     Session lifecycle and phase tracking.                          │
 │ env           Inspect and mutate the worktree env cache.                     │
 │ ticket        Ticket state management.                                       │
@@ -4461,6 +4477,76 @@ Usage: t3 teatree checking show [OPTIONS]
 │ --this-overlay              Scope to the current overlay only (default:      │
 │                             aggregate all configured overlays).              │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree handover`
+
+```
+Usage: t3 teatree handover [OPTIONS] COMMAND [ARGS]...
+
+ Hand all current work from this session to another session.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ create          Hand this session's full durable state to the loop owner, a  │
+│                 named session, or next.                                      │
+│ whoami          Print this Claude session's own id.                          │
+│ claim-on-start  Claim an unclaimed hand-off for a starting session           │
+│                 (SessionStart hook entry).                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree handover create`
+
+```
+Usage: t3 teatree handover create [OPTIONS]
+
+ Hand this session's full durable state to another session.
+
+ No ``--to`` → the live ``loop-owner`` slot holder; if none, parked
+ for whichever session starts next. Always persists the
+ :class:`SessionHandover` row AND mirrors it to the XDG file.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --to          TEXT  Target session id. Omit to hand to the live loop owner,  │
+│                     else park for next.                                      │
+│ --json              Emit JSON.                                               │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree handover whoami`
+
+```
+Usage: t3 teatree handover whoami [OPTIONS]
+
+ Print this Claude session's own id (the hand-off ``--to`` target).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree handover claim-on-start`
+
+```
+Usage: t3 teatree handover claim-on-start [OPTIONS]
+
+ Atomically claim an unclaimed hand-off for *session* and print its payload.
+
+ The SessionStart hook calls this for a fresh / non-owner session: it
+ claims a hand-off targeted AT the session (preferred) or parked for
+ "next session", marks it claimed so it injects exactly once, and
+ prints the payload. Empty payload when nothing is claimable.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --session        TEXT  The starting session id claiming a hand-off.          │
+│ --json                 Emit JSON. [default: True]                            │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

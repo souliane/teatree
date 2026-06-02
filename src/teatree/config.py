@@ -399,6 +399,20 @@ class OverlayEntry:
         return name.removeprefix("t3-")
 
 
+def _default_handover_mirror_path() -> Path:
+    """Human-readable mirror of the latest session hand-off.
+
+    ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`` — XDG
+    *state* (not data) because a hand-off is regenerable transient session
+    state, not durable user data. Overridable via ``[teatree]
+    handover_mirror_path``. The DB row is the source of truth; this file
+    is for human-readability and for bootstrapping a brand-new session.
+    """
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg_state) if xdg_state else Path.home() / ".local" / "state"
+    return base / "teatree" / "handover" / "latest.md"
+
+
 @dataclass
 class UserSettings:
     workspace_dir: Path = field(default_factory=lambda: Path.home() / "workspace")
@@ -705,6 +719,12 @@ class UserSettings:
     issue_implementer_max_concurrent: int = 1
     # Internal dispatch-rate floor (hours) between auto-implement pickups.
     issue_implementer_cadence_hours: int = 1
+    # Human-readable mirror of the latest session hand-off. The
+    # ``SessionHandover`` DB row is the source of truth; this file mirrors
+    # the payload for human-readability and for bootstrapping a brand-new
+    # session. Default ``${XDG_STATE_HOME:-~/.local/state}/teatree/handover/
+    # latest.md``; override via ``[teatree] handover_mirror_path``.
+    handover_mirror_path: Path = field(default_factory=_default_handover_mirror_path)
     # Env kill-switch ``T3_ISSUE_IMPLEMENTER_ENABLED`` (operational fast-
     # disable) wins over both the per-overlay override and the global
     # setting; resolution is env → per-overlay ``[overlays.<name>]`` →
@@ -836,6 +856,11 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
         issue_implementer_max_concurrent=int(teatree.get("issue_implementer_max_concurrent", 1)),
         issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
+        handover_mirror_path=(
+            Path(str(teatree["handover_mirror_path"])).expanduser()
+            if teatree.get("handover_mirror_path")
+            else _default_handover_mirror_path()
+        ),
         billing_cycle_anchor_day=int(teatree.get("billing_cycle_anchor_day", 0)),
         sdk_monthly_credit_usd=float(teatree.get("sdk_monthly_credit_usd", 200.0)),
     )
