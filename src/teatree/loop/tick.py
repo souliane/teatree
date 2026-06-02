@@ -19,7 +19,6 @@ imports.
 import datetime as dt
 import logging
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,7 +30,8 @@ from pathlib import Path
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.dispatch import DispatchAction, dispatch
+from teatree.loop.dispatch import DispatchAction
+from teatree.loop.phases import act_phase, orchestrate_phase, scan_phase, sweep_phase
 from teatree.loop.rendering import zones_for
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
@@ -153,6 +153,13 @@ def run_tick(
     tick (#1481); the default falls back to :func:`build_default_jobs`.
     The seam keeps :mod:`teatree.loop` from importing :mod:`teatree.loops`
     up-stack.
+
+    The body composes the named tick phases (#1796): :func:`sweep_phase`
+    splits the maintenance scanners out of the world-scan, :func:`scan_phase`
+    fans both slices out in parallel and merges their signals,
+    :func:`act_phase` dispatches + runs mechanical handlers + persists
+    agent dispatches, and :func:`orchestrate_phase` runs the speed-driven
+    autonomous fan-out (a no-op at the default ``medium`` speed).
     """
     request = request or TickRequest()
     started_at = now or dt.datetime.now(dt.UTC)
@@ -183,15 +190,13 @@ def run_tick(
         _write_tick_meta(started_at, target=statusline_path)
         return report
 
-    with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:
-        for label, signals, error in pool.map(_run_job, jobs):
-            report.signals.extend(signals)
-            if error:
-                report.errors[label] = error
+    split = sweep_phase(jobs)
+    outcome = scan_phase(split.scan_jobs + split.sweep_jobs)
+    report.signals.extend(outcome.signals)
+    report.errors.update(outcome.errors)
 
-    report.actions = dispatch(report.signals)
-    _execute_mechanical(report)
-    _persist_agent_dispatches(report)
+    act_phase(report)
+    _orchestrate_dormant(request)
 
     zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
     _write_tick_meta(started_at, target=statusline_path)
@@ -200,6 +205,20 @@ def run_tick(
     _populate_loop_owner_anchor(zones)
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     return report
+
+
+def _orchestrate_dormant(request: TickRequest) -> None:
+    """Run :func:`orchestrate_phase` read-only, never aborting the tick.
+
+    Wired dormant (``claim=False``): it computes a plan but mutates no Task
+    row, so wiring it here cannot orphan a claim. Fully fail-open — a config
+    read or budget-resolution error degrades to a no-op, like every other
+    tick phase — until the spawn half opts into ``claim=True`` in a later step.
+    """
+    try:
+        orchestrate_phase(backends=request.backends)
+    except Exception:
+        logger.exception("orchestrate_phase failed — tick continues")
 
 
 def _identity_aliases_for_request(request: TickRequest) -> tuple[tuple[str, ...], ...]:
