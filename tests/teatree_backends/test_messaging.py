@@ -240,8 +240,8 @@ def test_slack_inbound_methods_return_empty_until_socket_mode_enqueues() -> None
 
 def test_slack_fetch_mentions_drains_enqueued_events() -> None:
     backend = SlackBotBackend(bot_token="xoxb-test")
-    backend.enqueue_mention({"text": "hi", "ts": "1.0"})
-    backend.enqueue_mention({"text": "hello", "ts": "2.0"})
+    backend.inbound.enqueue_mention({"text": "hi", "ts": "1.0"})
+    backend.inbound.enqueue_mention({"text": "hello", "ts": "2.0"})
 
     first = backend.fetch_mentions()
     second = backend.fetch_mentions()
@@ -252,7 +252,7 @@ def test_slack_fetch_mentions_drains_enqueued_events() -> None:
 
 def test_slack_fetch_dms_drains_enqueued_events() -> None:
     backend = SlackBotBackend(bot_token="xoxb-test")
-    backend.enqueue_dm({"text": "dm", "ts": "3.0"})
+    backend.inbound.enqueue_dm({"text": "dm", "ts": "3.0"})
 
     drained = backend.fetch_dms()
 
@@ -262,7 +262,7 @@ def test_slack_fetch_dms_drains_enqueued_events() -> None:
 
 def test_slack_fetch_dms_non_destructive_across_scanners_in_tick() -> None:
     backend = SlackBotBackend(bot_token="")
-    backend.enqueue_dm({"text": "red card", "ts": "9.0", "channel": "D1"})
+    backend.inbound.enqueue_dm({"text": "red card", "ts": "9.0", "channel": "D1"})
 
     slack_dm_inbound = backend.fetch_dms()
     slack_mentions = backend.fetch_dms()
@@ -275,7 +275,7 @@ def test_slack_fetch_dms_non_destructive_across_scanners_in_tick() -> None:
 
 def test_slack_fetch_reactions_non_destructive_across_scanners_in_tick() -> None:
     backend = SlackBotBackend(bot_token="")
-    backend.enqueue_reaction({"reaction": "no_entry_sign", "event_ts": "9.1"})
+    backend.inbound.enqueue_reaction({"reaction": "no_entry_sign", "event_ts": "9.1"})
 
     review_intent = backend.fetch_reactions()
     red_card = backend.fetch_reactions()
@@ -286,7 +286,7 @@ def test_slack_fetch_reactions_non_destructive_across_scanners_in_tick() -> None
 
 def test_slack_fetch_mentions_non_destructive_across_scanners_in_tick() -> None:
     backend = SlackBotBackend(bot_token="")
-    backend.enqueue_mention({"text": "@bot", "ts": "9.2"})
+    backend.inbound.enqueue_mention({"text": "@bot", "ts": "9.2"})
 
     mentions_scanner = backend.fetch_mentions()
     review_intent = backend.fetch_mentions()
@@ -297,7 +297,7 @@ def test_slack_fetch_mentions_non_destructive_across_scanners_in_tick() -> None:
 
 def test_slack_fetch_dms_concurrent_consumers_each_see_event() -> None:
     backend = SlackBotBackend(bot_token="")
-    backend.enqueue_dm({"text": "dm", "ts": "9.3"})
+    backend.inbound.enqueue_dm({"text": "dm", "ts": "9.3"})
 
     barrier = threading.Barrier(3)
 
@@ -313,11 +313,11 @@ def test_slack_fetch_dms_concurrent_consumers_each_see_event() -> None:
 
 def test_slack_fetch_dms_new_enqueue_rolls_batch() -> None:
     backend = SlackBotBackend(bot_token="")
-    backend.enqueue_dm({"text": "first tick", "ts": "10.0"})
+    backend.inbound.enqueue_dm({"text": "first tick", "ts": "10.0"})
 
     assert [e["ts"] for e in backend.fetch_dms()] == ["10.0"]
 
-    backend.enqueue_dm({"text": "second tick", "ts": "11.0"})
+    backend.inbound.enqueue_dm({"text": "second tick", "ts": "11.0"})
 
     assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
     assert [e["ts"] for e in backend.fetch_dms()] == ["11.0"]
