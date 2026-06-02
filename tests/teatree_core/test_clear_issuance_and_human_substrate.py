@@ -749,3 +749,30 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
         with _overlay_autonomy("t3-client", "babysit"):
             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
         assert precheck is not None
+
+    def test_full_autonomy_substrate_passes_for_ticketless_clear_via_slug(self) -> None:
+        """MUST-ALLOW: a ticket-less CLEAR resolves its overlay from ``slug`` (the loop's common case)."""
+        clear = _substrate_clear(None, pr_id=1740, slug="souliane/teatree")
+        with _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear)
+        assert precheck is not None
+
+    def test_full_autonomy_substrate_passes_when_ticket_overlay_is_canonical_alias(self) -> None:
+        """MUST-ALLOW: ``ticket.overlay`` short alias resolves the entry-point-keyed override."""
+        ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1741)
+        with _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear)
+        assert precheck is not None
+
+    def test_babysit_autonomy_ticketless_clear_still_refused(self) -> None:
+        """MUST-DENY: a ticket-less CLEAR under a below-full overlay keeps the per-PR sign-off."""
+        clear = _substrate_clear(None, pr_id=1742, slug="souliane/teatree")
+        with _overlay_autonomy("t3-teatree", "babysit"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
+
+    def test_full_autonomy_ticketless_clear_unresolvable_slug_refused(self) -> None:
+        """MUST-DENY: a ticket-less CLEAR whose slug maps to no overlay fails closed."""
+        clear = _substrate_clear(None, pr_id=1743, slug="unknown-owner/unknown-repo")
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
