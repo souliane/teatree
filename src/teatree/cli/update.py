@@ -30,15 +30,25 @@ codes").  Precedent: ``cli/setup.py`` ``_validate_repo`` → ``raise typer.Exit`
 """
 
 import enum
-import os
 import shutil
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
+from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+
+__all__ = [
+    "ReinstallResult",
+    "RepoUpdate",
+    "SubprocessRunner",
+    "UpdateStatus",
+    "ensure_self_db_migrated",
+    "reinstall_running_editable",
+    "update_app",
+    "update_repo",
+]
 
 update_app = typer.Typer(
     help="Sync teatree core and registered overlays to their default branch.",
@@ -307,109 +317,6 @@ def _git_toplevel(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
-def _self_db_migrate_env() -> dict[str, str]:
-    """Env for the runtime-interpreter self-DB migrate.
-
-    Strips an inherited ``DJANGO_SETTINGS_MODULE`` (a worktree-specific value
-    leaking from the caller would crash the subprocess with
-    ``ModuleNotFoundError`` — the #959 class) and pins ``teatree.settings``,
-    so the migrate always targets the teatree-core control DB the runtime
-    ``t3`` resolves.
-    """
-    env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
-    env["DJANGO_SETTINGS_MODULE"] = "teatree.settings"
-    return env
-
-
-def _self_db_migrate_cmd(*args: str) -> list[str]:
-    """``python -m teatree <args>`` using the *running* interpreter.
-
-    Running in the runtime process — not ``uv --directory <clone>`` — is the
-    #126 fix: a worktree-anchored editable install resolves its control DB by
-    the *code's* on-disk location, so ``uv --directory <clone>`` auto-isolates
-    onto a sibling DB the runtime never reads, while ``python -m teatree``
-    (this interpreter, this installed package) resolves the exact DB the merge
-    gate inspects.
-    """
-    return [sys.executable, "-m", "teatree", *args]
-
-
-def _self_db_has_pending_migrations() -> bool:
-    """Probe whether the runtime teatree self-DB has unapplied migrations.
-
-    Runs ``python -m teatree migrate --check --no-input`` in the runtime
-    interpreter: Django exits 0 when the DB is fully migrated and non-zero
-    when migrations are pending. This decouples "should we migrate?" from
-    "did a repo advance *this run*?" — an interrupted prior ``t3 update`` or
-    an out-of-band ``git pull`` can leave the SHA already current with a
-    stale self-DB (#929), so the per-run ``UPDATED`` flag is the wrong gate.
-    """
-    result = run_allowed_to_fail(
-        _self_db_migrate_cmd("migrate", "--check", "--no-input"),
-        env=_self_db_migrate_env(),
-        expected_codes=None,
-    )
-    return result.returncode != 0
-
-
-def _migrate_self_db() -> None:
-    """Apply pending teatree self-DB migrations non-destructively, in-process.
-
-    A teatree git-pull can land new migrations; ``t3 update`` must apply them
-    or the sanctioned merge path breaks against the now-stale self-DB. Runs
-    ``python -m teatree migrate --no-input`` in the *running* interpreter so
-    the DB it migrates is exactly the one the runtime ``t3`` (and the merge
-    gate) resolves — never a ``uv --directory <clone>`` sibling DB (#126).
-    Non-destructive: live ticket/session/lease state is preserved. This is
-    the first-class t3 alternative to the destructive ``resetdb`` and the
-    hook-discouraged raw ``manage.py migrate``.
-
-    A failure is **fail-closed** (#929): it raises ``typer.Exit(code=1)``
-    rather than swallowing a WARN, so ``t3 update`` can never exit 0 with
-    a half-migrated self-DB and silently break #870's
-    fail-closed-on-unmigrated-self-DB guarantee.
-    """
-    typer.echo("Applying teatree self-DB migrations (non-destructive, runtime self-DB) ...")
-    result = run_allowed_to_fail(
-        _self_db_migrate_cmd("migrate", "--no-input"),
-        env=_self_db_migrate_env(),
-        expected_codes=None,
-    )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
-        typer.echo("")
-        typer.echo(f"!! FAIL: self-DB migration failed — {detail}")
-        typer.echo("!! The teatree self-DB is left UNMIGRATED; the sanctioned merge path (#870) will fail closed.")
-        typer.echo("!! Resolve the migration error and re-run `t3 update` before relying on the merge path.")
-        typer.echo("")
-        raise typer.Exit(code=1)
-    typer.echo("OK    self-DB migrations applied.")
-
-
-def _ensure_self_db_migrated() -> bool:
-    """Migrate the runtime teatree self-DB iff migrations are actually pending.
-
-    Probe-gated and fully decoupled from whether a repo advanced *this
-    run* (#929): an interrupted prior ``t3 update`` or an out-of-band
-    ``git pull`` leaves the SHA current with a stale self-DB, and the
-    migration must still run.  Returns ``True`` when the self-DB is left
-    unmigrated (caller exits non-zero — fail-closed, #870); ``False``
-    when nothing was pending or the migration succeeded.
-
-    Both probe and migrate run in the runtime interpreter (``python -m
-    teatree``), so they always target the DB the runtime resolves — there
-    is no clone to resolve and no ``uv`` dependency for this path (#126).
-    """
-    if not _self_db_has_pending_migrations():
-        typer.echo("OK    self-DB already migrated.")
-        return False
-    try:
-        _migrate_self_db()
-    except typer.Exit:
-        return True
-    return False
-
-
 def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
     """Reinstall editable installs whose source advanced, then re-run setup.
 
@@ -422,30 +329,16 @@ def _reinstall_and_resetup(updated: list[RepoUpdate]) -> None:
         typer.echo("No repo advanced — skipping reinstall + setup.")
         return
 
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        from teatree.cli.setup import _current_editable_source  # noqa: PLC0415
-
-        source = _current_editable_source(uv_bin)
-        if source is not None and source.is_dir():
-            typer.echo(f"Reinstalling editable teatree from {source} ...")
-            result = run_allowed_to_fail(
-                [uv_bin, "tool", "install", "--editable", str(source), "--reinstall"],
-                expected_codes=None,
-            )
-            if result.returncode != 0:
-                typer.echo(f"WARN  Reinstall failed: {result.stderr.strip()}")
-            else:
-                typer.echo("OK    Reinstalled teatree.")
-    else:
+    if not shutil.which("uv"):
         typer.echo("WARN  `uv` not on PATH — skipping editable reinstall.")
-
-    t3_bin = shutil.which("t3") or sys.argv[0]
-    typer.echo("Re-running `t3 setup` ...")
-    result = run_allowed_to_fail([t3_bin, "setup"], expected_codes=None)
-    typer.echo(result.stdout.rstrip() if result.stdout.strip() else "")
-    if result.returncode != 0:
-        typer.echo(f"WARN  `t3 setup` reported a problem: {result.stderr.strip()}")
+    typer.echo("Reinstalling editable teatree + re-running `t3 setup` ...")
+    result = reinstall_running_editable()
+    if result.reinstalled:
+        typer.echo("OK    Reinstalled teatree.")
+    if result.ok:
+        typer.echo("OK    `t3 setup` complete.")
+    else:
+        typer.echo(f"WARN  reinstall/setup reported a problem: {result.error}")
 
 
 @update_app.callback()
@@ -477,7 +370,7 @@ def _run_update() -> None:
     # Probe-gated and decoupled from the per-run UPDATED flag (#929): an
     # interrupted prior run or an out-of-band ff-pull leaves the SHA
     # current with a stale self-DB; this still migrates it.
-    self_db_unmigrated = _ensure_self_db_migrated()
+    self_db_unmigrated = ensure_self_db_migrated()
 
     typer.echo("")
     typer.echo("Summary:")

@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import shutil
-import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
+from teatree.self_update import current_editable_source
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -78,28 +78,12 @@ def _find_main_clone() -> Path | None:
 def _current_editable_source(uv_bin: str) -> Path | None:
     """Return the editable source recorded in uv's teatree tool receipt, or None.
 
-    Returns None when teatree isn't installed as a uv tool, when it's installed
-    non-editable (regular PyPI-style install), or when the receipt is
-    unparsable.  ``~/.local/share/uv/tools/teatree/uv-receipt.toml`` looks like::
-
-        [tool]
-        requirements = [{ name = "teatree", editable = "/path/to/clone" }]
+    Thin alias kept on the ``setup`` surface for its callers; the canonical
+    implementation lives in :func:`teatree.self_update.current_editable_source`
+    so the reinstall path shares one definition (``teatree.loop`` cannot import
+    ``teatree.cli``).
     """
-    result = _run_captured([uv_bin, "tool", "dir"])
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    receipt = Path(result.stdout.strip()) / "teatree" / "uv-receipt.toml"
-    if not receipt.is_file():
-        return None
-    try:
-        data = tomllib.loads(receipt.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return None
-    for req in data.get("tool", {}).get("requirements", []):
-        if req.get("name") == "teatree":
-            editable = req.get("editable")
-            return Path(editable) if editable else None
-    return None
+    return current_editable_source(uv_bin)
 
 
 def _run_captured(args: list[str], cwd: Path | None = None) -> CompletedProcess[str]:

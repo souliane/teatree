@@ -71,6 +71,7 @@ from teatree.loop.scanners import (
 )
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
+from teatree.loop.scanners.self_update_ci import GhMainCiStatus
 from teatree.loop.tick_resolvers import (
     _allowed_url_prefixes_for_host,
     _identity_alias_groups_for_overlay,
@@ -629,7 +630,7 @@ def _git_toplevel(path: Path) -> Path | None:
 
 
 def _self_update_scanner() -> SelfUpdateScanner | None:
-    """Build the global self-update scanner from teatree-core config (#1249).
+    """Build the global self-update scanner from teatree-core config (#1249, #1760).
 
     Returns ``None`` when ``self_update_disabled = true`` (the escape
     hatch) OR when there are no editable clones to walk (a non-editable
@@ -639,6 +640,14 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     1 hour). The scanner is wired as a global job (``overlay=""``)
     because it concerns the editable installs themselves, not any one
     overlay's tracked work.
+
+    #1760 wires the CI-green fail-closed gate and the deferred-reinstall
+    queue: ``auto_update_require_green_main`` (default ON) refuses a
+    ff-pull unless the default branch's CI is explicitly green — the
+    verdict comes from :class:`GhMainCiStatus`, the same ``gh
+    check-runs`` source the PR sweep uses. ``auto_update_reinstall``
+    (default OFF, ``T3_LOOP_AUTO_UPDATE`` env wins) opts into queuing a
+    deferred reinstall on an actual update.
     """
     settings = load_config().user
     if settings.self_update_disabled:
@@ -649,6 +658,9 @@ def _self_update_scanner() -> SelfUpdateScanner | None:
     return SelfUpdateScanner(
         repos=tuple(repos),
         cadence_hours=settings.self_update_cadence_hours,
+        ci_status=GhMainCiStatus(),
+        require_green_main=settings.auto_update_require_green_main,
+        auto_update_reinstall=settings.auto_update_reinstall,
     )
 
 
