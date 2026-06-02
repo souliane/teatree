@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run tests in Docker across all supported Python versions (mirrors CI).
-# Uses a cached image with apt packages + uv pre-installed.
-# Caches uv data (Python installs) and venvs between runs to avoid re-downloading.
+# OPT-IN Docker superset of the fast pre-push gate (dev/test-fast.sh).
+# Runs the suite in Docker across Python 3.13 + 3.14; not the default push path.
+#
+# Usage: dev/test-matrix.sh [--all | <version>...]   (no args / --all = 3.13 3.14)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,7 +10,13 @@ IMAGE="teatree-test"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/teatree-test"
 mkdir -p "${CACHE_DIR}/uv"
 failed=0
-versions=(3.13)
+
+default_versions=(3.13 3.14)
+if [ "$#" -eq 0 ] || [ "${1:-}" = "--all" ]; then
+    versions=("${default_versions[@]}")
+else
+    versions=("$@")
+fi
 total=${#versions[@]}
 current=0
 

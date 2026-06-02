@@ -194,7 +194,7 @@ See your [issue tracker platform reference](../../platforms/references/) § "Kno
 - **Cause:** New code introduced a `subprocess.run` call to an external tool. Local dev has the tool installed; Docker CI does not. Common culprits: `_compose_has_service` (calls `docker compose`), `_drop_orphan_databases` (calls `psql`/`dropdb`).
 - **Subtle variant — local imports:** When a function uses `from module import func` inside the function body, patching the *caller's* `subprocess` doesn't cover calls made through the *imported module's* `subprocess`. Example: patching `lifecycle_mod.subprocess` does NOT mock `_compose_has_service` which is imported from `run_mod` at call time.
 - **Fix:** Patch the function directly on the module it lives in: `patch.object(run_mod, "_compose_has_service", return_value=True)`.
-- **Prevention:** When adding any `subprocess` call to an external tool, grep all test files for tests that exercise that code path (`grep -r "lifecycle.*start\|workspace.*clean"`) and add mocks. Run the Docker test matrix locally before pushing: the pre-push hook does this automatically.
+- **Prevention:** When adding any `subprocess` call to an external tool, grep all test files for tests that exercise that code path (`grep -r "lifecycle.*start\|workspace.*clean"`) and add mocks. The default pre-push gate (`dev/test-fast.sh`) runs host-native, so it won't catch a missing-in-Docker tool; run the opt-in Docker matrix (`dev/test-matrix.sh`) before merging changes that add such a subprocess call.
 
 ## direnv Not Loading `.envrc`
 
