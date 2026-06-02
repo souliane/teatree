@@ -529,7 +529,9 @@ def slack_bot_setup(
     if not reset:
         recorded_app_id = _read_overlay_field(config_path, overlay, "slack_app_id")
         if recorded_app_id or update:
-            app_id = recorded_app_id or _prompt_app_id()
+            from teatree.cli.slack_app_resolve import resolve_overlay_app_id  # noqa: PLC0415
+
+            app_id = resolve_overlay_app_id(config_path, overlay, token_ref=token_ref) or _prompt_app_id()
             try:
                 _run_update_path(
                     overlay=overlay,

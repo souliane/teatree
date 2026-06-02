@@ -652,6 +652,20 @@ class SlackBotBackend:
         channel_id = channel.get("id")
         return channel_id if isinstance(channel_id, str) else ""
 
+    def join_conversation(self, channel: str) -> RawAPIDict:
+        """Join the bot to a public channel via ``conversations.join`` (bot token).
+
+        Returns the raw Slack body. ``ok:true`` is returned both on a fresh
+        join and when the bot is already a member (Slack sets
+        ``already_in_channel``), so callers treat the call as idempotent. A
+        private or Slack-Connect channel rejects a self-join with an error in
+        the body; the setup-time channel provisioner maps that to a clean
+        "invite the bot manually" instruction rather than failing.
+        """
+        if not channel:
+            return {}
+        return self._post("conversations.join", {"channel": channel})
+
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""
         if not channel or not ts:

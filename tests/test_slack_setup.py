@@ -689,6 +689,7 @@ class TestUpdatePathModeResolution:
             patch("teatree.cli.slack_setup.discover_overlays", return_value=_stub_overlays()),
             patch("teatree.cli.slack_setup.webbrowser.open"),
             patch("teatree.cli.slack_setup.read_pass", return_value="xoxe.xoxp-token"),
+            patch("teatree.cli.slack_app_resolve.read_pass", return_value=""),
             patch("teatree.cli.slack_setup.write_pass", return_value=True),
             patch("teatree.cli.slack_setup._smoke_test", return_value=True),
             patch(

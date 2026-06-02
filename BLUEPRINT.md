@@ -66,7 +66,7 @@ overlay_init/, contrib/, docker/, templates/overlay/
 
 Plus top-level: `agents/` (phase sub-agent definitions), `skills/*/` (workflow skills), `hooks/` (plugin hooks), `tests/` (pytest suite), `scripts/` (utility scripts), `.claude-plugin/`, `apm.yml`, `settings.json`.
 
-Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) is detailed in [docs/blueprint/configuration.md](docs/blueprint/configuration.md) §10.1 "Slack bot setup" — cited from `src/teatree/backends/slack_bot.py` and `src/teatree/cli/slack_setup.py` as `BLUEPRINT §3.6`.
+Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the one-command `t3 setup slack-provision` that runs the whole lifecycle (manifest scopes, OAuth URL, channel join, tokens) idempotently ([#1686](https://github.com/souliane/teatree/issues/1686)) — are detailed in [docs/blueprint/configuration.md](docs/blueprint/configuration.md) §10.1 "Slack bot setup", cited from `src/teatree/backends/slack_bot.py`, `src/teatree/cli/slack_setup.py`, and `src/teatree/cli/slack_provision.py` as `BLUEPRINT §3.6`.
 
 ---
 
