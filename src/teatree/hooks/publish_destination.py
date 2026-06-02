@@ -7,15 +7,21 @@ repo's own customer/domain terms and bare cross-references are exactly
 what its issues/PRs are supposed to carry.
 
 :func:`resolve_publish_destination` extracts the target repo/namespace
-from a publish command and :func:`is_public_destination` classifies it
-FAIL-CLOSED: a destination is PUBLIC (gate scans/blocks) UNLESS it is
-PROVABLY internal -- its namespace matches the CONFIG-DRIVEN ``[teatree]
-internal_publish_namespaces`` allowlist (or the
-``T3_INTERNAL_PUBLISH_NAMESPACES`` env var). The default when the key is
-absent is an empty allowlist, so every destination stays PUBLIC and
-behaviour is UNCHANGED for unconfigured users. An unresolvable destination
-is PUBLIC (scan). :func:`gate_skips_destination` is the composed predicate
-the gates call.
+from the COMMAND ITSELF (the ``--repo``/``-R`` flag, the ``api`` URL path,
+or the cwd git remote) and :func:`is_public_destination` classifies THAT
+resolved target FAIL-CLOSED: a destination is PUBLIC (gate scans/blocks)
+UNLESS it is PROVABLY internal -- its namespace matches the CONFIG-DRIVEN
+``[teatree] internal_publish_namespaces`` allowlist (or the
+``T3_INTERNAL_PUBLISH_NAMESPACES`` env var), the ``[teatree] private_repos``
+allowlist, or the day-cached ``gh``/``glab`` live-visibility probe (the same
+fallback the private-repo carve-out applies to its command-resolved target).
+Resolving visibility from the command's target rather than the harness cwd
+is what lets a post FROM a public clone TO a provably-private repo skip the
+public-leak scan instead of over-blocking. With no allowlist configured and
+no probe-resolvable target, every destination stays PUBLIC, so behaviour is
+UNCHANGED for unconfigured users. An unresolvable destination is PUBLIC
+(scan). :func:`gate_skips_destination` is the composed predicate the gates
+call.
 
 The shared command-parsing helpers (``_extract_repo_flag``, the
 eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
@@ -34,7 +40,7 @@ from typing import Final
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
 from teatree.hooks._publish_detection import segment_is_api_call as _segment_is_api_call
-from teatree.hooks._repo_visibility import _config_path, slug_for_cwd, slug_is_allowlisted_private
+from teatree.hooks._repo_visibility import _config_path, slug_for_cwd, slug_is_allowlisted_private, slug_is_private
 from teatree.hooks.publish_surface import (
     _GH_ELIGIBLE_VERBS,
     _GLAB_ELIGIBLE_VERBS,
@@ -51,8 +57,9 @@ class Destination:
     ``slug`` is the repo/namespace as it appears on the command line
     (``owner/repo``, ``host/owner/repo``, or ``ns/sub/repo``). ``via``
     records how it was resolved (``flag`` for ``--repo``/``-R``, ``api`` for
-    a ``gh``/``glab api`` URL path, ``cwd`` for the current-repo fallback) so
-    a caller can log the provenance without re-parsing.
+    a ``gh``/``glab api`` URL path, ``url`` for a forge URL positional, ``env``
+    for ``GH_REPO``, ``cwd`` for the current-repo fallback) so a caller can log
+    the provenance without re-parsing.
     """
 
     slug: str
@@ -68,6 +75,16 @@ _GH_API_REPOS_RE: Final[re.Pattern[str]] = re.compile(r"^repos/([^/]+/[^/]+)")
 # single URL-encoded path segment (``ns%2Frepo`` or ``ns%2Fsub%2Frepo``).
 # ``%2F`` decodes back to ``/`` so the slug matches the allowlist shape.
 _GLAB_API_PROJECTS_RE: Final[re.Pattern[str]] = re.compile(r"^projects/([^/?]+)")
+
+# A forge URL positional (``gh issue comment https://github.com/o/r/issues/5``)
+# names the target by URL with no ``--repo`` flag. The slug is the path before
+# the resource segment; GitLab's ``/-/`` infix and a multi-level group path are
+# both handled. ``.git`` and a trailing slash on a bare repo URL are stripped.
+_FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
+    r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com)/"
+    r"(?P<slug>[\w.-]+(?:/[\w.-]+)+?)"
+    r"(?:/(?:-/)?(?:issues|pull|pulls|merge_requests|commit|tree|blob)\b|\.git\b|/?$)",
+)
 
 # ``gh``/``glab`` create/comment verbs whose target, when no ``--repo``/``-R``
 # flag is present, is the CURRENT repo (resolved from the git remote).
@@ -140,17 +157,35 @@ def _destination_from_current_repo(cwd: Path | None) -> Destination | None:
     return Destination(slug=slug, via="cwd") if slug else None
 
 
+def _destination_from_forge_url(words: list[str]) -> Destination | None:
+    """Resolve the target from the FIRST forge URL positional in ``words``, or ``None``.
+
+    ``gh issue comment https://github.com/owner/repo/issues/5`` names its target
+    by URL with no ``--repo`` flag; the slug is the path before the resource
+    segment. This is more specific than the cwd remote, so it is resolved before
+    the current-repo fallback.
+    """
+    for word in words:
+        match = _FORGE_URL_SLUG_RE.search(word)
+        if match:
+            return Destination(slug=match.group("slug").removesuffix(".git"), via="url")
+    return None
+
+
 def _flagless_destination(words: list[str], tool: str, cwd: Path | None) -> Destination | None:
     """Resolve a publish target when no explicit ``--repo``/``-R`` flag is present.
 
     Priority: a raw-REST ``api`` URL path, then the ``gh`` ``GH_REPO`` env
-    default, then the current repo for a create/comment/note verb. ``None``
-    when none of these resolves a target.
+    default, then a forge URL positional in the args, then the current repo for a
+    create/comment/note verb. ``None`` when none of these resolves a target.
     """
     if "api" in words:
         return _destination_from_api(words, tool)
     if tool == "gh" and os.environ.get("GH_REPO", "").strip():
         return Destination(slug=os.environ["GH_REPO"].strip(), via="env")
+    url_dest = _destination_from_forge_url(words)
+    if url_dest is not None:
+        return url_dest
     if len(words) >= 3 and (words[1], words[2]) in _CURRENT_REPO_VERBS:  # noqa: PLR2004
         return _destination_from_current_repo(cwd)
     return None
@@ -287,8 +322,8 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     """Return True iff ``dest`` should be treated as a PUBLIC publish target.
 
     FAIL-CLOSED classification: a destination is PUBLIC (the gate scans and
-    blocks) UNLESS it is PROVABLY internal. A destination is internal when
-    EITHER allowlist matches its slug:
+    blocks) UNLESS it is PROVABLY internal. A destination is internal when ANY
+    of these resolves its slug to private:
 
     - the ``[teatree] internal_publish_namespaces`` /
         ``T3_INTERNAL_PUBLISH_NAMESPACES`` allowlist, as a case-insensitive
@@ -299,10 +334,21 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         (:func:`_repo_visibility.slug_is_allowlisted_private`, a
         case-insensitive SUBSTRING match), so a user's CURRENT
         ``private_repos`` config makes their private namespaces skip the
-        public-leak scan without maintaining a second allowlist.
+        public-leak scan without maintaining a second allowlist;
+    - the day-cached ``gh``/``glab`` live-visibility probe
+        (:func:`_repo_visibility.slug_is_private`), the same fallback the
+        commit / pure-post carve-out (:func:`publish_surface._segment_target_is_private`)
+        already applies to its command-resolved target. Resolving visibility
+        from the COMMAND's target slug (the ``--repo``/``-R`` flag, the
+        ``api`` URL path, or the cwd remote) rather than the harness cwd is
+        what lets a post FROM a public clone TO a provably-private repo skip
+        the public-leak scan instead of over-blocking. The probe returns
+        ``None`` (unknown -- tool absent in-hook or auth differs) for an
+        unresolvable target, which stays PUBLIC.
 
-    A ``None`` destination (unresolvable target) is PUBLIC -- detection
-    failure never weakens the gate.
+    A ``None`` destination (unresolvable target) is PUBLIC, and a probe that
+    cannot prove the target private leaves it PUBLIC -- detection failure
+    never weakens the gate.
     """
     if dest is None:
         return True
@@ -311,7 +357,9 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         return True
     if any(_namespace_matches(entry, slug) for entry in _internal_publish_namespaces(config_path)):
         return False
-    return not slug_is_allowlisted_private(slug, config_path)
+    if slug_is_allowlisted_private(slug, config_path):
+        return False
+    return not slug_is_private(slug)
 
 
 def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:

@@ -150,3 +150,124 @@ def test_banned_terms_allowed_when_target_resolvable_private(
     assert blocked is False
     assert captured.out == ""  # no deny JSON
     assert "visibility unknown" not in captured.err
+
+
+def _write_home_config(home: Path, body: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    (home / ".teatree.toml").write_text(body, encoding="utf-8")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+
+def _public_clone(tmp_path: Path) -> Path:
+    repo = tmp_path / "public-clone"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@github.com:souliane/teatree.git")
+    return repo
+
+
+def test_live_hook_allows_customer_term_to_probe_private_target_from_public_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point regression: the harness cwd is the PUBLIC teatree clone,
+    # the post targets a PROVABLY-private ``--repo`` the allowlist does not name.
+    # The over-block was the live path classifying the destination from the
+    # ambient cwd; the gate must resolve the target FROM THE COMMAND and consult
+    # the probe, then SKIP the scan for the private target.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, '[teatree]\nbanned_terms = ["acmewidget"]\n', monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        _repo_visibility,
+        "probe_visibility",
+        lambda slug: "PRIVATE" if "privowner/private-svc" in slug else None,
+    )
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue comment 5 --repo privowner/private-svc --body "rolling out acmewidget"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+_PUBLIC_ONLY_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["customer-org"]\n'
+
+
+def test_live_hook_blocks_customer_term_to_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point must-DENY: a customer term toward the genuinely-public
+    # repo (the harness cwd) is a leak and the live path DENIES.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _PUBLIC_ONLY_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue comment 5 --repo souliane/teatree --body "customercorp leak"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_allows_customer_term_to_colleague_private_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point must-ALLOW: a customer term toward the customer's own
+    # (colleague) private repo is allowed -- the leak gate enforces on PUBLIC
+    # targets only. The target is resolved FROM THE COMMAND (--repo), not the
+    # ambient public-clone cwd.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _PUBLIC_ONLY_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh issue comment 5 --repo customer-org/their-svc --body "customercorp note"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_live_hook_allows_customer_term_on_git_c_commit_to_private_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # LIVE entry-point must-ALLOW (commit path): a customer term in a
+    # ``git -C <worktree> commit`` subject whose repo resolves FROM THE COMMAND
+    # to a private repo is allowed, even though the harness cwd is the public
+    # clone -- the cwd->target resolution part of the fix.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _PUBLIC_ONLY_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    _git(worktree, "init", "-b", "main")
+    _git(worktree, "remote", "add", "origin", "git@gitlab.com:customer-org/their-svc.git")
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f'git -C {worktree} commit -m "customercorp feature"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
