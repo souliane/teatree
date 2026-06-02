@@ -15,6 +15,7 @@ from django.utils.module_loading import import_string
 
 import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
+import teatree.core.management.commands._workspace_docker as ws_docker_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
@@ -640,6 +641,9 @@ _no_stash = patch.object(workspace_mod, "drop_orphaned_stashes", new=lambda _rep
 _no_orphan_dbs = patch.object(workspace_mod, "drop_orphan_databases", new=list)
 
 
+_no_orphan_docker = patch.object(workspace_mod, "reap_orphan_worktree_docker", new=list)
+
+
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
@@ -1011,6 +1015,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1026,6 +1031,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1077,6 +1083,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1124,6 +1131,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1165,6 +1173,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1211,6 +1220,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1246,6 +1256,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_includes_dslr_snapshot_pruning(self) -> None:
@@ -1263,6 +1274,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_passes_in_use_tenants_from_active_worktrees(self) -> None:
@@ -1308,6 +1320,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1381,6 +1394,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_prune
     @_no_stash
     @_no_orphan_dbs
+    @_no_orphan_docker
     @_no_dslr_prune
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1416,6 +1430,63 @@ class TestWorkspaceCleanAll(TestCase):
             call_command("workspace", "clean-all")
 
         assert exc_info.value.code == 1
+
+    @_no_prune
+    @_no_stash
+    @_no_orphan_dbs
+    @_no_dslr_prune
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_reaps_orphan_worktree_docker(self) -> None:
+        """#1523: clean-all reaps docker for compose projects whose worktree dir is gone."""
+        with patch.object(workspace_mod, "reap_orphan_worktree_docker") as mock_reap:
+            mock_reap.return_value = ["Reaped docker project teatree-wt99: 1 container(s), 1 image(s)"]
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+        mock_reap.assert_called_once_with()
+        assert any("Reaped docker project teatree-wt99" in c for c in cleaned)
+
+
+class TestReapOrphanWorktreeDocker(TestCase):
+    """#1523 orphan reaper: a worktree whose dir is gone is not live, so its docker is reaped.
+
+    The docker subprocess is mocked at the engine boundary
+    (``reap_orphan_compose_projects``); this asserts the live/keep set is
+    computed correctly from the rows-on-disk and handed to the engine.
+    """
+
+    def _worktree(self, *, repo: str, number: str, wt_path: str | None) -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url=f"https://example.com/issues/{number}")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path=repo,
+            branch=f"{number}-x",
+            extra={"worktree_path": wt_path} if wt_path else {},
+        )
+
+    def test_live_set_excludes_worktrees_whose_dir_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            live_dir = Path(tmp) / "live"
+            live_dir.mkdir()
+            self._worktree(repo="backend", number="1", wt_path=str(live_dir))
+            self._worktree(repo="backend", number="9", wt_path=str(Path(tmp) / "gone"))
+
+            with patch.object(ws_docker_mod, "reap_orphan_compose_projects", return_value=[]) as mock_engine:
+                ws_docker_mod.reap_orphan_worktree_docker()
+
+        (live_projects,) = mock_engine.call_args.args
+        assert live_projects == {"backend-wt1"}
+
+    def test_renders_engine_results_as_lines(self) -> None:
+        from teatree.docker.reap import ReapResult  # noqa: PLC0415
+
+        result = ReapResult(project="backend-wt9", containers_removed=2, images_removed=1)
+        with patch.object(ws_docker_mod, "reap_orphan_compose_projects", return_value=[result]):
+            lines = ws_docker_mod.reap_orphan_worktree_docker()
+
+        assert lines == [str(result)]
+        assert "backend-wt9" in lines[0]
 
 
 class TestResolveUnsyncedWorktree(TestCase):
