@@ -858,21 +858,39 @@ def _assert_clear_authorized(
     return clear
 
 
+def _resolve_clear_overlay_name(clear: "MergeClear") -> str:
+    """The overlay name to resolve autonomy against for *clear*.
+
+    The CLEAR's ``ticket.overlay`` is authoritative when present, but the loop
+    routinely issues a CLEAR with no linked ticket (every substrate CLEAR in
+    the live ledger). The CLEAR always carries the ``owner/repo`` ``slug``, so
+    the overlay is recovered from it via :func:`infer_overlay_for_url` — the
+    same workspace-repos inference ``ticket.overlay`` itself is populated from.
+    Returns ``""`` when neither source resolves an overlay.
+    """
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
+
+    overlay_name = str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
+    if overlay_name:
+        return overlay_name
+    return infer_overlay_for_url(str(getattr(clear, "slug", "") or "")).strip()
+
+
 def _overlay_grants_full_substrate_autonomy(clear: "MergeClear") -> bool:
     """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
 
-    Resolves the effective autonomy for the overlay the CLEAR's ticket belongs
-    to via :func:`get_effective_settings`. ``full`` is the owner's standing,
-    recorded grant that this overlay merges end-to-end without a per-PR human
-    sign-off; it satisfies the substrate sign-off in place of a per-CLEAR
-    ``human_authorizer``. Any other tier (``notify`` / ``babysit``), or an
-    unresolvable overlay, is fail-closed: the per-CLEAR human authoriser stays
-    mandatory. The carve-out touches ONLY the per-PR sign-off — every other
-    substrate-merge floor guard runs unchanged.
+    Resolves the effective autonomy for the CLEAR's overlay
+    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings`.
+    ``full`` is the owner's standing, recorded grant that this overlay merges
+    end-to-end without a per-PR human sign-off; it satisfies the substrate
+    sign-off in place of a per-CLEAR ``human_authorizer``. Any other tier
+    (``notify`` / ``babysit``), or an unresolvable overlay, is fail-closed:
+    the per-CLEAR human authoriser stays mandatory. The carve-out touches ONLY
+    the per-PR sign-off — every other substrate-merge floor guard runs unchanged.
     """
     from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
 
-    overlay_name = str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
+    overlay_name = _resolve_clear_overlay_name(clear)
     if not overlay_name:
         return False
     return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
