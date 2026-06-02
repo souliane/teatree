@@ -111,6 +111,16 @@ def _message(text: str, ts: str) -> RawAPIDict:
     return {"text": text, "ts": ts, "user": "USRG", "type": "message"}
 
 
+def _message_with_reactions(text: str, ts: str, reactions: list[RawAPIDict]) -> RawAPIDict:
+    message = _message(text, ts)
+    message["reactions"] = reactions
+    return message
+
+
+USER_SLACK_ID = "U0DEMOUSER1"
+COLLEAGUE_SLACK_ID = "UC0LLEAGUE"
+
+
 class TestClassificationBehaviour(TestCase):
     def test_all_merged_broadcast_reacts_green_check_and_skips_dispatch(self) -> None:
         backend = FakeMessaging()
@@ -248,6 +258,104 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
 
         assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
         assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+
+class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
+    """A broadcast already :eyes:-reacted by a colleague must not be dispatched.
+
+    Standing user rule: never dispatch a review of an MR/PR carrying a
+    :eyes: reaction from someone other than the user — that reaction is the
+    colleague's claim on the review. The override is an explicit
+    ``<@user_slack_id>`` mention: the user naming the MR re-opens dispatch.
+    """
+
+    def _scanner(self, history: dict[str, list[RawAPIDict]]) -> SlackBroadcastsScanner:
+        return SlackBroadcastsScanner(
+            backend=FakeMessaging(user_id=USER_SLACK_ID),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
+        )
+
+    def test_colleague_eyes_reaction_skips_react_and_dispatch(self) -> None:
+        message = _message_with_reactions(
+            f"please review {MR_OPEN}",
+            TS_A,
+            [{"name": "eyes", "users": [COLLEAGUE_SLACK_ID], "count": 1}],
+        )
+        scanner = self._scanner({CHANNEL: [message]})
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert scanner.backend.react_calls == []
+        row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
+        assert row.classification == ScannedBroadcast.Classification.PENDING
+
+    def test_own_eyes_reaction_does_not_count_as_a_colleague_claim(self) -> None:
+        message = _message_with_reactions(
+            f"please review {MR_OPEN}",
+            TS_A,
+            [{"name": "eyes", "users": [USER_SLACK_ID], "count": 1}],
+        )
+        scanner = self._scanner({CHANNEL: [message]})
+
+        signals = scanner.scan()
+
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+    def test_non_eyes_colleague_reaction_still_dispatches(self) -> None:
+        message = _message_with_reactions(
+            f"please review {MR_OPEN}",
+            TS_A,
+            [{"name": "thumbsup", "users": [COLLEAGUE_SLACK_ID], "count": 1}],
+        )
+        scanner = self._scanner({CHANNEL: [message]})
+
+        signals = scanner.scan()
+
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+
+    def test_no_user_id_configured_cannot_be_overridden_by_mention(self) -> None:
+        message = _message_with_reactions(
+            f"<@{USER_SLACK_ID}> please review {MR_OPEN}",
+            TS_A,
+            [{"name": "eyes", "users": [COLLEAGUE_SLACK_ID], "count": 1}],
+        )
+        scanner = SlackBroadcastsScanner(
+            backend=FakeMessaging(user_id=""),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher({CHANNEL: [message]}),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert scanner.backend.react_calls == []
+
+    def test_user_mention_overrides_colleague_eyes_reaction(self) -> None:
+        message = _message_with_reactions(
+            f"<@{USER_SLACK_ID}> please review {MR_OPEN}",
+            TS_A,
+            [{"name": "eyes", "users": [COLLEAGUE_SLACK_ID], "count": 1}],
+        )
+        scanner = SlackBroadcastsScanner(
+            backend=FakeMessaging(user_id=USER_SLACK_ID),
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher({CHANNEL: [message]}),
+            classify_mrs=_classifier({MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}),
+            user_slack_id=USER_SLACK_ID,
+            reviewer_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert {s.kind for s in signals} == {"slack.review_intent", "review_request_in_slack"}
+        assert {s.payload["mr_url"] for s in signals} == {MR_OPEN}
+        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
 
 
 class TestIdempotency(TestCase):

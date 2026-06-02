@@ -59,6 +59,7 @@ from django.db import OperationalError, ProgrammingError
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
+from teatree.core.review_candidate import eyes_reacted_by_other
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -305,12 +306,18 @@ class SlackBroadcastsScanner:
         # review channel were previously invisible to the nag train because
         # only the bot's review-request flow wrote ReviewRequestPost rows.
         _seed_review_request_posts(channel=row.channel, ts=row.slack_ts, states=states)
-        signals = self._apply_classification(row, states)
+        signals = self._apply_classification(row, states, message, user_named=self._user_named(text))
         # #1295 cap B: detect ``<@user_slack_id>`` mentions so the
         # mechanical assigner picks up the MR without waiting for a
         # forge-side assignment to land.
         signals.extend(self._pickup_signals(text, row, states))
         return signals
+
+    def _user_named(self, text: str) -> bool:
+        user_id = self._user_id()
+        if not user_id:
+            return False
+        return user_id in {match.group(1) for match in _SLACK_MENTION_RE.finditer(text)}
 
     def _pickup_signals(
         self,
@@ -344,6 +351,9 @@ class SlackBroadcastsScanner:
         self,
         row: ScannedBroadcast,
         states: Sequence[MrState],
+        message: RawAPIDict,
+        *,
+        user_named: bool,
     ) -> list[ScanSignal]:
         if row.classification == ScannedBroadcast.Classification.ALL_MERGED:
             self._react(row.channel, row.slack_ts, "white_check_mark")
@@ -361,8 +371,16 @@ class SlackBroadcastsScanner:
             # meaningless noise on one's own MR, and there is nothing to
             # dispatch a reviewer for. Skip both. Sibling of #1321.
             return []
+        if not user_named and eyes_reacted_by_other(message, user_id=self._user_id()):
+            # A colleague has already :eyes:-claimed this review. Dispatching
+            # ``t3:reviewer`` anyway duplicates their in-flight work. An
+            # explicit ``<@user_slack_id>`` mention re-opens dispatch.
+            return []
         self._react(row.channel, row.slack_ts, "eyes")
         return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states]
+
+    def _user_id(self) -> str:
+        return getattr(self.backend, "user_id", "") or self.user_slack_id
 
     def _all_authored_by_me(self, open_states: Sequence[MrState]) -> bool:
         """True when every open MR in the broadcast is authored by the current user (#1384).

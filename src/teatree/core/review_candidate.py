@@ -87,6 +87,24 @@ def _self_has_non_system_note(mr: RawAPIDict, identities: set[str]) -> bool:
     return False
 
 
+def eyes_reacted_by_other(message: RawAPIDict, *, user_id: str) -> bool:
+    reactions = message.get("reactions")
+    if not isinstance(reactions, list):
+        return False
+    for reaction in reactions:
+        if not isinstance(reaction, dict):
+            continue
+        reaction_dict = cast("RawAPIDict", reaction)
+        if reaction_dict.get("name") != "eyes":
+            continue
+        users = reaction_dict.get("users")
+        if not isinstance(users, list):
+            continue
+        if any(isinstance(user, str) and user and user != user_id for user in users):
+            return True
+    return False
+
+
 def _broadcast_reacted_by_other(broadcast: RawAPIDict, current_user: str) -> bool:
     reactions = broadcast.get("reactions")
     if not isinstance(reactions, list):
