@@ -4,7 +4,11 @@ The auto-sweep / discover surfaces previously relied on agent-side BINDING
 memory to apply these rules; this module is the canonical structural fix.
 """
 
-from teatree.core.review_candidate import should_review_candidate, should_review_candidate_reasons
+from teatree.core.review_candidate import (
+    eyes_reacted_by_other,
+    should_review_candidate,
+    should_review_candidate_reasons,
+)
 
 
 class TestSkipSelfAuthor:
@@ -274,3 +278,37 @@ class TestReasonsAccumulate:
     def test_clean_candidate_returns_empty_reasons(self) -> None:
         mr = {"author": {"username": "bob"}, "state": "opened", "notes": []}
         assert should_review_candidate_reasons(mr, current_user="alice") == []
+
+
+class TestEyesReactedByOther:
+    def test_eyes_from_colleague_is_a_claim(self) -> None:
+        message = {"reactions": [{"name": "eyes", "users": ["UC0LLEAGUE"], "count": 1}]}
+        assert eyes_reacted_by_other(message, user_id="UME") is True
+
+    def test_eyes_only_from_user_is_not_a_claim(self) -> None:
+        message = {"reactions": [{"name": "eyes", "users": ["UME"], "count": 1}]}
+        assert eyes_reacted_by_other(message, user_id="UME") is False
+
+    def test_non_eyes_colleague_reaction_is_not_a_claim(self) -> None:
+        message = {"reactions": [{"name": "thumbsup", "users": ["UC0LLEAGUE"], "count": 1}]}
+        assert eyes_reacted_by_other(message, user_id="UME") is False
+
+    def test_no_reactions_is_not_a_claim(self) -> None:
+        assert eyes_reacted_by_other({}, user_id="UME") is False
+
+    def test_malformed_reactions_block_is_not_a_claim(self) -> None:
+        assert eyes_reacted_by_other({"reactions": "nope"}, user_id="UME") is False
+
+    def test_malformed_reaction_entry_and_users_are_skipped(self) -> None:
+        message = {
+            "reactions": [
+                "not-a-dict",
+                {"name": "eyes", "users": "not-a-list"},
+                {"name": "eyes", "users": [42, "", "UME", "UC0LLEAGUE"], "count": 1},
+            ],
+        }
+        assert eyes_reacted_by_other(message, user_id="UME") is True
+
+    def test_empty_user_id_treats_every_eyes_as_other(self) -> None:
+        message = {"reactions": [{"name": "eyes", "users": ["UC0LLEAGUE"], "count": 1}]}
+        assert eyes_reacted_by_other(message, user_id="") is True
