@@ -42,6 +42,28 @@ class TestRecordResultEnvelope(TestCase):
         task.claim(claimed_by="loop-slot")
         return task
 
+    def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]},
+        )
+        task.refresh_from_db()
+        task.ticket.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.ticket.state == Ticket.State.STARTED
+        assert attempt.result == {}
+        assert attempt.error.startswith("outage_death:")
+
+    def test_outage_death_takes_precedence_over_evidence_gate(self) -> None:
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "API Error: connection refused"})
+        task.refresh_from_db()
+        latest = task.attempts.order_by("-pk").first()
+        assert task.status == Task.Status.FAILED
+        assert latest is not None
+        assert latest.error.startswith("outage_death:")
+
     def test_success_completes_and_stamps_usage(self) -> None:
         task = self._claimed()
         attempt = record_result_envelope(

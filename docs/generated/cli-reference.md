@@ -52,6 +52,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
+│ recover         Find (and optionally recover) work stranded by a             │
+│                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
 │ teatree         Commands for the t3-teatree overlay.                         │
@@ -2724,6 +2726,14 @@ Usage: t3 task list [OPTIONS]
 Usage: t3 task cancel [OPTIONS]
 
  Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.
+```
+
+### `t3 recover`
+
+```
+Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
+
+ Find (and optionally recover) work stranded by a network-outage death (#1764).
 ```
 
 ### `t3 dogfood`

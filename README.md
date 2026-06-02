@@ -255,6 +255,7 @@ t3 teatree db refresh           # restore a database dump
 t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 cost                         # cycle-to-date SDK-equivalent spend vs the monthly credit
+t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
