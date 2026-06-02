@@ -208,6 +208,16 @@ def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> N
         logger.debug("notify_user answered_at stamp failed for ts=%s: %s", ts, exc)
 
 
+def _active_dm_thread(channel: str) -> str:
+    from teatree.core.models import IncomingEvent  # noqa: PLC0415
+
+    try:
+        return IncomingEvent.objects.active_dm_thread(channel=channel)
+    except DatabaseError as exc:
+        logger.debug("active_dm_thread lookup failed for channel=%s: %s", channel, exc)
+        return ""
+
+
 def _deliver_dm(
     backend: MessagingBackend,
     *,
@@ -233,7 +243,7 @@ def _deliver_dm(
         channel = backend.open_dm(user_id)
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
-        response = backend.post_message(channel=channel, text=text, thread_ts="")
+        response = backend.post_message(channel=channel, text=text, thread_ts=_active_dm_thread(channel))
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
 

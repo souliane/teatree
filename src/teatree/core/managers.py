@@ -126,6 +126,19 @@ class IncomingEventQuerySet(models.QuerySet):
     def unprocessed(self) -> models.QuerySet:
         return self.filter(processed_at__isnull=True)
 
+    def active_dm_thread(self, *, channel: str) -> str:
+        from teatree.core.models.incoming_event import IncomingEvent  # noqa: PLC0415
+
+        if not channel:
+            return ""
+        latest = (
+            self.filter(source=IncomingEvent.Source.SLACK, channel_ref=channel)
+            .order_by("-received_at", "-pk")
+            .values_list("thread_ref", flat=True)
+            .first()
+        )
+        return latest or ""
+
 
 class ReplyDispatchQuerySet(models.QuerySet):
     def due_for_retry(self, now: datetime | None = None) -> models.QuerySet:
