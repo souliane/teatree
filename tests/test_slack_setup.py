@@ -1,6 +1,7 @@
 """Tests for ``t3 setup slack-bot`` — interactive Slack-bot walkthrough."""
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,9 +15,12 @@ from typer.testing import CliRunner
 from teatree.cli.setup import setup_app
 from teatree.cli.slack_setup import (
     _APP_ID_RE,
+    _BOT_ONLY_SCOPES,
     _BOT_TOKEN_RE,
     _USER_ID_RE,
+    _USER_SCOPES,
     SlackManifestError,
+    _user_scopes_carry_no_bot_only_scope,
     app_install_url,
     app_manifest_editor_url,
     build_manifest,
@@ -142,6 +146,35 @@ class TestBuildManifest:
         assert "bot" in scopes
         assert "user" in scopes
         assert "chat:write" in scopes["bot"]
+
+
+class TestUserScopesExcludeBotOnly:
+    """``_USER_SCOPES`` must list only scopes Slack grants on a *user* token.
+
+    A user token (``xoxp-…``) minted via ``apps.manifest.update`` is rejected
+    with ``illegal_user_scopes`` if the manifest's ``oauth_config.scopes.user``
+    contains a bot-only scope. The data-driven ``_BOT_ONLY_SCOPES`` set is the
+    guard: any future bot-only scope added to it is automatically enforced
+    against both the manifest and the verifier without touching this test.
+    """
+
+    def test_known_bot_only_scopes_enumerated(self) -> None:
+        assert {"chat:write.customize", "chat:write.public"} <= _BOT_ONLY_SCOPES
+
+    def test_user_scopes_contain_no_bot_only_scope(self) -> None:
+        assert _BOT_ONLY_SCOPES.isdisjoint(_USER_SCOPES)
+
+    def test_built_manifest_user_section_has_no_bot_only_scope(self) -> None:
+        user_scopes = build_manifest(overlay_name="acme")["oauth_config"]["scopes"]["user"]
+        assert _BOT_ONLY_SCOPES.isdisjoint(user_scopes)
+
+    def test_guard_raises_when_a_bot_only_scope_leaks_in(self) -> None:
+        leaked = min(_BOT_ONLY_SCOPES)
+        with (
+            patch("teatree.cli.slack_setup._USER_SCOPES", [*_USER_SCOPES, leaked]),
+            pytest.raises(AssertionError, match=re.escape(leaked)),
+        ):
+            _user_scopes_carry_no_bot_only_scope()
 
 
 class TestManifestInstallUrl:
