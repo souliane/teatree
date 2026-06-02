@@ -161,6 +161,14 @@ class _FakeMessaging:
         _ = (channel, ts, emoji)
         return {}
 
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> dict[str, object]:
+        _ = (channel, text, thread_ts)
+        return {}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> dict[str, object]:
+        _ = (channel, ts, emoji)
+        return {}
+
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
         return ""
