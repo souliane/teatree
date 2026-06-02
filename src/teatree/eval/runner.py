@@ -18,7 +18,7 @@ from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 WATCHDOG_SECONDS = 120
 MAX_BUDGET_USD = "0.10"
-FALLBACK_MODEL = "sonnet"
+FALLBACK_MODEL = "claude-sonnet-4-6"
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 

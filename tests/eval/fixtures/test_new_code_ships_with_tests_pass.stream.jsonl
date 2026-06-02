@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-test_new_code_ships_with_tests-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "tests/teatree_util/test_money.py", "content": "def test_x():\n    assert True\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
