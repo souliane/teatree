@@ -35,8 +35,9 @@ import typer
 from teatree.backends.slack_token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
 from teatree.cli.slack_app_resolve import derive_app_id_from_token
 from teatree.cli.slack_setup import _USER_SCOPES
+from teatree.cli.slack_token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token
 from teatree.config import CONFIG_PATH
-from teatree.utils.secrets import read_pass, write_pass
+from teatree.utils.secrets import read_pass
 
 USER_TOKEN_PASS_KEY = "slack/user-oauth-token"  # noqa: S105 — pass key name, not a secret
 BOT_TOKEN_PASS_KEY = "slack/bot-token"  # noqa: S105 — pass key name, not a secret
@@ -138,7 +139,12 @@ def _print_reauthorize_instructions(overlay_app_id: str) -> None:
     typer.echo("      app's 'OAuth & Permissions' page and paste it below.")
 
 
-def _store_and_verify(token: str, previous_scopes: list[str]) -> tuple[list[str], list[str]]:
+def _store_and_verify(
+    token: str,
+    previous_scopes: list[str],
+    *,
+    echo: Callable[[str], None],
+) -> tuple[list[str], list[str]]:
     granted = fetch_token_scopes(token)
     missing = missing_scopes(granted, REQUIRED_USER_SCOPES)
     if missing:
@@ -148,9 +154,10 @@ def _store_and_verify(token: str, previous_scopes: list[str]) -> tuple[list[str]
             f"Re-run after updating the Slack app manifest and reinstalling."
         )
         raise TokenScopeError(message)
-    if not write_pass(USER_TOKEN_PASS_KEY, token):
-        message = f"Failed to store token via `pass insert {USER_TOKEN_PASS_KEY}`."
-        raise TokenScopeError(message)
+    try:
+        store_slack_token(USER_TOKEN_SLOT, token, echo=echo)
+    except SlackTokenWriteError as exc:
+        raise TokenScopeError(str(exc)) from exc
     added = added_scopes(granted, previous_scopes)
     return granted, added
 
@@ -186,14 +193,16 @@ def _detect_and_backup_xoxb_mis_install(*, echo: Callable[[str], None]) -> None:
     current = read_pass(USER_TOKEN_PASS_KEY)
     if not current.startswith("xoxb-"):
         return
-    existing_bot = read_pass(BOT_TOKEN_PASS_KEY)
+    if read_pass(BOT_TOKEN_PASS_KEY) == current:
+        return
     echo(
         "      bot token mis-install detected at pass "
         f"{USER_TOKEN_PASS_KEY} — backing up to {BOT_TOKEN_PASS_KEY} before reinstall."
     )
-    if existing_bot == current:
-        return
-    write_pass(BOT_TOKEN_PASS_KEY, current)
+    try:
+        store_slack_token(BOT_TOKEN_SLOT, current, echo=echo)
+    except SlackTokenWriteError as exc:
+        echo(f"WARN  Could not preserve the mis-installed bot token: {exc}")
 
 
 # Source of truth for the derive-from-token chain is
@@ -229,7 +238,7 @@ def slack_user_token_setup(
 
     typer.echo("Step 3/3 — Verify scopes via auth.test and store via pass.")
     try:
-        granted, added = _store_and_verify(token, previous_scopes)
+        granted, added = _store_and_verify(token, previous_scopes, echo=typer.echo)
     except TokenScopeError as exc:
         typer.echo(f"ERROR {exc}")
         raise typer.Exit(code=1) from exc

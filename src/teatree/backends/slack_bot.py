@@ -44,9 +44,8 @@ resolves correctly.
 import threading
 from typing import cast
 
-import httpx
-
 from teatree.backends.slack_bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
+from teatree.backends.slack_http import SlackHttpClient
 from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
 from teatree.backends.slack_scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
 from teatree.backends.slack_token_policy import SlackOp, channel_token
@@ -204,6 +203,7 @@ class SlackBotBackend:
         # fallback through whichever bot already had an IM with the user —
         # the per-overlay attribution leak the issue reports).
         self._dm_channel_id = dm_channel_id
+        self._http = SlackHttpClient()
         # #1395 voice/token gate; factory overrides via set_voice_classifier_mode.
         self._voice_gate = VoiceTokenGate(mode=VoiceClassifierMode.WARN, dm_channel_id=dm_channel_id)
         self._cached_bot_id: str | None = None
@@ -261,34 +261,26 @@ class SlackBotBackend:
         """
         return self._inbound
 
-    def _post(self, method: str, payload: SlackPayload, *, token: str = "") -> RawAPIDict:
+    def _post(self, method: str, payload: SlackPayload, *, token: str = "", idempotent: bool = True) -> RawAPIDict:
+        """POST *method* through the bounded-retry transport.
+
+        ``idempotent`` gates the response-phase retry. A non-idempotent
+        ``chat.postMessage`` (``idempotent=False``) is never replayed on a
+        response-phase failure — a ``ReadTimeout`` after the request reached
+        Slack may mean it already posted. Replayable calls (``reactions.add``'s
+        ``already_reacted`` no-op, ``auth.test``, ``conversations.*`` lookups)
+        keep the ``True`` default.
+        """
         auth = token or self._bot_token
         if not auth:
             return {}
-        response = httpx.post(
-            f"https://slack.com/api/{method}",
-            headers={
-                "Authorization": f"Bearer {auth}",
-                "Content-Type": "application/json; charset=utf-8",
-            },
-            json=payload,
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        return cast("RawAPIDict", response.json())
+        return self._http.post(method, token=auth, json=payload, idempotent=idempotent)
 
     def _get(self, method: str, params: dict[str, str | int], *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
         if not auth:
             return {}
-        response = httpx.get(
-            f"https://slack.com/api/{method}",
-            headers={"Authorization": f"Bearer {auth}"},
-            params=params,
-            timeout=10.0,
-        )
-        response.raise_for_status()
-        return cast("RawAPIDict", response.json())
+        return self._http.get(method, token=auth, params=params)
 
     def _is_ext_shared(self, channel: str) -> bool | None:
         """Whether *channel* is a Slack-Connect externally-shared channel.
@@ -564,11 +556,13 @@ class SlackBotBackend:
         """
         if not self._bot_token:
             return {}
-        headers = {"Authorization": f"Bearer {self._bot_token}", "Content-Type": "application/json; charset=utf-8"}
-        response = httpx.post("https://slack.com/api/auth.test", headers=headers, json={}, timeout=10.0)
-        response.raise_for_status()
-        body = cast("RawAPIDict", response.json())
-        return attach_granted_scopes(body, response.headers.get(OAUTH_SCOPES_HEADER, ""))
+        body, scopes_header = self._http.post_with_header(
+            "auth.test",
+            token=self._bot_token,
+            json={},
+            header=OAUTH_SCOPES_HEADER,
+        )
+        return attach_granted_scopes(body, scopes_header)
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         if is_single_emoji_body(text):
@@ -578,7 +572,7 @@ class SlackBotBackend:
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload, token=token)
+        return self._post("chat.postMessage", payload, token=token, idempotent=False)
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         if is_single_emoji_body(text):
@@ -589,6 +583,7 @@ class SlackBotBackend:
             "chat.postMessage",
             {"channel": channel, "thread_ts": ts, "text": text},
             token=token,
+            idempotent=False,
         )
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
@@ -638,6 +633,17 @@ class SlackBotBackend:
             return self._bot_token or self._user_token
         return self._user_token or self._bot_token
 
+    def route_token(self, channel: str) -> str:
+        """Public accessor over the #1750 destination router (self-DM→bot, else→xoxp).
+
+        The deterministic classifier ``post_routed`` / ``react_routed`` and
+        ``t3 <overlay> notify post`` / ``react`` consult to choose the
+        outbound token by destination. Distinct from
+        :meth:`resolve_channel_token`, which is the Connect-membership policy
+        that cannot tell the user's own DM from a colleague's.
+        """
+        return self._route_token(channel)
+
     def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         """Post to *channel*, token chosen by destination (#1750).
 
@@ -652,7 +658,7 @@ class SlackBotBackend:
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
-        return self._post("chat.postMessage", payload, token=token)
+        return self._post("chat.postMessage", payload, token=token, idempotent=False)
 
     def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         """Add a reaction to *channel*'s message, token chosen by destination (#1750).

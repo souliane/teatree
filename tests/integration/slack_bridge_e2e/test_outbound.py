@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from inline_snapshot import snapshot
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core import notify as core_notify
@@ -98,8 +98,8 @@ class TestOutboundBridgeEndToEnd:
         assert alpha is not beta
 
         recording = FakeSlackTransport()
-        monkeypatch.setattr(slack_bot.httpx, "post", recording.post)
-        monkeypatch.setattr(slack_bot.httpx, "get", recording.get)
+        monkeypatch.setattr(slack_http.httpx, "post", recording.post)
+        monkeypatch.setattr(slack_http.httpx, "get", recording.get)
 
         alpha.post_message(channel="D-alpha", text="for alpha only")
         beta.post_message(channel="D-beta", text="for beta only")

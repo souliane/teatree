@@ -12,7 +12,7 @@ import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.core.connector_preflight import assert_slack_scope, run_connector_preflight
 from teatree.core.models import Worktree
@@ -42,12 +42,12 @@ def _fake_auth_test_post(header_value: str | None):
 
 class TestAssertSlackScope(TestCase):
     def test_passes_when_scope_present_in_header(self) -> None:
-        with patch.object(slack_bot.httpx, "post", _fake_auth_test_post("chat:write,reactions:write,users:read")):
+        with patch.object(slack_http.httpx, "post", _fake_auth_test_post("chat:write,reactions:write,users:read")):
             assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")
 
     def test_fires_when_scope_missing_from_header(self) -> None:
         with (
-            patch.object(slack_bot.httpx, "post", _fake_auth_test_post("chat:write,users:read")),
+            patch.object(slack_http.httpx, "post", _fake_auth_test_post("chat:write,users:read")),
             pytest.raises(RuntimeError) as excinfo,
         ):
             assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")
@@ -55,7 +55,7 @@ class TestAssertSlackScope(TestCase):
 
     def test_fires_when_header_absent_entirely(self) -> None:
         with (
-            patch.object(slack_bot.httpx, "post", _fake_auth_test_post(None)),
+            patch.object(slack_http.httpx, "post", _fake_auth_test_post(None)),
             pytest.raises(RuntimeError),
         ):
             assert_slack_scope(SlackBotBackend(bot_token="xoxb-test"), "reactions:write")

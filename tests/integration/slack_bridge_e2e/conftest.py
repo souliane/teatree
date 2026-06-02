@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
 
 # ── Fake Slack transport ──────────────────────────────────────────────
@@ -171,8 +171,8 @@ def _isolate_bundled_overlay_module() -> Iterator[None]:
 def transport(monkeypatch: pytest.MonkeyPatch) -> FakeSlackTransport:
     """Install :class:`FakeSlackTransport` as the ``httpx`` boundary for slack_bot."""
     fake = FakeSlackTransport()
-    monkeypatch.setattr(slack_bot.httpx, "post", fake.post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake.get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake.post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake.get)
     return fake
 
 

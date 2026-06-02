@@ -20,7 +20,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_bot, slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 
 _EXT_SHARED = "C0AM3TENTLK"  # an externally-shared partner channel (Slack-Connect)
@@ -92,8 +92,8 @@ class TestPostMessageRoutesConnectChannelsThroughUserToken:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         result = backend.post_message(channel=_EXT_SHARED, text="review please")
@@ -110,8 +110,8 @@ class TestPostMessageRoutesConnectChannelsThroughUserToken:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_reply(channel=_EXT_SHARED, ts="1.0", text="ping")
@@ -128,8 +128,8 @@ class TestPostMessageKeepsInternalChannelsOnBotToken:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_INTERNAL, text="status")
@@ -142,8 +142,8 @@ class TestPostMessageKeepsInternalChannelsOnBotToken:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_DM, text="dm")
@@ -158,8 +158,8 @@ class TestPostMessageKeepsInternalChannelsOnBotToken:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot")
         backend.post_message(channel=_EXT_SHARED, text="hi")
@@ -178,8 +178,8 @@ class TestConnectMembershipIsCachedPerChannel:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_EXT_SHARED, text="one")
@@ -209,8 +209,8 @@ class TestReactionsRoutedByTheSamePolicy:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.react(channel=_INTERNAL, ts="1.0", emoji="eyes")
@@ -223,8 +223,8 @@ class TestReactionsRoutedByTheSamePolicy:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.react(channel=_EXT_SHARED, ts="1.0", emoji="eyes")
@@ -237,8 +237,8 @@ class TestReactionsRoutedByTheSamePolicy:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.get_reactions(channel=_EXT_SHARED, ts="1.0")
@@ -255,8 +255,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.WRITE) == "xoxp-user"
@@ -293,8 +293,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         def fake_post(url: str, **kwargs: object) -> httpx.Response:
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.WRITE) == "xoxp-user"
@@ -323,8 +323,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         def fake_post(url: str, **kwargs: object) -> httpx.Response:
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         assert backend._channel_token(_EXT_SHARED, op=slack_bot.SlackOp.READ) == "xoxb-bot"
@@ -354,8 +354,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
             captured.append({"method": "POST", "url": url, **kwargs})
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.react(channel=_EXT_SHARED, ts="1.0", emoji="eyes")
@@ -374,8 +374,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         """
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_INTERNAL, text="status")
@@ -395,8 +395,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
         """
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_DM, text="dm drain")
@@ -435,8 +435,8 @@ class TestChannelTokenIsTheSingleSelectionPoint:
             captured.append({"method": "POST", "url": url, **kwargs})
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel=_EXT_SHARED, text="one")  # info fails -> WRITE -> xoxp
@@ -468,8 +468,8 @@ class TestFetchChannelHistoryRoutedAsTheBroadcastPost:
     ) -> None:
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels={_EXT_SHARED})
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.fetch_channel_history(channel=_EXT_SHARED, limit=10)
@@ -503,8 +503,8 @@ class TestFetchChannelHistoryRoutedAsTheBroadcastPost:
         def fake_post(url: str, **kwargs: object) -> httpx.Response:
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.fetch_channel_history(channel=_EXT_SHARED, limit=10)
@@ -523,8 +523,8 @@ class TestFetchChannelHistoryRoutedAsTheBroadcastPost:
         """
         captured: list[dict[str, object]] = []
         fake_post, fake_get = _router(captured, ext_shared_channels=set())
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.fetch_channel_history(channel=_INTERNAL, limit=10)

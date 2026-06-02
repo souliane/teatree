@@ -86,9 +86,14 @@ def _resolve_app_id(*, config_path: Path, overlay: str, echo: Callable[[str], No
 def _push_manifest(*, overlay: str, app_id: str, echo: Callable[[str], None]) -> str:
     """Push the desired manifest; return the action taken ("updated"/"current"/"degraded")."""
     if not read_pass(_CONFIG_TOKEN_REF):
-        echo("WARN  No Slack app-config token in `pass` — cannot auto-update the manifest.")
-        echo(f"      Edit it manually: {app_manifest_editor_url(app_id)}")
-        echo("      To automate next time, store a config token:")
+        echo("!! DEGRADED — manifest NOT pushed; user scopes are NOT set on the app.")
+        echo("!! Until you add them, the app has ZERO user scopes — the personal xoxp")
+        echo("!! token cannot post or react in Slack-Connect channels.")
+        echo(f"   No Slack app-config token in `pass {_CONFIG_TOKEN_REF}` — cannot auto-update the manifest.")
+        echo(f"   FIX NOW (manual): open {app_manifest_editor_url(app_id)}")
+        echo("   and add these user scopes under oauth_config.scopes.user, then reinstall:")
+        echo(f"        {', '.join(REQUIRED_USER_SCOPES)}")
+        echo("   To automate next time, store a config token:")
         echo(f"        pass insert {_CONFIG_TOKEN_REF}")
         return "degraded"
     desired = build_manifest(overlay_name=overlay)
