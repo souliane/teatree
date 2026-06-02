@@ -1,7 +1,7 @@
 """Tests for the systematic Slack-Connect token-selection policy.
 
-Slack-Connect externally-shared channels (``#the-review-team``,
-``#client-term-redacted``) reject the bot token with
+Slack-Connect externally-shared channels (e.g. a shared partner channel)
+reject the bot token with
 ``mcp_externally_shared_channel_restricted``. The user's personal
 ``xoxp-…`` token *is* a member of those partner channels and can post
 there. The deterministic policy: ``chat.postMessage`` (and reactions) to
@@ -23,7 +23,7 @@ import pytest
 from teatree.backends import slack_bot
 from teatree.backends.slack_bot import SlackBotBackend
 
-_EXT_SHARED = "C0DEMOCHAN1"  # #the-review-team (Slack-Connect)
+_EXT_SHARED = "C0DEMOCHAN1"  # an externally-shared partner channel (Slack-Connect)
 _INTERNAL = "C09INTERNAL0"  # an ordinary workspace channel
 _DM = "D0000000001"
 
