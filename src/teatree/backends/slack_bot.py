@@ -55,6 +55,7 @@ from teatree.backends.slack_token_validation import (
     assert_app_token,
     assert_bot_token,
     assert_user_token,
+    resolve_user_token_or_degrade,
 )
 from teatree.backends.slack_voice_classifier import ClassifierMode as VoiceClassifierMode
 from teatree.backends.slack_voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
@@ -170,9 +171,15 @@ class SlackBotBackend:
     every call falls back to the bot token.
     ``user_id`` is the Slack user id of the human the bot speaks for; scanners
     use it to filter @mentions targeted at that user.
+
+    ``degrade_bad_user_token`` makes a prefix-mismatched ``user_token``
+    degrade to bot-only (treated as absent, with a one-time WARNING)
+    instead of raising. The loop construction paths set it so a Slack-only
+    credential typo never wedges merges, CI, or PR sweeps; the explicit
+    setup/provision path leaves it ``False`` so a wrong paste errors loudly.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 — Slack credential facade; each kwarg is a distinct documented token/identity/config slot, not an internal design smell.
         self,
         *,
         bot_token: str = "",
@@ -180,15 +187,22 @@ class SlackBotBackend:
         user_token: str = "",
         user_id: str = "",
         dm_channel_id: str = "",
+        degrade_bad_user_token: bool = False,
     ) -> None:
         # Runtime token-prefix validation — codex #1282 item 5, see
         # ``slack_token_validation``. The capture-time regex in
         # ``slack_user_token_setup`` is not enough: a swapped token in pass
         # reaches the slot-based policy in ``slack_token_policy`` which
         # never inspects the prefix. Validate at the single construction
-        # chokepoint so the loop fails loud-but-early.
+        # chokepoint so the loop fails loud-but-early. Bot/app tokens are
+        # always strict (a wrong one is real misconfig); the user token is
+        # optional capability, so the loop paths degrade it instead of
+        # crashing the whole tick on a Slack-only typo.
         assert_bot_token(bot_token)
-        assert_user_token(user_token)
+        if degrade_bad_user_token:
+            user_token = resolve_user_token_or_degrade(user_token)
+        else:
+            assert_user_token(user_token)
         assert_app_token(app_token)
         self._bot_token = bot_token
         self._app_token = app_token
