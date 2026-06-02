@@ -338,12 +338,15 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     # through this bot's IM instead of failing ``channel_not_found``.
     dm_channel_id = cfg.get("slack_dm_channel_id", "")
     if bot_token:
+        # Loop construction path — a malformed user token degrades to
+        # bot-only instead of crashing the tick (see ``get_messaging``).
         backend = SlackBotBackend(
             bot_token=bot_token,
             app_token=app_token or "",
             user_token=user_token,
             user_id=user_id,
             dm_channel_id=dm_channel_id,
+            degrade_bad_user_token=True,
         )
         _apply_voice_classifier_mode(backend)
         return backend
