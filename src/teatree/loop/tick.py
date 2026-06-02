@@ -46,6 +46,7 @@ from teatree.loop.tick_freshness import (
 from teatree.loop.tick_jobs import (
     Domain,
     _gitlab_approvals_enabled,
+    _identity_groups_for_overlay,
     _jobs_for_backend_hosts,
     _run_job,
     _ScannerJob,
@@ -207,11 +208,19 @@ def _identity_aliases_for_request(request: TickRequest) -> tuple[tuple[str, ...]
     The renderer suppresses a reassignment between two handles of the same
     human and collapses each handle to its group's canonical name. Fails
     open: any config-read error degrades to no suppression.
+
+    Routes through :func:`_identity_groups_for_overlay` (not the raw
+    resolver) so the #1113 self-group fallback applies on the render path
+    too: when no explicit ``identity_aliases`` is configured, the operator's
+    ``backend.identities`` (← ``user_identity_aliases``; the accessor #1773's
+    ``TrustedIdentity`` will sit behind) form one implicit self-group.
+    Without it the render-side group was empty and intra-self reassigns
+    leaked as ``reassigned`` churn.
     """
     groups: list[tuple[str, ...]] = []
     try:
         for backend in request.backends or []:
-            groups.extend(_identity_alias_groups_for_overlay(backend.name, backend))
+            groups.extend(_identity_groups_for_overlay(backend))
     except Exception:  # noqa: BLE001
         return ()
     return tuple(groups)
