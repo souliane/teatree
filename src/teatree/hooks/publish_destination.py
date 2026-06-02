@@ -76,10 +76,8 @@ _GH_API_REPOS_RE: Final[re.Pattern[str]] = re.compile(r"^repos/([^/]+/[^/]+)")
 # ``%2F`` decodes back to ``/`` so the slug matches the allowlist shape.
 _GLAB_API_PROJECTS_RE: Final[re.Pattern[str]] = re.compile(r"^projects/([^/?]+)")
 
-# A forge URL positional (``gh issue comment https://github.com/o/r/issues/5``)
-# names the target by URL with no ``--repo`` flag. The slug is the path before
-# the resource segment; GitLab's ``/-/`` infix and a multi-level group path are
-# both handled. ``.git`` and a trailing slash on a bare repo URL are stripped.
+# The ``owner/repo`` of a forge URL positional, before the resource segment
+# (GitLab ``/-/`` infix and nested group paths handled; ``.git`` suffix stripped).
 _FORGE_URL_SLUG_RE: Final[re.Pattern[str]] = re.compile(
     r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com)/"
     r"(?P<slug>[\w.-]+(?:/[\w.-]+)+?)"
