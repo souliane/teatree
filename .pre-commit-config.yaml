@@ -316,13 +316,13 @@ repos:
         files: ^(pyproject\.toml|uv\.lock)$
         stages: [manual]
 
-  # Phase 8b - Pre-push (Docker)
+  # Phase 8b - Pre-push
   - repo: local
     hooks:
-      - id: pytest-docker
-        name: pytest (Docker test matrix)
+      - id: pytest-fast
+        name: pytest (fast gate, Python 3.13, parallel — matches CI)
         language: script
-        entry: dev/test-matrix.sh
+        entry: dev/test-fast.sh
         pass_filenames: false
         always_run: true
         stages: [push]
