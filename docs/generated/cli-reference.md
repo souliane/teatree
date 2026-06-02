@@ -3506,7 +3506,7 @@ Usage: t3 teatree workspace clean-merged [OPTIONS]
 ```
 Usage: t3 teatree workspace clean-all [OPTIONS]
 
- Prune merged worktrees, stale branches, orphaned stashes, orphan databases,
+ Prune merged worktrees, stale branches, stashes, orphan databases + docker,
  and old DSLR snapshots.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

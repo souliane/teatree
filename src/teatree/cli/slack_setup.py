@@ -66,6 +66,12 @@ _BOT_SCOPES = [
     "users:read",
     "users:read.email",
 ]
+_BOT_ONLY_SCOPES = frozenset(
+    {
+        "chat:write.customize",
+        "chat:write.public",
+    }
+)
 # Scopes for the human user's OAuth token (``xoxp-…``). ``SlackBotBackend``
 # routes every outbound call (``chat.postMessage``, ``reactions.add`` /
 # ``reactions.get``) through this token for Slack-Connect externally-shared
@@ -89,8 +95,6 @@ _USER_SCOPES = [
     "canvases:write",
     "channels:history",
     "chat:write",
-    "chat:write.customize",
-    "chat:write.public",
     "files:read",
     "groups:history",
     "im:history",
@@ -106,6 +110,17 @@ _USER_SCOPES = [
     "users:read",
     "users:read.email",
 ]
+
+
+def _user_scopes_carry_no_bot_only_scope() -> None:
+    leaked = _BOT_ONLY_SCOPES.intersection(_USER_SCOPES)
+    if leaked:
+        joined = ", ".join(sorted(leaked))
+        message = f"_USER_SCOPES contains bot-only scope(s) Slack rejects on a user token: {joined}"
+        raise AssertionError(message)
+
+
+_user_scopes_carry_no_bot_only_scope()
 _BOT_EVENTS = ["app_mention", "message.im"]
 
 _SMOKE_TEST_TIMEOUT_SECONDS = 120
