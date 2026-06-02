@@ -170,6 +170,7 @@ class, where it is pinned, and the originating fix:
 | branch-currency §940 (conflict-only, never behind-only) | `regression_corpus` | [#1719](https://github.com/souliane/teatree/pull/1719) |
 | bare-reference gate over-block on read-only `gh api` | `regression_corpus` | [#1535](https://github.com/souliane/teatree/pull/1535) |
 | substrate-merge human-authorize floor | `regression_corpus` (merge precondition) | [#1498](https://github.com/souliane/teatree/pull/1498) |
+| substrate-merge full-autonomy carve-out | `regression_corpus` (merge precondition) | [#1748](https://github.com/souliane/teatree/issues/1748) |
 | maker≠checker at merge time | `regression_corpus` (merge precondition) | [#1601](https://github.com/souliane/teatree/pull/1601) |
 | loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
 | orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |

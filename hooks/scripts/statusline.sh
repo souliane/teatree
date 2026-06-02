@@ -11,10 +11,11 @@
 #     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
 #     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
-#     summary of this session's harness TODO list (TodoWrite), and a
+#     summary of this session's harness TODO list, and a
 #     per-session loop-owner badge — the skills and TODO summaries are
 #     populated by hook_router.py into ${state_dir}/<session_id>.skills and
-#     ${state_dir}/<session_id>.todos, the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
+#     ${state_dir}/<session_id>.todos (the TODO file is materialised from the
+#     live harness task store), the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
 #     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
 #     different session owns it, or "unclaimed" (dim) when the registry has
 #     no live owner. Unlike the shared loop line, this badge is resolved
@@ -57,11 +58,12 @@ if [ -n "$session_id" ]; then
     if [ -r "$skills_file" ]; then
         skills=$(paste -sd ' ' "$skills_file")
     fi
-    # This session's harness TODO list (TodoWrite), persisted by hook_router.py
-    # as one ``- [status] content`` line per todo. Rendered as a fixed-width
-    # ``TODO done/total ✓ · Nwip`` summary — never item content, so width is
-    # bounded no matter how many todos exist. Distinct from the loop work
-    # queue (rendered Python-side); this is the current session's checklist.
+    # This session's harness TODO list, materialised by hook_router.py from
+    # the live harness task store as one ``- [status] content`` line per
+    # todo. Rendered as a fixed-width ``TODO done/total ✓ · Nwip`` summary —
+    # never item content, so width is bounded no matter how many todos exist.
+    # Distinct from the loop work queue (rendered Python-side); this is the
+    # current session's checklist.
     todos_file="$state_dir/${session_id}.todos"
     if [ -r "$todos_file" ]; then
         _total=$(grep -c '^- \[' "$todos_file" 2>/dev/null || true)

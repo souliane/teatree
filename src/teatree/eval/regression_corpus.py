@@ -178,19 +178,45 @@ _SHA_B = "b" * 40
 
 
 def _check_merge_precondition_substrate_human_authorize() -> bool:
-    """Substrate floor: a substrate CLEAR never merges without the recorded human authorizer.
+    """Substrate floor: a below-full substrate CLEAR never merges without the recorded human authorizer.
 
     Exercises the real ``_assert_clear_authorized`` guard (the network-free
     §17.4.3 identity/substrate block) against an actionable, green,
     independently-reviewed substrate ``MergeClear``:
     * presenting no ``--human-authorized`` must RAISE (the floor holds), and
     * presenting the recorded authorizer must NOT raise on that guard.
+
+    The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
+    via a hermetic ``~/.teatree.toml`` so the check is deterministic regardless
+    of the developer's live config. The ``autonomy = full`` carve-out is a
+    distinct must-allow path verified by
+    :func:`_check_merge_precondition_substrate_full_autonomy`; this check is the
+    must-block direction for a below-full overlay.
     """
+    return _exercise_substrate_authorize(autonomy="babysit", expect_cleared_without_human=False)
+
+
+def _check_merge_precondition_substrate_full_autonomy() -> bool:
+    """Carve-out: a substrate CLEAR under an ``autonomy = full`` overlay clears without a per-PR sign-off.
+
+    The mirror of :func:`_check_merge_precondition_substrate_human_authorize`:
+    with the CLEAR's overlay pinned to ``full``, the standing grant satisfies
+    the substrate sign-off, so presenting no ``--human-authorized`` must NOT
+    raise. This is the must-allow direction the ticket-less / aliased
+    overlay-resolution fix restores; without it, a full-autonomy substrate
+    merge is wrongly blocked (the rest of the floor is unaffected).
+    """
+    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=True)
+
+
+def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
     from teatree.core.merge_execution import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
     from teatree.core.models import MergeClear  # noqa: PLC0415
     from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url, staged_overlay_autonomy  # noqa: PLC0415
 
     slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
+    overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
     clear = MergeClear.issue(
         ClearRequest(
             pr_id=pr_id,
@@ -204,28 +230,21 @@ def _check_merge_precondition_substrate_human_authorize() -> bool:
         )
     )
 
-    def _authorize(human_authorized: str) -> None:
-        _assert_clear_authorized(
-            clear=clear,
-            executing_loop_identity=executor,
-            slug=slug,
-            pr_id=pr_id,
-            human_authorized=human_authorized,
-        )
+    with staged_overlay_autonomy(overlay_name, autonomy):
+        try:
+            _assert_clear_authorized(
+                clear=clear,
+                executing_loop_identity=executor,
+                slug=slug,
+                pr_id=pr_id,
+                human_authorized="",
+            )
+        except MergePreconditionError:
+            cleared_without_human = False
+        else:
+            cleared_without_human = True
 
-    refused_without_human = False
-    try:
-        _authorize("")
-    except MergePreconditionError:
-        refused_without_human = True
-
-    try:
-        _authorize("the-user")
-    except MergePreconditionError:
-        cleared_with_human = False
-    else:
-        cleared_with_human = True
-    return refused_without_human and cleared_with_human
+    return cleared_without_human is expect_cleared_without_human
 
 
 def _check_merge_precondition_maker_is_not_checker() -> bool:
@@ -307,24 +326,29 @@ def _unused_pid() -> int:
     return 2_147_483_000
 
 
+def _count_core_leaves(graph: object) -> int:
+    """Number of leaf nodes the ``core`` app owns in a migration graph.
+
+    A linear graph has exactly one; a fork (two migrations off one parent)
+    leaves two. The predicate the regression check turns on, factored out so a
+    test can feed it a synthetic forked graph and assert it returns ``> 1``.
+    """
+    return sum(1 for leaf in graph.leaf_nodes() if leaf[0] == "core")  # type: ignore[attr-defined]
+
+
 def _check_migration_graph_single_leaf() -> bool:
     """#1721: the migration graph stays linear — a forked graph (>1 leaf) is caught.
 
     The real failure: two PRs each branch a migration off the same parent, the
     merged graph has multiple leaf nodes, and ``migrate`` refuses. This asserts
-    the live ``teatree.core`` graph has exactly one leaf (the fixed state) AND
-    that the leaf-count predicate would flag a synthetic forked graph (so the
-    check is not vacuous).
+    the live ``teatree.core`` graph has exactly one leaf node via
+    :func:`_count_core_leaves` — the same predicate a synthetic forked graph
+    drives ``> 1`` in the corpus's anti-vacuous test.
     """
     from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415
 
     loader = MigrationLoader(None, ignore_no_migrations=True)
-    core_leaves = [leaf for leaf in loader.graph.leaf_nodes() if leaf[0] == "core"]
-    live_is_linear = len(core_leaves) == 1
-
-    forked = {("core", "0049_a"), ("core", "0049_b")}
-    detects_fork = len(forked) > 1
-    return live_is_linear and detects_fork
+    return _count_core_leaves(loader.graph) == 1
 
 
 _CHECKS: tuple[RegressionCheck, ...] = (
@@ -343,8 +367,15 @@ _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="substrate-merge human-authorize floor",
         origin="https://github.com/souliane/teatree/pull/1498",
-        invariant="a substrate MergeClear never merges without the recorded human authorizer",
+        invariant="a below-full substrate MergeClear never merges without the recorded human authorizer",
         predicate=_check_merge_precondition_substrate_human_authorize,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="substrate-merge full-autonomy carve-out",
+        origin="https://github.com/souliane/teatree/issues/1748",
+        invariant="an autonomy=full overlay clears a ticket-less substrate CLEAR without a per-PR human sign-off",
+        predicate=_check_merge_precondition_substrate_full_autonomy,
         needs_db=True,
     ),
     RegressionCheck(
