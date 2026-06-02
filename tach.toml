@@ -41,6 +41,10 @@ path = "teatree.utils"
 depends_on = ["teatree.paths"]
 
 [[modules]]
+path = "teatree.self_update"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.hooks"
 depends_on = ["teatree.utils"]
 
@@ -122,6 +126,7 @@ depends_on = [
   "teatree.overlay_init",
   "teatree.loop",
   "teatree.utils",
+  "teatree.self_update",
   "teatree.repo_mode",
   "teatree.triage",
   "teatree.skill_deps",
@@ -159,6 +164,7 @@ depends_on = [
   "teatree.types",
   "teatree.paths",
   "teatree.utils",
+  "teatree.self_update",
   "teatree.config",
   "teatree.core",
   "teatree.backends",

@@ -64,6 +64,27 @@ class TestLoopTickCommand(TestCase):
         assert "1 signal(s)" in output
         assert "statusline" in output
 
+    def test_drains_deferred_reinstall_before_running_scanners(self) -> None:
+        """#1760: the deferred-reinstall drain is the FIRST owner-tick step.
+
+        It must run before ``run_tick`` (the scanner pass) so the reinstall
+        happens in a process that has not yet imported the about-to-change
+        scanner code (no mixed-code window).
+        """
+        report = _build_report()
+        order: list[str] = []
+        with (
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch(
+                "teatree.loop.self_update_reinstall.drain_pending_reinstall",
+                side_effect=lambda: order.append("drain"),
+            ),
+            patch("teatree.loop.tick.run_tick", side_effect=lambda *a, **k: (order.append("tick"), report)[1]),
+        ):
+            call_command("loop_tick", stdout=StringIO())
+
+        assert order == ["drain", "tick"], "drain must precede the scanner pass"
+
     def test_installs_then_resets_mini_loop_schedules_reader(self) -> None:
         from unittest.mock import call  # noqa: PLC0415
 

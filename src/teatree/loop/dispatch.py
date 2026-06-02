@@ -105,6 +105,11 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
     # review; the completion path routes through the mechanical handler below.
     "todo.orphaned": "action_needed",
+    # #1760 self-update CI-green gate — a ff-pull HELD because the default
+    # branch's CI is red / pending / unknown. Only these CI-verdict
+    # ``self_update.skipped`` signals reach here (see _is_self_update_ci_skip);
+    # a wedged clone behind a red main must be visible, not silently stale.
+    "self_update.skipped": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -124,7 +129,9 @@ _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 # ledger; the statusline is the wrong surface for it.
 #
 # ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
-# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
+# (``recent_marker`` / up-to-date / advanced) EXCEPT the CI-green
+# fail-closed skips, which :func:`_self_update_ci_skip_action` surfaces
+# before this drop (#1760); ``pull_main_clone.*`` — the main-clone pull marker;
 # ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
 # ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
 # explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
@@ -143,9 +150,32 @@ _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _is_statusline_dropped(kind: str) -> bool:
-    """True when *kind* is diagnostic-only and must not reach the statusline."""
-    return kind in _STATUSLINE_DROP_KINDS or kind.startswith(_STATUSLINE_DROP_PREFIXES)
+# The self-update scanner's CI-green fail-closed skips are the one
+# ``self_update.*`` family that IS user-facing (#1760): a refused ff-pull
+# because the default branch's CI is red / pending / unknown is a held update
+# the user should see, unlike the dropped up-to-date / cadence / advanced noise.
+_SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
+
+
+def _is_self_update_ci_skip(signal: ScanSignal) -> bool:
+    """True for a ``self_update.skipped`` held by the CI-green fail-closed gate.
+
+    Only these CI-verdict skips (red / pending / unknown) are user-facing; the
+    rest of the ``self_update.*`` family stays diagnostic-only noise. A true
+    result exempts the signal from :func:`_is_statusline_dropped` so the
+    catch-all renders it in ``action_needed`` — a clone wedged behind a red
+    default branch is visible, not silently stale.
+    """
+    return signal.kind == "self_update.skipped" and (
+        str(signal.payload.get("reason", "")) in _SELF_UPDATE_CI_SKIP_REASONS
+    )
+
+
+def _is_statusline_dropped(signal: ScanSignal) -> bool:
+    """True when *signal* is diagnostic-only and must not reach the statusline."""
+    if _is_self_update_ci_skip(signal):
+        return False
+    return signal.kind in _STATUSLINE_DROP_KINDS or signal.kind.startswith(_STATUSLINE_DROP_PREFIXES)
 
 
 _PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
@@ -432,11 +462,11 @@ def _claim_red_mr_fix(signal: ScanSignal) -> bool:
 
 
 def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
-    if _is_statusline_dropped(signal.kind):
-        return []
     conditional = _conditional_dispatch(signal)
     if conditional is not None:
         return conditional
+    if _is_statusline_dropped(signal):
+        return []
     agent = _AGENT_BY_KIND.get(signal.kind)
     if agent is not None:
         actions: list[DispatchAction] = []

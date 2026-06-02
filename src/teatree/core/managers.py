@@ -383,6 +383,21 @@ class TaskQuerySet(models.QuerySet):
                 heartbeat_at=None,
             )
 
+    def active_claim_exists(self) -> bool:
+        """True iff some task is CLAIMED with a still-live lease.
+
+        A live CLAIMED lease means a worker / sub-agent is actively driving
+        a unit of loop work right now — the deferred-reinstall drain reads
+        this to DEFER re-anchoring the running interpreter until no unit is
+        in flight (never mutate the code out from under an active agent).
+        An expired lease is not in-flight (the worker is gone; the reaper /
+        reclaimer will sweep it).
+        """
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        now = timezone.now()
+        return self.filter(status=Task.Status.CLAIMED, lease_expires_at__gt=now).exists()
+
     def _claimable_for_target(self, target: str, overlay: str | None = None) -> models.QuerySet:
         from teatree.core.models.task import Task  # noqa: PLC0415
 

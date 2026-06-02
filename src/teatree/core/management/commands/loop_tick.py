@@ -199,6 +199,18 @@ class Command(TyperCommand):
             )
             return
 
+        # Drain any deferred self-update reinstall BEFORE any scanner code is
+        # imported. This is a fresh per-tick subprocess that has not yet
+        # imported the about-to-change modules, so re-anchoring the running
+        # editable install here leaves no mixed-code window. It is a no-op
+        # when nothing is pending and DEFERS while a loop unit is in flight,
+        # and runs only on the owner's tick (we are past the owner gate, the
+        # `loop-tick` lease is not yet held, so a slow reinstall never blocks
+        # a sibling's mutex).
+        from teatree.loop.self_update_reinstall import drain_pending_reinstall  # noqa: PLC0415
+
+        drain_pending_reinstall()
+
         # #786 WS2: DB lease/heartbeat replaces the flock/pidfile singleton.
         # The lease row is queryable and reapable by expiry, so loop
         # ownership survives context compaction (re-acquirable) instead of

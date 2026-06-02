@@ -342,6 +342,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "dogfood_smoke_overlay": str,
     "self_update_disabled": bool,
     "self_update_cadence_hours": int,
+    "auto_update_reinstall": bool,
+    "auto_update_require_green_main": bool,
     "resource_pressure_disabled": bool,
     "resource_pressure_cadence_minutes": int,
     "resource_pressure_min_free_interval_minutes": int,
@@ -378,6 +380,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_REVIEW_SKILL": ("review_skill", str),
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
+    "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
 }
 
 
@@ -600,6 +603,17 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
+    # CI-gated auto-reinstall for the self-update scanner.
+    # ``auto_update_require_green_main`` (default ON, fail closed) refuses a
+    # ff-pull unless the default branch's CI is explicitly green — red /
+    # pending / unknown all skip. ``auto_update_reinstall`` (default OFF —
+    # the genuinely new side-effect on the running orchestrator) queues a
+    # deferred reinstall on an actual update so the next tick's fresh
+    # subprocess re-anchors the running editable install. Both are
+    # per-overlay overridable; ``T3_LOOP_AUTO_UPDATE`` env wins for the
+    # reinstall flag.
+    auto_update_reinstall: bool = False
+    auto_update_require_green_main: bool = True
     # #128 Resource-pressure scanner — teatree-controlled auto-free before
     # the host hits OOM / full-disk. Measures ABSOLUTE free bytes
     # (``os.statvfs`` for disk, ``vm_stat`` reclaimable pages for RAM) — never
@@ -832,6 +846,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
         self_update_disabled=bool(teatree.get("self_update_disabled", False)),
         self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        auto_update_reinstall=bool(teatree.get("auto_update_reinstall", False)),
+        auto_update_require_green_main=bool(teatree.get("auto_update_require_green_main", True)),
         resource_pressure_disabled=bool(teatree.get("resource_pressure_disabled", False)),
         resource_pressure_cadence_minutes=int(teatree.get("resource_pressure_cadence_minutes", 5)),
         resource_pressure_min_free_interval_minutes=int(

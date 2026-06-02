@@ -201,6 +201,44 @@ class TestTaskQuerySet(TestCase):
         assert got.pk == fresh.pk  # skipped the already-claimed one
 
 
+class TestActiveClaimExists(TestCase):
+    """#1760: the deferred-reinstall drain reads this to defer while a unit runs."""
+
+    def _task(self, *, status: str, lease_offset_seconds: int | None) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        lease = None if lease_offset_seconds is None else timezone.now() + timedelta(seconds=lease_offset_seconds)
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            status=status,
+            lease_expires_at=lease,
+        )
+
+    def test_false_when_no_tasks(self) -> None:
+        assert Task.objects.active_claim_exists() is False
+
+    def test_true_for_a_live_claimed_lease(self) -> None:
+        self._task(status=Task.Status.CLAIMED, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is True
+
+    def test_false_for_an_expired_claimed_lease(self) -> None:
+        self._task(status=Task.Status.CLAIMED, lease_offset_seconds=-10)
+
+        assert Task.objects.active_claim_exists() is False
+
+    def test_false_for_a_pending_task(self) -> None:
+        self._task(status=Task.Status.PENDING, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is False
+
+    def test_false_for_a_completed_task(self) -> None:
+        self._task(status=Task.Status.COMPLETED, lease_offset_seconds=300)
+
+        assert Task.objects.active_claim_exists() is False
+
+
 class TestReclaimOrphanedClaims(TestCase):
     """#652 — an orphaned in-flight task must be *taken over*, not failed.
 

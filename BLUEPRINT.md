@@ -442,6 +442,7 @@ graph TD
     teatree.update_check --> teatree.paths
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
+    teatree.self_update --> teatree.utils
     teatree.hooks --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.repo_mode --> teatree.paths
@@ -491,6 +492,7 @@ graph TD
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
     teatree.cli --> teatree.utils
+    teatree.cli --> teatree.self_update
     teatree.cli --> teatree.repo_mode
     teatree.cli --> teatree.triage
     teatree.cli --> teatree.skill_deps
@@ -518,6 +520,7 @@ graph TD
     teatree.loop --> teatree.types
     teatree.loop --> teatree.paths
     teatree.loop --> teatree.utils
+    teatree.loop --> teatree.self_update
     teatree.loop --> teatree.config
     teatree.loop --> teatree.core
     teatree.loop --> teatree.backends
