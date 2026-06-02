@@ -11,7 +11,7 @@
 #     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
 #     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
-#     summary of this session's Claude TODO list (TodoWrite), and a
+#     summary of this session's harness TODO list (TodoWrite), and a
 #     per-session loop-owner badge — the skills and TODO summaries are
 #     populated by hook_router.py into ${state_dir}/<session_id>.skills and
 #     ${state_dir}/<session_id>.todos, the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
@@ -57,7 +57,7 @@ if [ -n "$session_id" ]; then
     if [ -r "$skills_file" ]; then
         skills=$(paste -sd ' ' "$skills_file")
     fi
-    # This session's Claude TODO list (TodoWrite), persisted by hook_router.py
+    # This session's harness TODO list (TodoWrite), persisted by hook_router.py
     # as one ``- [status] content`` line per todo. Rendered as a fixed-width
     # ``TODO done/total ✓ · Nwip`` summary — never item content, so width is
     # bounded no matter how many todos exist. Distinct from the loop work
@@ -237,7 +237,7 @@ if [ -n "$skills" ]; then
     _skills_segment="${_LBL}skills:${_RST} ${_colored_skills}"
 fi
 
-# Compact Claude-TODO summary: ``TODO done/total ✓`` plus ``· Nwip`` only when
+# Compact harness-TODO summary: ``TODO done/total ✓`` plus ``· Nwip`` only when
 # work is in progress. Dimmed when every item is complete. Never lists item
 # content, so the segment width is bounded regardless of list size.
 _todo_segment=""
@@ -414,7 +414,7 @@ for _g in g_context g_usage g_updates g_resource; do
     fi
 done
 
-# The compact Claude-TODO summary is its own header group: short, fixed-width,
+# The compact harness-TODO summary is its own header group: short, fixed-width,
 # and per-session, so it rides the header without crowding skills onto a line.
 if [ -n "$_todo_segment" ]; then
     if [ -z "$header" ]; then
