@@ -13,11 +13,12 @@ from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.phases import normalize_phase, phase_transition
+from teatree.core.review_context_gate import ReviewContextError, check_review_context
 from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["Command", "ReviewSkillEvidenceError", "ReviewerAttestationError"]
+__all__ = ["Command", "ReviewContextError", "ReviewSkillEvidenceError", "ReviewerAttestationError"]
 
 
 class ReviewerAttestationError(RuntimeError):
@@ -75,6 +76,12 @@ class Command(TyperCommand):
             # attestation must be backed by durable evidence the skill ran —
             # NO-OP when ``review_skill`` is unset (opt-in default preserved).
             check_review_skill_evidence(ticket)
+            # Gate D: when ``require_review_context`` is on, entering
+            # ``reviewing`` is refused until the referenced-context retrieval
+            # is recorded — the work item fetched from its source, its links
+            # followed, the referenced documents downloaded + analyzed against
+            # the diff. NO-OP when the knob is off (opt-in default preserved).
+            check_review_context(ticket)
         # #801 SSOT: the canonical earliest+locked policy — never the
         # old -pk-latest pick nor a raw blank-agent_id create. The
         # explicit --agent-id seeds a created session's identity.
@@ -155,6 +162,45 @@ class Command(TyperCommand):
         assert_lifecycle_db_is_canonical(ticket)
         ticket.record_review_skill_run(skill)
         return f"Recorded review-skill run {skill!r} for ticket {ticket.pk}"
+
+    @command(name="record-review-context")
+    def record_review_context(
+        self,
+        ticket_id: str,
+        work_item: Annotated[
+            str,
+            typer.Option(help="The work item / ticket URL fetched from its source (Notion / GitLab / tracker)."),
+        ] = "",
+        documents: Annotated[
+            str,
+            typer.Option(help="Comma-separated referenced documents downloaded and read (spec, design doc, schedule)."),
+        ] = "",
+        analysis: Annotated[
+            str,
+            typer.Option(help="How the implementation was analyzed against the specified requirements + rules."),
+        ] = "",
+    ) -> str:
+        """Record durable evidence the referenced context was retrieved + analyzed.
+
+        Reviewing carries the same responsibility as implementing: this stamps
+        ``ticket.extra['review_context']`` so the ``-> reviewing`` deep-retrieval
+        gate can attest the work item was fetched from its source, its links
+        followed, and each referenced document downloaded + analyzed against the
+        diff before ``visit-phase ... reviewing`` records the attestation. A
+        record missing the work item, any document, or the analysis does not
+        satisfy the gate.
+        """
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        document_list = [doc.strip() for doc in documents.split(",") if doc.strip()]
+        if not work_item.strip() or not document_list or not analysis.strip():
+            return (
+                f"record-review-context refused for ticket {ticket.pk}: --work-item, at least one "
+                f"--documents entry, and --analysis are all required (a partial record never satisfies "
+                f"the deep-retrieval gate)"
+            )
+        ticket.record_review_context(work_item, document_list, analysis)
+        return f"Recorded review context for ticket {ticket.pk} ({len(document_list)} document(s))"
 
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:

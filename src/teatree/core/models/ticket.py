@@ -27,7 +27,7 @@ def _auto_ship_enabled() -> bool:
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
-    from teatree.core.models.types import ReviewSkillRun, TicketExtra, TicketSiblingFields
+    from teatree.core.models.types import ReviewContext, ReviewSkillRun, TicketExtra, TicketSiblingFields
     from teatree.core.models.worktree import Worktree
 
 
@@ -228,7 +228,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         field=state,
         source=State.TESTED,
         target=State.REVIEWED,
-        conditions=[lambda t: t.tasks.completed_in_phase("reviewing").exists()],
+        conditions=[
+            lambda t: t.tasks.completed_in_phase("reviewing").exists(),
+            lambda t: t.review_context_satisfied(),
+        ],
     )
     def review(self) -> None:
         self._refuse_if_worktree_dirty("reviewing")
@@ -482,6 +485,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         target=State.DELIVERED,
         conditions=[
             lambda t: t.role == Ticket.Role.REVIEWER and t.tasks.completed_in_phase("reviewing").exists(),
+            lambda t: t.review_context_satisfied(),
         ],
     )
     def mark_reviewed_externally(self) -> None:
@@ -907,6 +911,46 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """
         run: ReviewSkillRun = {"skill": skill, "at": timezone.now().isoformat()}
         self.merge_extra(set_keys={"review_skill_run": run})
+
+    def record_review_context(self, work_item: str, documents: list[str], analysis: str) -> None:
+        """Stamp durable evidence the referenced context was retrieved + analyzed.
+
+        Reviewing carries the same responsibility as implementing: the
+        ``-> reviewing`` deep-retrieval gate (``teatree.core.review_context_gate``)
+        reads this to refuse a verdict formed from the diff alone. ``work_item``
+        is the fetched ticket / work-item source, ``documents`` the downloaded
+        references, ``analysis`` how the implementation was checked against the
+        specified requirements. Written through the canonical locked
+        ``merge_extra`` primitive so a concurrent ``extra`` writer's key
+        survives; the timestamp is UTC ISO.
+        """
+        context: ReviewContext = {
+            "work_item": work_item,
+            "documents": list(documents),
+            "analysis": analysis,
+            "at": timezone.now().isoformat(),
+        }
+        self.merge_extra(set_keys={"review_context": context})
+
+    def review_context_satisfied(self) -> bool:
+        """Whether the ``-> reviewing`` deep-retrieval precondition is met.
+
+        An FSM ``condition`` on ``review()``: the ``TESTED -> REVIEWED``
+        transition is mechanically refused (``TransitionNotAllowed``) when
+        ``require_review_context`` is on and no complete ``review_context``
+        artifact is recorded — so a verdict from the diff alone cannot advance
+        the FSM regardless of entry path. NO-OP (returns ``True``) when the knob
+        is off (opt-in default preserved).
+        """
+        from teatree.core.review_context_gate import (  # noqa: PLC0415
+            is_complete,
+            recorded_review_context,
+            review_context_required,
+        )
+
+        if not review_context_required():
+            return True
+        return is_complete(recorded_review_context(self))
 
     def append_context(self, entry: str) -> str:
         r"""Append a timestamped block to the durable per-ticket knowledge store (#627).

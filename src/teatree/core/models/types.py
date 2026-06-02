@@ -86,6 +86,12 @@ class TicketExtra(TypedDict, total=False):
     # reviewing-phase gate reads this to refuse a ``reviewing`` attestation
     # that no review-skill execution backs.
     review_skill_run: "ReviewSkillRun"
+    # Deep-retrieval evidence: the ticket/work-item was fetched from its
+    # source and the referenced documents were downloaded + analyzed against
+    # the diff before the ``reviewing`` attestation. The reviewing-phase gate
+    # (``teatree.core.review_context_gate``) reads this to refuse a verdict
+    # formed from the diff alone.
+    review_context: "ReviewContext"
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -99,6 +105,29 @@ class ReviewSkillRun(TypedDict, total=False):
     """
 
     skill: str
+    at: str
+
+
+class ReviewContext(TypedDict, total=False):
+    """Durable evidence a review retrieved and analyzed the referenced context.
+
+    Reviewing carries the same responsibility as implementing: a verdict from
+    the diff alone is not a review. Recorded by
+    ``Ticket.record_review_context`` once the reviewer has fetched the
+    work item from its source (``work_item``: the Notion/GitLab/tracker URL),
+    followed every link in the MR description + ticket, downloaded each
+    referenced document (``documents``: spec, design doc, amortization /
+    Tilgungsplan schedule, requirement doc), and analyzed them against the
+    diff (``analysis``: how the implementation was checked against the
+    specified requirements + business rules). The reviewing-phase gate
+    (``teatree.core.review_context_gate``) consumes it: when
+    ``require_review_context`` is on, entering ``reviewing`` is refused
+    until this is recorded.
+    """
+
+    work_item: str
+    documents: list[str]
+    analysis: str
     at: str
 
 

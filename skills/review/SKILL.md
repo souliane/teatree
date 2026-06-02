@@ -45,6 +45,8 @@ Both self-review and external review cycles.
 
 When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase evidence gate (#1539) hardens this further: `lifecycle visit-phase <id> reviewing` refuses unless a `review_skill_run` artifact attests the configured skill ran. After running the skill, stamp the evidence with `t3 <overlay> lifecycle record-review-skill-run <id> <skill>`, then record the phase. With `review_skill` unset the gate is a NO-OP (opt-in default).
 
+Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: when `require_review_context` is set, the FSM `→ reviewing` transition (`teatree.core.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — stamp it with `t3 <overlay> lifecycle record-review-context <id> --work-item <url> --documents <urls> --analysis <how-checked>`. A diff-only verdict cannot enter `reviewing`.
+
 The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
 
 ### Self-Review Before Finalization

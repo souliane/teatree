@@ -30,6 +30,10 @@ def test_lifecycle_group_exposes_record_review_skill_run() -> None:
     assert "record-review-skill-run" in _lifecycle_subcommands()
 
 
+def test_lifecycle_group_exposes_record_review_context() -> None:
+    assert "record-review-context" in _lifecycle_subcommands()
+
+
 def test_lifecycle_subcommands_map_to_real_command_methods() -> None:
     for name in _lifecycle_subcommands():
         assert hasattr(LifecycleCommand, name.replace("-", "_")), name
