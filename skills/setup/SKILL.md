@@ -108,7 +108,23 @@ EOF
 ### Slack integration (per-overlay)
 
 Messaging is configured per overlay in `~/.teatree.toml`, not via `T3_CHAT_PLATFORM`.
-Run `t3 setup slack-bot --overlay <name>` to register a Slack app and store tokens.
+Three commands cover distinct phases of the Slack lifecycle — they are not
+interchangeable:
+
+- `t3 setup slack-bot --overlay <name>` — first-time bootstrap: registers the
+  app and **captures** the bot (`xoxb-`) + app-level (`xapp-`) tokens into
+  `pass`, recording the overlay's Slack settings.
+- `t3 setup slack-provision [--overlay <name>]` — the idempotent one-shot
+  lifecycle pass: pushes the manifest (all bot + user scopes), prints the OAuth
+  reinstall URL, joins review channels, provisions the bot IM, and **verifies**
+  the shared personal token's scopes. It reads tokens; it does not capture them.
+- `t3 setup slack-user-token` — (re)captures the personal user (`xoxp-`) token
+  after a manual OAuth reinstall and verifies its scopes.
+
+Token writes are prefix-validated (`xoxb-`/`xapp-`/`xoxp-`) and back up any
+prior value to a timestamped `pass` key before overwriting, so a mis-pasted
+token can never clobber a good secret.
+
 Then start `t3 slack listen` for real-time event delivery via Socket Mode.
 
 ```toml

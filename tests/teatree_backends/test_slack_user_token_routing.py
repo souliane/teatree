@@ -19,7 +19,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 
 
@@ -74,8 +74,8 @@ class TestReactRoutesThroughUserToken:
 
     def test_react_uses_user_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
-        monkeypatch.setattr(slack_bot.httpx, "get", _capturing_get(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "get", _capturing_get(captured))
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.react(channel="C0AM3TENTLK", ts="1779168774.186559", emoji="eyes")
@@ -86,7 +86,7 @@ class TestReactRoutesThroughUserToken:
 
     def test_react_falls_back_to_bot_token_when_user_token_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
 
         backend = SlackBotBackend(bot_token="xoxb-bot")
         backend.react(channel="C1", ts="1.0", emoji="eyes")
@@ -104,7 +104,7 @@ class TestGetReactionsRoutesThroughUserToken:
 
     def test_get_reactions_uses_user_token_when_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "get", _capturing_get(captured))
+        monkeypatch.setattr(slack_http.httpx, "get", _capturing_get(captured))
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.get_reactions(channel="C0AM3TENTLK", ts="1779168774.186559")
@@ -115,7 +115,7 @@ class TestGetReactionsRoutesThroughUserToken:
 
     def test_get_reactions_falls_back_to_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "get", _capturing_get(captured))
+        monkeypatch.setattr(slack_http.httpx, "get", _capturing_get(captured))
 
         backend = SlackBotBackend(bot_token="xoxb-bot")
         backend.get_reactions(channel="C1", ts="1.0")
@@ -136,9 +136,9 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
 
     def test_post_message_uses_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", _internal_channel_get)
+        monkeypatch.setattr(slack_http.httpx, "get", _internal_channel_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_message(channel="C", text="hi")
@@ -149,9 +149,9 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
 
     def test_post_reply_uses_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
 
-        monkeypatch.setattr(slack_bot.httpx, "get", _internal_channel_get)
+        monkeypatch.setattr(slack_http.httpx, "get", _internal_channel_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.post_reply(channel="C", ts="1.0", text="hi")
@@ -170,7 +170,7 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
                 request=httpx.Request("POST", url),
             )
 
-        monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.open_dm("U123")
@@ -190,7 +190,7 @@ class TestBotTokenStillAuthorisesNonReactionCalls:
                 request=httpx.Request("GET", url),
             )
 
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
 
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
         backend.resolve_user_id("alice")
@@ -204,7 +204,7 @@ class TestUserTokenOnly:
 
     def test_react_works_with_only_user_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
 
         backend = SlackBotBackend(user_token="xoxp-user")
         result = backend.react(channel="C", ts="1.0", emoji="eyes")
@@ -225,7 +225,7 @@ class TestUserTokenOnly:
         ``chat.postMessage`` through ``xoxp`` (#1072).
         """
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured))
 
         backend = SlackBotBackend(user_token="xoxp-user")
         result = backend.post_message(channel="C", text="hi")
