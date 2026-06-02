@@ -143,6 +143,73 @@ class TestIsPublishCommandTokenAware:
         assert not _command_parser.is_publish_command("git -C /some/dir status")
 
 
+class TestApiEffectiveMethodCorpus:
+    """`gh`/`glab api` is classified by EFFECTIVE HTTP method, not bare substring (#1530).
+
+    A read-only `api` call (effective GET/HEAD) is NOT a publish, so the
+    destination-aware gates no longer over-block it; an `api` WRITE (effective
+    POST/PATCH/PUT/DELETE, last-wins on repeated `-X`/`--method`) stays a publish
+    surface the body walkers must scan.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Bare reads — no method flag, no body flag → default GET.
+            "gh api user",
+            "gh api repos/o/r/commits/main",
+            "glab api projects/42/merge_requests",
+            # Explicit GET, even alongside a `-f` query param (#1568): a forced
+            # GET sends `-f` as a query param, never a body write.
+            "gh api repos/o/r/issues --method GET",
+            "gh api repos/o/r/issues -X GET -f state=open",
+            "glab api projects/42/issues --method=GET -f per_page=100",
+            # No-space explicit GET forces a read.
+            "gh api repos/o/r/issues -XGET -f state=open",
+            # Repeated method flags, GET LAST → effective GET → read.
+            "gh api repos/o/r/issues -X POST -X GET",
+            # HEAD is a read.
+            "gh api repos/o/r -X HEAD",
+        ],
+    )
+    def test_read_only_api_is_not_a_publish(self, command: str) -> None:
+        assert not _command_parser.is_publish_command(command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Body flag with no method → gh/glab default to POST → write.
+            "gh api repos/o/r/issues -f title=bug -f body=x",
+            "glab api projects/42/issues --field body=x",
+            # Explicit write methods.
+            "gh api repos/o/r/issues -X POST -f body=x",
+            "gh api repos/o/r/issues/1 --method PATCH -f body=x",
+            "glab api projects/42/merge_requests/7/notes -X PUT -f body=x",
+            "gh api repos/o/r/issues/1 -X DELETE",
+            # No-space write shorthand.
+            "glab api projects/42/issues -XPOST -f body=x",
+            # Repeated method flags, write LAST → effective write.
+            "gh api repos/o/r/issues -X GET -X POST -f body=x",
+            # Interspersed persistent flag before `api` still detected as write.
+            "gh --hostname github.com api repos/o/r/issues -f body=x",
+        ],
+    )
+    def test_write_api_stays_a_publish(self, command: str) -> None:
+        assert _command_parser.is_publish_command(command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr view 12",
+            "gh pr list --state open",
+            "gh pr diff 12",
+            "gh repo view o/r",
+        ],
+    )
+    def test_gh_pr_reads_are_not_a_publish(self, command: str) -> None:
+        assert not _command_parser.is_publish_command(command)
+
+
 class TestExtractPublishPayload:
     def test_gh_issue_create_body_is_extracted(self) -> None:
         payload = banned_terms_scanner.extract_publish_payload(

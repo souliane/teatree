@@ -74,14 +74,14 @@ _BASH_PUBLISH_SUBSTRINGS: Final[tuple[str, ...]] = (
     "git commit -F",
     "git commit --file",
     "git tag --message",
-    # ``gh api`` / ``glab api`` POST/PATCH calls land on REST endpoints
-    # that publish issue/PR/MR comments. The payload is carried via
-    # ``-f``/``-F``/``--raw-field``/``--field``/``--input`` and parsed
-    # by :func:`extract_bash_payload`.
-    "gh api ",
-    "glab api ",
     "chat.postMessage",
 )
+# ``gh api`` / ``glab api`` is NOT a contiguous-substring publish: a bare
+# substring match flagged read-only GET calls (``gh api user``, ``gh api
+# repos/o/r/commits/main``) as publishes, so the destination-aware gates
+# over-blocked them (#1530). Raw-REST publishes are classified WRITE-only and
+# flag-order-robust by the token-aware :func:`_publish_detection.segment_is_api_write`
+# (effective method ≠ GET), reached via :func:`is_publish_command`.
 
 # t3 sub-commands that publish on the user's behalf. The overlay segment
 # between ``t3`` and the verb is arbitrary (one of the registered
@@ -153,10 +153,10 @@ def is_publish_command(command: str) -> bool:
     The contiguous substring catalogue (:data:`_BASH_PUBLISH_SUBSTRINGS`)
     catches the common spellings; the token-aware per-segment checks
     (:func:`_publish_detection.command_has_token_aware_publish_surface`) catch
-    the spellings an interspersed persistent flag breaks -- ``gh``/``glab api``
-    after a ``--hostname``/``-X`` flag, ``git [global-flags] commit`` after a
-    ``-C``/``--git-dir`` flag -- so the body reaches the scanner regardless of
-    flag ordering.
+    the ``git [global-flags] commit`` after a ``-C``/``--git-dir`` flag and the
+    raw-REST ``gh``/``glab api`` WRITE (effective method ≠ GET) regardless of
+    flag ordering, so the body reaches the scanner. A read-only ``gh``/``glab
+    api`` GET is NOT a publish and is not flagged (#1530).
     """
     joined = normalize_for_substring_match(command)
     if any(needle in joined for needle in _BASH_PUBLISH_SUBSTRINGS):

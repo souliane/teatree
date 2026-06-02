@@ -1044,6 +1044,9 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] =
         # Loop-bootstrap enforcer — its deny is a one-off setup nudge to
         # register the background-loop cron, not a content/enforcement gate.
         router.handle_enforce_loop_registration,
+        # Responsiveness nudge — advisory only (prints additionalContext once a
+        # turn crosses the tool-call budget), returns ``None``, never denies.
+        router.handle_orchestrator_turn_budget_nudge,
     }
 )
 

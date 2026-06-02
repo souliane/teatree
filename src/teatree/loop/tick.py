@@ -173,7 +173,6 @@ def run_tick(
     if not jobs:
         empty_zones = StatuslineZones()
         _populate_live_loops_in_anchors(empty_zones)
-        _populate_cost_chip_in_anchors(empty_zones)
         _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
@@ -234,21 +233,6 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
         return
     try:
         zones.anchors.extend(live_loops_anchor())
-    except Exception:  # noqa: BLE001
-        return
-
-
-def _populate_cost_chip_in_anchors(zones: StatuslineZones) -> None:
-    """Append the SDK-equivalent cost chip on the empty-jobs path.
-
-    Mirrors :func:`_populate_live_loops_in_anchors`: the non-empty path goes
-    through :func:`teatree.loop.rendering._populate_cost_chip`. Fails open:
-    any import/query error degrades to a no-op.
-    """
-    try:
-        from teatree.loop.rendering import cost_chip_lines  # noqa: PLC0415
-
-        zones.anchors.extend(cost_chip_lines())
     except Exception:  # noqa: BLE001
         return
 

@@ -3673,6 +3673,142 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
     return _deny_heavy_main_agent_bash(data)
 
 
+# ── UserPromptSubmit + PreToolUse: orchestrator turn-budget nudge ────
+#
+# The orchestrator stays responsive only if its TURNS stay short — a turn
+# that fires 20 tool calls before yielding makes the session feel dead to
+# a user trying to interject. The heavy-Bash gate above governs long
+# single OPERATIONS; this governs long TURNS (many small tool calls in a
+# row). It is a SOFT advisory nudge, never a deny: once a main-agent turn
+# crosses the configured tool-call budget, a one-time ``additionalContext``
+# line steers the orchestrator to wrap up and yield to the user. It can
+# never lock the orchestrator out — it does not write a deny.
+#
+# Only the main agent is governed (a sub-agent's turn is its whole job and
+# must run to completion). Pure-orchestration tool calls — talking to the
+# user, dispatching sub-agents, posting status — are FREE: they neither
+# count toward the budget nor get nudged, because yielding to the user is
+# itself an orchestration action. The counter resets every user turn.
+
+_TURN_TOOL_COUNT_SUFFIX = "turn-tool-count"
+_TURN_NUDGED_SUFFIX = "turn-budget-nudged"
+_DEFAULT_ORCHESTRATOR_TURN_BUDGET = 25
+
+
+def _orchestrator_turn_budget() -> int:
+    """Soft per-turn tool-call budget for the main agent (default 25; 0 ⇒ off).
+
+    Best-effort read of ``[teatree] orchestrator_turn_budget`` from
+    ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`'s
+    toml-read shape. A missing/broken config keeps the protective default; an
+    explicit ``0`` (or any non-positive value) disables the nudge with one
+    config line — never a code edit. A non-int value falls back to the default.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
+    raw = teatree.get("orchestrator_turn_budget", _DEFAULT_ORCHESTRATOR_TURN_BUDGET)
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
+    return raw
+
+
+def handle_reset_turn_tool_budget(data: dict) -> None:
+    """UserPromptSubmit: reset the per-turn tool-call counter and nudge marker.
+
+    A fresh user turn re-arms the responsiveness nudge — the orchestrator gets
+    its full budget again. Advisory only; never blocks the prompt.
+    """
+    if not isinstance(data, dict):
+        return
+    session_id = data.get("session_id", "")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    for suffix in (_TURN_TOOL_COUNT_SUFFIX, _TURN_NUDGED_SUFFIX):
+        try:
+            _state_file(session_id, suffix).unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+_TURN_BUDGET_NUDGE = (
+    "[orchestrator-responsiveness] This turn has now made {count} tool calls "
+    "(soft budget {budget}). To keep the session responsive, wrap up the "
+    "current step and YIELD to the user: dispatch any remaining heavy work to "
+    "a background sub-agent (`Agent` with `run_in_background: true`), then end "
+    "the turn so a new user message can be read. Orchestrate — don't keep "
+    "grinding inline."
+)
+
+
+def _bump_turn_tool_count(session_id: str) -> int:
+    """Increment and persist the per-turn tool-call counter; return the new count.
+
+    Returns ``0`` (a no-op sentinel below the budget) if the state file can't be
+    written — the nudge must never crash the hook.
+    """
+    count_file = _state_file(session_id, _TURN_TOOL_COUNT_SUFFIX)
+    try:
+        count = int(count_file.read_text(encoding="utf-8").strip()) if count_file.is_file() else 0
+    except (OSError, ValueError):
+        count = 0
+    count += 1
+    try:
+        count_file.write_text(str(count), encoding="utf-8")
+    except OSError:
+        return 0
+    return count
+
+
+def _emit_turn_budget_nudge_once(session_id: str, count: int, budget: int) -> None:
+    """Print the yield-to-user nudge at most once per turn (idempotent marker)."""
+    nudged_marker = _state_file(session_id, _TURN_NUDGED_SUFFIX)
+    if nudged_marker.exists():
+        return
+    try:
+        nudged_marker.write_text("1", encoding="utf-8")
+    except OSError:
+        return
+    print(json.dumps({"additionalContext": _TURN_BUDGET_NUDGE.format(count=count, budget=budget)}))  # noqa: T201
+
+
+def handle_orchestrator_turn_budget_nudge(data: dict) -> None:
+    """PreToolUse: once per turn, nudge the main agent to yield after N tool calls.
+
+    Counts NON-orchestration main-agent tool calls per turn (a fresh
+    ``python3`` process each call, so the count is persisted in a per-session
+    state file). When the count crosses :func:`_orchestrator_turn_budget`, a
+    single ``additionalContext`` line steers the orchestrator to wrap up and
+    yield. Sub-agents are exempt (their turn is their whole job); pure
+    orchestration calls (:func:`_is_orchestration_action` — talking to the
+    user, dispatching, status posts) are free and never trigger the nudge,
+    because yielding is itself orchestration. Advisory only — never a deny, so
+    it cannot lock the orchestrator out.
+    """
+    if not isinstance(data, dict):
+        return
+    if _call_is_from_subagent(data) or _is_orchestration_action(data):
+        return
+    budget = _orchestrator_turn_budget()
+    session_id = data.get("session_id", "")
+    if budget <= 0 or not isinstance(session_id, str) or not session_id:
+        return
+    _ensure_state_dir()
+    count = _bump_turn_tool_count(session_id)
+    if count >= budget:
+        _emit_turn_budget_nudge_once(session_id, count, budget)
+
+
 # ── PostToolUse: track-active-repo ──────────────────────────────────
 
 
@@ -5296,14 +5432,20 @@ def _loop_self_pump(data: dict) -> bool | None:
         return None
 
     marker.write_text("1", encoding="utf-8")
-    # Tag the tick with the owner session id so its re-claim heartbeat
-    # always lands under the real session (and records its pid) instead of
-    # resolving to "" in the Bash-tool subprocess (#1107). The id IS the
-    # owner session here (the self-pump only fires for the owner), so the
-    # pid-anchored claim keeps the lease anchored to this session (#1073).
+    # Tag the tick with the owner session id AND the durable session pid so
+    # its re-claim heartbeat always lands under the real session and anchors
+    # the lease on the long-lived session process — instead of resolving the
+    # id to "" and the pid to os.getppid() of the torn-down Bash-tool shell
+    # (#1107/#1722). The session id IS the owner here (the self-pump only
+    # fires for the owner), and os.getppid() in this Stop hook IS that
+    # durable session process (the same value SessionStart records in the
+    # loop registry), so the pid-anchored claim keeps the lease anchored
+    # even when the tick subprocess cannot read the registry (#1073).
+    session_pid = os.getppid()
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
         f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
+        f"T3_LOOP_SESSION_PID={session_pid} "
         "t3 loop tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
@@ -7396,6 +7538,7 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
 _HANDLERS: dict[str, list] = {
     "UserPromptSubmit": [
         handle_clear_classifier_deny_marker,
+        handle_reset_turn_tool_budget,
         handle_record_presence,
         handle_enforce_loop_on_prompt,
         handle_todo_freshness_nudge,
@@ -7423,6 +7566,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
         handle_mirror_question_to_slack,
+        handle_orchestrator_turn_budget_nudge,
     ],
     "PostToolUse": [
         handle_track_classifier_denial,

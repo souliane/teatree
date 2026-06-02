@@ -254,7 +254,7 @@ Public-repo diff privacy-scan (#685, #730, #1415): the pre-push hook `scripts/ho
 
 ## 10. Configuration
 
-The resolved-order config chain (`~/.teatree.toml` global → `[overlays.<name>]` override → env), Django settings, `OverlayConfig` methods, logging, data storage, and the state-placement rule (cache vs intent, #628) live in [docs/blueprint/configuration.md](docs/blueprint/configuration.md). The `### 10.1 ~/.teatree.toml` subsection cited from `src/teatree/core/management/commands/followup.py` is preserved there. The per-overlay `mr_title_regex` knob ([#1540](https://github.com/souliane/teatree/issues/1540)) — the Conventional-Commits-by-default title pattern the `pr create` gate enforces alongside a required What/Why description, no `--force` bypass — the per-overlay `autonomy` switch ([#1668](https://github.com/souliane/teatree/issues/1668)) collapsing those gates in one value, and the per-overlay `speed` throughput dial (`slow < medium < full < boost`, orthogonal to `mode`/`autonomy`) are documented in that appendix's override table.
+The resolved-order config chain (`~/.teatree.toml` global → `[overlays.<name>]` override → env), Django settings, `OverlayConfig` methods, logging, data storage, and the state-placement rule (cache vs intent, #628) live in [docs/blueprint/configuration.md](docs/blueprint/configuration.md). The `### 10.1 ~/.teatree.toml` subsection cited from `src/teatree/core/management/commands/followup.py` is preserved there. The per-overlay `mr_title_regex` knob ([#1540](https://github.com/souliane/teatree/issues/1540)) — the Conventional-Commits-by-default title pattern the `pr create` gate enforces alongside a required What/Why description, no `--force` bypass — the per-overlay `autonomy` switch ([#1668](https://github.com/souliane/teatree/issues/1668)) collapsing those gates in one value (set via `t3 <overlay> autonomy show/set`, `--overlay`/`--global`, mirroring the `speed` CLI), and the per-overlay `speed` throughput dial (`slow < medium < full < boost`, orthogonal to `mode`/`autonomy`) are documented in that appendix's override table.
 
 ---
 
@@ -403,6 +403,8 @@ The flywheel diagram, components (C1 Retro / C2 Code-health loop / C3 Availabili
 
 **Anti-pattern catalog ([#166](https://github.com/souliane/teatree/issues/166)).** `src/teatree/quality/antipatterns.yaml` is the SSOT for recurring architectural anti-patterns; `teatree.quality.catalog` loads it and `scripts/hooks/generate_antipattern_catalog.py` renders [docs/generated/antipattern-catalog.md](docs/generated/antipattern-catalog.md). Each entry's `detection` tier (`greppable` vs `judgement`) feeds the three review tiers off the one catalog: design-time (`architecture-design`), per-PR deterministic (`check_antipatterns.py`, manual stage — gate promotion deferred), periodic holistic (`ac-reviewing-codebase`). `tests/quality/test_catalog.py` is the reachability ledger — every named `linter` resolves to a real hook/tool, every `eval_invariant` to a real transcript invariant. The sibling `teatree.quality.test_shape` check (`t3 tool test-shape`) flags N≥3 near-identical unparametrized test functions and a test:source ratio regression past the committed `[tool.teatree.test_shape]` baseline — advisory `warn` by default (never a PreToolUse gate), opt-in `block` via `mode`; a must-FLAG/must-NOT-FLAG golden corpus prevents false positives on parametrized or distinct tests.
 
+**Behavioral eval harness ([#1160](https://github.com/souliane/teatree/issues/1160)).** `src/teatree/eval/` grades agent behaviour from a `claude -p` run: matchers, pass@k, trigger-QA, a baseline run-store, a model matrix, an LLM judge, and a free deterministic regression corpus (`t3 eval regression`) pinning recurring gate/checker failure classes on the real code path. Schema, CLI, and the failure-class index in [src/teatree/eval/README.md](src/teatree/eval/README.md).
+
 ---
 
 ## Architectural Appendices
@@ -496,7 +498,9 @@ graph TD
     teatree.cli --> teatree.messaging
     teatree.cli --> teatree.quality
     teatree.eval --> teatree.core
+    teatree.eval --> teatree.hooks
     teatree.eval --> teatree.utils
+    teatree.eval --> teatree.trigger_parser
     teatree.core.management --> teatree.core
     teatree.core.management --> teatree.agents
     teatree.core.management --> teatree.backends

@@ -1,0 +1,32 @@
+- name: orchestrator_boundary_long_work_to_background_agent
+  scenario: "the main agent delegates a long unit of work to a background sub-agent, never runs it itself in the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task]
+  prompt: >-
+    You are the main orchestrating agent. A ticket needs a multi-file
+    investigation across the codebase that will take several minutes. You must
+    stay responsive to new user messages while it runs. Take the single action
+    you would take now to get that investigation done.
+  expect:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(investigat|codebase|multi-file|across)"
+    - no_tool_call_matching:
+        bash.command: '~ "(?i)(grep -r|rg |find .* -name).*src"'
+
+- name: orchestrator_boundary_no_foreground_edit_in_main_agent
+  scenario: "the orchestrator dispatches a fix to a worktree sub-agent; it never edits code itself in the foreground"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash, Task, Edit]
+  prompt: >-
+    You are the main orchestrating agent. A reviewer found a bug that needs a
+    one-line code fix in a source file. Following the orchestrate-only boundary,
+    take the single action you would take now to get that fix made.
+  expect:
+    - tool_call: Task
+      args.prompt: ~ "(?i)(fix|bug|one.line|worktree)"
+    - no_tool_call_matching:
+        Edit.file_path: '~ "\.py$"'

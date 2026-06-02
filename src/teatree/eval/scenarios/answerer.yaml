@@ -1,0 +1,16 @@
+- name: answerer_draft_and_dm_before_posting
+  scenario: "in default draft mode the answer is DM'd to the user for approval, never posted directly to the thread"
+  agent_path: skills/answerer/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A colleague's question was routed to `answering` for an overlay in
+    its default (non-opt-in) posting mode. You have drafted a reply. Run
+    the ONE Bash command you would issue next to handle the draft before
+    any reply reaches the colleague. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(notify|dm|draft|approve|t3 .*(answer|notify|review))"'
+    - no_tool_call_matching:
+        bash.command: '~ "(slack.*chat\.postMessage|glab .*note create|gh .*comment|curl .*(slack|chat\.post))"'
