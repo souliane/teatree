@@ -5377,6 +5377,77 @@ def handle_loop_self_pump(data: dict) -> bool | None:
 _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
+def _bash_env_file() -> Path:
+    """Path to the shell-sourceable teatree env file (``~/.teatree``).
+
+    The harness spawns the Stop hook as a bare ``python3`` that does NOT
+    source the user's shell profile, so ``export VAR=value`` lines in this
+    file never reach ``os.environ`` (the ``ensure-skills-loaded.sh``
+    bootstrap calls it out: "hooks don't source .zshrc/.teatree").
+    ``TEATREE_BASH_ENV_FILE`` overrides the location (tests / non-default
+    HOME).
+    """
+    override = os.environ.get("TEATREE_BASH_ENV_FILE", "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME", str(Path.home()))) / ".teatree"
+
+
+def _read_bash_env_var(name: str) -> str:
+    """Last ``export <name>=<value>`` value in :func:`_bash_env_file`.
+
+    Pure-stdlib parse — no ``teatree`` import (the hook interpreter may
+    lack it, #810) and no shell invocation. Tolerant of a leading
+    ``export``/whitespace, spaces around ``=``, single/double quotes, and
+    trailing ``# comments``. Crash-proof: a missing or unreadable file
+    yields ``""``. Last assignment wins, mirroring shell sourcing.
+    """
+    try:
+        path = _bash_env_file()
+        if not path.is_file():
+            return ""
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    value = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, sep, rest = line.partition("=")
+        if not sep or key.strip() != name:
+            continue
+        value = _strip_bash_value(rest)
+    return value
+
+
+def _strip_bash_value(rest: str) -> str:
+    """Strip surrounding quotes and a trailing ``# comment``."""
+    rest = rest.strip()
+    quote = rest[0] if rest[:1] in {"'", '"'} else ""
+    if quote:
+        end = rest.find(quote, 1)
+        if end != -1:
+            return rest[1:end]
+        return rest[1:]
+    return rest.split("#", 1)[0].strip()
+
+
+def _resolve_loop_env(name: str) -> str:
+    """Resolve a loop control var: process env first, bash env file second.
+
+    The process env is authoritative — an explicit value (even empty)
+    there is never overridden by the file. The file is consulted only when
+    the var is wholly absent from ``os.environ``, recovering the
+    kill-switch the unsourced Stop hook would otherwise miss.
+    """
+    if name in os.environ:
+        return os.environ[name]
+    return _read_bash_env_var(name)
+
+
 def _all_loops_disabled() -> bool:
     """Does ``T3_LOOPS_DISABLED`` fully prune the loop for this session?
 
@@ -5391,8 +5462,12 @@ def _all_loops_disabled() -> bool:
     pending Tasks that drive ``pending-spawn`` keep the pump re-arming every
     interval. That is the busy-loop the prune is meant to silence, so a fully
     pruned session never pumps.
+
+    The value is resolved via :func:`_resolve_loop_env` so the kill-switch
+    set in ``~/.teatree`` (never sourced into the bare-``python3`` Stop
+    hook) is still honoured.
     """
-    raw = os.environ.get("T3_LOOPS_DISABLED", "").strip()
+    raw = _resolve_loop_env("T3_LOOPS_DISABLED").strip()
     if not raw:
         return False
     return any(part.strip().lower() == "all" for part in raw.split(","))
@@ -5416,16 +5491,20 @@ def _self_pump_suppressed(session_id: str) -> bool:
     ``T3_LOOPS_DISABLED=all`` fully prunes the loop (the same kill-switch
     the orchestrator honours per tick job): the owner's Stop hook becomes
     a clean no-op so a pruned environment cannot busy-loop on stale
-    pending work.
+    pending work. Both this and ``T3_LOOP_DISOWN`` resolve through
+    :func:`_resolve_loop_env`, which falls back to the ``~/.teatree`` bash
+    env file when the var is absent from the process env — the bare
+    ``python3`` Stop hook never sources that file, so a kill-switch set
+    only there would otherwise be invisible to the self-pump.
 
-    Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy in the
-    session's env makes even the owner's Stop hook a clean no-op, so a
-    session can stop driving the loop in-process without touching the
-    registry or ending the session.
+    Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy (in the session's
+    env or the bash env file) makes even the owner's Stop hook a clean
+    no-op, so a session can stop driving the loop in-process without
+    touching the registry or ending the session.
     """
     if _all_loops_disabled():
         return True
-    if os.environ.get("T3_LOOP_DISOWN", "").strip() not in _DISOWN_FALSEY:
+    if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return True
     return not _session_owns_loop(session_id)
 
