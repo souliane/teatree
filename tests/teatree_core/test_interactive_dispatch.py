@@ -116,6 +116,19 @@ class TestRecordAttemptCommand(TestCase):
         assert attempt.agent_session_id == "sess-1"
         assert task.ticket.state == Ticket.State.CODED
 
+    def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
+        task = self._claimed_task()
+        result_json = json.dumps(
+            {"summary": "Unable to connect to API", "files_modified": [{"path": "a.py", "action": "modified"}]},
+        )
+
+        call_command("tasks", "record-attempt", str(task.pk), result_json, stdout=StringIO())
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert task.ticket.state == Ticket.State.STARTED
+        assert task.attempts.latest("pk").error.startswith("outage_death:")
+
     def test_missing_phase_evidence_fails_task(self) -> None:
         task = self._claimed_task()
         result_json = json.dumps({"summary": "no files changed"})

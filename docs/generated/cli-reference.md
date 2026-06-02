@@ -52,6 +52,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
+│ recover         Find (and optionally recover) work stranded by a             │
+│                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
 │ teatree         Commands for the t3-teatree overlay.                         │
@@ -2726,6 +2728,14 @@ Usage: t3 task cancel [OPTIONS]
  Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.
 ```
 
+### `t3 recover`
+
+```
+Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
+
+ Find (and optionally recover) work stranded by a network-outage death (#1764).
+```
+
 ### `t3 dogfood`
 
 ```
@@ -4870,6 +4880,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │ sync-completions  Check post-ship tickets against upstream issues and        │
 │                   advance completed ones.                                    │
 │ comment           Post a comment to an issue or work item by its URL.        │
+│ create-sub        Create a child work item nested under a parent issue/work  │
+│                   item.                                                      │
 │ context           Durable per-ticket knowledge store: show / add / edit      │
 │                   (#627).                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -5053,6 +5065,36 @@ Usage: t3 teatree ticket comment [OPTIONS] ISSUE_URL
 │ --body             TEXT  Comment body text.                                  │
 │ --body-file        TEXT  Path to a file containing the comment body.         │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket create-sub`
+
+```
+Usage: t3 teatree ticket create-sub [OPTIONS]
+
+ Create a child work item nested under a parent issue/work item.
+
+ Resolves the code host per-URL across all registered overlays (the
+ same resolver ``comment`` uses). On GitLab the child is created, then
+ converted to ``--type`` and linked under ``--parent`` as one operation
+ — an Issue→Issue parent link is forbidden, so the default ``Task`` is
+ the natural sub-item. Pass the description inline with ``--description``
+ or from a file with ``--description-file``. Prints the child IID and URL
+ for chaining into dispatch prompts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --parent                  TEXT  Parent issue/work-item URL the child is      │
+│                                 nested under.                                │
+│ --title                   TEXT  Title of the child work item.                │
+│ --description             TEXT  Child description text.                      │
+│ --description-file        TEXT  Path to a file containing the child          │
+│                                 description.                                 │
+│ --labels                  TEXT  Comma-separated labels for the child.        │
+│ --type                    TEXT  Child work-item type: Task (default),        │
+│                                 Incident, or Issue.                          │
+│                                 [default: Task]                              │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

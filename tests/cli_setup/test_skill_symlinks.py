@@ -5,6 +5,7 @@ Lifted verbatim from the former monolithic ``tests/test_cli_setup.py``
 relocated under a focused package by concern.
 """
 
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -383,6 +384,117 @@ class TestSetupSyncsCodexWhenDirExists:
             setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
 
         assert not (home / ".codex").exists()
+
+
+class TestPrunesStaleSkillLinks:
+    @staticmethod
+    def _make_core_skill(skills_src: Path, name: str) -> Path:
+        skill = skills_src / name
+        skill.mkdir()
+        (skill / "SKILL.md").touch()
+        return skill
+
+    def test_prunes_link_for_removed_core_skill(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        self._make_core_skill(skills_src, "speed")
+        runtime = tmp_path / "runtime_skills"
+        runtime.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+            removed = self._make_core_skill(skills_src, "full-speed")
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+            shutil.rmtree(removed)
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+
+        assert {p.name for p in runtime.iterdir()} == {"speed"}
+
+    def test_prunes_link_for_renamed_core_skill(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        self._make_core_skill(skills_src, "full-speed")
+        runtime = tmp_path / "runtime_skills"
+        runtime.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+            (skills_src / "full-speed").rename(skills_src / "speed")
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+
+        assert {p.name for p in runtime.iterdir()} == {"speed"}
+
+    def test_prunes_link_for_overlay_skill_removed_from_source(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        overlay_root = tmp_path / "overlay" / "skills"
+        overlay_skill = overlay_root / "my-skill"
+        overlay_skill.mkdir(parents=True)
+        (overlay_skill / "SKILL.md").touch()
+        runtime = tmp_path / "runtime_skills"
+        runtime.mkdir()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = [(overlay_skill, "my-skill")]
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+            assert (runtime / "my-skill").is_symlink()
+            shutil.rmtree(overlay_skill)
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+
+        assert not (runtime / "my-skill").exists()
+
+    def test_leaves_user_owned_real_directory(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        self._make_core_skill(skills_src, "speed")
+        runtime = tmp_path / "runtime_skills"
+        runtime.mkdir()
+        own = runtime / "my-own-skill"
+        own.mkdir()
+        (own / "SKILL.md").touch()
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime, tmp_path / "workspace")
+
+        assert (runtime / "my-own-skill").is_dir()
+        assert not (runtime / "my-own-skill").is_symlink()
+
+    def test_preserves_contribute_mode_link(self, tmp_path: Path) -> None:
+        skills_src = tmp_path / "core_skills"
+        skills_src.mkdir()
+        self._make_core_skill(skills_src, "speed")
+        workspace = tmp_path / "workspace"
+        contrib_target = workspace / "my-fork" / "skills" / "code"
+        contrib_target.mkdir(parents=True)
+        (contrib_target / "SKILL.md").touch()
+        runtime = tmp_path / "runtime_skills"
+        runtime.mkdir()
+        (runtime / "code").symlink_to(contrib_target)
+
+        with (
+            patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
+            patch("teatree.cli.setup.DoctorService") as mock_svc,
+        ):
+            mock_svc.collect_overlay_skills.return_value = []
+            _sync_skill_symlinks(runtime, workspace)
+
+        assert (runtime / "code").resolve() == contrib_target.resolve()
 
 
 class TestCleanBrokenSymlinks:

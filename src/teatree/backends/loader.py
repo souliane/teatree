@@ -116,6 +116,10 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
     set, ``SlackBotBackend`` authenticates reactions through that token so
     Slack-Connect externally-shared channels accept them — the bot token is
     rejected there by the workspace restriction policy.
+
+    This is a loop construction path, so a malformed user token degrades to
+    bot-only (``degrade_bad_user_token=True``) instead of raising: a
+    Slack-only credential typo must never wedge merges, CI, or PR sweeps.
     """
     choice = overlay.config.messaging_backend or "noop"
     if choice == "slack":
@@ -131,6 +135,7 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
             # third-party overlay subclasses (that pre-date the field)
             # working without an explicit default.
             dm_channel_id=getattr(overlay.config, "slack_dm_channel_id", ""),
+            degrade_bad_user_token=True,
         )
     if choice == "noop":
         return NoopMessagingBackend()

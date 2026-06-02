@@ -241,6 +241,33 @@ class TestFetchRequiredChecksGitLab(TestCase):
         with patch("teatree.core.merge_execution._run_glab", side_effect=_boom):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "failed"
 
+    def test_selects_head_sha_pipeline_ignoring_canceled_merge_train(self) -> None:
+        # The pipelines endpoint interleaves a canceled merge-train pipeline
+        # ahead of the real head-branch pipeline; selecting pipelines[0] would
+        # misread a green MR as failed and brick the keystone merge gate.
+        train_sha = "b" * 40
+        pipelines = [
+            {
+                "id": 999,
+                "status": "canceled",
+                "sha": train_sha,
+                "ref": f"refs/merge-requests/{_PR_IID}/train",
+                "source": "merge_train",
+            },
+            {"id": 100, "status": "success", "sha": _SHA, "source": "merge_request_event"},
+        ]
+
+        def _train_then_head(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "/pipelines" in joined:
+                return (0, json.dumps(pipelines), "")
+            if "/merge_requests/" in joined:
+                return (0, json.dumps({"iid": _PR_IID, "sha": _SHA}), "")
+            return (0, "", "")
+
+        with patch("teatree.core.merge_execution._run_glab", side_effect=_train_then_head):
+            assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "green"
+
 
 class TestExecuteBoundMergeGitLab(TestCase):
     def test_uses_glab_api_put_merge_endpoint_with_sha(self) -> None:

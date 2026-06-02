@@ -255,6 +255,7 @@ t3 teatree db refresh           # restore a database dump
 t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 cost                         # cycle-to-date SDK-equivalent spend vs the monthly credit
+t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
@@ -424,7 +425,6 @@ graph LR
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
 | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, evidence posting, and the pre-push visual QA gate |
 | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
-| `full-speed` | Deprecated alias for `/t3:speed boost`. Parallel backlog blast — classify the actionable backlog, fan out autonomous-safe work across isolated worktrees, surface the rest |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
 | `loops` | Show t3 loop status — which loops are running vs stalled, the cadence and next tick of each loop, and loop ownership |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
