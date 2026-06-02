@@ -27,7 +27,8 @@ validation in order: a valid, actionable ``MergeClear`` row re-read from the
 DB; CI green on the exact PR head; an independent cold-review CLEAR recorded
 (a ``reviewer_identity`` distinct from the executing loop — §17.8 clause 3);
 plus the §17.4.3 SHA-match and not-draft checks. ``substrate`` blast-class PRs
-are never auto-merged here (invariant 4 / §17.4.3 step 5).
+need a per-PR human sign-off — a matching ``human_authorizer`` OR the overlay
+standing at ``autonomy = full`` (invariant 4 carve-out / §17.4.3 step 5).
 
 Atomic merge — ``execute_bound_merge`` binds the merge to
 ``expected_head_oid`` so a force-push landing in the TOCTOU window is rejected
@@ -817,34 +818,64 @@ def _assert_clear_authorized(
         )
         raise MergePreconditionError(msg)
 
-    # 5. blast_class respected — the loop NEVER auto-merges substrate-class
-    #    PRs regardless of CLEAR validity (invariant 4 / §17.4.3 step 5). The
-    #    ONLY exception: a substrate CLEAR whose recorded ``human_authorizer``
-    #    matches the value re-presented at merge time. The recorded human
-    #    approval is the gate; the AGENT then executes through this same
-    #    SHA-bound, audited transition (invariant 8) — not raw ``gh``, not a
-    #    human-performed merge. The approval is recorded durably on the CLEAR
-    #    and bound to the merge.
-    if clear.is_substrate() and not clear.human_merge_authorized_by(presented):
+    # 5. blast_class respected — substrate-class PRs are draft-locked and
+    #    require a recorded human sign-off (invariant 4 / §17.4.3 step 5). Two
+    #    things satisfy the per-PR sign-off, in this order:
+    #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
+    #         at merge time (the owner approved this exact diff), OR
+    #      b. the overlay's STANDING autonomy grant resolving to ``full`` — the
+    #         owner recorded once, in config, that this overlay merges
+    #         end-to-end without a per-PR sign-off (invariant 4 carve-out).
+    #    Either way the AGENT executes through this same SHA-bound, audited
+    #    transition (invariant 8) — never raw ``gh``, never a human-performed
+    #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
+    #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
+    #    the carve-out; autonomy=full removes ONLY the per-PR human sign-off.
+    if (
+        clear.is_substrate()
+        and not clear.human_merge_authorized_by(presented)
+        and not _overlay_grants_full_substrate_autonomy(clear)
+    ):
         detail = (
-            "no human authoriser recorded on the CLEAR"
+            "no human authoriser recorded on the CLEAR and the overlay autonomy is not full"
             if not clear.human_authorizer
             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
             if presented
-            else "no --human-authorized presented at merge time"
+            else "no --human-authorized presented at merge time and the overlay autonomy is not full"
         )
         msg = (
             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
             f"changes require a recorded human approval and are draft-locked "
             f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
-            f"{detail.capitalize()}. The sanctioned path: an owner issues `t3 "
-            f"<overlay> ticket clear … --blast-class substrate --human-authorize "
-            f"<id>` (the recorded approval — the gate), then the agent executes "
-            f"`t3 <overlay> ticket merge <clear_id> --human-authorized <id>`"
+            f"{detail.capitalize()}. The sanctioned paths: `t3 <overlay> autonomy "
+            f"set full` (the standing owner grant), or issue `t3 <overlay> ticket "
+            f"clear … --blast-class substrate --human-authorize <id>` (a per-PR "
+            f"recorded approval), then the agent executes `t3 <overlay> ticket "
+            f"merge <clear_id> [--human-authorized <id>]`"
         )
         raise MergePreconditionError(msg)
 
     return clear
+
+
+def _overlay_grants_full_substrate_autonomy(clear: "MergeClear") -> bool:
+    """Whether the CLEAR's overlay stands at ``autonomy = full`` (invariant 4 carve-out).
+
+    Resolves the effective autonomy for the overlay the CLEAR's ticket belongs
+    to via :func:`get_effective_settings`. ``full`` is the owner's standing,
+    recorded grant that this overlay merges end-to-end without a per-PR human
+    sign-off; it satisfies the substrate sign-off in place of a per-CLEAR
+    ``human_authorizer``. Any other tier (``notify`` / ``babysit``), or an
+    unresolvable overlay, is fail-closed: the per-CLEAR human authoriser stays
+    mandatory. The carve-out touches ONLY the per-PR sign-off — every other
+    substrate-merge floor guard runs unchanged.
+    """
+    from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
+
+    overlay_name = str(getattr(getattr(clear, "ticket", None), "overlay", "") or "").strip()
+    if not overlay_name:
+        return False
+    return get_effective_settings(overlay_name=overlay_name).autonomy is Autonomy.FULL
 
 
 def _reconcile_if_already_merged(
@@ -903,17 +934,19 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     runs the post hook idempotently instead of re-issuing the merge — a
     lost post-hook becomes recoverable rather than a permanent brick.
 
-    ``human_authorized`` is the only escape from the substrate auto-merge
-    refusal (step 5). It is empty for every loop-driven merge, so the loop
-    still never auto-merges substrate. A non-empty value unlocks the merge
-    **only** when the CLEAR is substrate-class AND its recorded
-    ``human_authorizer`` matches: the substrate change requires a recorded
-    human authorisation, and on re-presentation **the agent executes** the
-    merge through this same sanctioned ``t3`` transition (invariant 8: even an
-    owner-approved merge goes through this transition, never raw ``gh`` and
-    never a human-performed merge action — approval is the gate, execution is
-    always the agent). It can never unlock a non-substrate CLEAR, so it cannot
-    be used to bypass independent loop review of logic/docs PRs.
+    The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
+    ``human_authorized`` OR the CLEAR's overlay standing at ``autonomy = full``.
+    ``human_authorized`` unlocks the merge **only** when the CLEAR is
+    substrate-class AND its recorded ``human_authorizer`` matches; it can never
+    unlock a non-substrate CLEAR. The ``autonomy = full`` carve-out is the
+    owner's standing, recorded grant that the overlay merges end-to-end without
+    a per-PR sign-off (invariant 4) — every other tier keeps the per-CLEAR
+    authoriser mandatory. Either path runs the identical sanctioned ``t3``
+    transition (invariant 8: even an owner-approved merge goes through this
+    transition, never raw ``gh`` and never a human-performed merge action). The
+    carve-out removes ONLY the per-PR sign-off — the quality/safety floor
+    (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
+    never-lockout, privacy scan) is untouched.
     """
     authorized_clear = _assert_clear_authorized(
         clear=clear,
