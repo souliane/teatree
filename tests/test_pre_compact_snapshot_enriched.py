@@ -10,6 +10,7 @@ was I doing" after compaction. These tests pin the enriched capture so
 the snapshot reliably contains that recovery-relevant state.
 """
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -194,50 +195,66 @@ class TestSnapshotIncludesOpenPRs:
         assert "Open PRs" not in body
 
 
-class TestTodoCaptureAndSnapshot:
-    """The TODO list is durable-state we have to populate ourselves.
+def _seed_harness_store(tmp_path: Path, session_id: str, todos: list[tuple[str, str]]) -> None:
+    """Write one ``<n>.json`` per harness TODO under ``CLAUDE_TASKS_DIR/<session>``."""
+    session_dir = tmp_path / "harness-tasks" / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    for index, (status, subject) in enumerate(todos, start=1):
+        (session_dir / f"{index}.json").write_text(json.dumps({"subject": subject, "status": status}), encoding="utf-8")
 
-    Anthropic's current Tasks API doesn't fire PostToolUse, but the legacy
-    ``TodoWrite`` tool does (and any tool the agent uses to maintain a
-    visible task list can plug in here). The hook captures the latest
-    snapshot of the todos to ``<session>.todos`` so PreCompact can quote
-    them back into the snapshot.
+
+class TestTodoCaptureFromHarnessStore:
+    """The ``.todos`` statusline state file is a materialised view of the live store (#1736).
+
+    ``TodoWrite`` PostToolUse no longer fires (the harness migrated to the
+    ``TaskCreate`` / ``TaskUpdate`` store, #1734), so the only live source
+    is the harness task store. ``handle_track_todos`` refreshes
+    ``<session>.todos`` from ``read_harness_todos`` on each PostToolUse so
+    the fast statusline keeps reading a fresh file rather than a dead one.
     """
 
-    def test_todowrite_is_captured_to_session_todos_file(self) -> None:
-        session_id = "sess-todo-capture"
-        handle_track_todos(
-            {
-                "session_id": session_id,
-                "tool_name": "TodoWrite",
-                "tool_input": {
-                    "todos": [
-                        {"content": "fix snapshot", "status": "in_progress"},
-                        {"content": "push and open PR", "status": "pending"},
-                    ]
-                },
-            }
+    def test_refreshes_todos_file_from_harness_store(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        session_id = "sess-todo-store"
+        _seed_harness_store(
+            tmp_path,
+            session_id,
+            [("in_progress", "fix snapshot"), ("pending", "push and open PR")],
         )
+        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tmp_path / "harness-tasks"))
+
+        handle_track_todos({"session_id": session_id, "tool_name": "Read", "tool_input": {"file_path": "x"}})
+
         todos_file = router.STATE_DIR / f"{session_id}.todos"
         assert todos_file.is_file()
         text = todos_file.read_text(encoding="utf-8")
-        assert "fix snapshot" in text
-        assert "push and open PR" in text
+        assert "- [in_progress] fix snapshot" in text
+        assert "- [pending] push and open PR" in text
 
-    def test_non_todowrite_tool_does_not_clobber_todos(self) -> None:
-        session_id = "sess-todo-noclobber"
-        todos_file = router.STATE_DIR / f"{session_id}.todos"
-        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        todos_file.write_text("- existing\n", encoding="utf-8")
+    def test_empty_store_writes_empty_todos_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        session_id = "sess-todo-empty"
+        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tmp_path / "harness-tasks"))
+
         handle_track_todos({"session_id": session_id, "tool_name": "Read", "tool_input": {"file_path": "x"}})
-        assert todos_file.read_text(encoding="utf-8") == "- existing\n"
 
-    def test_snapshot_renders_captured_todos(self) -> None:
+        todos_file = router.STATE_DIR / f"{session_id}.todos"
+        assert todos_file.read_text(encoding="utf-8") == ""
+
+    def test_missing_session_id_is_a_noop(self, tmp_path: Path) -> None:
+        handle_track_todos({"tool_name": "Read", "tool_input": {"file_path": "x"}})
+        assert not any(router.STATE_DIR.glob("*.todos"))
+
+
+class TestSnapshotTodosFromHarnessStore:
+    """The PreCompact snapshot quotes the live harness store, not the dead file (#1736)."""
+
+    def test_snapshot_renders_harness_store_todos(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         session_id = "sess-todo-render"
-        router.STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (router.STATE_DIR / f"{session_id}.todos").write_text(
-            "- [in_progress] fix snapshot\n- [pending] push PR\n", encoding="utf-8"
+        _seed_harness_store(
+            tmp_path,
+            session_id,
+            [("in_progress", "fix snapshot"), ("pending", "push PR")],
         )
+        monkeypatch.setenv("CLAUDE_TASKS_DIR", str(tmp_path / "harness-tasks"))
 
         handle_pre_compact({"session_id": session_id})
 

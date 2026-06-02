@@ -282,6 +282,40 @@ class TestScanTreeCli:
         assert "clean" in result.stdout
 
 
+class TestScanTreeCliSummaryIsBrandAgnostic:
+    """The summary describes findings generically, not as brand-only (#1736).
+
+    ``scan-tree`` returns brand AND terminology findings; the summary line
+    and remediation must not call a terminology finding a "brand" one.
+    """
+
+    def test_terminology_only_summary_does_not_say_brand(self, tmp_path: Path) -> None:
+        # A conflated-terminology hit with NO brand configured: the only
+        # finding is a terminology violation, never a brand. The conflated
+        # phrase is assembled at runtime so this (non-exempt) test file's
+        # own committed source never trips the terminology backstop.
+        conflated = "claude-" + "code " + "todos"
+        repo = _repo_with(tmp_path, "docs/note.md", f"tracking {conflated} here\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
+        )
+        assert result.exit_code == 1
+        assert "docs/note.md" in result.stdout
+        assert "brand" not in result.stdout.lower()
+
+    def test_summary_counts_findings_generically(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND])
+        repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
+        )
+        assert result.exit_code == 1
+        assert "banned-term finding(s)" in result.stdout
+        assert "brand-name finding" not in result.stdout
+
+
 @pytest.mark.parametrize("joined", ["wt_777_{b}", "{b}_777", "a_{b}_z"])
 def test_all_underscore_shapes_are_caught(joined: str) -> None:
     pattern = banned_terms_tree_scan.build_brand_pattern((SYNTH_BRAND,))
