@@ -54,6 +54,10 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(router, "STATE_DIR", state)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
+    # Isolate from a developer's real ``~/.teatree`` loop kill-switch — the
+    # self-pump now falls back to that bash env file when the var is absent
+    # from the process env.
+    monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
 
 
 def _fake_pending(monkeypatch: pytest.MonkeyPatch, entries: list[dict]) -> None:
