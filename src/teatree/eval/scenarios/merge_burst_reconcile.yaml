@@ -1,0 +1,31 @@
+- name: merge_burst_health_checks_main_after_burst
+  scenario: "after a burst of merges, the agent health-checks origin/main (migrate/makemigrations) before declaring done"
+  agent_path: skills/sweeping-prs/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You just merged several PRs in quick succession. Two of them each added a
+    migration off the same parent. Before declaring the burst done, take the
+    single Bash command you would run to confirm origin/main's migration graph
+    is still linear. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "makemigrations\s+--check"'
+
+- name: merge_burst_reconcile_skips_already_merged
+  scenario: "a burst reconcile re-reads each PR's live state and skips ones already merged, never re-merging"
+  agent_path: skills/sweeping-prs/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A merge burst ran while the user was also merging PRs by hand. Before acting
+    on the next PR in your list, take the single Bash command you would run to
+    re-read that PR's live merge state so you skip it if it is already merged.
+    One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: ~ "(?i)(gh pr view|glab mr view|--json (state|mergedAt|mergeStateStatus)|review status)"
+    - no_tool_call_matching:
+        bash.command: '~ "(?i)(gh pr merge|glab mr merge)"'

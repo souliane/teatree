@@ -21,24 +21,171 @@ t3 eval run                                 # run all (persists to run-history)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
-t3 eval run --no-persist                    # run without recording to the ledger
-t3 eval run --baseline                      # record + mark this run as the baseline
+t3 eval run --no-persist                     # run without recording to the ledger
+t3 eval run --trials 3                        # pass@k: 3 trials, pass if any passes
+t3 eval run --trials 3 --require all          # pass^k: regression gate, all must pass
+t3 eval run --models opus,sonnet,haiku        # model-regression matrix (per-model columns)
+t3 eval run --judge                           # also grade judge-opted scenarios with an LLM judge
+t3 eval run --baseline                        # persist + mark this run as its model's baseline
+t3 eval run --gate-regressions               # persist + fail on a drop vs each model's baseline
+t3 eval history                               # list past recorded runs (newest first)
+t3 eval history --baseline                    # show the current baseline run(s)
+t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
+t3 eval history --model opus --format json    # filter + JSON
+t3 eval run --backend subscription            # grade subscription-produced transcripts
+t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
+t3 eval transcript-replay                     # replay a real session against invariants
+t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
+t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
+t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
 ```
 
-Each invocation shells out to `claude -p` in `--output-format stream-json`
-mode with a 120-second wall-clock watchdog and a `--max-budget-usd 0.10`
-circuit breaker. When `claude` is not on `PATH` the runner emits
-`SKIP <scenario>: claude binary not on PATH` and exits 0.
+Each scenario invocation shells out to `claude -p` in `--output-format
+stream-json` mode with a 120-second wall-clock watchdog and a
+`--max-budget-usd 0.10` circuit breaker. When `claude` is not on `PATH` the
+runner emits `SKIP <scenario>: claude binary not on PATH` and exits 0.
+
+### pass@k (multi-trial)
+
+A single trial against an LLM is noisy. `--trials k` re-runs each scenario `k`
+times and aggregates: `--require any` (default) is **pass@k** — capable-of the
+behavior; `--require all` is **pass^k** — a regression gate where intermittent
+compliance is itself a failure. The aggregation lives in `pass_at_k.py`.
+
+### Run-store and history (#1160)
+
+Every `t3 eval run` persists to the durable `EvalRunRecord` +
+`EvalScenarioResult` ledger (`src/teatree/core/models/eval_run.py`) unless
+`--no-persist` is given. One run row carries the model id, the `git_sha`, and a
+UTC timestamp; one scenario-result row carries the verdict (pass/fail/skip),
+the per-result model, the pass-rate `score` and trial count, the *trajectory*
+signal (captured tool calls), the *side-effect* signal (terminal reason + error
+flag), the per-matcher detail, and any LLM-judge rationale — so a historical run
+is reconstructable without re-invoking the model. `t3 eval history` lists past
+runs (newest first) with each scenario's pass-rate.
+
+`--baseline` marks the persisted run as the baseline for its model (demoting the
+prior baseline). `--gate-regressions` diffs the just-persisted run against each
+model's current baseline and prints `REGRESSED`/`IMPROVED` lines; a scenario
+whose score fell exits non-zero. Aggregation and the diff live on the model
+(`EvalRunRecord.pass_rates()` / `EvalRunRecord.regression_diff(baseline=…,
+candidate=…)`), and the per-model baseline is what the model matrix compares
+against. The store is a Django model so history survives across machines that
+share the control DB.
+
+### Model matrix
+
+`--models opus,sonnet,haiku` runs the suite once per model and renders a
+scenario-by-model table (`pass` / `FAIL` per cell, or the pass-rate under
+`--trials`), followed by a per-model tally. It persists one scenario-result row
+per `(scenario, model)` cell (unless `--no-persist`); combined with
+`--gate-regressions` it flags per-model drops against each model's baseline.
+`--format json` emits a
+`{models, scenarios:[{name, results:{model:{passed,score,...}}}]}` payload.
+
+### LLM-judge (opt-in, per scenario)
+
+Matcher grading is the default and stays so. A scenario whose pass/fail is not
+cleanly matcher-gradeable (tone, faithfulness, "did it actually answer") opts in
+to an LLM judge by adding a `judge:` block:
+
+```yaml
+- name: explains_change_faithfully
+  scenario: the agent's explanation matches the diff it made
+  prompt: >-
+    ...
+  judge:
+    rubric: |
+      The explanation names every file it changed and does not claim a change
+      it did not make.
+    model: haiku            # optional, default "haiku" (cheap tier)
+    max_output_tokens: 512  # optional cap on the judge reply
+```
+
+A judged scenario passes only when its matchers pass **and** the judge returns
+`PASS`. The judge runs only under `t3 eval run --judge`; cost is bounded by the
+cheap default model tier, a per-call `--max-budget-usd` cap, and a per-run
+`--judge-budget` call cap (default 20). When `claude` is not on PATH the judge
+skips (it never fails a scenario by absence). A scenario may carry `judge:` with
+no `expect:` (judge-only) or alongside matchers (both must pass).
+
+### Trigger-QA (skill activation)
+
+`t3 eval trigger-qa` is a Layer-1 (deterministic, free, no `claude` run) eval.
+It loads each skill's `triggers.keywords` frontmatter and checks the
+must-fire / must-not-fire prompt corpus in `trigger_qa_corpus.yaml`: an
+under-trigger (in-scope prompt that does not fire) or over-trigger (control
+prompt that fires) exits non-zero. A skill author registers expectations by
+editing the corpus.
+
+### Regression corpus (real gate/checker code paths)
+
+`t3 eval regression` is a Layer-1 (deterministic, free, no `claude` run) eval —
+sibling of trigger-QA. Where a scenario grades what an agent *says* it would
+do, the regression corpus (`regression_corpus.py`) grades what the gate/checker
+code *does*: each `RegressionCheck` calls the **real** function for a recurring
+failure class on a constructed must-block input and a must-allow input, and
+reports a violation when either direction is wrong. Checks that need git build
+a throwaway repo under `tempfile`; checks that need the ORM run under the test
+DB (and skip cleanly when Django is not configured). `tests/eval/
+test_regression_corpus.py` proves each check is non-vacuous — a deliberately
+broken stand-in for the same code path turns the corpus RED — so a check that
+would silently pass on the pre-fix behavior is caught at test time. The corpus
+also runs in the normal pytest gate on every PR (via that test), so it is not
+gated behind the weekly cadence.
+
+Add a check by appending a `RegressionCheck` to `_CHECKS` with its
+`failure_class`, a clickable `origin` URL (the originating fix PR/issue), the
+`invariant` it pins, and a `predicate` that returns `True` only when the real
+code path still honors the invariant — then add the matching anti-vacuous test.
+
+## Triggering
+
+- **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
+  `t3 eval trigger-qa` / `t3 eval regression` locally whenever you want.
+- **Every PR (deterministic layers).** The regression corpus is exercised by
+  `tests/eval/test_regression_corpus.py` in the normal pytest gate on every
+  PR, and trigger-QA + the scenario anti-vacuous matchers are pinned by
+  `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
+  test_eval.py`. The deterministic, free layers therefore guard every PR
+  through pytest — only the paid `claude -p` scenario *run* is weekly.
+- **Weekly, on the first PR of the ISO week.** CI runs the full suite (the
+  paid scenario run plus the free `trigger-qa` and `regression` commands) once
+  a week — not on every push, not on every PR. `scripts/eval/
+  first_pr_of_week.py` decides whether the current MR is the earliest-created
+  MR of the current ISO week (order-independent, re-run safe). The rule is
+  wired in `.gitlab-ci.yml` (`eval-gate` → `eval-weekly`) and mirrored in
+  `.github/workflows/ci.yml` (`eval-weekly` job).
+
+## Failure-class coverage
+
+The regression corpus (`t3 eval regression`, real code-path checks) and the
+behavioral scenarios (`t3 eval run`, agent-trajectory checks) together pin the
+recurring failure classes of the last development cycle. Each row names the
+class, where it is pinned, and the originating fix:
+
+| Failure class | Where pinned | Originating fix |
+|---|---|---|
+| migration-fork / multiple leaf nodes | `regression_corpus` (graph leaf count) | [#1721](https://github.com/souliane/teatree/pull/1721) |
+| branch-currency §940 (conflict-only, never behind-only) | `regression_corpus` | [#1719](https://github.com/souliane/teatree/pull/1719) |
+| bare-reference gate over-block on read-only `gh api` | `regression_corpus` | [#1535](https://github.com/souliane/teatree/pull/1535) |
+| substrate-merge human-authorize floor | `regression_corpus` (merge precondition) | [#1498](https://github.com/souliane/teatree/pull/1498) |
+| maker≠checker at merge time | `regression_corpus` (merge precondition) | [#1601](https://github.com/souliane/teatree/pull/1601) |
+| loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
+| orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
+| structured-question — AskUserQuestion, one decision | `scenarios/structured_question.yaml` | [#1622](https://github.com/souliane/teatree/pull/1622) |
+| background long operations (>15s) | `scenarios/background_long_operations.yaml` | [#1701](https://github.com/souliane/teatree/pull/1701) |
+| merge-burst reconcile + main health-check | `scenarios/merge_burst_reconcile.yaml` | [#1721](https://github.com/souliane/teatree/pull/1721) |
+| never-edit-main-clone + ff-not-reset | `scenarios/main_clone_protected.yaml` | [#1662](https://github.com/souliane/teatree/pull/1662) |
+| do-work-now (run the command, don't hand back) | `scenarios/do_work_now.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
+| BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
+| CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
+
+The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
+skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
+ticket, …) cover the remaining classes already shipped on this branch.
 
 ## Run history and baselines
-
-Every `t3 eval run` is recorded into a durable ledger (`EvalRunRecord` +
-`EvalScenarioResult`, `src/teatree/core/models/eval_run.py`) unless
-`--no-persist` is given. One run row carries the model id and a UTC
-timestamp; one scenario-result row per scenario per trial carries the
-verdict (pass/fail/skip), the *trajectory* signal (captured tool calls) and
-the *side-effect* signal (terminal reason + error flag), plus the per-matcher
-detail — so a historical run is reconstructable without re-invoking the model.
 
 ```bash
 t3 eval history                             # recent runs + per-scenario pass-rate
@@ -48,11 +195,10 @@ t3 eval history --mark-baseline <run-id>    # promote a run to baseline
 t3 eval history --format json               # JSON for tooling
 ```
 
-The schema carries `trial` from the start (single-trial today) and the
-aggregation lives on the model — `EvalRunRecord.pass_rates()` and
-`EvalRunRecord.regression_diff(baseline=…, candidate=…)`. This is the data
-substrate the later model-regression mode (the "Geert deliverable") reads;
-that diff mode is **not** built yet (see `EVAL-BEST-SHAPE.md` for the roadmap).
+The aggregation and diff live on the model — `EvalRunRecord.pass_rates()` and
+`EvalRunRecord.regression_diff(baseline=…, candidate=…)` — and are surfaced
+through `t3 eval history` and `t3 eval run --gate-regressions`. See the
+"Run-store and history" section above for the persisted shape.
 
 ## Scenario shape
 
@@ -84,7 +230,10 @@ Fields:
 - `model` — Claude model alias (default `"haiku"`).
 - `max_turns` — turn budget for the CLI (default `4`).
 - `tools` — allow-list of tools exposed to the agent (default `["Bash"]`).
-- `expect` — non-empty list of matchers (see below).
+- `expect` — list of matchers (see below); required unless a `judge` block is
+  present (a judge-only scenario may omit it).
+- `judge` — optional LLM-judge block (`rubric`, optional `model`, optional
+  `max_output_tokens`); see "LLM-judge" above.
 
 Supported matcher operators:
 

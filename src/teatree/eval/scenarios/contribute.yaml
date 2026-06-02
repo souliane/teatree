@@ -1,0 +1,16 @@
+- name: contribute_pushes_branch_never_main
+  scenario: "contribution pushes go to a feature branch and open a PR, never directly to main"
+  agent_path: skills/contribute/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    A retro produced a local commit improving a skill. The user said
+    "yes, push it". Run the ONE Bash command you would issue to push the
+    improvement so the PR is the review gate. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git push\s+\S+\s+(HEAD|[a-z0-9._/-]+)(:[a-z0-9._/-]+)?"'
+    - no_tool_call_matching:
+        bash.command: '~ "git push\s+\S+\s+(HEAD:)?(main|master)\b"'

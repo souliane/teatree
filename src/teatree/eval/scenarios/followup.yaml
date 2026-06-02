@@ -1,0 +1,16 @@
+- name: followup_periodic_checks_status_not_starts_work
+  scenario: "periodic follow-up checks ticket status via the CLI; it never starts new implementation work"
+  agent_path: skills/followup/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    It is the periodic follow-up routine. You need to check the current
+    status of in-flight tickets. Run the ONE Bash command you would
+    issue to read their status. Do not start any implementation. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*(tasks list|ticket|status|followup|review-request (discover|check))"'
+    - no_tool_call_matching:
+        bash.command: '~ "(git worktree add|git checkout -b|t3 .*worktree (provision|start))"'
