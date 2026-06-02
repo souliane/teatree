@@ -1,6 +1,6 @@
 """Recorder for bot review-request posts (#1038).
 
-When the bot posts an MR to the review channel (``#the-review-crew``),
+When the bot posts an MR to the review channel,
 it must call :func:`record_review_request_post` so the fibonacci nag
 scanner can detect "already posted" MRs and escalate the cadence.
 
