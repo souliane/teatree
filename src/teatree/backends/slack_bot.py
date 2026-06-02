@@ -119,7 +119,7 @@ class _TickFanoutQueue:
             return list(self._events)
 
 
-class SlackBotBackend:
+class SlackBotBackend:  # noqa: PLR0904 — Slack API facade; method count reflects the API surface (one method per call), not poor encapsulation.
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
     ``bot_token`` (``xoxb-…``) authorises Web API calls for DMs, posts, and
@@ -569,6 +569,78 @@ class SlackBotBackend:
             token=self._channel_token(channel, op=SlackOp.WRITE),
         )
 
+    def _is_self_dm(self, channel: str) -> bool:
+        """True when *channel* is the configured user's own DM (#1750).
+
+        The single deterministic destination test for the #1750 routing
+        rule. The user's own IM is the channel id provisioned at
+        ``t3 setup`` time (:attr:`_dm_channel_id`), or — when an ``open_dm``
+        has not yet been resolved — the user's own ``U…`` id, which Slack
+        accepts as a ``chat.postMessage`` target that opens/uses the
+        self-IM. A *colleague's* DM is a different ``D…`` id and is
+        therefore NOT a self-DM, so it routes to ``xoxp`` like any other
+        non-self surface.
+        """
+        if not channel:
+            return False
+        if self._dm_channel_id and channel == self._dm_channel_id:
+            return True
+        return bool(self._user_id) and channel == self._user_id
+
+    def _route_token(self, channel: str) -> str:
+        """The token a #1750-routed post/react to *channel* goes out under.
+
+        The single, deterministic destination router shared by
+        :meth:`post_routed` and :meth:`react_routed` (reacting follows the
+        same rule as posting). A private message *to the user* — the user's
+        own DM — goes through the per-overlay **bot** (``xoxb``); a message
+        or reaction to a *colleague* or a *channel* goes out under the
+        user's personal **OAuth** (``xoxp``) token. Distinct from
+        :meth:`_channel_token`, which is the Connect-membership policy that
+        keeps confirmed-internal channels (and *all* ``D…`` DMs) on the
+        bot — that policy cannot tell a colleague DM from the self DM,
+        which is exactly the distinction #1750 turns on.
+
+        Falls back to whichever single credential is configured when the
+        other is absent, so a bot-only or user-only deployment still has a
+        usable token.
+        """
+        if self._is_self_dm(channel):
+            return self._bot_token or self._user_token
+        return self._user_token or self._bot_token
+
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        """Post to *channel*, token chosen by destination (#1750).
+
+        The deterministic edge for ``t3 <overlay> notify post``: routes
+        through :meth:`_route_token` (self-DM → bot, colleague/channel →
+        ``xoxp``). Returns the raw Slack body so the CLI can inspect
+        ``ok`` / ``error``; ``{}`` when no token at all is configured.
+        """
+        token = self._route_token(channel)
+        if not token:
+            return {}
+        payload: SlackPayload = {"channel": channel, "text": text}
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        return self._post("chat.postMessage", payload, token=token)
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        """Add a reaction to *channel*'s message, token chosen by destination (#1750).
+
+        Reacting follows the *same* :meth:`_route_token` rule as
+        :meth:`post_routed` — self-DM → bot, colleague/channel → ``xoxp``.
+        Returns the raw Slack body; ``{}`` when no token is configured.
+        """
+        token = self._route_token(channel)
+        if not token:
+            return {}
+        return self._post(
+            "reactions.add",
+            {"channel": channel, "timestamp": ts, "name": emoji},
+            token=token,
+        )
+
     def open_dm(self, user_id: str) -> str:
         """Return the IM channel id for *user_id*; short-circuit to the cached id when set (#1342)."""
         if user_id and user_id == self._user_id and self._dm_channel_id:
@@ -579,6 +651,20 @@ class SlackBotBackend:
         channel = cast("RawAPIDict", data.get("channel") or {})
         channel_id = channel.get("id")
         return channel_id if isinstance(channel_id, str) else ""
+
+    def join_conversation(self, channel: str) -> RawAPIDict:
+        """Join the bot to a public channel via ``conversations.join`` (bot token).
+
+        Returns the raw Slack body. ``ok:true`` is returned both on a fresh
+        join and when the bot is already a member (Slack sets
+        ``already_in_channel``), so callers treat the call as idempotent. A
+        private or Slack-Connect channel rejects a self-join with an error in
+        the body; the setup-time channel provisioner maps that to a clean
+        "invite the bot manually" instruction rather than failing.
+        """
+        if not channel:
+            return {}
+        return self._post("conversations.join", {"channel": channel})
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""

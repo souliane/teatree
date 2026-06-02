@@ -172,7 +172,7 @@ def run_tick(
 
     if not jobs:
         empty_zones = StatuslineZones()
-        _populate_live_loops_in_anchors(empty_zones)
+        _populate_live_loops_in_anchors(empty_zones, colorize=colorize)
         _populate_loop_owner_anchor(empty_zones)
         report.statusline_path = render(
             empty_zones,
@@ -217,22 +217,23 @@ def _identity_aliases_for_request(request: TickRequest) -> tuple[tuple[str, ...]
     return tuple(groups)
 
 
-def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
+def _populate_live_loops_in_anchors(zones: StatuslineZones, *, colorize: bool | None = None) -> None:
     """Append one anchor line per live LoopLease row (#1156).
 
     Used by the empty-jobs path in :func:`run_tick` so even an idle tick
     still surfaces the running loops. The non-empty path goes through
     :func:`teatree.loop.rendering._populate_live_loops_anchor` via
     :func:`teatree.loop.rendering.zones_for` and must not double-populate.
+    *colorize* threads the per-loop recency coloring through.
 
     Fails open: any import/query error degrades to a no-op.
     """
     try:
-        from teatree.loop.statusline import live_loops_anchor  # noqa: PLC0415
+        from teatree.loop.statusline import colorize_enabled, live_loops_anchor  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return
     try:
-        zones.anchors.extend(live_loops_anchor())
+        zones.anchors.extend(live_loops_anchor(colorize=colorize_enabled(colorize=colorize)))
     except Exception:  # noqa: BLE001
         return
 
@@ -240,8 +241,8 @@ def _populate_live_loops_in_anchors(zones: StatuslineZones) -> None:
 def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
     """Append the #1073 foreign-hijack loop-owner RED line.
 
-    The live-loops anchor (the single dedicated ``loop running · …`` line
-    folding all live LoopLease rows) is populated separately by
+    The live-loops anchor (the single dedicated loop line folding all live
+    LoopLease rows) is populated separately by
     :func:`teatree.loop.rendering._populate_live_loops_anchor` (#1163, #1184, #130).
     This function is responsible only for the #1073 foreign-hijack RED line
     surfaced when a different live session holds ``loop-owner``.

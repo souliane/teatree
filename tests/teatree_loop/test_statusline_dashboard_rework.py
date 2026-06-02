@@ -173,9 +173,9 @@ class TestFsmStateGroupingLabels:
 
 
 class TestLoopLineStateAndWaiting:
-    """Concern 3: loop line has a leading state word + a ``waiting:`` clause."""
+    """Concern 3: loop line leads with its loop chunks + a ``waiting:`` clause."""
 
-    def test_leading_state_word_running_when_live(self) -> None:
+    def test_line_leads_with_loop_chunk_when_live(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
@@ -185,7 +185,8 @@ class TestLoopLineStateAndWaiting:
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
-        assert lines[0].startswith("loop running"), lines[0]
+        assert lines[0].startswith("tickets"), lines[0]
+        assert "loop running" not in lines[0], lines[0]
 
     def test_waiting_clause_when_blocked_on_user(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
@@ -218,5 +219,5 @@ class TestLoopLineStateAndWaiting:
             patch("teatree.loop.statusline._pending_questions", side_effect=RuntimeError("db down")),
         ):
             lines = live_loops_anchor()
-        assert lines[0].startswith("loop running"), lines[0]
+        assert lines[0].startswith("tickets"), lines[0]
         assert "waiting" not in lines[0], lines[0]

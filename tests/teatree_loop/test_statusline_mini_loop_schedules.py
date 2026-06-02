@@ -43,14 +43,14 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         MiniLoopMarker.objects.mark_fired("dispatch", fired_at)
         MiniLoopMarker.objects.mark_fired("news", fired_at)
         with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
-            schedules = dict(mini_loop_schedules())
-        assert schedules["dispatch"] == fired_at + dt.timedelta(seconds=300)
-        assert schedules["news"] == fired_at + dt.timedelta(seconds=3600)
+            schedules = {name: (next_fire, cadence) for name, next_fire, cadence in mini_loop_schedules()}
+        assert schedules["dispatch"] == (fired_at + dt.timedelta(seconds=300), 300)
+        assert schedules["news"] == (fired_at + dt.timedelta(seconds=3600), 3600)
 
     def test_never_fired_loop_has_no_next_fire(self) -> None:
         loops = (_stub_loop("inbox", 60),)
         with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
-            schedules = dict(mini_loop_schedules())
+            schedules = {name: next_fire for name, next_fire, _ in mini_loop_schedules()}
         assert schedules["inbox"] is None
 
     def test_disabled_loop_is_excluded(self) -> None:
@@ -62,14 +62,14 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
                 side_effect=lambda loop: loop.name != "review",
             ),
         ):
-            names = [name for name, _ in mini_loop_schedules()]
+            names = [name for name, _, _ in mini_loop_schedules()]
         assert names == ["dispatch"]
         assert "review" not in names
 
     def test_results_sorted_by_name(self) -> None:
         loops = (_stub_loop("ship", 300), _stub_loop("audit", 300), _stub_loop("inbox", 60))
         with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
-            names = [name for name, _ in mini_loop_schedules()]
+            names = [name for name, _, _ in mini_loop_schedules()]
         assert names == ["audit", "inbox", "ship"]
 
 

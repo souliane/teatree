@@ -1,8 +1,9 @@
 """Live loop-status snapshot shared by the statusline and ``t3 loop list`` (#1744).
 
 ``t3 loop status`` prints the statusline file written at the *last* tick, so
-its countdowns are stale — it can read "loop running" while the loop has been
-dead for hours. This module computes the same state LIVE from the DB on every
+its countdowns are stale — it can still show a live-looking loop line while
+the loop has been dead for hours. This module computes the same state LIVE
+from the DB on every
 call: the per-mini-loop cadence ledger (:class:`MiniLoopMarker`), the
 mini-loop registry + ``[loops]`` config, and the infra-slot leases
 (:class:`LoopLease`) with PID-anchored owner liveness.

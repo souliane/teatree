@@ -219,8 +219,8 @@ class Command(TyperCommand):
         from teatree.loops.schedule import mini_loop_schedules  # noqa: PLC0415
 
         # Bridge the up-stack mini-loop next-fire reader into the statusline
-        # for the duration of this tick's render so the ``loop running · …``
-        # line shows every enabled cron with its own countdown (#1400). This
+        # for the duration of this tick's render so the dedicated loop line
+        # shows every enabled cron with its own countdown (#1400). This
         # command is the only place allowed to import :mod:`teatree.loops`
         # into the statusline (tach graph); the reader is reset afterwards so
         # the process-global seam never leaks past the tick.

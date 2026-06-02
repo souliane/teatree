@@ -88,7 +88,7 @@ class TestPerLoopRelativeTicks:
             patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop running · my-prs · tickets"], repr(lines)
+        assert lines == ["my-prs · tickets"], repr(lines)
 
     def test_empty_when_no_loops_live(self) -> None:
         with patch("teatree.loop.statusline._live_loop_leases", return_value=[]):
@@ -113,8 +113,11 @@ class TestSingleLoopLine:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        loop_lines = [ln for ln in body.splitlines() if ln.startswith("loop")]
+        loop_lines = [ln for ln in body.splitlines() if "tick 11m" in ln]
         assert len(loop_lines) == 1, body
+        # All loop chunks ride that single line.
+        assert "my-prs" in loop_lines[0], body
+        assert "tickets" in loop_lines[0], body
         # The legacy top-zone ``loops: tick(Nm)`` fragment must not appear.
         assert "loops: tick(" not in body, body
         assert "loops live" not in body, body
