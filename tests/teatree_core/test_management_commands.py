@@ -1,4 +1,5 @@
 import io
+import json
 import tempfile
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
@@ -12,6 +13,7 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.headless as headless_mod
 import teatree.core.management.commands.tasks as tasks_cmd
+import teatree.core.management.commands.tasks_session_view as session_view
 import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
@@ -258,13 +260,13 @@ class TestTasksListSession(TestCase):
 
 
 class TestSessionTodoRendering(TestCase):
-    """The session-scoped renderer groups task rows + harness todos."""
+    """The session-scoped renderer prints two labeled sections, never merged."""
 
     @staticmethod
     def _row(
         task_id: int, *, status: str, ticket_id: int = 1, phase: str = "coding", reason: str = "do it"
-    ) -> tasks_cmd.TaskRow:
-        return tasks_cmd.TaskRow(
+    ) -> session_view.TaskRow:
+        return session_view.TaskRow(
             task_id=task_id,
             ticket_id=ticket_id,
             status=status,
@@ -274,20 +276,24 @@ class TestSessionTodoRendering(TestCase):
             claimed_by="",
         )
 
-    def test_groups_tasks_and_merges_harness_todos(self) -> None:
+    def test_groups_both_lists_under_separate_headings(self) -> None:
         out = io.StringIO()
         rows = [
             self._row(1, status="pending", reason="write the gate"),
             self._row(2, status="claimed", reason="run the suite"),
             self._row(3, status="completed", reason="read the model"),
         ]
-        tasks_cmd._render_session_todos(
+        session_view.render_session_todos(
             rows,
             harness_todos=[("pending", "draft the helper"), ("completed", "open the PR")],
             session_id="claude-abc",
             stream=out,
         )
         printed = out.getvalue()
+        assert "harness TODOs" in printed
+        assert "teatree tasks" in printed
+        # harness TODOs section heading precedes the teatree tasks heading.
+        assert printed.index("harness TODOs") < printed.index("teatree tasks")
         assert "pending" in printed
         assert "in_progress" in printed
         assert "completed" in printed
@@ -296,22 +302,65 @@ class TestSessionTodoRendering(TestCase):
         assert "draft the helper" in printed
         assert "open the PR" in printed
 
+    def test_harness_todos_render_without_teatree_tasks(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_todos(
+            [],
+            harness_todos=[("in_progress", "fix the capture path")],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "harness TODOs" in printed
+        assert "fix the capture path" in printed
+        assert "teatree tasks" not in printed
+
     def test_no_active_session_is_explicit(self) -> None:
         out = io.StringIO()
-        tasks_cmd._render_session_todos([], harness_todos=[], session_id="", stream=out)
-        assert "No active Claude session" in out.getvalue()
+        session_view.render_session_todos([], harness_todos=[], session_id="", stream=out)
+        assert "No active harness session" in out.getvalue()
 
     def test_empty_session_says_no_todos(self) -> None:
         out = io.StringIO()
-        tasks_cmd._render_session_todos([], harness_todos=[], session_id="claude-abc", stream=out)
+        session_view.render_session_todos([], harness_todos=[], session_id="claude-abc", stream=out)
         assert "No todos for this session" in out.getvalue()
 
 
 class TestReadHarnessTodos(TestCase):
-    """The harness ``TodoWrite`` state file is parsed into ``(status, text)``."""
+    """The harness TODO list is read from the harness task store, with a legacy fallback."""
 
-    def test_parses_status_lines(self) -> None:
+    def test_reads_from_harness_task_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tasks_dir:
+            session_dir = Path(tasks_dir) / "claude-abc"
+            session_dir.mkdir()
+            (session_dir / "1.json").write_text(
+                json.dumps({"id": "1", "subject": "draft the helper", "status": "pending"}),
+                encoding="utf-8",
+            )
+            (session_dir / "2.json").write_text(
+                json.dumps({"id": "2", "subject": "wire the CLI", "status": "in_progress"}),
+                encoding="utf-8",
+            )
+            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
+                todos = session_view.read_harness_todos("claude-abc")
+        assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
+
+    def test_orders_by_numeric_task_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tasks_dir:
+            session_dir = Path(tasks_dir) / "claude-abc"
+            session_dir.mkdir()
+            for task_id in ("2", "10", "1"):
+                (session_dir / f"{task_id}.json").write_text(
+                    json.dumps({"id": task_id, "subject": f"task {task_id}", "status": "pending"}),
+                    encoding="utf-8",
+                )
+            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
+                todos = session_view.read_harness_todos("claude-abc")
+        assert [text for _status, text in todos] == ["task 1", "task 2", "task 10"]
+
+    def test_falls_back_to_legacy_todowrite_state(self) -> None:
         with (
+            tempfile.TemporaryDirectory() as tasks_dir,
             tempfile.TemporaryDirectory() as state_dir,
             override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
         ):
@@ -319,18 +368,21 @@ class TestReadHarnessTodos(TestCase):
                 "- [pending] draft the helper\n- [in_progress] wire the CLI\n",
                 encoding="utf-8",
             )
-            todos = tasks_cmd._read_harness_todos("claude-abc")
+            with patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}):
+                todos = session_view.read_harness_todos("claude-abc")
         assert todos == [("pending", "draft the helper"), ("in_progress", "wire the CLI")]
 
-    def test_missing_file_is_empty(self) -> None:
+    def test_missing_everywhere_is_empty(self) -> None:
         with (
+            tempfile.TemporaryDirectory() as tasks_dir,
             tempfile.TemporaryDirectory() as state_dir,
             override_settings(TEATREE_CLAUDE_STATUSLINE_STATE_DIR=state_dir),
+            patch.dict("os.environ", {"CLAUDE_TASKS_DIR": tasks_dir}),
         ):
-            assert tasks_cmd._read_harness_todos("claude-abc") == []
+            assert session_view.read_harness_todos("claude-abc") == []
 
     def test_empty_session_id_is_empty(self) -> None:
-        assert tasks_cmd._read_harness_todos("") == []
+        assert session_view.read_harness_todos("") == []
 
 
 class DbOverlay(CommandOverlay):
