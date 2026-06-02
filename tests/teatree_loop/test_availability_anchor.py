@@ -1,6 +1,6 @@
 """Tests for the availability segment on the loop line (#58, #1678).
 
-The ``loop running · …`` line carries an ``availability: <present|away>
+The loop line carries an ``availability: <present|away>
 (<source>)`` segment reflecting the currently-resolved availability, read
 live at render time. The label is deliberately distinct from the config
 ``Mode`` enum (auto/interactive) and from other ``mode=`` usages, and the
@@ -54,7 +54,7 @@ class TestAvailabilitySegmentRidesLoopLineLive:
     def test_segment_tracks_a_live_away_then_present_flip(self, override_file: Path) -> None:
         write_override(MODE_AWAY)
         away_line = self._loop_line()
-        assert away_line.startswith("loop running · tick "), away_line
+        assert away_line.startswith("tick "), away_line
         assert "· availability: away (override)" in away_line, away_line
 
         write_override(MODE_PRESENT)

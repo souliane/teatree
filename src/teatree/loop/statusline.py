@@ -4,7 +4,6 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from itertools import starmap
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,8 +21,16 @@ _ANSI_RESET = "\033[0m"
 _ANSI_DIM = "\033[38;5;244m"
 _ANSI_RED = "\033[1;31m"
 _ANSI_YELLOW = "\033[1;33m"
+_ANSI_GREEN = "\033[1;32m"
 _ANSI_CYAN = "\033[1;36m"
 _ANSI_BOLD = "\033[1m"
+
+# Per-loop recency thresholds, expressed as the FRACTION of the loop's own
+# cadence still remaining until its next tick. Judging on the fraction (not
+# absolute seconds) makes the color relative to each loop's cadence, so a fast
+# 60s cron and a slow 1h cron are scored on their own scale.
+_RECENCY_GREEN_FRACTION = 0.5
+_RECENCY_YELLOW_FRACTION = 0.15
 
 _ZONE_COLORS: dict[str, str] = {
     "anchors": _ANSI_DIM,
@@ -181,12 +188,12 @@ def render(zones: StatuslineZones, *, target: Path | None = None, colorize: bool
 
 
 def availability_segment(resolution: "Resolution") -> str:
-    """Return the ``loop running`` line's availability segment (#58, #1678).
+    """Return the loop line's availability segment (#58, #1678).
 
     Renders ``availability: <present|away> (<source>)`` so the user reads the
     currently-resolved availability and which layer decided it (override /
     schedule / default) at a glance, as one ``·``-separated segment of the
-    ``loop running …`` line.
+    dedicated loop line.
 
     The ``availability:`` label is deliberately distinct from the config
     ``Mode`` enum (auto/interactive) and other ``mode=`` usages, which the bare
@@ -228,10 +235,11 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
 # :func:`set_mini_loop_schedules_reader`; absent injection (a quiet machine,
 # a unit test) the default reader returns ``[]`` and the mini-loop chunks are
 # simply omitted — never an import-direction violation, never a crash.
-type MiniLoopSchedulesReader = Callable[[], list[tuple[str, datetime | None]]]
+type MiniLoopSchedule = tuple[str, datetime | None, int]
+type MiniLoopSchedulesReader = Callable[[], list[MiniLoopSchedule]]
 
 
-def _empty_mini_loop_schedules() -> list[tuple[str, datetime | None]]:
+def _empty_mini_loop_schedules() -> list[MiniLoopSchedule]:
     return []
 
 
@@ -249,15 +257,16 @@ def set_mini_loop_schedules_reader(reader: MiniLoopSchedulesReader | None) -> No
     _mini_loop_schedules_reader = reader or _empty_mini_loop_schedules
 
 
-def _mini_loop_schedules() -> list[tuple[str, datetime | None]]:
-    """Return ``(loop_name, next_fire_at)`` for every enabled mini-loop.
+def _mini_loop_schedules() -> list[MiniLoopSchedule]:
+    """Return ``(loop_name, next_fire_at, cadence_seconds)`` per enabled mini-loop.
 
     Delegates to the injected reader (:func:`set_mini_loop_schedules_reader`).
     Each domain mini-loop (``dispatch``, ``tickets``, ``review``, ``ship``,
     ``inbox``, ``resource_pressure``, …) is a cron with its own cadence: its
     ``next_fire_at`` is the cadence-ledger ``last_fired_at`` plus the loop's
     resolved cadence, or ``None`` when the loop has never fired (the renderer
-    surfaces that as ``due``).
+    surfaces that as ``due``). ``cadence_seconds`` is that resolved cadence —
+    the denominator the renderer colors each chunk against.
     """
     return _mini_loop_schedules_reader()
 
@@ -301,6 +310,41 @@ def _cadence_seconds() -> int:
     return cadence_seconds()
 
 
+def _loop_recency_color(seconds_until_tick: float | None, cadence_seconds: int) -> str:
+    """Map a loop's imminence to an ANSI color, RELATIVE to its own cadence.
+
+    The color tracks the fraction of the loop's cadence still remaining until
+    its next tick (``seconds_until_tick / cadence_seconds``): green when over
+    half the cadence is left (just ticked / plenty of time), yellow as it
+    approaches, red when it is about to tick or already overdue. Judging the
+    fraction rather than absolute seconds keeps the signal relative — the same
+    "120s until tick" reads green on an hourly loop and red on a 150s loop.
+
+    ``None`` seconds (no acquire instant / never fired) and a non-positive
+    cadence both fail safe to red (overdue / unknown).
+    """
+    if seconds_until_tick is None or cadence_seconds <= 0:
+        return _ANSI_RED
+    fraction = seconds_until_tick / cadence_seconds
+    if fraction >= _RECENCY_GREEN_FRACTION:
+        return _ANSI_GREEN
+    if fraction >= _RECENCY_YELLOW_FRACTION:
+        return _ANSI_YELLOW
+    return _ANSI_RED
+
+
+def _colorize_chunk(text: str, color: str, *, colorize: bool) -> str:
+    """Wrap *text* in *color*, resetting to the line's dim baseline (not full reset).
+
+    The whole loop line is wrapped in :data:`_ANSI_DIM` by :func:`render`, so a
+    colored chunk resets back to dim — never a full ANSI reset — to keep the
+    ` · ` separators, availability, and waiting segments dim around it.
+    """
+    if not colorize or not color:
+        return text
+    return f"{color}{text}{_ANSI_DIM}"
+
+
 def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str, str]:
     """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
@@ -326,7 +370,7 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     return "action_needed", f"loop-owner=session {short8} (NOT this session)"
 
 
-def _live_lease_chunks() -> list[str]:
+def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     """Return one ``<short-name> <next-tick>`` chunk per live infra LoopLease.
 
     The ``loop-owner`` lease is excluded: it is a session-ownership token,
@@ -334,37 +378,66 @@ def _live_lease_chunks() -> list[str]:
     file (every terminal would show the same ``owner Nm`` chunk regardless
     of which session is actually the owner). The per-session owner badge in
     ``statusline.sh`` replaces that signal with a context-aware you ✓ /
-    owner·pid / unclaimed display. Fails open to ``[]`` on any read error.
+    owner·pid / unclaimed display. When *colorize* is set, each chunk is
+    wrapped in its recency color (:func:`_loop_recency_color`). Fails open to
+    ``[]`` on any read error.
     """
     try:
         leases = _live_loop_leases()
     except Exception:  # noqa: BLE001
         return []
-    return [_loop_chunk(name, acquired_at) for name, acquired_at in leases if name != "loop-owner"]
+    return [
+        _colorize_chunk(
+            _loop_chunk(name, acquired_at),
+            _lease_recency_color(name, acquired_at),
+            colorize=colorize,
+        )
+        for name, acquired_at in leases
+        if name != "loop-owner"
+    ]
 
 
-def live_loops_anchor() -> list[str]:
+def _lease_recency_color(name: str, acquired_at: datetime | None) -> str:
+    """Resolve the recency color for an infra lease from its own cadence."""
+    try:
+        cadence = _cadence_for_loop(name)
+    except Exception:  # noqa: BLE001
+        return _ANSI_RED
+    seconds_until = _seconds_until(acquired_at + timedelta(seconds=cadence)) if acquired_at is not None else None
+    return _loop_recency_color(seconds_until, cadence)
+
+
+def _seconds_until(next_fire_at: datetime) -> float:
+    """Return seconds from now until *next_fire_at* (negative once overdue)."""
+    from django.utils import timezone  # noqa: PLC0415
+
+    return (next_fire_at - timezone.now()).total_seconds()
+
+
+def live_loops_anchor(*, colorize: bool = False) -> list[str]:
     """Return the single dedicated loop line for the dashboard (#1400, #130).
 
     Single line, prepended at the top of the statusline so the user's
     "which loops are running, when does each tick next, and am I blocked?"
     question is answered with one glance:
 
-        ``loop running · tick 11m · dispatch 2m · tickets 4m · news 18m · waiting: 2 questions``
+        ``tick 11m · dispatch 2m · tickets 4m · news 18m · waiting: 2 questions``
 
     Shape:
 
-    *   ``loop running`` — the leading state word. The line is only ever
-        rendered when at least one loop or cron is active; when none is, the
-        function returns ``[]`` and the line is silenced entirely (no
-        ``idle`` line is shown). The foreign-hijack case is NOT shown here —
-        it is RED and routed to the action line by :func:`loop_owner_anchor`.
+    *   the line leads with the live loops' own chunks. The line is only
+        ever rendered when at least one loop or cron is active; when none
+        is, the function returns ``[]`` and the line is silenced entirely
+        (no ``idle`` line is shown). The ``tick <next-tick>`` chunk already
+        carries the loop's liveness, so no separate ``loop running`` state
+        word precedes it. The foreign-hijack case is NOT shown here — it is
+        RED and routed to the action line by :func:`loop_owner_anchor`.
     *   one ``<short-name> <next-tick>`` chunk per live infra
         :class:`~teatree.core.models.LoopLease` (``tick``,
         ``self-improve``, ``slack-answer``) — see :func:`_live_lease_chunks`.
     *   one ``<name> <next-tick>`` chunk per ENABLED domain mini-loop /
         cron (``dispatch``, ``tickets``, ``review``, ``ship``, ``inbox``,
-        ``resource_pressure``, …) — see :func:`mini_loops_anchor`. Every
+        ``resource_pressure``, …) — see :func:`_mini_loop_chunks`. Every
         chunk's ``<next-tick>`` is the RELATIVE whole-minute countdown to
         THAT loop's own next fire (``2m``), derived live from its own
         cadence and last-fired instant — not one shared constant — so a
@@ -380,16 +453,25 @@ def live_loops_anchor() -> list[str]:
         the dashboard surfaces "the loop is held, you owe it an answer"
         without the user hunting for it.
 
+    Each per-loop chunk is colored by its imminence relative to its own
+    cadence (:func:`_loop_recency_color`) when *colorize* is on — green when
+    it just ticked / has plenty of time, yellow as it approaches, red when it
+    is about to tick or overdue — so the user reads at a glance which loops
+    are fresh and which are due. *colorize* defaults to ``False`` (the
+    plain-text builder output); the render orchestrators (:func:`zones_for`,
+    :func:`teatree.loop.tick.run_tick`) pass the ``NO_COLOR``-resolved value.
+    The availability and waiting segments stay the line's baseline dim.
+
     Returns ``[]`` when neither an infra lease nor an enabled mini-loop is
     active — silences the line entirely on a quiet machine. Fails open: any
     DB / import error degrades to ``[]`` (or, for an individual segment,
     drops just that segment) so a broken read can never blank the statusline.
     """
-    chunks = [*_live_lease_chunks(), *mini_loops_anchor()]
+    chunks = [*_live_lease_chunks(colorize=colorize), *_mini_loop_chunks(colorize=colorize)]
     if not chunks:
         return []
 
-    parts = ["loop running", *chunks]
+    parts = [*chunks]
     availability = _availability_segment()
     if availability:
         parts.append(availability)
@@ -498,17 +580,18 @@ def _mini_loop_chunk(name: str, next_fire_at: datetime | None) -> str:
     return f"{name} {tick}"
 
 
-def mini_loops_anchor() -> list[str]:
+def _mini_loop_chunks(*, colorize: bool = False) -> list[str]:
     """Return one ``<name> <next-tick>`` chunk per enabled domain mini-loop.
 
-    Companion to :func:`live_loops_anchor`: where that renders the infra
+    Companion to :func:`_live_lease_chunks`: where that renders the infra
     leases (``loop-tick`` and friends), this renders every enabled domain
     cron from :func:`teatree.loops.registry.iter_loops` — ``dispatch``,
     ``tickets``, ``review``, ``ship``, ``inbox``, ``resource_pressure``, … —
     each with its own next-tick countdown derived from the cadence ledger
-    (:func:`_mini_loop_schedules`), never a shared constant. The two anchors
-    compose into the single ``loop running · …`` line in
-    :func:`combined_loops_chunks`.
+    (:func:`_mini_loop_schedules`), never a shared constant, and (when
+    *colorize* is set) wrapped in its cadence-relative recency color. The two
+    chunk lists compose into the single dedicated loop line in
+    :func:`live_loops_anchor`.
 
     Returns ``[]`` when no mini-loop is enabled, or fails open to ``[]`` on
     any DB / config read error so a broken ledger never blanks the line.
@@ -517,7 +600,24 @@ def mini_loops_anchor() -> list[str]:
         schedules = _mini_loop_schedules()
     except Exception:  # noqa: BLE001
         return []
-    return list(starmap(_mini_loop_chunk, schedules))
+    return [
+        _colorize_chunk(
+            _mini_loop_chunk(name, next_fire_at),
+            _loop_recency_color(None if next_fire_at is None else _seconds_until(next_fire_at), cadence),
+            colorize=colorize,
+        )
+        for name, next_fire_at, cadence in schedules
+    ]
+
+
+def mini_loops_anchor() -> list[str]:
+    """Return the plain (uncolored) mini-loop chunk list.
+
+    Thin :func:`_mini_loop_chunks` wrapper kept for the public surface and
+    direct callers that want the bare ``<name> <next-tick>`` strings without
+    recency color.
+    """
+    return _mini_loop_chunks(colorize=False)
 
 
 _SECONDS_PER_MINUTE = 60

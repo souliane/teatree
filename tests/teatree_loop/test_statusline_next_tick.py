@@ -51,7 +51,7 @@ def _ready(num: str, *, overlay: str = "ov") -> DispatchAction:
 
 
 class TestConsolidatedLoopAnchor:
-    """Line 1 = ``loop running · <name> <Nm> · <name> <Nm>`` (per-loop relative ticks)."""
+    """Line 1 = ``<name> <Nm> · <name> <Nm>`` (per-loop relative ticks)."""
 
     def test_includes_relative_minutes_when_acquired_at_known(self) -> None:
         # Each lease carries its own acquire instant; 2 minutes elapsed of
@@ -67,7 +67,7 @@ class TestConsolidatedLoopAnchor:
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
         line = lines[0]
-        assert line.startswith("loop running · "), line
+        assert line.startswith("tick "), line
         # Per-loop name + relative minutes, no headline count.
         assert "loops live" not in line, line
         assert "tick 10m" in line, line
@@ -82,7 +82,7 @@ class TestConsolidatedLoopAnchor:
             patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop running · tick"], repr(lines)
+        assert lines == ["tick"], repr(lines)
 
     def test_reports_due_when_overdue(self) -> None:
         # Acquired 1 hour ago; cadence 12 minutes → due now.
@@ -94,7 +94,7 @@ class TestConsolidatedLoopAnchor:
             patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
             lines = live_loops_anchor()
-        assert lines == ["loop running · tick due"], repr(lines)
+        assert lines == ["tick due"], repr(lines)
 
     def test_no_per_loop_lines_anymore(self) -> None:
         """The pre-refit one-line-per-loop shape is gone (user explicitly opted out)."""
@@ -136,9 +136,9 @@ class TestMiniLoopsAnchor:
     def test_one_chunk_per_enabled_mini_loop_with_own_countdown(self) -> None:
         now = datetime.now(UTC)
         schedules = [
-            ("dispatch", now + timedelta(seconds=120)),
-            ("tickets", now + timedelta(seconds=240)),
-            ("news", now + timedelta(seconds=18 * 60)),
+            ("dispatch", now + timedelta(seconds=120), 600),
+            ("tickets", now + timedelta(seconds=240), 600),
+            ("news", now + timedelta(seconds=18 * 60), 3600),
         ]
         with patch("teatree.loop.statusline._mini_loop_schedules", return_value=schedules):
             chunks = mini_loops_anchor()
@@ -146,12 +146,12 @@ class TestMiniLoopsAnchor:
         assert chunks == ["dispatch 2m", "tickets 4m", "news 18m"], chunks
 
     def test_never_fired_loop_reads_due(self) -> None:
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("inbox", None)]):
+        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("inbox", None, 300)]):
             assert mini_loops_anchor() == ["inbox due"]
 
     def test_overdue_loop_reads_due(self) -> None:
         past = datetime.now(UTC) - timedelta(minutes=5)
-        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("review", past)]):
+        with patch("teatree.loop.statusline._mini_loop_schedules", return_value=[("review", past, 300)]):
             assert mini_loops_anchor() == ["review due"]
 
     def test_empty_when_no_mini_loops_enabled(self) -> None:
@@ -168,11 +168,11 @@ class TestMiniLoopsAnchor:
         # not a cached constant.
         now = datetime.now(UTC)
         with patch(
-            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=600))]
+            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=600), 1200)]
         ):
             far = mini_loops_anchor()
         with patch(
-            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=120))]
+            "teatree.loop.statusline._mini_loop_schedules", return_value=[("ship", now + timedelta(seconds=120), 1200)]
         ):
             near = mini_loops_anchor()
         assert far == ["ship 10m"], far
@@ -180,7 +180,7 @@ class TestMiniLoopsAnchor:
 
 
 class TestLoopLineComposesLeasesAndMiniLoops:
-    """The single ``loop running · …`` line lists infra leases AND mini-loops."""
+    """The single loop line lists infra leases AND mini-loops."""
 
     def test_both_sources_appear_on_one_line(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=120)
@@ -189,12 +189,12 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline._cadence_for_loop", return_value=720),
             patch(
                 "teatree.loop.statusline._mini_loop_schedules",
-                return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120))],
+                return_value=[("dispatch", datetime.now(UTC) + timedelta(seconds=120), 600)],
             ),
             patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
-            lines = live_loops_anchor()
-        assert lines == ["loop running · tick 10m · dispatch 2m"], lines
+            lines = live_loops_anchor(colorize=False)
+        assert lines == ["tick 10m · dispatch 2m"], lines
 
     def test_line_renders_for_mini_loops_even_with_no_live_lease(self) -> None:
         # The user's complaint: crons were invisible when no infra lease was
@@ -203,12 +203,12 @@ class TestLoopLineComposesLeasesAndMiniLoops:
             patch("teatree.loop.statusline._live_loop_leases", return_value=[]),
             patch(
                 "teatree.loop.statusline._mini_loop_schedules",
-                return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60))],
+                return_value=[("resource_pressure", datetime.now(UTC) + timedelta(seconds=60), 600)],
             ),
             patch("teatree.loop.statusline._availability_segment", return_value=""),
         ):
-            lines = live_loops_anchor()
-        assert lines == ["loop running · resource_pressure 1m"], lines
+            lines = live_loops_anchor(colorize=False)
+        assert lines == ["resource_pressure 1m"], lines
 
 
 class TestMiniLoopChunk:
@@ -305,7 +305,7 @@ class TestZonesForIntegration:
         render(zones, target=target, colorize=False)
         body = target.read_text()
         first_line = body.splitlines()[0]
-        assert first_line.startswith("loop running · "), repr(first_line)
+        assert first_line.startswith("tick "), repr(first_line)
         # 60s elapsed of 720s → next tick in 11m; loop-tick appears, loop-owner absent.
         assert "tick 11m" in first_line, first_line
         assert "owner" not in first_line, first_line

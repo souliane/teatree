@@ -106,7 +106,7 @@ class TestStatuslineHook:
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         statusline_file = tmp_path / "statusline.txt"
-        statusline_file.write_text("loop running · tick 5m\n", encoding="utf-8")
+        statusline_file.write_text("tick 5m\n", encoding="utf-8")
         (tmp_path / "tick-meta.json").write_text(
             json.dumps({"cost_chip": "SDK mtd ≈$48/$200"}),
             encoding="utf-8",
@@ -244,7 +244,7 @@ class TestStatuslineHook:
         }
         (state_dir / "s-no-loop.crons").write_text(json.dumps(crons), encoding="utf-8")
         statusline_file = tmp_path / "statusline.txt"
-        statusline_file.write_text("loop running · tick 11m\n", encoding="utf-8")
+        statusline_file.write_text("tick 11m\n", encoding="utf-8")
         (tmp_path / "tick-meta.json").write_text(
             json.dumps({"next_epoch": int(time.time()) + 120, "cadence": 720, "freshness": {}}),
             encoding="utf-8",
@@ -264,9 +264,10 @@ class TestStatuslineHook:
         assert "tick(" not in header, header
         assert "checking build" not in header, header
         # The one loop line (from the zones file) is still cat'd verbatim.
-        assert "loop running · tick 11m" in plain, plain
-        # And it appears exactly once.
-        assert plain.count("loop running") == 1, plain
+        assert "tick 11m" in plain, plain
+        # And it appears exactly once; the redundant ``loop running`` token is gone.
+        assert plain.count("tick 11m") == 1, plain
+        assert "loop running" not in plain, plain
 
     def test_no_session_id_emits_no_skills_section(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -689,7 +690,7 @@ class TestLoopOwnerBadge:
         registry_dir = tmp_path / "registry"
         self._write_registry(registry_dir, session_id="sess-loop", pid=7)
         statusline_file = tmp_path / "statusline.txt"
-        statusline_file.write_text("loop running · tick 5m\n", encoding="utf-8")
+        statusline_file.write_text("tick 5m\n", encoding="utf-8")
 
         result = _run(
             {"session_id": "sess-loop", "model": {"display_name": "Claude Opus"}},
@@ -704,9 +705,10 @@ class TestLoopOwnerBadge:
         # The header (line 1) carries model/ctx but not the loop-owner badge.
         assert "model=Claude Opus" in lines[0], lines[0]
         assert "loop-owner:" not in lines[0], lines[0]
-        # The badge rides the loop line.
-        loop_line = next(line for line in lines if "loop running" in line)
+        # The badge rides the loop line, ahead of the tick chunk.
+        loop_line = next(line for line in lines if "tick 5m" in line)
         assert "loop-owner: you ✓" in loop_line, loop_line
+        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
 
     def test_badge_rides_colorized_production_loop_line(self, tmp_path: Path) -> None:
         r"""The badge must ride the loop line even when it is ANSI-colorized.
@@ -714,16 +716,17 @@ class TestLoopOwnerBadge:
         ``loop.statusline.render`` wraps each anchor as
         ``\033[38;5;244m{text}\033[0m`` when ``colorize`` is on (the
         production default), so the real zones-file loop line starts with the
-        CSI escape, not ``l``. The matcher must tolerate that prefix and keep
-        the badge on the same visible line — a separate trailing badge line
-        means loop state lost its single home.
+        CSI escape, not its first letter. The matcher must tolerate that
+        prefix and keep the badge on the same visible line, ahead of the tick
+        chunk — a separate trailing badge line means loop state lost its
+        single home.
         """
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         registry_dir = tmp_path / "registry"
         self._write_registry(registry_dir, session_id="sess-color", pid=9)
         statusline_file = tmp_path / "statusline.txt"
-        statusline_file.write_text("\033[38;5;244mloop running · tick 5m\033[0m\n", encoding="utf-8")
+        statusline_file.write_text("\033[38;5;244mtick 5m\033[0m\n", encoding="utf-8")
 
         result = _run(
             {"session_id": "sess-color", "model": {"display_name": "Claude Opus"}},
@@ -735,12 +738,63 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         lines = plain.splitlines()
-        loop_line = next(line for line in lines if "loop running" in line)
+        loop_line = next(line for line in lines if "tick 5m" in line)
         assert "loop-owner: you ✓" in loop_line, loop_line
+        # The badge leads the loop line, ahead of the tick chunk.
+        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
         # The badge shares the loop line — never spilled onto its own trailing line.
         assert sum(1 for line in lines if "loop-owner:" in line) == 1, plain
         badge_line = next(line for line in lines if "loop-owner:" in line)
-        assert "loop running" in badge_line, plain
+        assert "tick 5m" in badge_line, plain
+
+    def test_badge_leads_loop_line_with_multiple_chunks(self, tmp_path: Path) -> None:
+        """The badge is the very first token of the loop line, before every chunk."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="sess-multi", pid=11)
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("tick 5m · dispatch 2m · tickets 4m\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "sess-multi", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        loop_line = next(line for line in plain.splitlines() if "tick 5m" in line)
+        # ``loop-owner:`` is first; every loop chunk follows it.
+        assert loop_line.lstrip().startswith("loop-owner:"), loop_line
+        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
+        assert loop_line.index("tick 5m") < loop_line.index("dispatch 2m"), loop_line
+
+    def test_badge_not_glued_to_overlay_anchor_when_no_loop_line(self, tmp_path: Path) -> None:
+        """No live loop line → first line is an overlay anchor; badge stays standalone."""
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        registry_dir = tmp_path / "registry"
+        self._write_registry(registry_dir, session_id="sess-anchor", pid=13)
+        statusline_file = tmp_path / "statusline.txt"
+        statusline_file.write_text("[acme] coded: #42 (topic)\n", encoding="utf-8")
+
+        result = _run(
+            {"session_id": "sess-anchor", "model": {"display_name": "Claude Opus"}},
+            state_dir=state_dir,
+            statusline_file=statusline_file,
+            registry_dir=registry_dir,
+        )
+
+        assert result.returncode == 0, result.stderr
+        plain = _strip_ansi(result.stdout)
+        # The overlay anchor must NOT have the badge prepended to it.
+        anchor_line = next(line for line in plain.splitlines() if "[acme]" in line)
+        assert "loop-owner:" not in anchor_line, anchor_line
+        # The badge surfaces on its own line so ownership context is never lost.
+        badge_line = next(line for line in plain.splitlines() if "loop-owner:" in line)
+        assert "[acme]" not in badge_line, badge_line
 
     def test_foreign_owner_badge_shows_short_sid_and_pid(self, tmp_path: Path) -> None:
         """Different session owns the loop → yellow ``abcdef01·pid4242``."""
