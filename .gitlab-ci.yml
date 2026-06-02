@@ -55,6 +55,14 @@ eval-weekly:
   before_script:
     - pip install --no-cache-dir uv
     - uv sync
+  # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - api_failure
+      - script_failure
   script:
     # Trigger-QA is deterministic and free; the scenario suite SKIPs cleanly
     # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
