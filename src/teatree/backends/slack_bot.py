@@ -119,7 +119,7 @@ class _TickFanoutQueue:
             return list(self._events)
 
 
-class SlackBotBackend:
+class SlackBotBackend:  # noqa: PLR0904 — Slack API facade; method count reflects the API surface (one method per call), not poor encapsulation.
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
     ``bot_token`` (``xoxb-…``) authorises Web API calls for DMs, posts, and
