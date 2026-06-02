@@ -166,6 +166,8 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 
 Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
 
+**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it.
+
 #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
 
 What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch in `~/.teatree.toml` (`src/teatree/config.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
