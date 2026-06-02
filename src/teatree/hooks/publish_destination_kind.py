@@ -53,15 +53,16 @@ from teatree.hooks.publish_surface import _GH_ELIGIBLE_VERBS, _GLAB_ELIGIBLE_VER
 # A posting segment is ``<tool> <sub> <verb>`` at minimum (``gh pr create``).
 _FORGE_POSTING_WORD_COUNT: Final[int] = 3
 
-# Forge-bound t3 wrappers only; ``notify send`` / ``slack react`` are
-# user-facing and live in ``_T3_USER_FACING_SUBSTRINGS`` below.
+# Forge-bound t3 verb segments (mirrors the forge entries of
+# ``_command_parser._T3_PUBLISH_SUBSTRINGS``; Slack-bound verbs live below).
 _T3_FORGE_SUBSTRINGS: Final[tuple[str, ...]] = (
     "review post-comment",
     "review post-draft-note",
     "ticket create-issue",
 )
 
-# Inert non-forge segments (``cd``, ``echo``, ``git push``) match neither set.
+# User-facing markers in a non-forge publish segment (Slack post / react,
+# git commit message). Inert non-publish segments stay neither kind.
 _T3_USER_FACING_SUBSTRINGS: Final[tuple[str, ...]] = ("notify send", "slack react")
 _CURL_USER_FACING_MARKERS: Final[tuple[str, ...]] = ("chat.postmessage",)
 

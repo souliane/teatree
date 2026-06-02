@@ -94,15 +94,16 @@ class ToolInput(TypedDict, total=False):
 _MARKDOWN_LINK_RE: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _ANGLE_LINK_RE: Final[re.Pattern[str]] = re.compile(r"<[^>\s]+(?:\|[^>]*)?>")
 
-# Verbatim external spans (exemption 0) — reproduced ids keep the source's form.
+# Verbatim external blocks (fenced span / ``>`` blockquote) are reproduced
+# source content — excised before matching so a bare ref inside is exempt (0).
 _FENCED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
 _BLOCKQUOTE_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*>.*$", re.MULTILINE)
 
 
 _BARE_ISSUE_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w/])([#!]\d+)\b")
 _BARE_SLACK_TS_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w.])(\d{10}\.\d{6})(?![\w.])")
-# Bare URLs are always allowed; this is exported only for
-# ``core.review_findings`` to autolink them in its own neutralizer.
+# A bare forge/Notion/Slack URL is always allowed (already clickable), so it
+# is not detected here — retained only as an export for ``core.review_findings``.
 _BARE_URL_RE: Final[re.Pattern[str]] = re.compile(
     r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com|notion\.so|notion\.site|slack\.com)/\S+",
 )
