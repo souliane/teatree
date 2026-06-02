@@ -114,6 +114,58 @@ class TestCleanupWorktree(TestCase):
     @_patch_overlay
     @_patch_git
     @_patch_config
+    def test_invokes_overlay_external_resource_reaper(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """#1523: cleanup hands each reaped worktree to the overlay's reaper.
+
+        ``docker_compose_down`` removes containers but never images, so the
+        per-worktree application image (~9GB) lingered for every removed
+        worktree. ``cleanup_worktree`` now calls
+        ``reap_worktree_external_resources`` for the docker-using overlay to
+        remove that worktree's compose images + containers in the same pass.
+        """
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.reap_worktree_external_resources.return_value = ["reaped 1 image"]
+        mock_git.status_porcelain.return_value = ""
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        result = cleanup_worktree(wt)
+
+        mock_overlay.return_value.reap_worktree_external_resources.assert_called_once_with(wt)
+        assert "reaped 1 image" in result.label
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
+    def test_overlay_reaper_failure_is_surfaced_not_crashed(
+        self,
+        mock_config: MagicMock,
+        mock_git: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        _mock_workspace(mock_config)
+        _no_unpushed(mock_git)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.reap_worktree_external_resources.side_effect = RuntimeError("docker exploded")
+        mock_git.status_porcelain.return_value = ""
+
+        wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
+        wt_id = wt.pk
+        result = cleanup_worktree(wt)
+
+        assert not result.clean
+        assert any("docker exploded" in e for e in result.errors)
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+
+    @_patch_overlay
+    @_patch_git
+    @_patch_config
     def test_drops_database_when_db_name_set(
         self,
         mock_config: MagicMock,

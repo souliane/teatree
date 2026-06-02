@@ -78,6 +78,12 @@
       "signature": "(worktree: 'Worktree') -> set[str]"
     },
     {
+      "description": "Reap a reaped worktree's out-of-band resources (e.g. its docker compose containers + images).",
+      "name": "reap_worktree_external_resources",
+      "required": false,
+      "signature": "(worktree: 'Worktree') -> list[str]"
+    },
+    {
       "description": "Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report.",
       "name": "get_checking_sources",
       "required": false,
