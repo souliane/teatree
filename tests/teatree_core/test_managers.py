@@ -51,6 +51,48 @@ class TestWorktreeQuerySet(TestCase):
         assert list(Worktree.objects.active()) == [active, also_active]
 
 
+class TestIncomingEventQuerySet(TestCase):
+    def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref=channel,
+            thread_ref=thread_ref,
+            idempotency_key=key,
+        )
+
+    def test_active_dm_thread_returns_most_recent_thread_ref_for_channel(self) -> None:
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
+        self._slack(channel="D1", thread_ref="1700000099.0009", key="slack:b")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == "1700000099.0009"
+
+    def test_active_dm_thread_scopes_to_the_requested_channel(self) -> None:
+        self._slack(channel="D-other", thread_ref="9999999999.0001", key="slack:other")
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:mine")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == "1700000000.0001"
+
+    def test_active_dm_thread_ignores_non_slack_sources(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.GITHUB,
+            channel_ref="D1",
+            thread_ref="github-ref",
+            idempotency_key="github:1",
+        )
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == ""
+
+    def test_active_dm_thread_empty_when_no_event_for_channel(self) -> None:
+        self._slack(channel="D-other", thread_ref="1700000000.0001", key="slack:other")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="D1") == ""
+
+    def test_active_dm_thread_empty_channel_matches_nothing(self) -> None:
+        self._slack(channel="D1", thread_ref="1700000000.0001", key="slack:a")
+
+        assert IncomingEvent.objects.active_dm_thread(channel="") == ""
+
+
 class TestSessionQuerySet(TestCase):
     def test_for_agent_filters_by_agent_identifier(self) -> None:
         wanted = Session.objects.create(ticket=Ticket.objects.create(), agent_id="agent-1")

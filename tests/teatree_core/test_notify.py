@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.models import BotPing
+from teatree.core.models import BotPing, IncomingEvent
 from teatree.notify import NotifyKind, notify_user
 
 _DB_LOCKED = OperationalError("database is locked")
@@ -48,6 +48,55 @@ class TestNotifyUser(TestCase):
         assert row.posted_ts == "1700000000.000000"
         assert row.permalink.startswith("https://")
         assert row.text == "tests are green"
+
+    def test_threads_under_active_dm_thread_when_one_exists(self) -> None:
+        IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref="D-USER",
+            thread_ref="1700000000.000111",
+            idempotency_key="slack:Ev-active",
+        )
+        backend = _backend()
+
+        notify_user(
+            "answering your question",
+            kind=NotifyKind.ANSWER,
+            idempotency_key="threaded-answer",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert backend.post_message.call_args.kwargs["thread_ts"] == "1700000000.000111"
+
+    def test_no_active_thread_posts_at_root(self) -> None:
+        backend = _backend()
+
+        notify_user(
+            "first message in the conversation",
+            kind=NotifyKind.INFO,
+            idempotency_key="rootless",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
+
+    def test_active_thread_lookup_db_error_falls_back_to_root(self) -> None:
+        backend = _backend()
+        with patch(
+            "teatree.core.models.IncomingEvent.objects.active_dm_thread",
+            side_effect=OperationalError("database is locked"),
+        ):
+            sent = notify_user(
+                "lookup blew up but the DM still lands",
+                kind=NotifyKind.INFO,
+                idempotency_key="thread-lookup-db-error",
+                backend=backend,
+                user_id="U_ME",
+            )
+
+        assert sent is True
+        assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
     def test_kind_accepts_string_alias(self) -> None:
         backend = _backend()
