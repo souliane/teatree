@@ -152,25 +152,33 @@ def _check_branch_currency_conflict_only() -> bool:
 
 
 def _check_bare_reference_gate_read_vs_write() -> bool:
-    """#1530: the bare-ref gate flags a publish body's bare ref, never a read-only api GET.
+    """#1530: the bare-ref gate is DESTINATION-AWARE and never over-blocks.
 
-    A read-only ``gh api repos/.../issues/<n> -X GET`` carries no publish body,
-    so its extracted payload yields zero flagged references — the gate never
-    fires on a read (the #1530 over-block direction). A publish body with a
-    bare ``#<n>`` must surface that ref, and the same ref rendered as a
-    markdown link must NOT (so the gate is not a blunt number-matcher).
+    Three over-block directions stay closed and the one enforce direction
+    stays open:
+
+    * a read-only ``gh api repos/.../issues/<n> -X GET`` carries no publish
+        body, so its payload yields zero flagged references;
+    * an EXTERNAL-FORGE post (``gh issue comment``) is exempt — the forge
+        auto-links the ref, so the payload is ``None`` (the gate does not
+        fire), the over-block this fix removes;
+    * a markdown-linked ref on a user-facing surface is NOT flagged (the gate
+        is not a blunt number-matcher); while
+    * a bare ``#<n>`` on a USER-FACING surface (a ``git commit`` message) IS
+        surfaced — the rule still has teeth where a human reads the ref raw.
     """
     from teatree.hooks.bare_reference_scanner import extract_publish_payload, scan_text  # noqa: PLC0415
 
     bare = "#" + "1500"
     read_only = extract_publish_payload("Bash", {"command": "gh api repos/souliane/teatree/issues/1530 -X GET"})
-    publish_payload = extract_publish_payload("Bash", {"command": f'gh issue comment 7 --body "see {bare} ctx"'})
-    if publish_payload is None:
+    forge_post = extract_publish_payload("Bash", {"command": f'gh issue comment 7 --body "see {bare} ctx"'})
+    user_facing = extract_publish_payload("Bash", {"command": f"git commit -m 'reverts {bare} change'"})
+    if user_facing is None:
         return False
     read_flags = scan_text(read_only) if read_only is not None else []
-    flagged = scan_text(publish_payload)
+    flagged = scan_text(user_facing)
     linked = scan_text(f"see [{bare}](https://github.com/souliane/teatree/issues/1500) ctx")
-    return read_flags == [] and bare in flagged and linked == []
+    return read_flags == [] and forge_post is None and bare in flagged and linked == []
 
 
 _SHA_A = "a" * 40
