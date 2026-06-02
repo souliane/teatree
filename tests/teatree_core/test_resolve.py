@@ -14,6 +14,8 @@ from teatree.core.resolve import (
     _find_env_cache,
     _match_worktree_by_path,
     _parse_env_file,
+    _ticket_number_from_branch,
+    _ticket_owning_branch,
     _warn_cwd_mismatch,
     _workspace_owner_ticket,
     resolve_worktree,
@@ -566,6 +568,174 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
 
         assert result is not None
         assert result.ticket.issue_url == "auto:feat/solo"
+
+
+class TestTicketNumberFromBranch:
+    """Parse the ticket number that ``_build_branch_name`` encodes in a branch.
+
+    ``workspace ticket`` names branches ``<number>-<slug>`` (see
+    ``workspace._build_branch_name``). Older/manual branches also use a
+    ``<scope>/<number>-<slug>`` shape. The parser must recover ``<number>``
+    from both so a manually-added worktree attaches to the right ticket.
+    """
+
+    def test_flat_number_slug(self) -> None:
+        assert _ticket_number_from_branch("1180-fix-the-thing") == "1180"
+
+    def test_scoped_number_slug(self) -> None:
+        assert _ticket_number_from_branch("ac/1180-fix-the-thing") == "1180"
+
+    def test_bare_number(self) -> None:
+        assert _ticket_number_from_branch("1180") == "1180"
+
+    def test_no_leading_number_returns_none(self) -> None:
+        assert _ticket_number_from_branch("feat/some-feature") is None
+
+    def test_no_number_at_all_returns_none(self) -> None:
+        assert _ticket_number_from_branch("main") is None
+
+    def test_empty_returns_none(self) -> None:
+        assert _ticket_number_from_branch("") is None
+
+    def test_does_not_match_number_buried_after_words(self) -> None:
+        """The number must be the leading segment, not any digits in the slug."""
+        assert _ticket_number_from_branch("feature-1180-thing") is None
+
+
+class TestTicketOwningBranch(TestCase):
+    """Match a branch to the ticket whose ``ticket_number`` it encodes."""
+
+    def test_matches_ticket_by_trailing_issue_number(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
+
+        assert _ticket_owning_branch("1180-fix-the-thing") == ticket
+
+    def test_returns_none_when_no_ticket_has_that_number(self) -> None:
+        Ticket.objects.create(issue_url="https://github.com/org/repo/issues/42")
+
+        assert _ticket_owning_branch("1180-fix-the-thing") is None
+
+    def test_returns_none_when_branch_has_no_number(self) -> None:
+        Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
+
+        assert _ticket_owning_branch("feat/no-number") is None
+
+
+class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
+    """A manually-added worktree must attach to the ticket its branch encodes.
+
+    Bug: ``git worktree add`` (no ``workspace ticket``) drops through
+    ``_auto_register_from_git``. With no matching Worktree row, it used to
+    call ``_workspace_owner_ticket``, which keys on the parent directory and
+    grabs the most-recent *sibling* ticket — misattributing the worktree to
+    an unrelated ticket. The branch name already carries the ticket number
+    (``<number>-<slug>``), so resolution must prefer the ticket that number
+    identifies.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def _make_git_worktree(self, name: str) -> Path:
+        wt_dir = self._tmp_path / name
+        wt_dir.mkdir()
+        (wt_dir / ".git").write_text(f"gitdir: /some/.git/worktrees/{name}\n")
+        return wt_dir
+
+    def test_branch_ticket_wins_over_sibling_workspace_owner(self) -> None:
+        # A sibling worktree for an unrelated ticket already lives under the
+        # same parent dir — the misattribution trap.
+        sibling_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/999")
+        sibling = self._make_git_worktree("sibling-repo")
+        Worktree.objects.create(
+            ticket=sibling_ticket,
+            repo_path="sibling-repo",
+            branch="999-unrelated",
+            extra={"worktree_path": str(sibling)},
+        )
+        # The real ticket the manual worktree belongs to.
+        real_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
+        manual = self._make_git_worktree("manual-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+            result = _auto_register_from_git(str(manual))
+
+        assert result is not None
+        assert result.ticket_id == real_ticket.pk
+        assert result.ticket_id != sibling_ticket.pk
+        assert not Ticket.objects.filter(issue_url__startswith="auto:").exists()
+
+    def test_falls_back_to_auto_ticket_when_no_branch_ticket_and_no_owner(self) -> None:
+        manual = self._make_git_worktree("manual-repo")
+
+        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+            result = _auto_register_from_git(str(manual))
+
+        assert result is not None
+        assert result.ticket.issue_url == "auto:1180-fix-the-thing"
+
+
+class TestResolveWorktreeTicketHint(TestCase):
+    """``ticket_hint`` rebinds a synthetic-ticket worktree but never steals a real one."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def test_rebinds_worktree_stuck_on_auto_ticket(self) -> None:
+        auto_ticket = Ticket.objects.create(issue_url="auto:some-branch")
+        wt_path = str(self._tmp_path / "backend")
+        wt = Worktree.objects.create(
+            ticket=auto_ticket,
+            repo_path="backend",
+            branch="some-branch",
+            extra={"worktree_path": wt_path},
+        )
+        real_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/321")
+        self._monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+
+        result = resolve_worktree(ticket_hint=real_ticket)
+
+        assert result.pk == wt.pk
+        result.refresh_from_db()
+        assert result.ticket_id == real_ticket.pk
+
+    def test_noop_when_hint_already_the_current_ticket(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/77")
+        wt_path = str(self._tmp_path / "backend")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="77-x",
+            extra={"worktree_path": wt_path},
+        )
+        self._monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+
+        result = resolve_worktree(ticket_hint=ticket)
+
+        assert result.pk == wt.pk
+        result.refresh_from_db()
+        assert result.ticket_id == ticket.pk
+
+    def test_leaves_worktree_on_real_ticket_untouched(self) -> None:
+        real_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/55")
+        wt_path = str(self._tmp_path / "backend")
+        wt = Worktree.objects.create(
+            ticket=real_ticket,
+            repo_path="backend",
+            branch="55-real",
+            extra={"worktree_path": wt_path},
+        )
+        other_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/999")
+        self._monkeypatch.setenv("T3_ORIG_CWD", wt_path)
+
+        result = resolve_worktree(ticket_hint=other_ticket)
+
+        assert result.pk == wt.pk
+        result.refresh_from_db()
+        assert result.ticket_id == real_ticket.pk
 
 
 class TestWorkspaceOwnerTicketIsDeterministic(TestCase):

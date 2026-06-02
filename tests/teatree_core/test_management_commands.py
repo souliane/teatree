@@ -184,6 +184,78 @@ class TestLifecycleCommands(TestCase):
             assert not Worktree.objects.filter(pk=worktree_id).exists()
 
 
+class TestProvisionTicketFlag(TestCase):
+    """``worktree provision --ticket`` pins attribution to a named ticket.
+
+    A manually-added git worktree (``git worktree add``, no ``workspace
+    ticket``) has no Worktree row. Resolution would auto-register and could
+    cross-attach to an unrelated workspace sibling. ``--ticket <number>``
+    overrides the heuristic and binds the worktree to the named ticket.
+    """
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_ticket_flag_pins_attribution_for_manual_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            # A sibling worktree for an unrelated ticket under the same parent.
+            sibling_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/999")
+            sibling_path = tmp_path / "sibling-backend"
+            sibling_path.mkdir()
+            (sibling_path / ".git").write_text("gitdir: /some/.git/worktrees/sibling-backend\n")
+            Worktree.objects.create(
+                ticket=sibling_ticket,
+                overlay="test",
+                repo_path="sibling-backend",
+                branch="999-unrelated",
+                extra={"worktree_path": str(sibling_path)},
+            )
+
+            target_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/321")
+
+            # The manual worktree: a git worktree marker, no Worktree row, on a
+            # branch whose number does not name the target ticket — so only the
+            # explicit --ticket flag can attribute it correctly.
+            manual_path = tmp_path / "manual-backend"
+            manual_path.mkdir()
+            (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
+
+            mock_config = MagicMock()
+            mock_config.user.workspace_dir = tmp_path
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                patch.object(utils_run_mod, "subprocess") as mock_sp,
+                patch("teatree.core.resolve.git.current_branch", return_value="no-number-branch"),
+                patch("teatree.utils.redis_container.ensure_running"),
+                patch("teatree.config.load_config", return_value=mock_config),
+            ):
+                mock_sp.run.return_value = MagicMock(returncode=0)
+                worktree_id = cast("int", call_command("worktree", "provision", "--ticket", "321"))
+
+            wt = Worktree.objects.get(pk=worktree_id)
+            assert wt.ticket_id == target_ticket.pk
+            assert wt.ticket_id != sibling_ticket.pk
+            assert not Ticket.objects.filter(issue_url__startswith="auto:").exists()
+
+    @override_settings(**COMMAND_SETTINGS)
+    def test_ticket_flag_for_unknown_number_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manual_path = Path(tmp) / "manual-backend"
+            manual_path.mkdir()
+            (manual_path / ".git").write_text("gitdir: /some/.git/worktrees/manual-backend\n")
+
+            with (
+                patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
+                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
+                pytest.raises(SystemExit),
+            ):
+                call_command("worktree", "provision", "--ticket", "404")
+
+            assert not Worktree.objects.exists()
+
+
 class TestTaskCommands(TestCase):
     @override_settings(**COMMAND_SETTINGS)
     def test_claim_and_complete_work(self) -> None:

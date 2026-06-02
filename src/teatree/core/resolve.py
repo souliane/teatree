@@ -13,6 +13,7 @@ across the ``uv --directory`` subprocess chain.
 
 import logging
 import os
+import re
 from pathlib import Path
 
 from teatree.core.models import Ticket, Worktree
@@ -20,6 +21,10 @@ from teatree.core.worktree_env import CACHE_FILENAME
 from teatree.utils import git
 
 logger = logging.getLogger(__name__)
+
+# Leading ``<number>`` of a ``<number>-<slug>`` branch (after an optional
+# ``<scope>/``); digits buried later in the slug never match (see the parser).
+_LEADING_TICKET_NUMBER = re.compile(r"^(?:[^/]*/)?(\d+)(?:-|$)")
 
 
 class WorktreeNotFoundError(RuntimeError):
@@ -112,7 +117,45 @@ def _match_worktree_by_path(path: str) -> Worktree | None:
     return None
 
 
-def _auto_register_from_git(cwd: str) -> Worktree | None:
+def _ticket_number_from_branch(branch: str) -> str | None:
+    """Return the ticket number a ``<number>-<slug>`` branch encodes, or None.
+
+    Mirrors ``workspace._build_branch_name``: the number is the leading
+    segment (optionally after a ``<scope>/`` prefix). Digits that appear
+    later in the slug are not a ticket number and must not match.
+    """
+    match = _LEADING_TICKET_NUMBER.match(branch)
+    return match.group(1) if match else None
+
+
+def _ticket_by_number(number: str) -> Ticket | None:
+    """Return the non-synthetic ticket whose ``ticket_number`` is *number*.
+
+    ``ticket_number`` is a derived property (trailing digits of ``issue_url``,
+    else the pk), so the match is done in Python over real tickets — synthetic
+    ``auto:`` rows are excluded so a hint never resolves back to a placeholder.
+    """
+    for ticket in Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:"):
+        if ticket.ticket_number == number:
+            return ticket
+    return None
+
+
+def _ticket_owning_branch(branch: str) -> Ticket | None:
+    """Return the ticket whose ``ticket_number`` the branch encodes, or None.
+
+    A manually-added worktree (``git worktree add`` without ``workspace
+    ticket``) has no Worktree row yet, but its branch already names the
+    ticket. Matching on that number attaches the worktree to the correct
+    ticket instead of the most-recent workspace sibling.
+    """
+    number = _ticket_number_from_branch(branch)
+    if number is None:
+        return None
+    return _ticket_by_number(number)
+
+
+def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Worktree | None:
     """Detect a git worktree from the filesystem and auto-register it in the DB.
 
     Reuses an existing Worktree row keyed by branch + repo before falling
@@ -120,6 +163,13 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
     ticket rows when a real-ticket worktree exists but its
     ``extra["worktree_path"]`` is missing or stale (which would make
     ``_match_worktree_by_path`` miss it).
+
+    Ticket attribution for a manually-added worktree resolves in order:
+    an explicit *ticket_hint* (the ``--ticket`` flag), the branch-encoded
+    ticket number (``_ticket_owning_branch``), the workspace-dir owner
+    (``_workspace_owner_ticket``), then a fresh ``auto:<branch>`` ticket. The
+    hint and branch number win first so a manual worktree never cross-attaches
+    to an unrelated sibling under the same workspace dir.
     """
     cwd_path = Path(cwd).resolve()
     git_file = cwd_path / ".git"
@@ -141,7 +191,9 @@ def _auto_register_from_git(cwd: str) -> Worktree | None:
         return existing
 
     ticket = (
-        _workspace_owner_ticket(cwd_path)
+        ticket_hint
+        or _ticket_owning_branch(branch)
+        or _workspace_owner_ticket(cwd_path)
         or Ticket.objects.get_or_create(
             issue_url=f"auto:{branch}",
             defaults={"variant": "", "repos": [repo_name]},
@@ -236,7 +288,33 @@ def _warn_cwd_mismatch(worktree: Worktree, cwd: str) -> None:
         )
 
 
-def resolve_worktree(path: str = "") -> Worktree:
+def _rebind_ticket_if_synthetic(worktree: Worktree, ticket_hint: Ticket) -> None:
+    """Re-attach *worktree* to *ticket_hint* when its current ticket is synthetic.
+
+    An explicit ``--ticket`` correction only overrides auto-registration: a
+    worktree already bound to a real ticket is left alone (the caller's hint
+    cannot silently steal a correctly-attributed worktree), but one stuck on
+    a placeholder ``auto:`` ticket is rebound to the named ticket.
+    """
+    current = worktree.ticket
+    if current.pk == ticket_hint.pk:
+        return
+    if not current.issue_url.startswith("auto:"):
+        return
+    worktree.ticket = ticket_hint
+    worktree.save(update_fields=["ticket"])
+
+
+def _finalize_matched(worktree: Worktree, cwd: str, ticket_hint: Ticket | None) -> Worktree:
+    """Apply the guards + optional ticket rebind shared by every DB-matched path."""
+    _reject_main_clone(worktree)
+    _warn_cwd_mismatch(worktree, cwd)
+    if ticket_hint is not None:
+        _rebind_ticket_if_synthetic(worktree, ticket_hint)
+    return worktree
+
+
+def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Worktree:
     """Resolve a worktree from *path* or the user's CWD.
 
     Raises ``WorktreeNotFoundError`` if no worktree can be found or if
@@ -244,6 +322,10 @@ def resolve_worktree(path: str = "") -> Worktree:
 
     Logs a warning when the resolved worktree path doesn't contain the
     user's CWD, which may indicate the wrong worktree was matched.
+
+    *ticket_hint* (the ``worktree provision --ticket`` flag) pins the ticket
+    a newly-auto-registered worktree attaches to, and rebinds an already-
+    resolved worktree that is stuck on a synthetic ``auto:`` ticket.
     """
     cwd = str(Path(path).resolve()) if path else _get_user_cwd()
 
@@ -256,19 +338,15 @@ def resolve_worktree(path: str = "") -> Worktree:
         if ticket_dir:
             wt = _match_worktree_by_path(ticket_dir)
             if wt is not None:  # pragma: no branch
-                _reject_main_clone(wt)
-                _warn_cwd_mismatch(wt, cwd)
-                return wt
+                return _finalize_matched(wt, cwd, ticket_hint)
 
     # 2. Match CWD directly against stored worktree paths
     wt = _match_worktree_by_path(cwd)
     if wt is not None:
-        _reject_main_clone(wt)
-        _warn_cwd_mismatch(wt, cwd)
-        return wt
+        return _finalize_matched(wt, cwd, ticket_hint)
 
     # 3. Detect git worktree from filesystem and auto-register
-    wt = _auto_register_from_git(cwd)
+    wt = _auto_register_from_git(cwd, ticket_hint=ticket_hint)
     if wt is not None:
         return wt
 
