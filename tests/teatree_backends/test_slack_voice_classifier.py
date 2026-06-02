@@ -142,7 +142,7 @@ class TestAssertVoiceTokenMatchStrict:
         """A review-request from the user's voice over the user's xoxp."""
         assert_voice_token_match(
             text="please review !6264 when you have time",
-            channel="C-the-review-crew",
+            channel="C-PARTNER-SHARED",
             token="xoxp-personal",
             mode=ClassifierMode.STRICT,
             dm_channel_ids=self._dm_channels(),
@@ -153,7 +153,7 @@ class TestAssertVoiceTokenMatchStrict:
         with pytest.raises(SlackVoiceMismatchError) as exc_info:
             assert_voice_token_match(
                 text="please review !6264",
-                channel="C-the-review-crew",
+                channel="C-PARTNER-SHARED",
                 token="xoxb-bot",
                 mode=ClassifierMode.STRICT,
                 dm_channel_ids=self._dm_channels(),

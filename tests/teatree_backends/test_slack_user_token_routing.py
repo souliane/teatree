@@ -36,7 +36,7 @@ def _capturing_get(captured: list[dict[str, object]]) -> object:
         captured.append({"url": url, **kwargs})
         if url.endswith("/conversations.info"):
             # The token-selection policy probes Connect membership here;
-            # C0AM3TENTLK is the real Slack-Connect #the-review-crew.
+            # C0AM3TENTLK stands in for an externally-shared partner channel.
             return httpx.Response(
                 200,
                 json={"ok": True, "channel": {"is_ext_shared": True}},
