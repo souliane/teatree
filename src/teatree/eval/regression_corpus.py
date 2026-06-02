@@ -307,24 +307,29 @@ def _unused_pid() -> int:
     return 2_147_483_000
 
 
+def _count_core_leaves(graph: object) -> int:
+    """Number of leaf nodes the ``core`` app owns in a migration graph.
+
+    A linear graph has exactly one; a fork (two migrations off one parent)
+    leaves two. The predicate the regression check turns on, factored out so a
+    test can feed it a synthetic forked graph and assert it returns ``> 1``.
+    """
+    return sum(1 for leaf in graph.leaf_nodes() if leaf[0] == "core")  # type: ignore[attr-defined]
+
+
 def _check_migration_graph_single_leaf() -> bool:
     """#1721: the migration graph stays linear — a forked graph (>1 leaf) is caught.
 
     The real failure: two PRs each branch a migration off the same parent, the
     merged graph has multiple leaf nodes, and ``migrate`` refuses. This asserts
-    the live ``teatree.core`` graph has exactly one leaf (the fixed state) AND
-    that the leaf-count predicate would flag a synthetic forked graph (so the
-    check is not vacuous).
+    the live ``teatree.core`` graph has exactly one leaf node via
+    :func:`_count_core_leaves` — the same predicate a synthetic forked graph
+    drives ``> 1`` in the corpus's anti-vacuous test.
     """
     from django.db.migrations.loader import MigrationLoader  # noqa: PLC0415
 
     loader = MigrationLoader(None, ignore_no_migrations=True)
-    core_leaves = [leaf for leaf in loader.graph.leaf_nodes() if leaf[0] == "core"]
-    live_is_linear = len(core_leaves) == 1
-
-    forked = {("core", "0049_a"), ("core", "0049_b")}
-    detects_fork = len(forked) > 1
-    return live_is_linear and detects_fork
+    return _count_core_leaves(loader.graph) == 1
 
 
 _CHECKS: tuple[RegressionCheck, ...] = (
