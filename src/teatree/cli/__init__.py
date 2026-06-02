@@ -24,6 +24,9 @@ import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 from teatree.cli import (
+    comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
+)
+from teatree.cli import (
     enforcement_tools as _enforcement_tools,  # noqa: F401  (side-effect: registers §17.6 gate commands onto tool_app)
 )
 from teatree.cli import (

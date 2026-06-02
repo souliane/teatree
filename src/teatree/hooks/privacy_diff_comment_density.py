@@ -17,16 +17,21 @@ is a block of 3+ consecutive comment-only lines.
 
 Comment-only is decided language-aware on the FILE SUFFIX (Python ``#``,
 JS/TS ``//`` and ``/* */`` line/block markers). Exempt from the comment
-count: docstring bodies (lines inside a triple-quoted block) and
-a small **security-rationale** allowlist (a comment whose text begins with
-the agreed ``security:`` marker — a deliberate threat-model note, not
+count: docstring bodies (lines inside a triple-quoted block); **tooling
+pragmas** that are machine directives, not prose (``# type:``, ``# noqa``,
+``# pragma``, ``pyright:``/``mypy:``/``ruff:``, ``// eslint-disable``,
+``// @ts-ignore``/``@ts-expect-error``, coverage ``istanbul``/``c8`` ignores);
+and a small **security-rationale** allowlist (a comment whose text begins
+with the agreed ``security:`` marker — a deliberate threat-model note, not
 WHAT-narration). Also exempt is a file-LEADING comment block — a run that
 begins at the top of a file's added lines (within a shebang / encoding /
 blank offset) before any code, which is a license / copyright / banner
 preamble rather than WHAT-narration — plus a narrow license-marker
 fallback for a header further down (a comment carrying ``SPDX-License-Identifier``,
 ``Copyright``, ``Licensed under`` or ``All rights reserved``). Fully exempt
-files: markdown/docs (``*.md``, ``docs/``, ``CHANGELOG*``) and ``tests/``
+files: markdown/docs (``*.md``, ``docs/``, ``CHANGELOG*``), declarative
+config (``*.yml``/``*.yaml``/``*.toml``/``*.cfg``/``*.ini`` — a CI job's
+"why this exists" block has no names+types alternative), and ``tests/``
 (test bodies legitimately narrate intent).
 
 The thresholds are deliberately conservative: the ratio rule applies only
@@ -38,21 +43,44 @@ signal and flags on its own.
 """
 
 import re
+from dataclasses import dataclass
 
 _ALLOW_MARKER = "privacy-scan:allow"
 _SECURITY_RATIONALE_MARKER = "security:"
 
 CATEGORY = "code_comment_density"
 
+_PRAGMA_TOKENS = (
+    "type:",
+    "noqa",
+    r"pragma\b",
+    "pyright:",
+    "mypy:",
+    "ruff:",
+    "eslint-disable",
+    "eslint-enable",
+    "prettier-ignore",
+    r"@ts-(?:ignore|expect-error|nocheck)",
+    r"istanbul\s+ignore",
+    r"c8\s+ignore",
+    r"v8\s+ignore",
+    "biome-ignore",
+)
+_PRAGMA_RE = re.compile(
+    r"(?:\#|//|/\*|\*)\s*(?:" + "|".join(_PRAGMA_TOKENS) + r")",
+    re.IGNORECASE,
+)
+
 _RATIO_THRESHOLD = 0.15
 _MIN_ADDED_CODE_LINES = 3
 _MIN_ADDED_COMMENT_LINES = 3
 _MAX_CONSECUTIVE_COMMENT_LINES = 2
 
-_HASH_COMMENT_SUFFIXES = (".py", ".sh", ".bash", ".rb", ".yml", ".yaml", ".toml")
+_HASH_COMMENT_SUFFIXES = (".py", ".sh", ".bash", ".rb")
 _SLASH_COMMENT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".c", ".cpp", ".cs", ".scss", ".css")
 
 _DOC_SUFFIXES = (".md", ".rst", ".txt", ".adoc")
+_CONFIG_SUFFIXES = (".yml", ".yaml", ".toml", ".cfg", ".ini")
 _DOC_PATH_PREFIXES = ("docs/",)
 _DOC_BASENAME_PREFIXES = ("CHANGELOG",)
 _TEST_PATH_PREFIXES = ("tests/", "test/")
@@ -72,7 +100,7 @@ _LICENSE_MARKER_RE = re.compile(
 
 def _is_exempt_file(path: str) -> bool:
     lowered = path.lower()
-    if lowered.endswith(_DOC_SUFFIXES):
+    if lowered.endswith((*_DOC_SUFFIXES, *_CONFIG_SUFFIXES)):
         return True
     if any(lowered.startswith(p) or f"/{p}" in lowered for p in (*_DOC_PATH_PREFIXES, *_TEST_PATH_PREFIXES)):
         return True
@@ -99,6 +127,10 @@ def _is_security_rationale(code: str) -> bool:
 
 def _is_license_marker(code: str) -> bool:
     return _LICENSE_MARKER_RE.search(code) is not None
+
+
+def _is_pragma(code: str) -> bool:
+    return _PRAGMA_RE.match(code.lstrip()) is not None
 
 
 class _FileScan:
@@ -129,7 +161,10 @@ class _FileScan:
         code = raw[1:]
         if _ALLOW_MARKER in code or self._consume_docstring(code) or _is_security_rationale(code):
             return
-        self._classify(code, is_comment=bool(self.comment_re.match(code)))
+        is_comment = bool(self.comment_re.match(code))
+        if is_comment and _is_pragma(code):
+            return
+        self._classify(code, is_comment=is_comment)
 
     def _consume_docstring(self, code: str) -> bool:
         was_in_docstring = self.in_docstring
@@ -163,25 +198,56 @@ class _FileScan:
             return False
         return self.comment_lines > self.code_lines * _RATIO_THRESHOLD
 
+    @property
+    def reason(self) -> str:
+        if self.max_consecutive > _MAX_CONSECUTIVE_COMMENT_LINES:
+            return (
+                f"{self.max_consecutive} consecutive comment-only lines (max allowed {_MAX_CONSECUTIVE_COMMENT_LINES})"
+            )
+        return (
+            f"{self.comment_lines} added comment lines vs {self.code_lines} added code lines "
+            f"(ratio {self.ratio:.2f} > {_RATIO_THRESHOLD:.2f})"
+        )
 
-def scan_diff(text: str) -> list[tuple[int, str, str]]:
-    """Scan a unified diff for comment-dense added code, one finding per file.
+    @property
+    def ratio(self) -> float:
+        return self.comment_lines / self.code_lines if self.code_lines else 0.0
 
-    Returns ``(line_number, category, match)`` findings where ``line_number``
-    is the 1-based position of the file header within ``text`` (so it lines
-    up with the per-line findings ``privacy_scan.py`` emits). Only added
-    lines (``+`` but not ``+++``) in non-exempt source files are counted, and
-    docstring bodies plus security-rationale comments are excluded from the
-    comment tally.
+
+@dataclass(frozen=True)
+class CommentDensityFinding:
+    """One comment-dense file flagged in a diff."""
+
+    path: str
+    comment_lines: int
+    code_lines: int
+    max_consecutive: int
+    reason: str
+
+    @property
+    def ratio(self) -> float:
+        return self.comment_lines / self.code_lines if self.code_lines else 0.0
+
+    def render(self) -> str:
+        return f"{self.path}: comment-dense added lines — {self.reason}"
+
+
+def _iter_file_scans(text: str) -> "list[tuple[int, str, _FileScan]]":
+    """Drive the diff through one ``_FileScan`` per file header.
+
+    Returns ``(header_lineno, path, scan)`` for every file in the diff,
+    flagged or not. ``header_lineno`` is the 1-based position of the
+    ``+++`` line within ``text``. The single scanning loop is shared by
+    :func:`scan_diff` and :func:`report_diff` so the parsing rules never fork.
     """
-    findings: list[tuple[int, str, str]] = []
+    results: list[tuple[int, str, _FileScan]] = []
     current_path: str | None = None
     header_lineno = 0
     scan = _FileScan(None)
 
     def flush() -> None:
-        if current_path is not None and scan.is_flagged:
-            findings.append((header_lineno, CATEGORY, f"{current_path}: comment-dense added lines"))
+        if current_path is not None:
+            results.append((header_lineno, current_path, scan))
 
     for lineno, raw in enumerate(text.splitlines(), 1):
         header = _FILE_HEADER_RE.match(raw)
@@ -198,4 +264,42 @@ def scan_diff(text: str) -> list[tuple[int, str, str]]:
             continue
         scan.feed_line(raw)
     flush()
-    return findings
+    return results
+
+
+def scan_diff(text: str) -> list[tuple[int, str, str]]:
+    """Scan a unified diff for comment-dense added code, one finding per file.
+
+    Returns ``(line_number, category, match)`` findings where ``line_number``
+    is the 1-based position of the file header within ``text`` (so it lines
+    up with the per-line findings ``privacy_scan.py`` emits). Only added
+    lines (``+`` but not ``+++``) in non-exempt source files are counted, and
+    docstring bodies plus security-rationale comments are excluded from the
+    comment tally.
+    """
+    return [
+        (header_lineno, CATEGORY, f"{path}: comment-dense added lines")
+        for header_lineno, path, scan in _iter_file_scans(text)
+        if scan.is_flagged
+    ]
+
+
+def report_diff(text: str) -> list[CommentDensityFinding]:
+    """Structured per-file findings for the standalone ``comment-density`` tool.
+
+    Same parsing and thresholds as :func:`scan_diff`, but each flagged file
+    carries its added comment/code counts, the longest consecutive-comment
+    run, and a human-readable reason so the CLI / hook can print an
+    actionable message rather than a bare "comment-dense" verdict.
+    """
+    return [
+        CommentDensityFinding(
+            path=path,
+            comment_lines=scan.comment_lines,
+            code_lines=scan.code_lines,
+            max_consecutive=scan.max_consecutive,
+            reason=scan.reason,
+        )
+        for _, path, scan in _iter_file_scans(text)
+        if scan.is_flagged
+    ]
