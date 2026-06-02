@@ -2743,7 +2743,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
-│ notify        Bot→user Slack DM from the shell (#1030).                      │
+│ notify        Slack egress from the shell (#1030, #1750).                    │
 │ retro         Retrospective enforcement tooling (#1573).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5398,14 +5398,18 @@ Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
 ```
 Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 
- Bot→user Slack DM from the shell (#1030).
+ Slack egress from the shell (#1030, #1750).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ send  DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct         │
-│       notify).                                                               │
+│ send   DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct        │
+│        notify).                                                              │
+│ post   Post, token routed by destination (self-DM→bot,                       │
+│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
+│ react  React, token routed by destination (self-DM→bot,                      │
+│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5433,6 +5437,51 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
 │                                   (per-overlay bot routing).                 │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify post`
+
+```
+Usage: t3 teatree notify post [OPTIONS]
+
+ Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp
+ (exit 0 on ``ok``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --channel        TEXT  Destination: the user's own DM (→bot) or a         │
+│                           colleague/channel (→xoxp).                         │
+│                           [required]                                         │
+│ *  --text           TEXT  Slack mrkdwn body. Use ``-`` to read the body from │
+│                           stdin.                                             │
+│                           [required]                                         │
+│    --thread         TEXT  Thread ``ts`` to reply into (omit to post a new    │
+│                           top-level message).                                │
+│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
+│                           credentials).                                      │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify react`
+
+```
+Usage: t3 teatree notify react [OPTIONS]
+
+ React on a destination, token chosen by it: self-DM→bot,
+ colleague/channel→xoxp (exit 0 on ``ok``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --channel        TEXT  Destination the message is in: self-DM (bot) or    │
+│                           colleague/channel (xoxp).                          │
+│                           [required]                                         │
+│ *  --ts             TEXT  Timestamp ``ts`` of the message to react to.       │
+│                           [required]                                         │
+│ *  --emoji          TEXT  Emoji name (with or without surrounding colons).   │
+│                           [required]                                         │
+│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
+│                           credentials).                                      │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

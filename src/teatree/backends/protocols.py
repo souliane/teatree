@@ -218,6 +218,10 @@ class MessagingBackend(Protocol):
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict: ...  # pragma: no branch
+
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def auth_test(self) -> RawAPIDict: ...  # pragma: no branch

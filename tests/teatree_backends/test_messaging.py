@@ -28,6 +28,8 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.post_message(channel="C", text="hi") == {}
     assert backend.post_reply(channel="C", ts="123", text="hi") == {}
     assert backend.react(channel="C", ts="123", emoji="eyes") == {}
+    assert backend.post_routed(channel="C", text="hi") == {}
+    assert backend.react_routed(channel="C", ts="123", emoji="eyes") == {}
     assert backend.resolve_user_id("alice") == ""
 
 
