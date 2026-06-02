@@ -4037,7 +4037,7 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │                       out-of-band.                                           │
 │ create                Enqueue the next-phase task for a ticket.              │
 │ list                  List tasks with optional filters; --session scopes to  │
-│                       the current Claude session's todos.                    │
+│                       the current harness session's todos.                   │
 │ start                 Claim and run the next interactive task in the current │
 │                       terminal.                                              │
 │ work-next-sdk         Claim and execute an headless task.                    │
@@ -4136,12 +4136,12 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 ```
 Usage: t3 teatree tasks list [OPTIONS]
 
- List the teatree tasks queue (not your Claude TODO list).
+ List the teatree tasks queue (not your harness TODO list).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --status                              TEXT  Filter by status                 │
 │ --execution-target                    TEXT  Filter by execution target       │
-│ --session             --no-session          Scope to the current Claude      │
+│ --session             --no-session          Scope to the current harness     │
 │                                             session and group pending /      │
 │                                             claimed / done.                  │
 │                                             [default: no-session]            │

@@ -13,9 +13,16 @@ metadata:
   subagent_safe: false
 ---
 
-# Todos — The Current Session's Task List
+# Todos — The Current Session's Lists
 
-A SHORT, read-only view of everything on the current Claude session's plate. `/t3:todos` never starts work, never transitions a ticket, never posts — it prints the session's tasks grouped by status and stops.
+A SHORT, read-only view of everything on the current harness session's plate. `/t3:todos` never starts work, never transitions a ticket, never posts — it prints the session's lists grouped by status and stops.
+
+There are **two distinct stores**, and the command keeps them apart — never conflate them:
+
+- **harness TODO** — the agent harness's own working list (the `TaskCreate` / `TaskUpdate` items, formerly `TodoWrite`). Ephemeral, harness-owned, not a teatree concept.
+- **teatree task** — a row in teatree's DB-backed `Task` model: a claimable lifecycle work unit with a phase, lease, and ticket.
+
+There is no such thing as a "teatree todo" — use **teatree task** for the DB model and **harness TODO** for the harness list.
 
 ## When to load
 
@@ -27,17 +34,18 @@ Load `/t3:todos` when the user wants to see what is on their list — phrasings 
 t3 <overlay> tasks list --session
 ```
 
-`--session` scopes the list to the **current Claude session** (resolved from `CLAUDE_SESSION_ID`). It sources from the teatree `Task` model — the durable, DB-backed tasks teatree persists per session — and merges the harness `TodoWrite` list captured for the same session, so one view covers both.
+`--session` scopes the list to the **current harness session** (resolved via `current_session_id()` — `CLAUDE_SESSION_ID`, the loop-session override, then the loop registry). It surfaces both stores in two clearly-labeled sections: the **harness TODO** list (read from the harness task store on disk) and the teatree `Task` rows persisted for the same session.
 
-Drop `--session` for the unscoped queue across every ticket; add `--status` / `--execution-target` to filter either view.
+Drop `--session` for the unscoped teatree-tasks queue across every ticket; add `--status` / `--execution-target` to filter the teatree-tasks view.
 
 ## Output contract
 
-- Groups in fixed order — `pending`, `in_progress`, `completed`. Each group header carries its count; an empty group is omitted.
-- A task line is `task #<id> (ticket #<n> <phase>): <reason>`; a harness todo line is `todo: <text>`.
-- `claimed` tasks show under `in_progress`; `failed` tasks show under `completed` (both terminal-or-active states the user reads as "done with for now").
-- No active Claude session → one line saying so (an anonymous caller has no session-scoped list).
-- Nothing on the list → one line: `No todos for this session.`
+- Two labeled sections, never merged: **`harness TODOs`** first, then **`teatree tasks`**. Each section header carries its total count; an empty section is omitted entirely.
+- Within each section, groups in fixed order — `pending`, `in_progress`, `completed` — each with its own count; an empty group is omitted.
+- A teatree-task line is `task #<id> (ticket #<n> <phase>): <reason>`; a harness-TODO line is `todo: <text>`.
+- `claimed` teatree tasks show under `in_progress`; `failed` show under `completed` (both states the user reads as "done with for now").
+- No active harness session → one line saying so (an anonymous caller has no session-scoped list).
+- Nothing in either store → one line: `No todos for this session.`
 - No preamble, no "Here is your list."
 
 Keep references clickable when surfacing them to the user — link a ticket/PR id, never paste a bare number.

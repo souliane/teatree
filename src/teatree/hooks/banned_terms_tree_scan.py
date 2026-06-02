@@ -191,16 +191,28 @@ def git_tracked_files(repo_root: Path) -> list[Path]:
 
 
 def scan_tree(repo_root: Path, terms: tuple[str, ...]) -> list[TreeFinding]:
-    """Scan every tracked text file's content for high-confidence brands."""
+    """Scan every tracked text file for committed brands and conflated terminology.
+
+    Two passes per file: the operator-supplied high-confidence brand list
+    (a clean no-op when none is configured) and the built-in terminology
+    gate (``terminology_gate``), which flags teatree-internal vocabulary
+    conflations regardless of any operator config.
+    """
+    from teatree.hooks import terminology_gate  # noqa: PLC0415
+
     pattern = build_brand_pattern(terms)
-    if pattern is None:
-        return []
     findings: list[TreeFinding] = []
     for path in git_tracked_files(repo_root):
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        lines = text.splitlines()
         rel = path.relative_to(repo_root).as_posix()
-        findings.extend(TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, pattern))
+        if pattern is not None:
+            findings.extend(TreeFinding(rel, lineno, term, line) for lineno, term, line in scan_text(text, pattern))
+        if not terminology_gate.path_is_exempt(rel):
+            for lineno, finding in terminology_gate.scan_text(text):
+                term = f"{finding.phrase} — {finding.correction}"
+                findings.append(TreeFinding(rel, lineno, term, lines[lineno - 1]))
     return findings

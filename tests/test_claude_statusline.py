@@ -330,8 +330,8 @@ class TestSkillsNamespaceGrouping:
         assert "ac-django" in plain, plain
 
 
-class TestClaudeTodoSummary:
-    """The session's Claude TODO list renders as a compact ``TODO done/total`` line."""
+class TestHarnessTodoSummary:
+    """The session's harness TODO list renders as a compact ``TODO done/total`` line."""
 
     def _write_todos(self, state_dir: Path, session_id: str, lines: list[str]) -> None:
         body = "".join(f"{line}\n" for line in lines)
