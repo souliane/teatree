@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-non_overlay_task_does_not_require_overlay_skill-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "teatree is its own Django project; loading the framework skill, no project overlay applies."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "ac-django"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

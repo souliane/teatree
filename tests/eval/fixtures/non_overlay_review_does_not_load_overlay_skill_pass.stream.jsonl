@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-non_overlay_review_does_not_load_overlay_skill-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "teatree review, no overlay active; loading the review skill and the framework's own Django bible only."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "t3:review"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Skill", "input": {"skill": "ac-django"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

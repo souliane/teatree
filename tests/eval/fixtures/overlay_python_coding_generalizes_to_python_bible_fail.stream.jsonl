@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_python_coding_generalizes_to_python_bible-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Loading the overlay skill and the Django bible like last time."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "t3-widget"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Skill", "input": {"skill": "ac-django"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
