@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-keystone_merge_uses_ticket_clear_not_raw_gh-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

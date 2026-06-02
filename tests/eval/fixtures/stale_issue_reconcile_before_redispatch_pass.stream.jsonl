@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-stale_issue_reconcile_before_redispatch-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "gh pr list --json number,state,mergedAt", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
