@@ -2614,6 +2614,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ config        Overlay configuration.                                         │
 │ gate          Enforcement-gate kill-switches (self-rescue).                  │
 │ speed         Parallel-work throughput dial.                                 │
+│ autonomy      Per-overlay trust switch (collapses the approval gates).       │
 │ worktree      Per-worktree FSM operations.                                   │
 │ workspace     Ticket-level workspace operations (every worktree in the       │
 │               ticket).                                                       │
@@ -2887,6 +2888,56 @@ Usage: t3 teatree speed set [OPTIONS] LEVEL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree autonomy`
+
+```
+Usage: t3 teatree autonomy [OPTIONS] COMMAND [ARGS]...
+
+ Per-overlay trust switch (collapses the approval gates).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Show the effective autonomy tier (env > per-overlay > global >         │
+│       default).                                                              │
+│ set   Persist the autonomy knob. A typo is rejected; the safety floor is     │
+│       never relaxed.                                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree autonomy show`
+
+```
+Usage: t3 teatree autonomy show [OPTIONS]
+
+ Show the effective autonomy tier (env > per-overlay > global > default).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree autonomy set`
+
+```
+Usage: t3 teatree autonomy set [OPTIONS] LEVEL
+
+ Persist the autonomy knob. A typo is rejected; the safety floor is never
+ relaxed.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    level      TEXT  babysit | notify | full [required]                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay name to scope the value to (default: the      │
+│                        active overlay). Ignored with --global.               │
+│ --global               Write the workspace-wide  default instead of a        │
+│                        per-overlay value.                                    │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
