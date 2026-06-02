@@ -282,6 +282,10 @@ def _cadence_for_loop(name: str) -> int:
         from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds  # noqa: PLC0415
 
         return _loop_owner_ttl_seconds()
+    if name == "loop-drain-queue":
+        from teatree.loop.queue_drain import drain_cadence_seconds  # noqa: PLC0415
+
+        return drain_cadence_seconds()
     return _cadence_seconds()
 
 

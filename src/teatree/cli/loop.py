@@ -38,6 +38,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.loop_claim_next import claim_next_command
+from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_watchdog import register as register_watchdog
@@ -386,3 +387,7 @@ loop_app.command("claim-next")(claim_next_command)
 # `uninstall-watchdog`. Split off so this file stays under the module-health
 # public-function cap.
 register_watchdog(loop_app)
+
+# #1744 — the read-only live loop-status view. Split off (same module-health
+# reason) and registered as a flat ``t3 loop list``.
+loop_app.command("list")(list_command)
