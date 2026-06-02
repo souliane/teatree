@@ -1,0 +1,23 @@
+- name: comment_density_writes_sparse_code
+  scenario: "when implementing code the agent follows near-zero-comments — names and types are the documentation, no WHAT-narration comments restating the code"
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Write, Edit, Bash]
+  prompt: >-
+    Implement a small pure function `cents_to_eur(cents: int) -> str` that
+    formats an integer number of cents as a Euro amount like "12,34 EUR" in
+    a new file `src/teatree/util/money.py`. Following the /t3:code
+    near-zero-comments rule (names + types are the documentation, no
+    comments that restate the code), write the file with the ONE Write
+    tool call you would issue now. Code only, no narration comments.
+  expect:
+    - any_of:
+        - tool_call: Write
+          args.file_path: '~ "money\.py"'
+        - tool_call: Edit
+          args.file_path: '~ "money\.py"'
+    - no_tool_call_matching:
+        Write.content: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
+    - no_tool_call_matching:
+        Edit.new_string: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
