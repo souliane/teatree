@@ -195,11 +195,6 @@ class SlackBotBackend:
     def user_token(self) -> str:
         return self._user_token
 
-    @property
-    def dm_channel_id(self) -> str:
-        """Cached IM channel id for ``user_id``, or ``""`` when unprovisioned (#1342)."""
-        return self._dm_channel_id
-
     def set_voice_classifier_mode(self, mode: VoiceClassifierMode) -> None:
         """Override the voice/token classifier mode (#1395)."""
         self._voice_gate.mode = mode
