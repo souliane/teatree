@@ -40,7 +40,7 @@ from teatree.utils.run import CommandFailedError
 # Branch names that are never a sub-agent *work* branch: a worktree resolved
 # to one of these (or to a detached HEAD) is a base checkout or a read-only
 # review worktree, not a feature branch that was supposed to accumulate commits.
-_NON_WORK_BRANCHES = frozenset({"main", "master", "development", "develop", "HEAD"})
+NON_WORK_BRANCHES = frozenset({"main", "master", "development", "develop", "HEAD"})
 
 
 class NoCommitVerdict(Enum):
@@ -101,7 +101,7 @@ def _resolve_work_branch(worktree: str) -> NoCommitFinding | str:
         return NoCommitFinding(NoCommitVerdict.UNDETERMINED, worktree=worktree)
     if not branch:
         return NoCommitFinding(NoCommitVerdict.UNDETERMINED, worktree=worktree)
-    if branch in _NON_WORK_BRANCHES:
+    if branch in NON_WORK_BRANCHES:
         return NoCommitFinding(NoCommitVerdict.NOT_A_WORK_BRANCH, worktree=worktree, branch=branch)
     return branch
 
