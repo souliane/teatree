@@ -651,7 +651,9 @@ def fetch_required_checks_status(slug: str, pr_id: int, *, host_kind: str = "git
 
     Dispatches on *host_kind*: GitHub uses ``gh pr view --json
     statusCheckRollup``; GitLab uses ``glab api .../merge_requests/<iid>/
-    pipelines`` (head pipeline status) — an MR with no pipeline at all is
+    pipelines`` and reads the status of the pipeline whose ``sha`` matches the
+    MR head SHA — merge-train pipelines (interleaved ahead on transient train
+    SHAs, frequently canceled) are ignored. An MR with no pipeline at all is
     "green" (no required checks to satisfy), mirroring the GitHub
     rollup-empty path.
     """
@@ -705,6 +707,63 @@ def _classify_gitlab_pipeline(status: str) -> str:
     return "failed"
 
 
+class _GitlabPipeline(TypedDict, total=False):
+    """One entry of ``glab api .../merge_requests/<iid>/pipelines``."""
+
+    id: object
+    sha: object
+    ref: object
+    source: object
+    status: object
+
+
+def _is_merge_train_pipeline(pipeline: _GitlabPipeline) -> bool:
+    ref = str(pipeline.get("ref") or "")
+    source = str(pipeline.get("source") or "")
+    return source == "merge_train" or "/train" in ref
+
+
+def _select_gitlab_head_pipeline(
+    pipelines: list[object],
+    head_sha: str,
+    *,
+    slug: str,
+    pr_id: int,
+) -> _GitlabPipeline | None:
+    """Pick the pipeline for the MR head commit, ignoring merge-train pipelines.
+
+    The ``…/merge_requests/<iid>/pipelines`` endpoint interleaves merge-train
+    pipelines (each on a transient train SHA, often canceled the moment the
+    train re-bases) ahead of the real head-branch pipeline, so ``pipelines[0]``
+    is not reliably the head pipeline. Match on the MR head SHA instead. When
+    the head SHA is known but no pipeline matches it, the head commit has no
+    pipeline of its own — return ``None`` so the caller fails closed rather
+    than reading an unrelated commit's pipeline. The newest non-train pipeline
+    is used only when the head SHA could not be fetched at all.
+    """
+    entries = [cast("_GitlabPipeline", p) for p in pipelines if isinstance(p, dict)]
+    candidates = [e for e in entries if not _is_merge_train_pipeline(e)]
+    if head_sha:
+        for pipeline in candidates:
+            if str(pipeline.get("sha") or "") == head_sha:
+                return pipeline
+        logger.info(
+            "merge_execution: no GitLab pipeline matches MR head %s for %s#%s "
+            "(non-train candidates: %s) — failing closed",
+            head_sha,
+            slug,
+            pr_id,
+            [str(p.get("sha") or "") for p in candidates],
+        )
+        return None
+    logger.info(
+        "merge_execution: GitLab MR head SHA unavailable for %s#%s — falling back to newest non-train pipeline",
+        slug,
+        pr_id,
+    )
+    return candidates[0] if candidates else None
+
+
 def _fetch_required_checks_status_gitlab(slug: str, pr_id: int) -> str:
     rc, out, _ = _run_glab(
         ["api", f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"],
@@ -721,9 +780,9 @@ def _fetch_required_checks_status_gitlab(slug: str, pr_id: int) -> str:
     # the GitHub empty-rollup branch).
     if not pipelines:
         return "green"
-    # The head pipeline is the first entry (GitLab orders by id desc).
-    head = pipelines[0]
-    if not isinstance(head, dict):
+    head_sha = _fetch_live_head_sha_gitlab(slug, pr_id)
+    head = _select_gitlab_head_pipeline(pipelines, head_sha, slug=slug, pr_id=pr_id)
+    if head is None:
         return "failed"
     return _classify_gitlab_pipeline(str(head.get("status") or ""))
 

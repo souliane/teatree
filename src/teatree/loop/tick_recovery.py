@@ -7,6 +7,7 @@ orphaned ticket state), and the agent/mechanical helpers after dispatch
 produces actions.
 """
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -17,34 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 def _reap_stale_task_claims() -> None:
-    """Recover orphaned ticket state, take over orphaned claims, reap stale ones.
+    """Run the boot sweeps from the loop tick, swallowing a DB-blocked harness.
 
-    Three boot/tick recovery sweeps, ordered so a recoverable row is
-    rescued before a harsher sweep can fail it. First,
-    ``replay_orphaned_transitions`` (#883): a task that COMPLETED but
-    whose FSM transition was lost to a mid-transition crash leaves the
-    ticket half-advanced; the task is COMPLETED (not CLAIMED) so the
-    claim sweeps can't see it and the loop stalls forever — this replays
-    the dropped transition via the shared idempotent path. Then
-    ``reclaim_orphaned_claims`` (#652): a CLAIMED task whose lease
-    expired because its owning session exited mid-task is recoverable —
-    returned to PENDING so another still-open session resumes it
-    ("fastest open session takes over") rather than being failed.
-    Finally ``reap_stale_claims``: any residual stale CLAIMED row is
-    failed.
-
-    Best-effort: if the test harness blocks DB access (pytest-django
-    without a ``db`` marker), the loop tick should still render scanners
-    and signals.
+    Best-effort wrapper over :func:`teatree.core.recovery_sweeps.run_boot_sweeps`
+    (the single SSOT, shared with ``t3 recover``): if the test harness blocks DB
+    access (pytest-django without a ``db`` marker), the loop tick should still
+    render scanners and signals.
     """
-    import contextlib  # noqa: PLC0415
-
-    from teatree.core.models import Task  # noqa: PLC0415
+    from teatree.core.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415
 
     with contextlib.suppress(RuntimeError):
-        Task.objects.replay_orphaned_transitions()
-        Task.objects.reclaim_orphaned_claims()
-        Task.objects.reap_stale_claims()
+        run_boot_sweeps()
 
 
 def _persist_agent_dispatches(report: "TickReport") -> None:
