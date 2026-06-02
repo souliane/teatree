@@ -18,6 +18,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ speak           Read text aloud per the resolved speak_mode + speak_target   │
+│                 (no-op when off).                                            │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
@@ -143,6 +145,24 @@ Usage: t3 cost [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the structured report as JSON.                          │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 speak`
+
+```
+Usage: t3 speak [OPTIONS] TEXT
+
+ Read text aloud per the resolved speak_mode + speak_target (no-op when off).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
+│                        creds).                                               │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

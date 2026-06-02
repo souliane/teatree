@@ -7237,6 +7237,82 @@ def _run_bare_reference_stop(data: dict) -> bool | None:
     return True
 
 
+# ── Stop: read the final reply aloud when speak_mode == all (#1791) ──────────
+#
+# The "all" arm of the local text-to-speech feature: when the agent finishes a
+# turn, read the transcript's last assistant text block aloud. The IM/DM arm
+# ("im-only") rides ``notify_user`` in-process; this is the additional arm
+# ``all`` enables. It NEVER blocks/denies (returns None, writes no stdout JSON
+# so it cannot be read as a Stop decision) and NEVER delays the session: the
+# whole job is handed to a detached ``t3 speak`` subprocess that synthesises +
+# plays + uploads on its own time and outlives this fast hook. The effective
+# mode (binary gate + config) is re-checked inside ``t3 speak`` (a clean no-op
+# when off); a cheap toml pre-check here avoids spawning Django on every Stop.
+
+
+def _speak_mode_setting() -> str:
+    """Read ``[teatree] speak_mode`` from ``~/.teatree.toml`` (default ``off``).
+
+    Mirrors the other toml-read gates' shape. Best-effort: a missing or
+    malformed config, or no ``[teatree]`` table, yields ``off`` so the
+    Stop arm stays silent unless the user explicitly opted in.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return "off"
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
+        return "off"
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return "off"
+    value = teatree.get("speak_mode")
+    return value if isinstance(value, str) else "off"
+
+
+def handle_speak_all_on_stop(data: dict) -> None:
+    """Speak the final assistant reply when ``speak_mode == all`` (#1791).
+
+    Pre-checks the toml setting (only ``all`` triggers this arm — ``im-only``
+    is handled in ``notify_user``) and the ``say`` binary, then hands the
+    last assistant text to a detached ``t3 speak`` subprocess. Returns
+    ``None`` unconditionally (a Stop side-effect handler, never a decision)
+    and is crash-proof: any error is contained to a stderr line.
+    """
+    try:
+        if _speak_mode_setting().strip().lower() != "all":
+            return
+        if shutil.which("say") is None or shutil.which("t3") is None:
+            return
+        turn = _last_assistant_turn(data.get("transcript_path", ""))
+        if turn is None:
+            return
+        text = turn[0].strip()
+        if not text:
+            return
+        overlay = os.environ.get("T3_OVERLAY_NAME", "")
+        argv = [shutil.which("t3") or "t3", "speak", text]
+        if overlay:
+            argv.extend(["--overlay", overlay])
+        subprocess.Popen(  # noqa: S603 — detached, fire-and-forget; speak is best-effort
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — Stop hook must be crash-proof
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] speak-on-stop skipped (unexpected error: {exc})",
+            file=sys.stderr,
+        )
+    return
+
+
 # ── Closure-verb re-verify advisory (#1448) ─────────────────────────────────
 #
 # The orchestrator has claimed a closure ("merged #N", "closed !N", "confirmed
@@ -7759,6 +7835,7 @@ _HANDLERS: dict[str, list] = {
         handle_closure_reverify_stop,
         handle_bare_reference_stop,
         handle_consideration_gate,
+        handle_speak_all_on_stop,
         handle_loop_self_pump,
     ],
     "SubagentStop": [handle_subagent_stop_no_commit],
