@@ -189,6 +189,71 @@ class TestLoopSelfPump:
         assert _decision(capsys) == {}
         assert result is not True
 
+    def test_all_loops_disabled_makes_owner_stop_hook_a_noop(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``T3_LOOPS_DISABLED=all`` fully prunes the loop. The owner session
+        # with stale pending work must NOT pump — re-running ``t3 loop tick``
+        # then only runs the always-on dispatch scanner (no useful work)
+        # while the pending Tasks keep re-arming the pump every interval: a
+        # busy-loop the prune is meant to silence.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_all_loops_disabled_does_not_probe_pending_work(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The kill-switch is checked BEFORE any ``pending-spawn`` subprocess —
+        # a fully pruned owner session must not even shell out to ``t3``.
+        _own_loop("owner-1")
+        probed = {"called": False}
+
+        def _spy() -> list[dict]:
+            probed["called"] = True
+            return [{"task_id": 1, "subagent": "x", "phase": "c", "issue_url": "u"}]
+
+        monkeypatch.setattr(router, "_consolidated_pending_work", _spy)
+        monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert probed["called"] is False
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_loops_disabled_all_is_whitespace_and_case_tolerant(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        monkeypatch.setenv("T3_LOOPS_DISABLED", " tick , ALL ")
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_named_loop_disable_does_not_suppress_self_pump(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Only the ``all`` sentinel fully prunes. A named-loop disable
+        # (e.g. just the review scanner) leaves the owner pumping its
+        # genuine pending work — the prune is per-scanner, not global.
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 9, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+        monkeypatch.setenv("T3_LOOPS_DISABLED", "review,self-improve")
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
     def test_anti_spin_suppresses_immediate_repeat(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

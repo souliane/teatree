@@ -5377,6 +5377,27 @@ def handle_loop_self_pump(data: dict) -> bool | None:
 _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
+def _all_loops_disabled() -> bool:
+    """Does ``T3_LOOPS_DISABLED`` fully prune the loop for this session?
+
+    Mirrors the ``all`` sentinel of ``teatree.loops.config._env_disabled_names``
+    without importing ``teatree`` (a Stop hook runs under whatever
+    interpreter the harness invokes, where ``teatree`` may be absent —
+    #810). The orchestrator gates every ``t3 loop tick`` job through that
+    same env var; the Stop self-pump is the in-session counterpart of a
+    tick, so it must honour the kill-switch identically. ``T3_LOOPS_DISABLED=all``
+    means every non-always-on loop is off — re-pumping then only re-runs the
+    one ``always_on`` ``dispatch`` scanner, doing no useful work while the
+    pending Tasks that drive ``pending-spawn`` keep the pump re-arming every
+    interval. That is the busy-loop the prune is meant to silence, so a fully
+    pruned session never pumps.
+    """
+    raw = os.environ.get("T3_LOOPS_DISABLED", "").strip()
+    if not raw:
+        return False
+    return any(part.strip().lower() == "all" for part in raw.split(","))
+
+
 def _self_pump_suppressed(session_id: str) -> bool:
     """Is the Stop self-pump gated off for this session (#959)?
 
@@ -5392,11 +5413,18 @@ def _self_pump_suppressed(session_id: str) -> bool:
     per-agent consolidation slot stays as a secondary cross-session
     dedup, NOT a substitute for this gate.
 
+    ``T3_LOOPS_DISABLED=all`` fully prunes the loop (the same kill-switch
+    the orchestrator honours per tick job): the owner's Stop hook becomes
+    a clean no-op so a pruned environment cannot busy-loop on stale
+    pending work.
+
     Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy in the
     session's env makes even the owner's Stop hook a clean no-op, so a
     session can stop driving the loop in-process without touching the
     registry or ending the session.
     """
+    if _all_loops_disabled():
+        return True
     if os.environ.get("T3_LOOP_DISOWN", "").strip() not in _DISOWN_FALSEY:
         return True
     return not _session_owns_loop(session_id)
