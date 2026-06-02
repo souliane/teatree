@@ -180,10 +180,52 @@ class, where it is pinned, and the originating fix:
 | do-work-now (run the command, don't hand back) | `scenarios/do_work_now.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
 | BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
+| overlay-defined skill set loaded (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
 ticket, …) cover the remaining classes already shipped on this branch.
+
+### Skill-routing scenarios (`scenarios/skill_routing.yaml`)
+
+These pin that a trajectory loads the skill set the **active overlay declares**,
+not a hardcoded list. The overlay's declaration is the ground truth:
+
+- `OverlayConfig.companion_skills` — the standing dev + project skills loaded
+  alongside the lifecycle skill (the overlay skill, `/backend-dev` or
+  `/frontend-dev`, the project's legal-entity skill).
+- `OverlayBase.get_review_companion_skills()` → `[pr_review_companion,
+  *companion_skills]` — the deduped set a reviewer must hold, threaded through
+  `SkillLoadingPolicy.select_for_runtime_phase(review_skills=…)` and
+  `agents.skill_bundle.active_overlay_review_skills()`.
+
+Core stays overlay-agnostic (BLUEPRINT § 1), so the prompts use placeholder
+identities — `t3-widget` for the overlay skill, `widget-le` for its
+legal-entity review skill, `widget-product` / `widget-workspace` for its repos.
+An installed overlay supplies the real names via its own `eval/scenarios/`
+directory; the contract under test is identical. Each prompt names that
+overlay-declared set and grading inspects the agent's `Skill` tool calls
+(`input.skill`). Four cases:
+
+- **Positive — overlay task** (`overlay_repo_task_loads_overlay_skill`): a task
+  in an overlay repo must load the overlay skill and the dev skill before
+  editing. Missing the overlay skill → FAIL.
+- **Positive — overlay review**
+  (`overlay_review_loads_overlay_review_skill_set`): a review on an overlay
+  legal-entity repo must load the overlay skill, `/t3:review`, the dev skill,
+  and the legal-entity skill. This is the null-review incident (a review ran
+  without the overlay and legal-entity skills); the reviewing-phase evidence
+  gate ([review-skill evidence gate](https://github.com/souliane/teatree/issues/1539))
+  is the code-side complement.
+- **Positive — dynamic-workflow review**
+  (`workflow_spawned_review_loads_overlay_skill_set`): a review running inside a
+  spawned sub-agent starts cold (skill prose does not propagate into a spawned
+  agent — see `skills/ship/SKILL.md` § "Review Gate"), so the overlay set named
+  in its dispatch prompt must be self-loaded before the diff is read.
+- **Negative — non-overlay task**
+  (`non_overlay_task_does_not_require_overlay_skill`): a teatree-only change
+  loads its framework skill but must NOT pull in the overlay skill; absence of
+  the overlay skill is the PASS condition there.
 
 ## Run history and baselines
 
