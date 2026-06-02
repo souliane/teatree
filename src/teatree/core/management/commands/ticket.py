@@ -30,6 +30,13 @@ class CommentResult(TypedDict, total=False):
     error: str
 
 
+class CreateSubResult(TypedDict, total=False):
+    parent_url: str
+    child_iid: int
+    child_url: str
+    error: str
+
+
 class MergeKeystoneResult(TypedDict, total=False):
     merged: bool
     pr_id: int
@@ -497,6 +504,65 @@ class Command(TyperCommand):
             }
 
         return {"error": f"No code host could be resolved for {issue_url}"}
+
+    @command(name="create-sub")
+    def create_sub(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public --parent/--title/--description/--description-file/--labels/--type surface (same rationale as `clear`), not an internal design smell.
+        self,
+        *,
+        parent: Annotated[str, typer.Option(help="Parent issue/work-item URL the child is nested under.")] = "",
+        title: Annotated[str, typer.Option(help="Title of the child work item.")] = "",
+        description: Annotated[str, typer.Option(help="Child description text.")] = "",
+        description_file: Annotated[str, typer.Option(help="Path to a file containing the child description.")] = "",
+        labels: Annotated[str, typer.Option(help="Comma-separated labels for the child.")] = "",
+        type: Annotated[str, typer.Option(help="Child work-item type: Task (default), Incident, or Issue.")] = "Task",  # noqa: A002 — the public CLI flag is ``--type``; shadowing the builtin here is the option name, not a usage.
+    ) -> CreateSubResult:
+        """Create a child work item nested under a parent issue/work item.
+
+        Resolves the code host per-URL across all registered overlays (the
+        same resolver ``comment`` uses). On GitLab the child is created, then
+        converted to ``--type`` and linked under ``--parent`` as one operation
+        — an Issue→Issue parent link is forbidden, so the default ``Task`` is
+        the natural sub-item. Pass the description inline with ``--description``
+        or from a file with ``--description-file``. Prints the child IID and URL
+        for chaining into dispatch prompts.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        from teatree.backends.loader import get_code_host_for_url  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
+
+        if not parent.strip() or not title.strip():
+            return {"error": "create-sub refused: --parent and --title are both required"}
+
+        body = Path(description_file).read_text(encoding="utf-8") if description_file else description
+        label_list = [label.strip() for label in labels.split(",") if label.strip()]
+
+        for overlay in get_all_overlays().values():
+            host = get_code_host_for_url(overlay, parent)
+            if host is None:
+                continue
+            raw = host.create_sub_issue(
+                parent_url=parent,
+                title=title,
+                body=body,
+                labels=label_list,
+                child_type=type,
+            )
+            error = raw.get("error") if isinstance(raw, dict) else None
+            if error:
+                self.stdout.write(f"  failed: {error}")
+                return {"error": str(error)}
+            child_iid = raw.get("iid") if isinstance(raw, dict) else None
+            child_url = raw.get("web_url") if isinstance(raw, dict) else None
+            child_url = str(child_url) if isinstance(child_url, str) else ""
+            self.stdout.write(f"  created #{child_iid} {child_url}")
+            return {
+                "parent_url": parent,
+                "child_iid": child_iid if isinstance(child_iid, int) else 0,
+                "child_url": child_url,
+            }
+
+        return {"error": f"No code host could be resolved for {parent}"}
 
     @command(name="list")
     def list_tickets(self, state: str = "", overlay: str = "") -> list[dict[str, object]]:

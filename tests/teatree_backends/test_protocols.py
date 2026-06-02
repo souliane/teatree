@@ -111,6 +111,18 @@ class _FakeCodeHost:
         _ = (repo, title, body, labels)
         return {}
 
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> dict[str, object]:
+        _ = (parent_url, title, body, labels, child_type)
+        return {}
+
     def search_open_issues(self, *, repo: str, query: str) -> list[dict[str, object]]:
         _ = (repo, query)
         return []

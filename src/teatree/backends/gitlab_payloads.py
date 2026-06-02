@@ -20,6 +20,89 @@ query($projectPath: ID!, $iid: String!) {
 }
 """
 
+WORK_ITEM_ID_QUERY = """\
+query($projectPath: ID!, $iid: String!) {
+    project(fullPath: $projectPath) {
+        workItems(iids: [$iid]) {
+            nodes { id }
+        }
+    }
+}
+"""
+
+WORK_ITEM_TYPE_ID_QUERY = """\
+query($projectPath: ID!) {
+    workspace: namespace(fullPath: $projectPath) {
+        workItemTypes {
+            nodes { id name }
+        }
+    }
+}
+"""
+
+WORK_ITEM_CONVERT_MUTATION = """\
+mutation($id: WorkItemID!, $typeId: WorkItemsTypeID!) {
+    workItemConvert(input: {id: $id, workItemTypeId: $typeId}) {
+        workItem { id }
+        errors
+    }
+}
+"""
+
+WORK_ITEM_SET_PARENT_MUTATION = """\
+mutation($id: WorkItemID!, $parentId: WorkItemID!) {
+    workItemUpdate(input: {id: $id, hierarchyWidget: {parentId: $parentId}}) {
+        workItem { id }
+        errors
+    }
+}
+"""
+
+
+def work_item_global_id(data: object) -> str | None:
+    nodes = dig(data, "data", "project", "workItems", "nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return None
+    first_node = nodes[0]
+    if not isinstance(first_node, Mapping):
+        return None
+    gid = cast("Mapping[str, object]", first_node).get("id")
+    return gid if isinstance(gid, str) else None
+
+
+def work_item_type_global_id(data: object, type_name: str) -> str | None:
+    nodes = dig(data, "data", "workspace", "workItemTypes", "nodes")
+    if not isinstance(nodes, list):
+        return None
+    wanted = type_name.casefold()
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        node_dict = cast("Mapping[str, object]", node)
+        name = node_dict.get("name")
+        gid = node_dict.get("id")
+        if isinstance(name, str) and name.casefold() == wanted and isinstance(gid, str):
+            return gid
+    return None
+
+
+def mutation_errors(data: object, mutation: str) -> list[str]:
+    errors = dig(data, "data", mutation, "errors")
+    if isinstance(errors, list):
+        return [str(error) for error in errors]
+    top_level = dig(data, "errors")
+    if isinstance(top_level, list):
+        return [str(_error_message(entry)) for entry in top_level]
+    return []
+
+
+def _error_message(entry: object) -> str:
+    if isinstance(entry, Mapping):
+        message = cast("Mapping[str, object]", entry).get("message")
+        if isinstance(message, str):
+            return message
+    return str(entry)
+
 
 def status_from_work_item_payload(data: object) -> str | None:
     """Extract the Status-widget name from a work-item GraphQL payload.
