@@ -164,17 +164,17 @@ class TestInputLengthCap:
         assert sentinel in stripped
 
     def test_unterminated_open_tag_flood_stays_fast(self) -> None:
-        # Defense-in-depth (NOT the primary assertion): ~200 KB of
-        # unclosed open tags — the O(n²) trigger — must complete well under
-        # 2s once the cap is applied. CI timing is noisy, so this is a
-        # generous guard layered on top of the deterministic cap test.
+        # Defense-in-depth (NOT the primary assertion): ~200 KB of unclosed
+        # open tags — the O(n²) trigger — burns little CPU once the cap applies.
+        # process_time (CPU, not wall-clock) keeps the guard immune to the
+        # scheduler contention of a parallel `-n auto` run.
         import time  # noqa: PLC0415
 
         flood = "<system-reminder> blog " * 9000
         assert len(flood) > 200_000
-        start = time.monotonic()
+        start = time.process_time()
         _strip_ambient_context(flood)
-        assert time.monotonic() - start < 2.0
+        assert time.process_time() - start < 2.0
 
 
 class TestAmbientKeywordDoesNotEnterSuggestions:
