@@ -53,8 +53,17 @@ class TestScalarArgCoercion:
         with pytest.raises(AssertionError):
             assert_tool_call_matching(run, "Bash", "run_in_background", "(?i)true")
 
-    def test_container_arg_is_not_matchable(self) -> None:
-        run = _run([EvalToolCall(name="Bash", input={"command": ["a", "b"]}, turn=1)])
+    def test_list_arg_is_searched_via_json(self) -> None:
+        # A structured list arg (e.g. AskUserQuestion's `questions`) is
+        # JSON-serialized so a regex can search its contents — otherwise a
+        # structured-arg tool would be silently unmatchable.
+        run = _run(
+            [EvalToolCall(name="AskUserQuestion", input={"questions": [{"question": "upstream or overlay?"}]}, turn=1)]
+        )
+        assert_tool_call_matching(run, "AskUserQuestion", "questions", "(?i)upstream")
+
+    def test_none_arg_is_not_matchable(self) -> None:
+        run = _run([EvalToolCall(name="Bash", input={"command": None}, turn=1)])
         with pytest.raises(AssertionError):
             assert_tool_call_matching(run, "Bash", "command", "a")
 

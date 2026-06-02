@@ -5,6 +5,7 @@ message so a failed eval shows what the agent actually did, not just that
 it didn't match.
 """
 
+import json
 import re
 
 from teatree.eval.models import EvalRun, EvalToolCall
@@ -20,16 +21,21 @@ def _get_arg(call: EvalToolCall, arg_path: str) -> object:
 
 
 def _as_text(value: object) -> str | None:
-    """Comparable string form of an arg value, or ``None`` if not scalar.
+    """Comparable string form of an arg value, or ``None`` if not matchable.
 
     A string compares as itself. A boolean / number (e.g. Bash's
     ``run_in_background: true``) compares as its ``str()`` form so a matcher
-    can pin it. Containers and ``None`` are not matchable.
+    can pin it. A list/dict argument (e.g. ``AskUserQuestion``'s structured
+    ``questions`` list, ``MultiEdit``'s ``edits``) is JSON-serialized so a
+    regex matcher can search its contents — without this a structured-arg tool
+    is unmatchable and the scenario silently vacuous. ``None`` is not matchable.
     """
     if isinstance(value, str):
         return value
     if isinstance(value, bool | int | float):
         return str(value)
+    if isinstance(value, list | dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return None
 
 

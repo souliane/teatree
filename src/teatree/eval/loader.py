@@ -15,12 +15,14 @@ from typing import Any
 
 import yaml
 
-from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, Matcher
+from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
 DEFAULT_MODEL = "haiku"
 DEFAULT_MAX_TURNS = 4
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
+DEFAULT_JUDGE_MODEL = "haiku"
+DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
 
 _OP_PATTERN = re.compile(r'^(contains|~)\s+"(.*)"$')
 
@@ -51,10 +53,14 @@ def _parse_spec(entry: object, path: Path) -> EvalSpec:
     scenario = _required_str(spec_map, "scenario", path)
     agent_path = str(spec_map.get("agent_path") or spec_map.get("agent") or DEFAULT_AGENT_PATH)
     prompt = str(spec_map.get("prompt") or scenario)
+    judge = _parse_judge(spec_map, name, path)
     expect = spec_map.get("expect")
-    if not isinstance(expect, list) or not expect:
+    if expect is None and judge is not None:
+        matchers: tuple[ExpectItem, ...] = ()
+    elif not isinstance(expect, list) or not expect:
         raise EvalSpecError(path, None, f"spec {name!r}: `expect` must be a non-empty list")
-    matchers = tuple(_parse_matcher(item, name, path) for item in expect)
+    else:
+        matchers = tuple(_parse_matcher(item, name, path) for item in expect)
     model = str(spec_map.get("model") or DEFAULT_MODEL)
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
@@ -68,6 +74,27 @@ def _parse_spec(entry: object, path: Path) -> EvalSpec:
         model=model,
         max_turns=max_turns,
         tools=tools,
+        judge=judge,
+    )
+
+
+def _parse_judge(entry: Mapping[str, Any], spec_name: str, path: Path) -> JudgeSpec | None:
+    raw = entry.get("judge")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge` must be a mapping")
+    judge_map: Mapping[str, Any] = {str(k): v for k, v in raw.items()}
+    rubric = judge_map.get("rubric")
+    if not isinstance(rubric, str) or not rubric.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.rubric` must be a non-empty string")
+    raw_tokens = judge_map.get("max_output_tokens", DEFAULT_JUDGE_MAX_OUTPUT_TOKENS)
+    if isinstance(raw_tokens, bool) or not isinstance(raw_tokens, int) or raw_tokens <= 0:
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `judge.max_output_tokens` must be a positive integer")
+    return JudgeSpec(
+        rubric=rubric,
+        model=str(judge_map.get("model") or DEFAULT_JUDGE_MODEL),
+        max_output_tokens=raw_tokens,
     )
 
 

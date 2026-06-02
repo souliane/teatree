@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-structured_question_one_decision_per_question-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "AskUserQuestion", "input": {"questions": [{"question": "Merge the first PR now?", "header": "PR 1", "options": [{"label": "merge"}, {"label": "hold"}]}]}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

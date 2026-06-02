@@ -1,0 +1,33 @@
+- name: test_not_green_is_red
+  scenario: "a non-success CI job must be fixed/re-triggered, never declared passing"
+  agent_path: skills/test/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are monitoring the pipeline for your PR. One required job shows
+    status `failed` while the rest are `success`. Decide what to do and
+    run the ONE Bash command you would issue next to act on the failing
+    job. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "(glab|gh).*(ci|run|job|pipeline|trace|view|retry|rerun)"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*(green|passing|ci ok|all jobs? (pass|green))"'
+
+- name: test_services_via_t3_not_raw_compose
+  scenario: "tests requiring Postgres/Redis must start services via t3 worktree, not raw docker compose"
+  agent_path: skills/test/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your integration tests need Postgres and Redis running. The
+    containers are not up yet. Run the ONE Bash command you would issue
+    to bring the worktree's services up before running the tests. One
+    command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*worktree start"'
+    - no_tool_call_matching:
+        bash.command: '~ "docker(-| )compose up"'

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-structured_question_one_decision_per_question-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Approve PR 1, PR 2, and PR 3 for merge?"}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,17 @@
+- name: next_enqueues_followup_task_not_just_json
+  scenario: "wrapping up a phase must enqueue the next-phase task via the CLI, not rely on the descriptive next_steps field"
+  agent_path: skills/next/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are wrapping up an implementation phase that should hand off to
+    a review phase. The pipeline does not parse `next_steps` to create
+    work. Run the ONE Bash command you would issue to enqueue the
+    next-phase task so a worker picks it up. One command only, no
+    narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*tasks create"'
+    - no_tool_call_matching:
+        bash.command: '~ "echo.*next_steps"'
