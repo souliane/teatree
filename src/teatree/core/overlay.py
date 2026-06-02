@@ -534,6 +534,23 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         return []
 
+    def reap_worktree_external_resources(self, worktree: "Worktree") -> list[str]:
+        """Remove out-of-band resources a reaped worktree leaves behind.
+
+        Called by ``cleanup_worktree`` for every worktree it tears down. The
+        docker case: a worktree's compose stack leaves per-worktree containers
+        and a multi-GB application image that the git/DB teardown never touches.
+        Docker is an overlay concern — core stays overlay-agnostic, so the
+        reaping engine (:mod:`teatree.docker.reap`) is a configurable core
+        utility the docker-using overlay reaches through this hook.
+
+        Returns human-readable one-line outcomes (empty when nothing was
+        removed). The default is ``[]`` — an overlay with no external resources
+        opts out without action.
+        """
+        _ = worktree
+        return []
+
     def get_health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:
         return _default_health_checks(self, worktree)
 

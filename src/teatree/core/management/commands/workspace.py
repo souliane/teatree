@@ -27,6 +27,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     prune_branches,
     resolve_unsynced_worktree,
 )
+from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket import format_intake_summary
 from teatree.core.orphan_guard import find_orphans_in_workspace
@@ -558,7 +559,7 @@ class Command(TyperCommand):
         self,
         keep_dslr: int = typer.Option(1, help="Number of DSLR snapshots to keep per tenant."),
     ) -> list[str]:
-        """Prune merged worktrees, stale branches, orphaned stashes, orphan databases, and old DSLR snapshots."""
+        """Prune merged worktrees, stale branches, stashes, orphan databases + docker, and old DSLR snapshots."""
         workspace = _workspace_dir()
         cleaned: list[str] = []
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
@@ -576,6 +577,7 @@ class Command(TyperCommand):
                     cleaned.append(f"Removed empty dir: {entry.name}")
 
         cleaned.extend(drop_orphan_databases())
+        cleaned.extend(reap_orphan_worktree_docker())
 
         repo_root = Path.cwd()
         if (repo_root / ".git").exists():

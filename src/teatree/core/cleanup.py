@@ -15,7 +15,10 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from teatree.core.overlay import OverlayBase
 
 from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
@@ -477,6 +480,23 @@ def _worktree_has_work_to_lose(repo_main: Path, wt_path: str, worktree: Worktree
         return True
 
 
+def _reap_external_resources(overlay: "OverlayBase", worktree: Worktree, step_errors: list[str]) -> str:
+    """Run the overlay's external-resource reaper, returning a label suffix.
+
+    Appends a descriptive string to *step_errors* on failure (collect-and-
+    surface, never crash mid-teardown) and returns the joined outcomes as a
+    ``" — …"`` suffix for the cleanup label, or ``""`` when nothing was removed
+    or the reaper failed.
+    """
+    try:
+        reaped = overlay.reap_worktree_external_resources(worktree)
+    except Exception as exc:
+        logger.exception("external-resource reap failed for %s (%s)", worktree.repo_path, worktree.branch)
+        step_errors.append(f"external-resource reap failed for {worktree.branch}: {exc}")
+        return ""
+    return " — " + "; ".join(reaped) if reaped else ""
+
+
 def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True) -> CleanupResult:
     """Remove a single worktree: git worktree, branch, DB, overlay cleanup.
 
@@ -559,6 +579,8 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
                 step_errors.append(f"pass-entry removal failed for {ticket.ticket_number}: {exc}")
 
     label = f"Cleaned: {worktree.repo_path} ({worktree.branch})"
+    label += _reap_external_resources(overlay, worktree, step_errors)
+
     ticket_id = worktree.ticket.pk
     worktree.delete()
     if not Worktree.objects.filter(ticket_id=ticket_id).exists():

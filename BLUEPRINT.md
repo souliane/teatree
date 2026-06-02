@@ -495,6 +495,7 @@ graph TD
     teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
     teatree.contrib --> teatree.config
+    teatree.contrib --> teatree.docker
     teatree.contrib --> teatree.utils
     teatree.contrib --> teatree.visual_qa
     teatree.cli --> teatree.paths

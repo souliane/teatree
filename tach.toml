@@ -108,7 +108,7 @@ depends_on = [
 
 [[modules]]
 path = "teatree.contrib"
-depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils", "teatree.visual_qa"]
+depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.docker", "teatree.utils", "teatree.visual_qa"]
 
 [[modules]]
 path = "teatree.cli"

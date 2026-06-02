@@ -386,6 +386,40 @@ class TestGetTestCommand(TestCase):
         assert overlay.get_test_command(worktree) == ["uv", "run", "pytest"]
 
 
+class TestReapWorktreeExternalResources(TestCase):
+    """#1523: the docker overlay reaps a removed worktree's compose containers + images."""
+
+    def _worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://example.com/issues/1523")
+        return Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="teatree", branch="1523-x")
+
+    def test_reaps_the_worktree_compose_project(self) -> None:
+        from teatree.docker.reap import ReapResult  # noqa: PLC0415
+
+        worktree = self._worktree()
+        with patch.object(
+            overlay_mod,
+            "reap_compose_project",
+            return_value=ReapResult(project="teatree-wt1523", containers_removed=2, images_removed=1),
+        ) as mock_reap:
+            outcomes = TeatreeOverlay().reap_worktree_external_resources(worktree)
+
+        mock_reap.assert_called_once_with("teatree-wt1523")
+        assert len(outcomes) == 1
+        assert "teatree-wt1523" in outcomes[0]
+
+    def test_returns_empty_when_nothing_to_reap(self) -> None:
+        from teatree.docker.reap import ReapResult  # noqa: PLC0415
+
+        worktree = self._worktree()
+        with patch.object(
+            overlay_mod,
+            "reap_compose_project",
+            return_value=ReapResult(project="teatree-wt1523"),
+        ):
+            assert TeatreeOverlay().reap_worktree_external_resources(worktree) == []
+
+
 class TestRepoRoot:
     def test_finds_repo_root(self) -> None:
         root = _repo_root()

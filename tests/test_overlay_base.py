@@ -129,6 +129,12 @@ def test_get_docker_services_returns_empty_set():
     assert overlay.get_docker_services(_make_worktree()) == set()
 
 
+def test_reap_worktree_external_resources_returns_empty_list_by_default():
+    """#1523: an overlay with no out-of-band resources opts out via the default."""
+    overlay = _MinimalOverlay()
+    assert overlay.reap_worktree_external_resources(_make_worktree()) == []
+
+
 def test_validate_pr_passes_conforming_title_and_what_why_description():
     overlay = _MinimalOverlay()
     result = overlay.metadata.validate_pr(
