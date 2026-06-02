@@ -238,6 +238,18 @@ class TestPushManifest:
             assert _push_manifest(overlay="t3", app_id="A1", echo=lines.append) == "degraded"
         assert any("app-config token" in line for line in lines)
 
+    def test_degraded_warns_loudly_that_user_scopes_are_not_set(self) -> None:
+        lines: list[str] = []
+        with patch("teatree.cli.slack_provision.read_pass", return_value=""):
+            _push_manifest(overlay="t3", app_id="A1", echo=lines.append)
+        joined = "\n".join(lines)
+        # The degraded path must NOT read as a success: it states the manifest
+        # was not pushed, that user scopes are unset, and lists the scopes to
+        # add manually so the user can fix the zero-user-scope app.
+        assert "DEGRADED" in joined
+        assert "manifest NOT pushed" in joined
+        assert "reactions:write" in joined
+
     def test_current_when_equivalent(self) -> None:
         with (
             patch("teatree.cli.slack_provision.read_pass", return_value="cfg-tok"),

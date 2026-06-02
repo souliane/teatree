@@ -7,7 +7,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot, slack_scopes
+from teatree.backends import slack_http, slack_scopes
 from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.protocols import MessagingBackend
 from teatree.backends.slack_bot import SlackBotBackend
@@ -46,7 +46,7 @@ def test_slack_post_message_omits_thread_ts_by_default(monkeypatch: pytest.Monke
         captured["json"] = json
         return httpx.Response(200, json={"ok": True, "ts": "1.2"}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     result = backend.post_message(channel="C42", text="hello")
@@ -64,7 +64,7 @@ def test_slack_post_message_includes_thread_ts_when_set(monkeypatch: pytest.Monk
         payloads.append(cast("dict[str, object]", kwargs["json"]))
         return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     backend.post_message(channel="C42", text="hello", thread_ts="123.456")
@@ -80,7 +80,7 @@ def test_slack_react_calls_reactions_add(monkeypatch: pytest.MonkeyPatch) -> Non
         captured["json"] = kwargs["json"]
         return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     backend.react(channel="C", ts="1.2", emoji="white_check_mark")
@@ -100,7 +100,7 @@ def test_slack_auth_test_returns_raw_response(monkeypatch: pytest.MonkeyPatch) -
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     result = backend.auth_test()
@@ -119,7 +119,7 @@ def test_slack_auth_test_surfaces_ok_false(monkeypatch: pytest.MonkeyPatch) -> N
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     result = backend.auth_test()
@@ -148,7 +148,7 @@ def test_slack_auth_test_surfaces_granted_scopes_from_header(monkeypatch: pytest
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     result = backend.auth_test()
@@ -166,7 +166,7 @@ def test_slack_auth_test_surfaces_empty_scopes_when_header_absent(monkeypatch: p
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.auth_test()[slack_scopes.GRANTED_SCOPES_KEY] == []
@@ -189,7 +189,7 @@ def test_slack_resolve_user_id_via_lookup_by_email(monkeypatch: pytest.MonkeyPat
             )
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("alice@example.com") == "U999"
@@ -211,7 +211,7 @@ def test_slack_resolve_user_id_falls_back_to_user_list(monkeypatch: pytest.Monke
             )
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("@alice") == "U2"
@@ -221,7 +221,7 @@ def test_slack_resolve_user_id_returns_empty_on_no_match(monkeypatch: pytest.Mon
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "members": []}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("ghost") == ""
@@ -337,7 +337,7 @@ def test_slack_open_dm_returns_channel_id(monkeypatch: pytest.MonkeyPatch) -> No
             request=httpx.Request("POST", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.open_dm("U01ABCD1234") == "D9XYZ"
@@ -347,7 +347,7 @@ def test_slack_open_dm_returns_empty_on_failure(monkeypatch: pytest.MonkeyPatch)
     def fake_post(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.open_dm("U01ABCD1234") == ""
@@ -369,7 +369,7 @@ def test_slack_get_reactions_returns_emoji_names(monkeypatch: pytest.MonkeyPatch
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123.456") == ["white_check_mark", "eyes"]
@@ -383,7 +383,7 @@ def test_slack_get_reactions_returns_empty_when_no_reactions(monkeypatch: pytest
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123.456") == []
@@ -411,7 +411,7 @@ def test_slack_get_reactions_skips_non_dict_entries(monkeypatch: pytest.MonkeyPa
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123") == ["eyes"]
@@ -425,7 +425,7 @@ def test_slack_get_reactions_returns_empty_when_reactions_not_list(monkeypatch: 
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123") == []
@@ -435,7 +435,7 @@ def test_slack_get_reactions_returns_empty_when_get_fails(monkeypatch: pytest.Mo
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.get_reactions(channel="C1", ts="123") == []
@@ -466,8 +466,8 @@ def test_slack_fetch_dms_polls_conversations_history(monkeypatch: pytest.MonkeyP
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
 
     dms = backend.fetch_dms(since="0.5")
@@ -485,7 +485,7 @@ def test_slack_fetch_dms_returns_empty_when_dm_channel_fails(monkeypatch: pytest
     def fake_post(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
 
     assert backend.fetch_dms() == []
@@ -506,8 +506,8 @@ def test_slack_fetch_dms_filters_non_dict_messages(monkeypatch: pytest.MonkeyPat
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
 
     dms = backend.fetch_dms()
@@ -523,8 +523,8 @@ def test_slack_fetch_dms_returns_empty_when_messages_not_list(monkeypatch: pytes
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "messages": "not-a-list"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
 
     assert backend.fetch_dms() == []
@@ -539,8 +539,8 @@ def test_slack_fetch_dms_returns_empty_when_api_fails(monkeypatch: pytest.Monkey
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
 
     assert backend.fetch_dms() == []
@@ -561,8 +561,8 @@ def test_slack_resolve_bot_id_caches_result(monkeypatch: pytest.MonkeyPatch) -> 
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "messages": []}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
 
     backend.fetch_dms()
@@ -585,8 +585,8 @@ def test_slack_resolve_bot_id_returns_empty_on_api_failure(monkeypatch: pytest.M
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="U1")
 
     dms = backend.fetch_dms()
@@ -600,7 +600,7 @@ def test_slack_post_reply_includes_thread_ts(monkeypatch: pytest.MonkeyPatch) ->
         captured["json"] = kwargs["json"]
         return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     backend.post_reply(channel="C", ts="1.0", text="reply")
@@ -612,7 +612,7 @@ def test_slack_resolve_user_id_returns_empty_when_members_not_list(monkeypatch: 
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "members": "not-a-list"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("alice") == ""
@@ -642,8 +642,8 @@ def test_slack_fetch_dms_stamps_channel_on_each_event(monkeypatch: pytest.Monkey
             )
         return httpx.Response(200, json={"ok": True, "messages": []}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
 
     dms = backend.fetch_dms()
@@ -672,8 +672,8 @@ def test_slack_fetch_dms_preserves_existing_channel(monkeypatch: pytest.MonkeyPa
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
 
     dms = backend.fetch_dms()
@@ -718,8 +718,8 @@ def test_slack_fetch_dms_includes_thread_replies(monkeypatch: pytest.MonkeyPatch
             )
         return httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "post", fake_post)
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test", user_id="UHUMAN")
 
     dms = backend.fetch_dms()
@@ -756,7 +756,7 @@ def test_slack_fetch_channel_history_returns_messages_with_channel_stamped(
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     messages = backend.fetch_channel_history(channel="C0AM3TENT", limit=10)
@@ -770,7 +770,7 @@ def test_slack_fetch_channel_history_returns_empty_on_non_ok(monkeypatch: pytest
     def fake_get(url: str, **kwargs: object) -> httpx.Response:
         return httpx.Response(200, json={"ok": False, "error": "channel_not_found"}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.fetch_channel_history(channel="C404") == []
@@ -796,7 +796,7 @@ def test_slack_resolve_user_id_skips_non_dict_members(monkeypatch: pytest.Monkey
             request=httpx.Request("GET", url),
         )
 
-    monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+    monkeypatch.setattr(slack_http.httpx, "get", fake_get)
     backend = SlackBotBackend(bot_token="xoxb-test")
 
     assert backend.resolve_user_id("alice") == "U99"

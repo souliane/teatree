@@ -5,7 +5,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 
 
@@ -20,7 +20,7 @@ def _post_returning(body: dict, captured: list[dict[str, object]]) -> object:
 class TestJoinConversation:
     def test_posts_to_conversations_join_with_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _post_returning({"ok": True}, captured))
+        monkeypatch.setattr(slack_http.httpx, "post", _post_returning({"ok": True}, captured))
         backend = SlackBotBackend(bot_token="xoxb-bot")
         body = backend.join_conversation("C123")
         assert body["ok"] is True
@@ -31,12 +31,13 @@ class TestJoinConversation:
 
     def test_empty_channel_short_circuits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _post_returning({"ok": True}, called))
+        monkeypatch.setattr(slack_http.httpx, "post", _post_returning({"ok": True}, called))
         assert SlackBotBackend(bot_token="xoxb-bot").join_conversation("") == {}
         assert called == []
 
     def test_returns_error_body_on_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, object]] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _post_returning({"ok": False, "error": "missing_scope"}, captured))
+        failing_post = _post_returning({"ok": False, "error": "missing_scope"}, captured)
+        monkeypatch.setattr(slack_http.httpx, "post", failing_post)
         body = SlackBotBackend(bot_token="xoxb-bot").join_conversation("C1")
         assert body["error"] == "missing_scope"

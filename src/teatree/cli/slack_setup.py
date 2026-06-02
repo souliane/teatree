@@ -35,6 +35,7 @@ import httpx
 import typer
 
 from teatree.backends.slack_bot import SlackBotBackend
+from teatree.cli.slack_token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
 from teatree.config import CONFIG_PATH, discover_overlays
 from teatree.utils.secrets import read_pass, write_pass
 
@@ -300,12 +301,12 @@ def _prompt_user_id() -> str:
 
 
 def _store_tokens(token_ref: str, *, bot_token: str, app_token: str) -> None:
-    if not write_pass(f"{token_ref}-bot", bot_token):
-        typer.echo("ERROR Failed to store bot token via `pass`.")
-        raise typer.Exit(code=1)
-    if not write_pass(f"{token_ref}-app", app_token):
-        typer.echo("ERROR Failed to store app token via `pass`.")
-        raise typer.Exit(code=1)
+    for slot, value in ((bot_token_slot(token_ref), bot_token), (app_token_slot(token_ref), app_token)):
+        try:
+            store_slack_token(slot, value, echo=typer.echo)
+        except SlackTokenWriteError as exc:
+            typer.echo(f"ERROR {exc}")
+            raise typer.Exit(code=1) from exc
     typer.echo(f"OK    Stored bot + app tokens under `{token_ref}-bot` and `{token_ref}-app`.")
 
 

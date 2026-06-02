@@ -18,7 +18,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.slack_bot import SlackBotBackend
 
 _SELF_DM = "D_SELF"
@@ -47,6 +47,11 @@ def _backend() -> SlackBotBackend:
 
 
 class TestRouteToken:
+    def test_public_route_token_matches_private(self) -> None:
+        backend = _backend()
+        assert backend.route_token(_SELF_DM) == "xoxb-bot"
+        assert backend.route_token("C_TEAM") == "xoxp-user"
+
     def test_self_dm_channel_id_routes_to_bot(self) -> None:
         assert _backend()._route_token(_SELF_DM) == "xoxb-bot"
 
@@ -74,7 +79,7 @@ class TestRouteToken:
 class TestPostRouted:
     def test_self_dm_posts_under_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
 
         _backend().post_routed(channel=_SELF_DM, text="status update")
 
@@ -83,7 +88,7 @@ class TestPostRouted:
 
     def test_colleague_posts_under_user_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
 
         result = _backend().post_routed(channel="D_COLLEAGUE", text="ping")
 
@@ -92,7 +97,7 @@ class TestPostRouted:
 
     def test_channel_posts_under_user_token_threaded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True, "ts": "1.2"}))
 
         _backend().post_routed(channel="C_TEAM", text="hi team", thread_ts="1700.0001")
 
@@ -102,7 +107,7 @@ class TestPostRouted:
     def test_returns_error_body_on_not_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             _capturing_post(captured, {"ok": False, "error": "channel_not_found"}),
         )
@@ -116,7 +121,7 @@ class TestPostRouted:
             called.append(url)
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "post", fail_post)
+        monkeypatch.setattr(slack_http.httpx, "post", fail_post)
 
         assert SlackBotBackend().post_routed(channel="C_TEAM", text="x") == {}
         assert called == []
@@ -125,7 +130,7 @@ class TestPostRouted:
 class TestReactRouted:
     def test_react_self_dm_under_bot_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
 
         _backend().react_routed(channel=_SELF_DM, ts="1.2", emoji="eyes")
 
@@ -134,7 +139,7 @@ class TestReactRouted:
 
     def test_react_colleague_under_user_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
 
         _backend().react_routed(channel="D_COLLEAGUE", ts="1.2", emoji="eyes")
 
@@ -142,7 +147,7 @@ class TestReactRouted:
 
     def test_react_channel_under_user_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
-        monkeypatch.setattr(slack_bot.httpx, "post", _capturing_post(captured, {"ok": True}))
+        monkeypatch.setattr(slack_http.httpx, "post", _capturing_post(captured, {"ok": True}))
 
         _backend().react_routed(channel="C_TEAM", ts="1.2", emoji="eyes")
 
@@ -152,7 +157,7 @@ class TestReactRouted:
     def test_returns_error_body_on_missing_scope(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[_Call] = []
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             _capturing_post(captured, {"ok": False, "error": "missing_scope", "needed": "reactions:write"}),
         )
@@ -168,7 +173,7 @@ class TestReactRouted:
             called.append(url)
             return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-        monkeypatch.setattr(slack_bot.httpx, "post", fail_post)
+        monkeypatch.setattr(slack_http.httpx, "post", fail_post)
 
         assert SlackBotBackend().react_routed(channel="C_TEAM", ts="1.2", emoji="eyes") == {}
         assert called == []

@@ -431,7 +431,7 @@ class TestResolveGuardTarget(TestCase):
         The real ``resolve_channel_token`` / ``_channel_token`` run; only
         the ``httpx`` boundary is faked so ``conversations.info`` fails.
         """
-        from teatree.backends import slack_bot  # noqa: PLC0415
+        from teatree.backends import slack_http  # noqa: PLC0415
 
         overlay = _overlay_with_channel()
         backend = SlackBotBackend(bot_token="xoxb-bot", user_token="xoxp-user")
@@ -446,7 +446,7 @@ class TestResolveGuardTarget(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": overlay}),
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
-            patch.object(slack_bot.httpx, "get", fake_get),
+            patch.object(slack_http.httpx, "get", fake_get),
         ):
             target = resolve_guard_target()
 
