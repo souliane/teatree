@@ -208,6 +208,47 @@ def test_outbound_audit_skipped_does_not_render_to_statusline() -> None:
     assert actions == []
 
 
+class SelfUpdateStatuslineTests(TestCase):
+    """#1760: a CI-green-gated self-update skip surfaces; the rest stays noise."""
+
+    def _zone(self, kind: str, reason: str) -> str | None:
+        signal = ScanSignal(
+            kind=kind,
+            summary=f"self-update teatree: {reason}",
+            payload={"repo": "teatree", "outcome": kind.split(".", 1)[-1], "reason": reason},
+        )
+        actions = dispatch([signal])
+        return actions[0].zone if actions else None
+
+    def test_ci_red_skip_surfaces_in_action_needed(self) -> None:
+        assert self._zone("self_update.skipped", "ci_red") == "action_needed"
+
+    def test_ci_pending_skip_surfaces_in_action_needed(self) -> None:
+        assert self._zone("self_update.skipped", "ci_pending") == "action_needed"
+
+    def test_ci_unknown_skip_surfaces_in_action_needed(self) -> None:
+        assert self._zone("self_update.skipped", "ci_unknown") == "action_needed"
+
+    def test_dirty_tree_skip_is_dropped(self) -> None:
+        # A non-CI skip (dirty tracked tree) is diagnostic-only noise.
+        assert self._zone("self_update.skipped", "dirty_tracked:foo.py") is None
+
+    def test_branch_mismatch_skip_is_dropped(self) -> None:
+        assert self._zone("self_update.skipped", "branch=feat!=main") is None
+
+    def test_up_to_date_is_dropped(self) -> None:
+        assert self._zone("self_update.up_to_date", "") is None
+
+    def test_cadence_not_elapsed_is_dropped(self) -> None:
+        assert self._zone("self_update.cadence_not_elapsed", "recent_marker") is None
+
+    def test_updated_is_dropped(self) -> None:
+        assert self._zone("self_update.updated", "") is None
+
+    def test_failed_is_dropped(self) -> None:
+        assert self._zone("self_update.failed", "fetch:boom") is None
+
+
 def test_payload_propagates_through_dispatch() -> None:
     payload: dict[str, object] = {"url": "https://example.com/mr/1"}
     actions = dispatch([ScanSignal(kind="reviewer_pr.new_sha", summary="x", payload=payload)])
