@@ -271,7 +271,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=asc&per_page=100" \
+          # Most-recent-first so the current ISO week is on the first page even
+          # for a repo with thousands of PRs. first_pr_of_week.py also keeps the
+          # newest window as a second line of defence regardless of ordering.
+          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
             --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
           if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
             echo "run_eval=true" >> "$GITHUB_OUTPUT"

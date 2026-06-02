@@ -18,6 +18,13 @@ The MR list is read from a JSON file (``--mrs-file``) so the platform query
 (``glab api`` / ``gh api``) stays in the CI YAML and this script stays a pure,
 unit-testable decision function. Each MR entry needs ``iid``/``number`` and
 ``created_at`` (ISO-8601). The current MR is identified by ``--current-iid``.
+
+The decision needs the current ISO week to be *present* in the supplied
+records. A single oldest-first page (``sort=asc&per_page=100``) of a repo with
+thousands of MRs never contains a current-week record, so the gate would skip
+forever. ``select_gate_records`` defends against that: it sorts the supplied
+records most-recent-first and keeps the newest window, so the latest week is
+always reachable regardless of how the platform ordered or paginated them.
 """
 
 import argparse
@@ -25,7 +32,10 @@ import datetime as dt
 import json
 import sys
 from collections.abc import Iterable
+from operator import itemgetter
 from pathlib import Path
+
+DEFAULT_PER_PAGE = 100
 
 
 def _iso_week(moment: dt.datetime) -> tuple[int, int]:
@@ -39,6 +49,34 @@ def _parse_created_at(raw: str) -> dt.datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.UTC)
     return parsed.astimezone(dt.UTC)
+
+
+def select_gate_records(
+    mrs: Iterable[dict],
+    *,
+    now: dt.datetime | None = None,
+    per_page: int = DEFAULT_PER_PAGE,
+) -> list[dict]:
+    now = (now or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
+    target_week = _iso_week(now)
+    dated: list[tuple[dt.datetime, dict]] = []
+    current_week: list[dict] = []
+    for mr in mrs:
+        created = mr.get("created_at")
+        if not created:
+            continue
+        try:
+            created_at = _parse_created_at(str(created))
+        except ValueError:
+            continue
+        dated.append((created_at, mr))
+        if _iso_week(created_at) == target_week:
+            current_week.append(mr)
+    newest_first = [mr for _, mr in sorted(dated, key=itemgetter(0), reverse=True)]
+    window = newest_first[:per_page]
+    seen = {id(mr) for mr in window}
+    window.extend(mr for mr in current_week if id(mr) not in seen)
+    return window
 
 
 def is_first_mr_of_week(
@@ -83,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
         print("--mrs-file must contain a JSON list", file=sys.stderr)
         return 2
     now = _parse_created_at(args.now) if args.now else None
-    if is_first_mr_of_week(mrs, current_iid=args.current_iid, now=now):
+    records = select_gate_records(mrs, now=now)
+    if is_first_mr_of_week(records, current_iid=args.current_iid, now=now):
         print(f"first MR of the ISO week → run the weekly eval (iid={args.current_iid})")
         return 0
     print(f"not the first MR of the ISO week → skip (iid={args.current_iid})")
