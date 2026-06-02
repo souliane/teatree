@@ -42,21 +42,21 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         fired_at = timezone.now() - dt.timedelta(seconds=60)
         MiniLoopMarker.objects.mark_fired("dispatch", fired_at)
         MiniLoopMarker.objects.mark_fired("news", fired_at)
-        with patch("teatree.loops.schedule.iter_loops", return_value=loops), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
             schedules = dict(mini_loop_schedules())
         assert schedules["dispatch"] == fired_at + dt.timedelta(seconds=300)
         assert schedules["news"] == fired_at + dt.timedelta(seconds=3600)
 
     def test_never_fired_loop_has_no_next_fire(self) -> None:
         loops = (_stub_loop("inbox", 60),)
-        with patch("teatree.loops.schedule.iter_loops", return_value=loops), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
             schedules = dict(mini_loop_schedules())
         assert schedules["inbox"] is None
 
     def test_disabled_loop_is_excluded(self) -> None:
         loops = (_stub_loop("dispatch", 300), _stub_loop("review", 300))
         with (
-            patch("teatree.loops.schedule.iter_loops", return_value=loops),
+            patch("teatree.loops.live.iter_loops", return_value=loops),
             patch(
                 "teatree.loops.config.LoopsConfig.is_enabled",
                 side_effect=lambda loop: loop.name != "review",
@@ -68,7 +68,7 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
 
     def test_results_sorted_by_name(self) -> None:
         loops = (_stub_loop("ship", 300), _stub_loop("audit", 300), _stub_loop("inbox", 60))
-        with patch("teatree.loops.schedule.iter_loops", return_value=loops), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
             names = [name for name, _ in mini_loop_schedules()]
         assert names == ["audit", "inbox", "ship"]
 
@@ -82,7 +82,7 @@ class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
     def test_installed_reader_renders_relative_countdown(self) -> None:
         loops = (_stub_loop("tickets", 300),)
         MiniLoopMarker.objects.mark_fired("tickets", timezone.now() - dt.timedelta(seconds=120))
-        with patch("teatree.loops.schedule.iter_loops", return_value=loops), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
             set_mini_loop_schedules_reader(mini_loop_schedules)
             chunks = mini_loops_anchor()
         # 120s elapsed of a 300s cadence → next fire in 180s → 3m.
@@ -91,7 +91,7 @@ class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
     def test_overdue_loop_reads_due(self) -> None:
         loops = (_stub_loop("audit", 60),)
         MiniLoopMarker.objects.mark_fired("audit", timezone.now() - dt.timedelta(hours=1))
-        with patch("teatree.loops.schedule.iter_loops", return_value=loops), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=loops), _default_config():
             set_mini_loop_schedules_reader(mini_loop_schedules)
             chunks = mini_loops_anchor()
         assert chunks == ["audit due"], chunks
@@ -119,7 +119,7 @@ class TestMiniLoopCadenceMatchesGate(django.test.TestCase):
         now = timezone.now()
         MiniLoopMarker.objects.mark_fired("ship", now - dt.timedelta(seconds=400))
         decision = elapsed_and_enabled(LoopsConfig(), loop, now)
-        with patch("teatree.loops.schedule.iter_loops", return_value=(loop,)), _default_config():
+        with patch("teatree.loops.live.iter_loops", return_value=(loop,)), _default_config():
             set_mini_loop_schedules_reader(mini_loop_schedules)
             chunks = mini_loops_anchor()
         assert decision.should_fire is True

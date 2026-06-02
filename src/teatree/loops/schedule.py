@@ -12,45 +12,28 @@ module owns the read and is wired into the statusline via the
 (installed by the ``loop_tick`` management command), mirroring the
 ``jobs_builder`` seam :func:`teatree.loop.tick.run_tick` already uses.
 
-The next-fire instant for a loop is the same ``last_fired_at + cadence``
-boundary :func:`teatree.loops.gating.elapsed_and_enabled` gates on, so the
-statusline countdown stays in lockstep with the orchestrator: a loop reads
-``due`` exactly when the gate would fire it.
+The next-fire instant comes from :func:`teatree.loops.live.build_report` — the
+same live snapshot ``t3 loop list`` renders (#1744) — so the statusline
+countdown, ``t3 loop list``, and the orchestrator's own cadence gate
+(:func:`teatree.loops.gating.elapsed_and_enabled`) all read one source of
+truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 
 import datetime as dt
-import operator
 
-from teatree.loops.cadence_ledger import MiniLoopMarker
-from teatree.loops.config import LoopsConfig
-from teatree.loops.registry import iter_loops
+from teatree.loops.live import build_report
 
 
 def mini_loop_schedules() -> list[tuple[str, dt.datetime | None]]:
     """Return ``(loop_name, next_fire_at)`` for every enabled mini-loop.
 
     ``next_fire_at`` is the cadence-ledger ``last_fired_at`` plus the loop's
-    resolved cadence (:meth:`LoopsConfig.cadence_for`); ``None`` when the loop
-    has never fired (no marker row) — the statusline renders that as ``due``.
-    Disabled loops are omitted. Sorted by name for a deterministic render.
+    resolved cadence; ``None`` when the loop has never fired (no marker row) —
+    the statusline renders that as ``due``. Disabled loops are omitted, and the
+    snapshot already returns mini-loops sorted by name for a deterministic
+    render.
     """
-    config = LoopsConfig.load()
-    schedules: list[tuple[str, dt.datetime | None]] = []
-    for loop in iter_loops():
-        if not config.is_enabled(loop):
-            continue
-        last_fired_at = _last_fired_at(loop.name)
-        if last_fired_at is None:
-            schedules.append((loop.name, None))
-            continue
-        schedules.append((loop.name, last_fired_at + dt.timedelta(seconds=config.cadence_for(loop))))
-    return sorted(schedules, key=operator.itemgetter(0))
-
-
-def _last_fired_at(name: str) -> dt.datetime | None:
-    """Return the cadence-ledger ``last_fired_at`` for *name*, or ``None``."""
-    marker = MiniLoopMarker.objects.filter(name=name).only("last_fired_at").first()
-    return marker.last_fired_at if marker is not None else None
+    return [(entry.name, entry.next_fire_at) for entry in build_report().mini_loops if entry.enabled]
 
 
 __all__ = ["mini_loop_schedules"]

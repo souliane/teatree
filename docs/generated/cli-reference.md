@@ -2094,6 +2094,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                     session alive.                                           │
 │ uninstall-watchdog  Remove the macOS LaunchAgent installed by                │
 │                     ``install-watchdog``.                                    │
+│ list                Print LIVE loop status: each loop's enabled state,       │
+│                     cadence, last fire, and next tick.                       │
 │ self-improve        Self-improving monitor — scheduled smell detection with  │
 │                     a tiered action ladder. Runs in the same loop-owner      │
 │                     session as `t3 loop tick` on a separate LoopLease so a   │
@@ -2372,6 +2374,24 @@ Usage: t3 loop uninstall-watchdog [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --label        TEXT  LaunchAgent label (default: com.$USER.teatree-loop).    │
 │ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop list`
+
+```
+Usage: t3 loop list [OPTIONS]
+
+ Print LIVE loop status: each loop's enabled state, cadence, last fire, and
+ next tick.
+
+ Read-only: it computes the report from the DB and prints it — never ticks,
+ claims, or mutates anything. Unlike ``t3 loop status`` (the cached
+ statusline view), every countdown here is recomputed at call time.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the live loop status as JSON.                           │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

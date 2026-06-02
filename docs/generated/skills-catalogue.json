@@ -45,6 +45,10 @@
       "summary": "Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high"
     },
     {
+      "name": "loops",
+      "summary": "Show t3 loop status \u2014 which loops are running vs stalled, the cadence and next tick of each loop, and loop ownership"
+    },
+    {
       "name": "next",
       "summary": "Wrap up the current session \u2014 retro, structured result, pipeline handoff"
     },
