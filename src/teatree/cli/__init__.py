@@ -24,6 +24,9 @@ import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 from teatree.cli import (
+    comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
+)
+from teatree.cli import (
     enforcement_tools as _enforcement_tools,  # noqa: F401  (side-effect: registers §17.6 gate commands onto tool_app)
 )
 from teatree.cli import (
@@ -47,6 +50,7 @@ from teatree.cli.infra import infra_app
 from teatree.cli.loop import loop_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
+from teatree.cli.recover import recover_app
 from teatree.cli.review import review_app
 from teatree.cli.review_request import review_request_app
 from teatree.cli.setup import setup_app
@@ -141,6 +145,7 @@ app.add_typer(infra_app, name="infra")
 app.add_typer(loop_app, name="loop")
 app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
+app.add_typer(recover_app, name="recover")
 app.add_typer(dogfood_app, name="dogfood")
 
 

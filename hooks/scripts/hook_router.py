@@ -7628,8 +7628,37 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
             _append_line(no_commit_file, line)
 
 
+def _capture_subagent_snapshot(worktree: str, branch: str, label: str) -> None:
+    """Capture a bundle+diff of a dirty/unpushed sub-agent worktree (#1764).
+
+    Runs under bare ``python3`` from the SubagentStop hook, so it imports only
+    the Django-free :mod:`teatree.core.worktree_snapshot`. The snapshot lands
+    BEFORE any teardown can auto-clean the worktree, preserving uncommitted
+    edits and unpushed commits an outage-killed sub-agent left behind. ``git
+    bundle`` runs against the worktree's own object store (the worktree shares
+    the main clone's gitdir), so the worktree path doubles as the repo handle.
+    Best-effort: a no-op for a clean+pushed tree, fully crash-proof at the
+    caller's boundary.
+    """
+    from teatree.core.worktree_snapshot import capture_worktree_snapshot  # noqa: PLC0415
+
+    recovery_dir = capture_worktree_snapshot(Path(worktree), worktree, branch=branch, label=label)
+    if recovery_dir is not None:
+        print(  # noqa: T201 — hook stderr is the module's logging channel
+            f"[hook_router] sub-agent worktree {worktree!r} (branch {branch!r}) had dirty/unpushed work — "
+            f"captured recovery artifact to {recovery_dir} before teardown.",
+            file=sys.stderr,
+        )
+
+
 def handle_subagent_stop_no_commit(data: dict) -> None:
     """SubagentStop: record a work-branch worktree that produced 0 commits (#1205).
+
+    Also captures a recovery snapshot (#1764) of the sub-agent's worktree
+    (resolved to a work branch) BEFORE teardown can auto-clean it — the
+    Django-free snapshot no-ops on a clean+pushed tree and writes a bundle+diff
+    when there are uncommitted edits or unpushed commits, so an outage-killed
+    sub-agent's work survives.
 
     Resolves the sub-agent's worktree from the harness ``cwd``, runs the
     conservative :func:`teatree.hooks.no_commit_detector.detect`, and records a
@@ -7650,10 +7679,15 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
         from teatree.hooks import no_commit_detector  # noqa: PLC0415
+        from teatree.utils import git  # noqa: PLC0415
 
         finding = no_commit_detector.detect(worktree)
         if finding.is_flagged:
             _record_no_commit_signal(data.get("session_id", ""), finding)
+
+        branch = git.current_branch(repo=worktree)
+        if branch and branch not in no_commit_detector.NON_WORK_BRANCHES:
+            _capture_subagent_snapshot(worktree, branch, branch)
     except Exception as exc:  # noqa: BLE001 — SubagentStop hook must be crash-proof
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] no-commit detection skipped (unexpected error: {exc})",
@@ -7730,6 +7764,17 @@ _HANDLERS: dict[str, list] = {
     "SubagentStop": [handle_subagent_stop_no_commit],
 }
 
+# Events whose block/deny is carried by a TOP-LEVEL ``decision`` JSON object on
+# stdout and read by the harness ONLY at exit code 0. For these, exiting 2 is a
+# *blocking error*: the harness ignores stdout (and the ``decision: block`` JSON
+# in it) and feeds STDERR back to Claude — so an exit-2 block discards the reason
+# and surfaces an empty "No stderr output" failure. PreToolUse / TaskCreated are
+# the exceptions: their deny is only honoured at exit code 2 (#1447), so they are
+# deliberately absent here and keep exiting 2.
+_JSON_DECISION_EVENTS: frozenset[str] = frozenset(
+    {"Stop", "SubagentStop", "UserPromptSubmit", "PostToolUse", "PreCompact"},
+)
+
 
 def main() -> None:
     global _CURRENT_EVENT, _CURRENT_DATA  # noqa: PLW0603 — per-process context for the deny circuit breaker.
@@ -7769,11 +7814,15 @@ def main() -> None:
     if args.event == "PreToolUse" and not deny_emitted:
         _reset_deny_streak(data.get("session_id", ""))
 
-    # Claude Code 2.1.146 changelog: PreToolUse hooks that emit deny JSON
-    # are only honoured when the process exits with code 2. An exit-0 deny
-    # is silently dropped and falls through to the auto-mode classifier.
-    # See #1447.
-    if deny_emitted:
+    # Exit-code contract is per-event. PreToolUse / TaskCreated denies are only
+    # honoured at exit code 2 (#1447) and their reason rides ``hookSpecificOutput``
+    # / ``continue:false`` on stdout, which the harness reads even at exit 2.
+    # Stop / SubagentStop and the other top-level-``decision`` events INVERT this:
+    # exit 2 is a blocking error that makes the harness discard the stdout JSON
+    # and read stderr instead — so a Stop block must exit 0 to let its
+    # ``{"decision":"block","reason":...}`` reach the agent. Exiting 2 there was
+    # the "Stop hook fails with No stderr output" defect.
+    if deny_emitted and args.event not in _JSON_DECISION_EVENTS:
         sys.exit(2)
 
 

@@ -52,6 +52,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │ slack           Slack integration commands.                                  │
 │ task            Alias for `t3 <overlay> tasks <sub>` (sub-agent-friendly     │
 │                 short form, #1306).                                          │
+│ recover         Find (and optionally recover) work stranded by a             │
+│                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
 │ teatree         Commands for the t3-teatree overlay.                         │
@@ -1432,6 +1434,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
+│ comment-density      Flag added comments that merely restate the code        │
+│                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
@@ -1646,6 +1650,30 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool comment-density`
+
+```
+Usage: t3 tool comment-density [OPTIONS]
+
+ Flag added comments that merely restate the code (near-zero-comments rule).
+
+ Content-blind density pass over a unified diff. Reusable by any overlay:
+ the dedicated prek hook and the CI job both call this command. Exits ``1``
+ when a file's added lines are comment-dense, ``0`` when clean. Never a
+ PreToolUse gate, so it can never lock the agent's tools.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --diff            PATH  Read the unified diff from this file instead of      │
+│                         stdin.                                               │
+│ --staged                Scan `git diff --cached` (the pre-push / pre-commit  │
+│                         diff).                                               │
+│ --base-ref        TEXT  Scan the diff of HEAD vs this base ref (the PR diff; │
+│                         used by CI).                                         │
+│ --json                  Emit machine-readable JSON.                          │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2698,6 +2726,14 @@ Usage: t3 task list [OPTIONS]
 Usage: t3 task cancel [OPTIONS]
 
  Forward `t3 task cancel <id> ` to `t3 <overlay> tasks cancel`.
+```
+
+### `t3 recover`
+
+```
+Usage: t3 recover [OPTIONS] COMMAND [ARGS]...
+
+ Find (and optionally recover) work stranded by a network-outage death (#1764).
 ```
 
 ### `t3 dogfood`
