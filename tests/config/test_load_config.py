@@ -52,6 +52,21 @@ def test_load_config_defaults_when_teatree_section_empty(tmp_path: Path) -> None
     assert config.user.branch_prefix == ""
 
 
+def test_handover_mirror_path_defaults_under_xdg_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert (
+        load_config(config_path).user.handover_mirror_path == tmp_path / "state" / "teatree" / "handover" / "latest.md"
+    )
+
+
+def test_handover_mirror_path_override(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\nhandover_mirror_path = "/custom/ho.md"\n')
+    assert load_config(config_path).user.handover_mirror_path == Path("/custom/ho.md")
+
+
 def test_agent_signature_defaults_off(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\n")
