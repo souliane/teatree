@@ -19,6 +19,7 @@ import json
 
 from django.utils import timezone
 
+from teatree.agents.outage_classifier import outage_signature
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, check_evidence
 from teatree.core.models import Task, TaskAttempt
 
@@ -88,18 +89,26 @@ def record_result_envelope(
 ) -> TaskAttempt:
     """Record *result* as a ``TaskAttempt`` and drive the ``Task`` to terminal.
 
-    Validation order matches the headless path exactly: schema-key check, then
-    the per-phase evidence gate (#1284) — a failure on either records a FAILED
-    attempt and fails the task (``exit_code=0`` so it reads as a clean refusal,
-    not a crash). On success the attempt is COMPLETED and ``task.complete``
-    fires, auto-advancing the ticket FSM (a ``needs_user_input`` result
-    completes the task too — ``_advance_ticket`` then schedules the interactive
-    follow-up rather than firing the phase transition).
+    Validation order: schema-key check → OUTAGE check (#1764) → per-phase
+    evidence gate (#1284) — a failure on any records a FAILED attempt and fails
+    the task (``exit_code=0`` so it reads as a clean refusal, not a crash). The
+    outage check runs BEFORE the evidence gate so an outage death that happens
+    to carry evidence (the "API error laundered as a completion" class) still
+    lands FAILED with the diagnostic signature, never COMPLETED — the ticket FSM
+    must not advance over work an outage interrupted. On success the attempt is
+    COMPLETED and ``task.complete`` fires, auto-advancing the ticket FSM (a
+    ``needs_user_input`` result completes the task too — ``_advance_ticket`` then
+    schedules the interactive follow-up rather than firing the phase
+    transition).
     """
     usage = usage or AttemptUsage()
     schema_error = validate_result_keys(result)
     if schema_error:
         return _record_failure(task, error=schema_error)
+
+    signature = outage_signature(result)
+    if signature:
+        return _record_failure(task, error=f"outage_death: {signature}")
 
     evidence_error = check_evidence(result, phase or task.phase)
     if evidence_error:

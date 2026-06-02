@@ -1,5 +1,6 @@
 """Tests for the backend loader."""
 
+import logging
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -168,6 +169,37 @@ def test_get_messaging_resolves_user_token_ref(monkeypatch: pytest.MonkeyPatch) 
 
     assert isinstance(backend, SlackBotBackend)
     assert backend.user_token == "xoxp-resolved"
+
+
+def test_get_messaging_degrades_malformed_user_token_to_bot_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An ``xoxb-`` value in the user slot must NOT crash the loop — degrade to bot-only.
+
+    The #1285 follow-up: a Slack-only credential typo (``pass`` holds an
+    ``xoxb-…`` where the ``xoxp-…`` user token belongs) must never wedge
+    merges, CI, or PR sweeps. ``get_messaging`` is a loop construction
+    path, so it builds a working bot-only backend and warns rather than
+    raising ``TokenSlotMismatchError``.
+    """
+    pass_lookups: dict[str, str] = {
+        "ref/bot-bot": "xoxb-resolved",
+        "ref/bot-app": "xapp-resolved",
+        "slack/user-oauth": "xoxb-mistakenly-pasted-into-user-slot",
+    }
+    monkeypatch.setattr("teatree.backends.loader.read_pass", lambda key: pass_lookups.get(key, ""))
+
+    overlay = _build_overlay(
+        messaging_backend="slack",
+        slack_token_ref="ref/bot",
+        user_token_ref="slack/user-oauth",
+    )
+    with caplog.at_level(logging.WARNING):
+        backend = get_messaging(overlay)
+
+    assert isinstance(backend, SlackBotBackend)
+    assert backend.user_token == ""
+    assert "t3 setup slack-user-token" in caplog.text
 
 
 def test_get_messaging_user_token_absent_when_ref_unset(monkeypatch: pytest.MonkeyPatch) -> None:

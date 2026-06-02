@@ -50,7 +50,7 @@ class TestSlackBotBackendErrorPathsE2E:
         polling — the queue contract is broken.
         """
         backend = SlackBotBackend(bot_token="xoxb-bot", user_id="U_HUMAN")
-        backend.enqueue_dm({"ts": "1.0", "user": "U_HUMAN", "text": "queued"})
+        backend.inbound.enqueue_dm({"ts": "1.0", "user": "U_HUMAN", "text": "queued"})
 
         events = backend.fetch_dms()
 
@@ -296,7 +296,7 @@ class TestSlackBotBackendErrorPathsE2E:
         """
         _ = transport  # ensure no HTTP call happens
         backend = SlackBotBackend(bot_token="xoxb-bot")
-        backend.enqueue_mention({"ts": "1.0", "user": "U", "text": "@bot hi"})
+        backend.inbound.enqueue_mention({"ts": "1.0", "user": "U", "text": "@bot hi"})
 
         events = backend.fetch_mentions()
         again = backend.fetch_mentions()

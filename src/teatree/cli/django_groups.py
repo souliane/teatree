@@ -201,6 +201,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List tickets, optionally filtered by state and/or overlay."),
             ("sync-completions", "Check post-ship tickets against upstream issues and advance completed ones."),
             ("comment", "Post a comment to an issue or work item by its URL."),
+            ("create-sub", "Create a child work item nested under a parent issue/work item."),
             ("context", "Durable per-ticket knowledge store: show / add / edit (#627)."),
         ],
         core_dispatch=True,

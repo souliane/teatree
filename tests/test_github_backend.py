@@ -480,6 +480,16 @@ class TestGitHubCodeHost:
             result = host.current_user()
         assert result == ""
 
+    def test_create_sub_issue_is_unsupported(self) -> None:
+        host = GitHubCodeHost(token="tok")
+        result = host.create_sub_issue(
+            parent_url="https://github.com/org/repo/issues/8",
+            title="child",
+            body="b",
+            child_type="Task",
+        )
+        assert "not supported" in result["error"]
+
     def test_list_my_prs_searches_by_author_across_forge(self) -> None:
         items = [
             {"number": 1, "title": "first", "html_url": "https://github.com/org/repo/pull/1"},

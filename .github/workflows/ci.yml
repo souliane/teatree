@@ -93,6 +93,34 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
+  comment-density-gate:
+    # Near-zero-comments gate (souliane/teatree#1369). The pre-push hook
+    # runs against staged changes; CI re-runs the SAME check on the PR diff
+    # so an agent that bypasses prek still trips the gate. Stages the
+    # PR-vs-base diff into the index so the hook's ``git diff --cached``
+    # query sees the PR contents — identical code path to prek and to
+    # ``t3 tool comment-density --staged``.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Stage PR diff against base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "${BASE_REF}"
+          git reset --soft FETCH_HEAD
+      - run: uv run python scripts/hooks/check_comment_density.py
+
   docs-drift:
     runs-on: ubuntu-latest
     steps:
@@ -264,7 +292,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: uv sync
+      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
       - name: Decide whether this is the first PR of the ISO week
         id: gate
         env:
@@ -290,6 +325,12 @@ jobs:
       - name: Regression corpus (deterministic, free; also gated every PR via pytest)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval regression
+      # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
       - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
         if: steps.gate.outputs.run_eval == 'true'
-        run: uv run t3 eval run --trials 3 --require any
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: uv run t3 eval run --trials 3 --require any

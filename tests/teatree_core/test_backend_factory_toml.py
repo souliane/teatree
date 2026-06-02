@@ -205,6 +205,51 @@ class TestMessagingFromToml:
         assert backend.user_token == ""
 
 
+class TestLoopAssemblySurvivesMalformedUserToken:
+    """A malformed Slack user token must NOT wedge the loop's backend assembly.
+
+    ``iter_overlay_backends`` is the exact construction path ``t3 loop tick``
+    runs without ``--overlay``. The #1285 follow-up bug: a Slack-only
+    credential typo (an ``xoxb-…`` in the ``xoxp`` user slot) raised
+    ``TokenSlotMismatchError`` inside ``SlackBotBackend.__init__`` and
+    ``iter_overlay_backends`` demoted Slack to ``None`` — disabling bot DMs
+    and all non-Slack work alike on a single credential typo. The fix
+    degrades the user token to bot-only so code-host (PR/CI/merge) work and
+    bot DMs both keep working.
+    """
+
+    def test_iter_overlay_backends_keeps_code_host_and_bot_slack_when_user_token_bad(self) -> None:
+        toml_cfg = {
+            "messaging_backend": "slack",
+            "slack_token_ref": "ref",
+            "user_token_ref": "slack/user-oauth",
+            "gitlab_token_ref": "ref/gitlab",
+            "slack_user_id": "U1",
+        }
+        pass_lookups = {
+            "ref-bot": "xoxb-real-bot",
+            "ref-app": "xapp-real-app",
+            "slack/user-oauth": "xoxb-mistakenly-pasted-into-user-slot",
+            "ref/gitlab": "gl-tok",
+        }
+        cfg = _config_with({"acme": toml_cfg})
+        with (
+            patch.object(backend_factory, "get_all_overlays", return_value={}),
+            patch.object(backend_factory, "_resolved_identities", return_value=()),
+            patch("teatree.config.load_config", return_value=cfg),
+            patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookups.get(k, "")),
+        ):
+            out = backend_factory.iter_overlay_backends()
+
+        acme = next(b for b in out if b.name == "acme")
+        # Non-Slack work (the code host) is fully present — the loop can
+        # still merge, run CI, and sweep PRs.
+        assert [type(h).__name__ for h in acme.hosts] == [GitLabCodeHost.__name__]
+        # Slack degraded to bot-only rather than vanishing entirely.
+        assert isinstance(acme.messaging, SlackBotBackend)
+        assert acme.messaging.user_token == ""
+
+
 class TestFindExternalDb:
     def test_returns_none_when_path_missing(self) -> None:
         assert backend_factory._find_external_db("foo", {}) is None

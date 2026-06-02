@@ -16,19 +16,30 @@ pasted-wrong token reaches the deterministic policy in
 prefix; the post then either impersonates the user or is silently dropped
 on a Slack-Connect channel.
 
-The runtime gate fires at backend construction (``__init__``) so the
-loop fails *loudly but early* — a clear ``TokenSlotMismatchError`` with
-the offending slot named and the right ``t3 setup …`` command pointed
-at, never a mid-tick crash. Empty tokens stay valid (the legacy
-single-credential / no-credential cases).
+The runtime gate fires at backend construction (``__init__``). The *bot*
+and *app* slots stay strict everywhere — a wrong token there is a genuine
+misconfiguration that must surface loudly with a clear
+``TokenSlotMismatchError``. The *user* slot is optional capability
+(colleague-channel posts/reactions under the human identity): the loop
+construction paths degrade a malformed user token to bot-only with a
+one-time WARNING (``degrade_bad_user_token=True``) so a Slack-only typo
+never wedges merges, CI, or PR sweeps; the explicit setup/provision path
+keeps :func:`assert_user_token` so a wrong paste there still errors loudly.
+Empty tokens stay valid (the legacy single-credential / no-credential
+cases).
 """
 
+import logging
 from unittest.mock import patch
 
 import pytest
 
 from teatree.backends.slack_bot import SlackBotBackend
-from teatree.backends.slack_token_validation import TokenSlotMismatchError
+from teatree.backends.slack_token_validation import (
+    TokenSlotMismatchError,
+    assert_user_token,
+    resolve_user_token_or_degrade,
+)
 from teatree.core import backend_factory
 
 
@@ -89,11 +100,75 @@ class TestSlackBotBackendConstructionRejectsSwappedTokens:
         SlackBotBackend(bot_token="xoxb-real-bot", app_token="")
 
 
-class TestFactoryConstructionFailsLoudOnPassSwap:
-    """The runtime path the codex finding flagged: a swapped token in ``pass``."""
+class TestLoopConstructionDegradesBadUserToken:
+    """``degrade_bad_user_token=True`` — a malformed user token must NOT crash the loop.
 
-    def test_messaging_from_toml_swapped_user_slot_raises(self) -> None:
-        """``pass slack/user-oauth-token`` holds an ``xoxb-…`` token (the field bug)."""
+    A Slack-only credential typo (an ``xoxb-…`` pasted into the ``xoxp``
+    slot) must never wedge merges, CI, or PR sweeps. The loop construction
+    paths degrade the user token to absent (bot-only) with a warning.
+    """
+
+    def test_swapped_user_slot_degrades_to_bot_only(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            backend = SlackBotBackend(
+                bot_token="xoxb-real-bot",
+                user_token="xoxb-pasted-into-user-slot",
+                degrade_bad_user_token=True,
+            )
+        assert backend.user_token == ""
+        assert "t3 setup slack-user-token" in caplog.text
+
+    def test_valid_user_token_survives_degrade_mode(self) -> None:
+        backend = SlackBotBackend(
+            bot_token="xoxb-real-bot",
+            user_token="xoxp-real-user",
+            degrade_bad_user_token=True,
+        )
+        assert backend.user_token == "xoxp-real-user"
+
+    def test_bot_slot_stays_strict_even_in_degrade_mode(self) -> None:
+        """Degrade only relaxes the *user* slot — a bad bot token still raises."""
+        with pytest.raises(TokenSlotMismatchError):
+            SlackBotBackend(bot_token="xoxp-pasted-into-bot-slot", degrade_bad_user_token=True)
+
+    def test_app_slot_stays_strict_even_in_degrade_mode(self) -> None:
+        with pytest.raises(TokenSlotMismatchError):
+            SlackBotBackend(bot_token="xoxb-real-bot", app_token="xoxb-not-an-app", degrade_bad_user_token=True)
+
+
+class TestResolveUserTokenOrDegrade:
+    """The pure policy helper the loop paths route the user token through."""
+
+    def test_returns_valid_token_unchanged(self) -> None:
+        assert resolve_user_token_or_degrade("xoxp-good") == "xoxp-good"
+
+    def test_returns_empty_unchanged(self) -> None:
+        assert resolve_user_token_or_degrade("") == ""
+
+    def test_degrades_mismatched_token_to_empty_with_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING):
+            assert resolve_user_token_or_degrade("xoxb-wrong-slot") == ""
+        assert "t3 setup slack-user-token" in caplog.text
+
+
+class TestSetupPathStaysStrict:
+    """The explicit setup/provision path keeps loud validation — a wrong paste must error."""
+
+    def test_assert_user_token_still_raises_on_mismatch(self) -> None:
+        with pytest.raises(TokenSlotMismatchError):
+            assert_user_token("xoxb-pasted-into-user-slot")
+
+    def test_default_construction_stays_strict_on_user_slot(self) -> None:
+        """Without the degrade flag (direct setup/provision construction) the user slot raises."""
+        with pytest.raises(TokenSlotMismatchError):
+            SlackBotBackend(bot_token="xoxb-real-bot", user_token="xoxb-pasted-into-user-slot")
+
+
+class TestFactoryConstructionDegradesUserSlotKeepsBotStrict:
+    """The runtime path the codex finding flagged — now degrades the user slot, keeps bot strict."""
+
+    def test_messaging_from_toml_swapped_user_slot_degrades_to_bot_only(self, caplog: pytest.LogCaptureFixture) -> None:
+        """``pass slack/user-oauth-token`` holds an ``xoxb-…`` token — the loop keeps ticking bot-only."""
         cfg = {
             "messaging_backend": "slack",
             "slack_token_ref": "ref",
@@ -108,12 +183,15 @@ class TestFactoryConstructionFailsLoudOnPassSwap:
         }
         with (
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookups.get(k, "")),
-            pytest.raises(TokenSlotMismatchError),
+            caplog.at_level(logging.WARNING),
         ):
-            backend_factory._messaging_from_toml(cfg)
+            backend = backend_factory._messaging_from_toml(cfg)
+        assert isinstance(backend, SlackBotBackend)
+        assert backend.user_token == ""
+        assert "t3 setup slack-user-token" in caplog.text
 
-    def test_messaging_from_toml_swapped_bot_slot_raises(self) -> None:
-        """The mirror case: ``pass slack/ref-bot`` holds an ``xoxp-…`` token."""
+    def test_messaging_from_toml_swapped_bot_slot_still_raises(self) -> None:
+        """The mirror case stays loud: a bad bot token is real misconfig, not optional capability."""
         cfg = {"messaging_backend": "slack", "slack_token_ref": "ref"}
         pass_lookups = {"ref-bot": "xoxp-pasted-into-bot-slot", "ref-app": "xapp-real-app"}
         with (
