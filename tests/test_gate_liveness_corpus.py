@@ -513,16 +513,18 @@ def _banned_bash_allow(ctx: GateContext) -> dict:
     return _bash('gh issue create --title t --body "Rolling out the integration."')
 
 
-# bare-reference (PreToolUse Bash arm): a publish body citing a bare #NNNN
-# denies; a body whose ref is a clickable link allows.
+# bare-reference (PreToolUse Bash arm): a USER-FACING publish body citing a
+# bare #NNNN denies; a body whose ref is a clickable link allows. An
+# external-forge post (gh/glab) is exempt (#1530 destination-awareness), so
+# the deny case uses a user-facing ``git commit`` message.
 
 
 def _bare_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_BARE_REF_BODY}"')
+    return _bash(f"git commit -m 'wip: {_BARE_REF_BODY}'")
 
 
 def _bare_bash_allow(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_CLEAN_BODY}"')
+    return _bash(f"git commit -m 'wip: {_CLEAN_BODY}'")
 
 
 # bare-reference Slack-MCP arm (mcp__*slack* send) — phantom (not in matcher).
