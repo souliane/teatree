@@ -234,7 +234,8 @@ class TestLiveLoopsAnchor:
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1
-        assert lines[0].startswith("loop running · ")
+        assert lines[0].startswith("tick")
+        assert "loop running" not in lines[0]
         assert "loops live" not in lines[0]
         assert "tick" in lines[0]
         assert "slack-answer" in lines[0]
@@ -270,7 +271,7 @@ class TestZonesForIntegratesLoopsAnchor:
         target = tmp_path / "statusline.txt"
         render(zones, target=target, colorize=False)
         body = target.read_text()
-        assert "loop running · " in body
+        assert "loop running" not in body
         assert "loops live" not in body
         assert "tick" in body
         # loop-owner absent from the shared zones file.
