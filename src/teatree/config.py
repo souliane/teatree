@@ -1042,9 +1042,21 @@ def _active_overlay_overrides() -> dict[str, Any]:
 
 
 def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
-    """Per-overlay overrides for a NAMED overlay (no env layer — see caller)."""
+    """Per-overlay overrides for a NAMED overlay (no env layer — see caller).
+
+    The match is canonical-alias-tolerant: a request for the short alias
+    ``teatree`` resolves the ``t3-``-prefixed entry-point overlay's
+    ``[overlays.t3-teatree]`` overrides, and vice versa. ``ticket.overlay``
+    and ``infer_overlay_for_url`` return the entry-point name while older
+    rows / configs may carry the bare alias; an exact-name-only match would
+    silently drop the per-overlay values (and an autonomous overlay would
+    resolve to ``babysit``).
+    """
+    canonical = OverlayEntry.canonical_overlay_name(overlay_name)
     for entry in discover_overlays():
-        if entry.name == overlay_name and entry.overrides:
+        if not entry.overrides:
+            continue
+        if entry.name == overlay_name or OverlayEntry.canonical_overlay_name(entry.name) == canonical:
             return dict(entry.overrides)
     return {}
 

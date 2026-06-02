@@ -8,12 +8,17 @@ of whether the overlay was registered via ``pip install`` (entry point) or
 import importlib
 import logging
 import os
+import tempfile
+from contextlib import contextmanager
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
@@ -231,3 +236,27 @@ def reset_overlay_cache() -> None:
 
     _discover_overlays.cache_clear()
     sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
+
+
+@contextmanager
+def staged_overlay_autonomy(overlay_name: str, autonomy: str) -> "Iterator[None]":
+    """Run the block with a hermetic ``~/.teatree.toml`` pinning *overlay_name* to *autonomy*.
+
+    A test-isolation helper for assertions whose outcome depends on the
+    overlay's effective autonomy (the substrate-merge carve-out). Swaps
+    :data:`teatree.config.CONFIG_PATH` at the single seam ``get_effective_settings``
+    reads, so the resolved autonomy is deterministic regardless of the
+    developer's live config, and restores it on exit. Production code never
+    calls this.
+    """
+    from teatree import config as config_module  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as raw:
+        cfg = Path(raw) / ".teatree.toml"
+        cfg.write_text(f'[teatree]\n[overlays.{overlay_name}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
+        original = config_module.CONFIG_PATH
+        config_module.CONFIG_PATH = cfg
+        try:
+            yield
+        finally:
+            config_module.CONFIG_PATH = original
