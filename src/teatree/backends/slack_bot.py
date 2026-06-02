@@ -189,15 +189,8 @@ class SlackBotBackend:
         dm_channel_id: str = "",
         degrade_bad_user_token: bool = False,
     ) -> None:
-        # Runtime token-prefix validation — codex #1282 item 5, see
-        # ``slack_token_validation``. The capture-time regex in
-        # ``slack_user_token_setup`` is not enough: a swapped token in pass
-        # reaches the slot-based policy in ``slack_token_policy`` which
-        # never inspects the prefix. Validate at the single construction
-        # chokepoint so the loop fails loud-but-early. Bot/app tokens are
-        # always strict (a wrong one is real misconfig); the user token is
-        # optional capability, so the loop paths degrade it instead of
-        # crashing the whole tick on a Slack-only typo.
+        # Construction-chokepoint prefix validation (codex #1282 item 5):
+        # bot/app strict; user token degrades per ``degrade_bad_user_token``.
         assert_bot_token(bot_token)
         if degrade_bad_user_token:
             user_token = resolve_user_token_or_degrade(user_token)
