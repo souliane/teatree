@@ -304,6 +304,46 @@ class TestIssueImplementerSettings:
         assert get_effective_settings().issue_implementer_enabled is True
 
 
+class TestAutoUpdateSettings:
+    """#1760: CI-green gate + deferred-reinstall flags load from toml + env."""
+
+    def test_require_green_main_defaults_on(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.auto_update_require_green_main is True
+
+    def test_require_green_main_reads_toml(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nauto_update_require_green_main = false\n")
+        assert load_config(config_path).user.auto_update_require_green_main is False
+
+    def test_reinstall_defaults_off(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.auto_update_reinstall is False
+
+    def test_reinstall_reads_toml(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nauto_update_reinstall = true\n")
+        assert load_config(config_path).user.auto_update_reinstall is True
+
+    def test_env_override_enables_reinstall(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # T3_LOOP_AUTO_UPDATE wins over the toml so the opt-in can be flipped
+        # on for one run without editing ~/.teatree.toml.
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        _write_toml(config_file, "[teatree]\nauto_update_reinstall = false\n")
+        monkeypatch.setenv("T3_LOOP_AUTO_UPDATE", "true")
+
+        assert get_effective_settings().auto_update_reinstall is True
+
+
 class TestMode:
     """Parse and resolution of the ``t3.mode`` setting.
 
