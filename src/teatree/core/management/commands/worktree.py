@@ -22,7 +22,7 @@ from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.readiness import run_and_report_probes
-from teatree.core.resolve import resolve_worktree
+from teatree.core.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.runners import (
     WorktreeProvisionRunner,
     WorktreeStartRunner,
@@ -127,6 +127,10 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
         variant: str = typer.Option("", help="Tenant variant. Updates ticket if provided."),
         overlay: str = typer.Option("", help="Overlay name (auto-detects if empty)."),
+        ticket: str = typer.Option(
+            "",
+            help="Pin attribution to this ticket number (overrides auto-register for a manual worktree).",
+        ),
         slow_import: bool = typer.Option(  # noqa: FBT001
             default=False,
             help="Allow slow DB fallbacks (pg_restore, remote dump). DSLR-only by default.",
@@ -138,14 +142,20 @@ class Command(TyperCommand):
         CREATED → PROVISIONED and enqueues ``execute_worktree_provision``;
         the runner also runs synchronously here so the operator sees
         immediate output. Idempotent — re-running is safe.
+
+        ``--ticket`` pins attribution: a manually-added worktree
+        (``git worktree add``) has no DB row, so resolution would auto-register
+        and could cross-attach to an unrelated workspace sibling. The flag
+        binds it to the named ticket instead.
         """
         variant, overlay_name = _resolve_typer_defaults(variant, overlay)
         if overlay_name:
             os.environ["T3_OVERLAY_NAME"] = overlay_name
-        worktree = resolve_worktree(path)
-        ticket = Ticket.objects.get(pk=worktree.ticket.pk)
+        ticket_hint = self._resolve_ticket_hint(ticket)
+        worktree = resolve_worktree(path, ticket_hint=ticket_hint)
+        ticket_obj = Ticket.objects.get(pk=worktree.ticket.pk)
 
-        _update_ticket_variant(ticket, variant)
+        _update_ticket_variant(ticket_obj, variant)
         # _update_ticket_variant mutated the ticket + worktree rows through
         # separate instances; reload so this worktree's cached ticket FK and
         # db_name reflect the new variant before provision() and the env render
@@ -155,7 +165,7 @@ class Command(TyperCommand):
         resolved_overlay = get_overlay()
         if resolved_overlay.uses_redis():
             redis_container.ensure_running(db_count=load_config().user.redis_db_count)
-            Ticket.objects.allocate_redis_slot(ticket)
+            Ticket.objects.allocate_redis_slot(ticket_obj)
         validate_docker_service_contract(resolved_overlay, worktree)
         _build_base_images(resolved_overlay, worktree, writer=self.stdout.write)
 
@@ -171,6 +181,16 @@ class Command(TyperCommand):
             self.stderr.write(f"  Provision failed for {worktree.repo_path}")
             raise SystemExit(1)
         return int(worktree.pk)
+
+    def _resolve_ticket_hint(self, ticket: str) -> Ticket | None:
+        """Resolve the ``--ticket`` number to a Ticket, or raise if it is unknown."""
+        if not ticket:
+            return None
+        hint = _ticket_by_number(ticket)
+        if hint is None:
+            self.stderr.write(f"  No ticket found for --ticket {ticket}")
+            raise SystemExit(1)
+        return hint
 
     def _check_readiness_probes(self, worktree: Worktree, overlay: OverlayBase) -> None:
         """Run overlay readiness probes; raise SystemExit(1) on any failure.
