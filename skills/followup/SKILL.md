@@ -90,8 +90,8 @@ For each confirmed ticket, analyze the external spec + issue description to dete
 - **Which repos need changes.** Common patterns:
   - New data field → backend + frontend + translations
   - New acceptance rule → backend verificators only
-  - New UI element → frontend + translations + client-term-redacted
-  - Tooltip/label changes → translations + client-term-redacted only
+  - New UI element → frontend + translations + tenant config repo
+  - Tooltip/label changes → translations + tenant config repo only
 - **Primary repo** for worktree creation (most significant changes).
 - **Whether backend is in scope** → load the project's backend convention references.
 

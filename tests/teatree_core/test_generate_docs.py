@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 
-from teatree.core.client-term-redacted import (
+from teatree.core.doc_render import (
     build_overlay_doc_payload,
     build_skill_catalogue_payload,
     build_skill_doc_payload,
