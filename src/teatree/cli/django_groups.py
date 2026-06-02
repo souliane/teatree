@@ -164,6 +164,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "handover": DjangoGroup(
+        "Hand all current work from this session to another session.",
+        [
+            ("create", "Hand this session's full durable state to the loop owner, a named session, or next."),
+            ("whoami", "Print this Claude session's own id."),
+            ("claim-on-start", "Claim an unclaimed hand-off for a starting session (SessionStart hook entry)."),
+        ],
+        core_dispatch=True,
+    ),
     "lifecycle": DjangoGroup(
         "Session lifecycle and phase tracking.",
         [

@@ -21,17 +21,20 @@ def _bootstrap_django() -> None:
     django.setup()
 
 
-def _delegate(subcommand: str, *, slot: str, json_output: bool, extra: dict[str, bool] | None = None) -> None:
+def _delegate(subcommand: str, *, slot: str | None, json_output: bool, extra: dict[str, bool] | None = None) -> None:
     """Call ``loop_owner <subcommand>``; map a mgmt-command ``SystemExit`` to ``typer.Exit``.
 
     ``loop_owner`` raises ``SystemExit(N)`` (correct on the Django
     ``call_command`` path); the CLI layer must surface that as a
-    ``typer.Exit`` so the process exit code is preserved.
+    ``typer.Exit`` so the process exit code is preserved. ``slot=None`` for
+    slot-agnostic subcommands (``whoami``) that take no ``--slot`` arg.
     """
     _bootstrap_django()
     from django.core.management import call_command  # noqa: PLC0415
 
-    kwargs: dict[str, str | bool] = {"slot": slot}
+    kwargs: dict[str, str | bool] = {}
+    if slot is not None:
+        kwargs["slot"] = slot
     if json_output:
         kwargs["json_output"] = True
     if extra:
@@ -71,8 +74,16 @@ def register(loop_app: typer.Typer) -> None:
         slot: str = typer.Option("loop-owner", "--slot", help="Loop-owner slot name (default: loop-owner)."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Show which session currently owns the loop-owner slot (#1073)."""
+        """Show which session owns the loop-owner slot AND this session's own id (#1073)."""
         _delegate("owner", slot=slot, json_output=json_output)
+
+    @loop_app.command("whoami")
+    def whoami_command(
+        *,
+        json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
+    ) -> None:
+        """Print this Claude session's own id — what a hand-off ``--to`` targets."""
+        _delegate("whoami", slot=None, json_output=json_output)
 
     @loop_app.command("release")
     def release_command(
