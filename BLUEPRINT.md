@@ -275,7 +275,7 @@ Skills declare dependencies via YAML frontmatter `requires:` (transitive, topo-s
 - **APM**: `apm install souliane/teatree`
 - **CLI-first**: `git clone … && uv tool install --editable . && t3 setup` — also creates the plugin symlink `~/.claude/plugins/t3 → <clone>`
 
-On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the editable install and reinstalls + `execv`-restarts if a declared dep is missing.
+On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the editable install and reinstalls + `execv`-restarts if a declared dep is missing. The same run re-syncs runtime skill links and **prunes stale ones** — a teatree-managed link (broken, or still resolving under a managed core/overlay skills root) whose skill was removed or renamed upstream is removed so the dropped skill stops resolving; contribute-mode workspace links and a user's own real skill directories are left untouched. Because `t3 update` re-runs `t3 setup`, updating teatree auto-cleans skills dropped upstream.
 
 **§11.4 Bash Permissions.** The plugin ships a **broad allow, narrow deny** `permissions.allow` list — every tool family the workflow legitimately touches is allowed, with load-bearing denies (`git push` to default branches, `--force`, `--no-verify`, `rm -rf` rooted at `/`, `~`, `.`, `..`, `curl|bash`, `gh repo delete`, etc.) taking precedence. The `t3` CLI is the workflow's safety wrapper — blocking inside the CLI is the wrong layer.
 
