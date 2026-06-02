@@ -60,6 +60,15 @@ _TITLE_LONG_FLAG: Final[str] = "--title"
 _TITLE_SHORT_FLAG: Final[str] = "-t"
 _GIT_COMMIT_MESSAGE_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message"})
 
+# ``gh api`` / ``glab api`` request-body flags. Their presence makes a
+# method-less call default to POST (a write); absent them it defaults to GET (a
+# read). Mirrors ``hook_router._REVIEW_POST_BODY_FLAG_RE``.
+_API_BODY_FLAGS: Final[frozenset[str]] = frozenset(
+    {"-f", "--field", "-F", "--raw-field", "--input", "-d", "--data"},
+)
+# Read-only effective HTTP methods. Every other method mutates and is a write.
+_API_READ_METHODS: Final[frozenset[str]] = frozenset({"GET", "HEAD"})
+
 
 def _attached_value(token: str, prefix: str) -> str | None:
     """Return the attached value of ``-X<value>`` / ``-X=<value>``, if any."""
@@ -98,6 +107,55 @@ def segment_is_api_call(words: list[str]) -> bool:
     token, so it does not match.
     """
     return bool(words) and words[0] in {"gh", "glab"} and "api" in words[1:]
+
+
+def _api_effective_method(words: list[str]) -> str:
+    """Return the EFFECTIVE HTTP method gh/glab would send for a ``... api`` call.
+
+    Models the gh (2.87.x) / glab (1.80.x) resolution the merge / review-post
+    gates already encode (``hook_router._is_raw_review_write``): a repeated
+    ``-X``/``--method`` flag resolves LAST-WINS, so ``-X GET -X POST`` POSTs and
+    ``-X POST -X GET`` reads. With no method flag the forge defaults to POST when
+    a request-body flag is present (``-f``/``--field``/``--input``/``-d``/…),
+    else GET. The returned method is upper-cased; ``GET``/``HEAD`` are reads,
+    every other method is a write.
+
+    Both spaced/``=`` (``-X PUT``, ``--method=POST``) and attached
+    (``-XPUT``/``-X=POST``) forms are honoured; a quoted value merely containing
+    the text ``-X`` stays a single distinct token and cannot spoof the method.
+    """
+    method: str | None = None
+    has_body_flag = False
+    i = 0
+    n = len(words)
+    while i < n:
+        word = words[i]
+        if word in {"-X", "--method"} and i + 1 < n:
+            method = words[i + 1]
+            i += 2
+            continue
+        attached = _attached_value(word, "-X") or _attached_value(word, "--method=")
+        if attached is not None:
+            method = attached
+        if word in _API_BODY_FLAGS:
+            has_body_flag = True
+        i += 1
+    if method is not None:
+        return method.strip("'\"").upper()
+    return "POST" if has_body_flag else "GET"
+
+
+def segment_is_api_write(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``gh``/``glab api`` call whose method WRITES.
+
+    A read (effective ``GET``/``HEAD``) is NOT a publish surface: ``gh api
+    user``, ``gh api repos/o/r/commits/main``, ``gh api … --method GET`` only
+    READ and must not be force-classified as a publish (#1530). A call whose
+    effective method mutates (``POST``/``PATCH``/``PUT``/``DELETE``/…) hits the
+    REST endpoints that publish issue/PR/MR comments, so it stays a publish
+    surface the body walkers must scan.
+    """
+    return segment_is_api_call(words) and _api_effective_method(words) not in _API_READ_METHODS
 
 
 def segment_is_git_commit_publish(words: list[str]) -> bool:
@@ -182,14 +240,17 @@ def segment_is_opaque_forge_transport(words: list[str]) -> bool:
 
 
 def command_has_token_aware_publish_surface(command: str) -> bool:
-    """Return True iff any segment is a token-aware ``api`` / ``git commit`` publish.
+    """Return True iff any segment is a token-aware ``api`` WRITE / ``git commit`` publish.
 
     The position-aware complement of the contiguous-substring catalogue, used by
     :func:`_command_parser.is_publish_command` to catch the interspersed-flag
-    spellings the substring matcher misses.
+    spellings the substring matcher misses. A ``gh``/``glab api`` segment is a
+    publish surface only when its EFFECTIVE method writes
+    (:func:`segment_is_api_write`); a read-only GET ``api`` call is not a publish
+    and must not be force-classified as one (#1530).
     """
     return any(
-        segment_is_api_call(words) or segment_is_git_commit_publish(words) for words in segment_word_lists(command)
+        segment_is_api_write(words) or segment_is_git_commit_publish(words) for words in segment_word_lists(command)
     )
 
 
