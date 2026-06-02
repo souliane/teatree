@@ -13,6 +13,7 @@ import typer
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
 from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
+from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
 from teatree.self_update import current_editable_source
@@ -535,3 +536,4 @@ def run(
 
 setup_app.command("slack-bot")(slack_bot_setup)
 setup_app.command("slack-user-token")(slack_user_token_setup)
+setup_app.command("slack-provision")(slack_provision)

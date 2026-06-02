@@ -119,6 +119,43 @@ class _TickFanoutQueue:
             return list(self._events)
 
 
+class _SlackInbound:
+    """Socket Mode inbound ingestion for one backend.
+
+    The Phase 3.6 Socket Mode receiver pushes ``app_mention`` /
+    ``message.im`` / ``reaction_added`` events through :meth:`enqueue_mention`
+    / :meth:`enqueue_dm` / :meth:`enqueue_reaction`; the loop scanners read
+    each per-tick batch through :meth:`snapshot_mentions` / :meth:`snapshot_dms`
+    / :meth:`snapshot_reactions`. Reads are non-destructive within a tick so
+    the scanners that share one backend each observe the same batch (#1655).
+    Bundling the three queues and their ingestion behind one collaborator
+    keeps the inbound concern out of the outbound messaging surface.
+    """
+
+    def __init__(self) -> None:
+        self._mentions = _TickFanoutQueue()
+        self._dms = _TickFanoutQueue()
+        self._reactions = _TickFanoutQueue()
+
+    def enqueue_mention(self, event: RawAPIDict) -> None:
+        self._mentions.enqueue(event)
+
+    def enqueue_dm(self, event: RawAPIDict) -> None:
+        self._dms.enqueue(event)
+
+    def enqueue_reaction(self, event: RawAPIDict) -> None:
+        self._reactions.enqueue(event)
+
+    def snapshot_mentions(self) -> list[RawAPIDict]:
+        return self._mentions.snapshot()
+
+    def snapshot_dms(self) -> list[RawAPIDict]:
+        return self._dms.snapshot()
+
+    def snapshot_reactions(self) -> list[RawAPIDict]:
+        return self._reactions.snapshot()
+
+
 class SlackBotBackend:
     """MessagingBackend backed by a Slack bot token, optionally with a user token.
 
@@ -176,12 +213,11 @@ class SlackBotBackend:
         # Inbound queues populated by the Phase 3.6 Socket Mode receiver. Each
         # tick the loop scanners read them via ``fetch_mentions`` /
         # ``fetch_dms`` / ``fetch_reactions``; the receiver calls
-        # ``enqueue_mention`` / ``enqueue_dm`` / ``enqueue_reaction``.
-        # Reads are non-destructive within a tick so the three scanners that
-        # share one backend each see the same batch (#1655).
-        self._mentions = _TickFanoutQueue()
-        self._dms = _TickFanoutQueue()
-        self._reactions = _TickFanoutQueue()
+        # ``inbound.enqueue_mention`` / ``inbound.enqueue_dm`` /
+        # ``inbound.enqueue_reaction``. Reads are non-destructive within a
+        # tick so the three scanners that share one backend each see the same
+        # batch (#1655).
+        self._inbound = _SlackInbound()
 
     @property
     def app_token(self) -> str:
@@ -194,11 +230,6 @@ class SlackBotBackend:
     @property
     def user_token(self) -> str:
         return self._user_token
-
-    @property
-    def dm_channel_id(self) -> str:
-        """Cached IM channel id for ``user_id``, or ``""`` when unprovisioned (#1342)."""
-        return self._dm_channel_id
 
     def set_voice_classifier_mode(self, mode: VoiceClassifierMode) -> None:
         """Override the voice/token classifier mode (#1395)."""
@@ -220,17 +251,15 @@ class SlackBotBackend:
         """
         return self._channel_token(channel, op=SlackOp.WRITE)
 
-    def enqueue_mention(self, event: RawAPIDict) -> None:
-        """Push a Socket Mode ``app_mention`` event into the inbound queue."""
-        self._mentions.enqueue(event)
+    @property
+    def inbound(self) -> _SlackInbound:
+        """Socket Mode ingestion surface (#1655).
 
-    def enqueue_dm(self, event: RawAPIDict) -> None:
-        """Push a Socket Mode ``message.im`` event into the inbound queue."""
-        self._dms.enqueue(event)
-
-    def enqueue_reaction(self, event: RawAPIDict) -> None:
-        """Push a Socket Mode ``reaction_added`` event into the inbound queue."""
-        self._reactions.enqueue(event)
+        The receiver pushes events via ``inbound.enqueue_mention`` /
+        ``enqueue_dm`` / ``enqueue_reaction``; ``fetch_mentions`` /
+        ``fetch_dms`` / ``fetch_reactions`` read the per-tick batches back.
+        """
+        return self._inbound
 
     def _post(self, method: str, payload: SlackPayload, *, token: str = "") -> RawAPIDict:
         auth = token or self._bot_token
@@ -339,7 +368,7 @@ class SlackBotBackend:
         (#1655).
         """
         _ = since
-        return self._mentions.snapshot()
+        return self._inbound.snapshot_mentions()
 
     def fetch_dms(self, *, since: str = "") -> list[RawAPIDict]:
         """Return new DMs from the user, including thread replies.
@@ -365,7 +394,7 @@ class SlackBotBackend:
         Only messages FROM the user are returned (bot's own messages are
         filtered out).
         """
-        queued = self._dms.snapshot()
+        queued = self._inbound.snapshot_dms()
         if queued:
             return queued
         if not self._user_id or not self._bot_token:
@@ -437,7 +466,7 @@ class SlackBotBackend:
         draining it (#1655); the buffer rolls on the next enqueue.
         """
         _ = since
-        return self._reactions.snapshot()
+        return self._inbound.snapshot_reactions()
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
         """Fetch a single message by ``(channel, ts)``.
@@ -651,6 +680,20 @@ class SlackBotBackend:
         channel = cast("RawAPIDict", data.get("channel") or {})
         channel_id = channel.get("id")
         return channel_id if isinstance(channel_id, str) else ""
+
+    def join_conversation(self, channel: str) -> RawAPIDict:
+        """Join the bot to a public channel via ``conversations.join`` (bot token).
+
+        Returns the raw Slack body. ``ok:true`` is returned both on a fresh
+        join and when the bot is already a member (Slack sets
+        ``already_in_channel``), so callers treat the call as idempotent. A
+        private or Slack-Connect channel rejects a self-join with an error in
+        the body; the setup-time channel provisioner maps that to a clean
+        "invite the bot manually" instruction rather than failing.
+        """
+        if not channel:
+            return {}
+        return self._post("conversations.join", {"channel": channel})
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         """Return the archive permalink for ``(channel, ts)`` or ``""``."""

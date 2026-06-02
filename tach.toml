@@ -134,7 +134,8 @@ depends_on = [
   "teatree.on_behalf_gate",
   "teatree.outbound_claim",
   "teatree.messaging",
-  "teatree.quality"
+  "teatree.quality",
+  "teatree.hooks"
 ]
 
 [[modules]]

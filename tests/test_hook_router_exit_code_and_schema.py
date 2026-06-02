@@ -173,6 +173,76 @@ class TestDenyJsonUsesNestedHookSpecificOutputSchema:
         assert "orchestrator" in reason
 
 
+# ── Stop / SubagentStop blocks exit 0 with stdout JSON (#1764) ─────────
+
+
+def _stop_block_transcript(home: str) -> str:
+    """Write a transcript whose final assistant turn poses a user-directed question.
+
+    Triggers ``handle_enforce_structured_question`` to emit a top-level
+    ``decision: block`` on stdout — the canonical Stop-block protocol.
+    """
+    path = Path(home) / "transcript.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "go"}]}},
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Do you want me to merge this PR now?"}],
+            },
+        },
+    ]
+    path.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
+    return str(path)
+
+
+def _run_router_with_transcript(event: str, transcript_path: str, home: str) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HOME": home, "USERPROFILE": home}
+    payload = {"session_id": "stop-block", "cwd": home, "transcript_path": transcript_path, "stop_hook_active": False}
+    return subprocess.run(
+        [sys.executable, str(HOOK_ROUTER), "--event", event],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env=env,
+    )
+
+
+class TestStopBlockExitsZeroWithStdoutJson:
+    """A Stop-event block must EXIT 0 with the decision JSON on stdout (#1764).
+
+    For Stop/SubagentStop the harness contract inverts PreToolUse: exit 2 is a
+    *blocking error* — the harness ignores stdout (and the ``decision: block``
+    JSON in it) and feeds STDERR back to Claude. Exiting 2 on a Stop block
+    therefore discards the reason and surfaces an empty "No stderr output"
+    failure. The block must use exit 0 + ``{"decision":"block","reason":...}``
+    on stdout so the reason reaches the agent.
+    """
+
+    def test_stop_structured_question_block_exits_0_not_2(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            transcript = _stop_block_transcript(home)
+            result = _run_router_with_transcript("Stop", transcript, home)
+
+        assert result.returncode == 0, (
+            f"a Stop block must exit 0 (got {result.returncode}); stderr was {result.stderr!r}"
+        )
+        out = json.loads(result.stdout)
+        assert out["decision"] == "block"
+        assert out["reason"], "the block reason must reach the agent via stdout"
+
+    def test_stop_and_subagent_stop_are_json_decision_events(self) -> None:
+        # SubagentStop shares the top-level-decision contract; a True-returning
+        # handler there must likewise exit 0 with stdout JSON, never exit 2.
+        from hooks.scripts import hook_router  # noqa: PLC0415
+
+        assert {"Stop", "SubagentStop"} <= hook_router._JSON_DECISION_EVENTS
+        assert "PreToolUse" not in hook_router._JSON_DECISION_EVENTS
+
+
 # ── Test 4: in-process helper unit tests for the deny emitter ─────────
 
 
