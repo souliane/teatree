@@ -157,6 +157,17 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         return self.apply_inferred_overlay(self._infer_overlay())
 
     @property
+    def is_terminal(self) -> bool:
+        """True when the ticket is in a genuinely terminal/abandoned state.
+
+        The public read of the model-owned terminal set (SHIPPED/MERGED/
+        DELIVERED/IGNORED): a terminal ticket is past recovery, so the outage
+        recovery sweep (#1764) skips its FAILED tasks rather than re-queuing
+        work that has already shipped.
+        """
+        return self.state in self._TERMINAL_STATES
+
+    @property
     def ticket_number(self) -> str:
         match = re.search(r"(\d+)$", self.issue_url)
         if match and match.group(1) != "0":
