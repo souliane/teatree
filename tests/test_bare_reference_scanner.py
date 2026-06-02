@@ -7,6 +7,14 @@ prose-only "never cite a bare ID, always a clickable link" rule
 (``feedback_always_clickable_links_never_bare_ids.md``) to a deterministic
 gate, mirroring the #1213 quote-scanner and #1415 banned-terms precedents.
 
+The gate is DESTINATION-AWARE (#1530): the clickable-link rule fires only
+on USER-FACING surfaces (Slack DM to the operator, ``t3 notify send``, the
+assistant's chat); an EXTERNAL-FORGE post (``gh``/``glab`` create/comment,
+forge ``api`` write) is exempt because the forge auto-renders bare ids. A
+bare URL is allowed on every surface (it is already clickable). The
+golden must-ALLOW / must-DENY corpus that pins both directions lives in
+:class:`TestDestinationAwareCorpus`.
+
 These tests exercise both halves: the pure detector (positives + an
 exhaustive anti-false-positive battery) and each handler end-to-end
 against a realistic publish surface or transcript.
@@ -59,9 +67,6 @@ class TestFindBareReferencesPositives:
             ("see issue #42 for details", "#42"),
             ("MR !7 is green", "!7"),
             ("thread ts 1716900000.123456", "1716900000.123456"),
-            ("https://github.com/souliane/teatree/issues/1500", "https://github.com/souliane/teatree/issues/1500"),
-            ("https://gitlab.com/group/proj/-/merge_requests/42", "https://gitlab.com/group/proj/-/merge_requests/42"),
-            ("https://workspace.notion.site/Some-Page-abc123", "https://workspace.notion.site/Some-Page-abc123"),
         ],
     )
     def test_bare_reference_is_flagged(self, text: str, expected: str) -> None:
@@ -74,11 +79,6 @@ class TestFindBareReferencesPositives:
         assert "#1500" in refs
         assert "#1501" in refs
         assert "!42" in refs
-
-    def test_trailing_sentence_punctuation_is_stripped_from_url(self) -> None:
-        assert find_bare_references("See https://github.com/o/r/pull/9, then merge.") == [
-            "https://github.com/o/r/pull/9"
-        ]
 
     def test_only_bare_ref_flagged_when_mixed_with_a_linked_one(self) -> None:
         assert find_bare_references("[text #5 here](http://x) plus bare #6") == ["#6"]
@@ -100,6 +100,39 @@ class TestFindBareReferencesNegatives:
     )
     def test_linked_reference_is_not_flagged(self, text: str) -> None:
         assert find_bare_references(text) == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A bare URL is already clickable everywhere — never flagged (the
+            # prior over-block this fix removes).
+            "https://github.com/souliane/teatree/issues/1500",
+            "https://gitlab.com/group/proj/-/merge_requests/42",
+            "https://workspace.notion.site/Some-Page-abc123",
+            "See https://github.com/o/r/pull/9, then merge.",
+        ],
+    )
+    def test_bare_url_is_never_flagged(self, text: str) -> None:
+        assert find_bare_references(text) == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # A bare ref inside a fenced block or a ``>`` blockquote is
+            # reproduced external content — exempt (exemption 0).
+            "Quoting the PR description:\n```\nsee #1764 and !7546\n```",
+            "```diff\n+ closes #1764\n```",
+            "Their comment said:\n> we should fix #1764 in !7546",
+            "> #1764\n> more quoted text",
+        ],
+    )
+    def test_bare_ref_inside_verbatim_block_is_not_flagged(self, text: str) -> None:
+        assert find_bare_references(text) == []
+
+    def test_bare_ref_outside_a_fenced_block_is_still_flagged(self) -> None:
+        # The fence exempts only its own span; a bare ref in surrounding prose
+        # still flags.
+        assert find_bare_references("see #1764\n```\nquoted #9999\n```") == ["#1764"]
 
     @pytest.mark.parametrize(
         "text",
@@ -131,13 +164,14 @@ class TestFindBareReferencesNegatives:
 
 
 class TestExtractPublishPayload:
-    def test_gh_issue_create_body(self) -> None:
-        payload = extract_publish_payload("Bash", {"command": 'gh issue create --title t --body "see #1500"'})
-        assert payload is not None
-        assert "#1500" in payload
+    def test_gh_issue_create_is_external_forge_so_no_payload(self) -> None:
+        # An external-forge post is exempt: no payload is returned, so the
+        # gate never fires (the forge auto-links the bare ref).
+        assert extract_publish_payload("Bash", {"command": 'gh issue create --title t --body "see #1500"'}) is None
 
     def test_git_commit_message(self) -> None:
-        payload = extract_publish_payload("Bash", {"command": "git commit -m 'fix: closes #1500'"})
+        # A commit message is user-facing (read in ``git log``): payload scanned.
+        payload = extract_publish_payload("Bash", {"command": "git commit -m 'see #1500 for context'"})
         assert payload is not None
         assert "#1500" in payload
 
@@ -180,16 +214,22 @@ class TestScanText:
 
 
 class TestPreToolUseHardGate:
-    def test_bare_ref_in_gh_issue_body_is_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('gh issue create --title t --body "see #1500"'))
+    def test_bare_ref_in_user_facing_commit_is_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'see #1500 for context'"))
         assert blocked is True
         decision = _out(capsys)
         assert decision["permissionDecision"] == "deny"
         assert "#1500" in decision["permissionDecisionReason"]
         assert "clickable link" in decision["permissionDecisionReason"]
 
-    def test_linked_ref_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh issue create --title t --body "see [#1500](https://github.com/o/r/issues/1500)"'
+    def test_external_forge_bare_ref_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A forge post is exempt — the bare ref auto-links there (the bug fix).
+        blocked = handle_bare_reference_pretool(_bash('gh issue create --title t --body "see #1500"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_linked_ref_in_commit_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'see [#1500](https://github.com/o/r/issues/1500) for context'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -199,13 +239,15 @@ class TestPreToolUseHardGate:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_unparseable_body_fails_closed(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_forge_api_write_is_exempt(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A ``gh api`` POST/stdin write is an external-forge surface, so even
+        # an unresolvable body is exempt — the forge renders the ref.
         blocked = handle_bare_reference_pretool(_bash("gh api repos/o/r/issues --input -"))
-        assert blocked is True
-        assert _out(capsys)["permissionDecision"] == "deny"
+        assert blocked is False
+        assert capsys.readouterr().out == ""
 
     def test_clean_body_with_plain_numbers_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('gh pr create --title t --body "merged 5 PRs, 100GB freed"'))
+        blocked = handle_bare_reference_pretool(_bash("git commit -m 'merged 5 PRs, 100GB freed'"))
         assert blocked is False
         assert capsys.readouterr().out == ""
 
@@ -258,22 +300,14 @@ class TestExtractTitleFragments:
 
 
 class TestConventionalTitleSuffixExemption:
-    """The trailing ``(#NNNN)``/``(!NNNN)`` of a PR/MR title or commit subject is exempt.
+    """The trailing ``(#NNNN)``/``(!NNNN)`` of a commit subject is exempt.
 
-    The forge auto-links the ref there and the suffix is the universal
-    convention, so it is allowed. The exemption is narrow: bodies, slack,
-    and mid-title refs stay flagged.
+    A ``git commit`` message is USER-FACING (read in ``git log``) yet its
+    trailing ``(#NNNN)`` suffix auto-links once pushed, so the suffix is
+    allowed; a mid-subject or body bare ref still flags. External-forge
+    posts (``gh``/``glab``) are exempt wholesale and are covered by
+    :class:`TestDestinationAwareCorpus`.
     """
-
-    def test_gh_pr_title_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "feat(x): desc (#123)" --body "ok"'))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-
-    def test_glab_mr_title_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('glab mr create --title "fix(y): z (!45)" --description "ok"'))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
 
     def test_git_commit_subject_trailing_suffix_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_bare_reference_pretool(_bash("git commit -m 'fix(y): z (#45)'"))
@@ -290,11 +324,6 @@ class TestConventionalTitleSuffixExemption:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_bare_ref_in_pr_body_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "feat(x): desc (#123)" --body "see #99"'))
-        assert blocked is True
-        assert "#99" in _out(capsys)["permissionDecisionReason"]
-
     def test_bare_ref_in_slack_send_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_bare_reference_pretool(
             {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": "merged !45 and #123"}}
@@ -303,11 +332,6 @@ class TestConventionalTitleSuffixExemption:
         reason = _out(capsys)["permissionDecisionReason"]
         assert "!45" in reason
         assert "#123" in reason
-
-    def test_mid_title_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_bare_reference_pretool(_bash('gh pr create --title "fixes #123 in the parser" --body "ok"'))
-        assert blocked is True
-        assert "#123" in _out(capsys)["permissionDecisionReason"]
 
     def test_mid_subject_ref_with_trailing_suffix_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_bare_reference_pretool(_bash("git commit -m 'feat: see #99 (#45)'"))
@@ -324,20 +348,11 @@ class TestConventionalTitleSuffixExemption:
         assert "#99" in reason
         assert "#45" not in reason
 
-    def test_extract_strips_only_trailing_title_suffix(self) -> None:
-        payload = extract_publish_payload(
-            "Bash", {"command": 'gh pr create --title "feat(x): desc (#123)" --body "body #99"'}
-        )
+    def test_extract_strips_only_trailing_subject_suffix(self) -> None:
+        payload = extract_publish_payload("Bash", {"command": "git commit -m 'feat(x): desc (#123)' -m 'body #99'"})
         assert payload is not None
         assert "#123" not in payload
         assert "#99" in payload
-
-    def test_strip_targets_title_line_not_body_substring_copy(self) -> None:
-        command = 'gh pr create --body "ref: feat(x): desc (#123) and more" --title "feat(x): desc (#123)"'
-        payload = extract_publish_payload("Bash", {"command": command})
-        assert payload is not None
-        assert "ref: feat(x): desc (#123) and more" in payload
-        assert "feat(x): desc\n" in payload or payload.endswith("feat(x): desc")
 
 
 class TestBodyCloseTrailerExemption:
@@ -399,26 +414,14 @@ class TestBodyCloseTrailerExemption:
     def test_mid_sentence_or_trailing_prose_is_still_flagged(self, text: str, expected: str) -> None:
         assert expected in find_bare_references(text)
 
-    def test_closes_ref_in_pr_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create --title "feat: some feature" --body "Closes #1613"'
+    def test_closes_ref_in_commit_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'feat: some feature' -m 'Closes #1613'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_fixes_ref_in_pr_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create --title "fix: something" --body "Fixes #1613"'
-        blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-
-    def test_resolves_ref_in_glab_mr_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'glab mr create --title "fix: bug" --description "Resolves #1613"'
-        blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is False
-        assert capsys.readouterr().out == ""
-
-    def test_refs_in_glab_mr_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'glab mr create --title "chore: update" --description "Refs #10"'
+    def test_fixes_ref_in_commit_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'fix: something' -m 'Fixes #1613'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -429,27 +432,27 @@ class TestBodyCloseTrailerExemption:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_closes_mr_ref_in_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create --title "fix: something" --body "Closes !42"'
+    def test_closes_mr_ref_in_commit_body_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'fix: something' -m 'Closes !42'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_close_trailer_with_prose_body_is_still_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_close_trailer_with_prose_commit_body_is_still_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
         body = "This implements the feature described in the ticket.\n\nCloses #1613"
-        cmd = f'gh pr create --title "feat: feature" --body "{body}"'
+        cmd = f"git commit -m 'feat: feature' -m '{body}'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_mid_sentence_close_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create --title "feat: something" --body "see #1613 for context"'
+    def test_mid_sentence_close_ref_in_commit_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'feat: something' -m 'see #1613 for context'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is True
         assert "#1613" in _out(capsys)["permissionDecisionReason"]
 
-    def test_trailing_prose_after_ref_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create --title "fix: parser" --body "fixes #123 in the parser"'
+    def test_trailing_prose_after_ref_in_commit_is_still_denied(self, capsys: pytest.CaptureFixture[str]) -> None:
+        cmd = "git commit -m 'fix: parser' -m 'fixes #123 in the parser'"
         blocked = handle_bare_reference_pretool(_bash(cmd))
         assert blocked is True
         assert "#123" in _out(capsys)["permissionDecisionReason"]
@@ -514,7 +517,9 @@ class TestHandlersFailOpenWithoutTeatreeImport:
 
     @pytest.mark.usefixtures("_teatree_unimportable")
     def test_pretool_returns_false(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert handle_bare_reference_pretool(_bash("gh issue create --body x")) is False
+        # A user-facing commit with a bare ref WOULD deny if teatree imported;
+        # the import failure must fail open (no block, silent).
+        assert handle_bare_reference_pretool(_bash("git commit -m 'see #1500 for context'")) is False
         captured = capsys.readouterr()
         assert captured.out == ""
         assert captured.err == ""
@@ -530,58 +535,56 @@ class TestHandlersFailOpenWithoutTeatreeImport:
         assert capsys.readouterr().out == ""
 
 
-@pytest.mark.integration
-class TestDestinationAwareGate:
-    """The gate scans only PUBLIC targets (#1530 destination-awareness).
+def _slack(text: str) -> dict[str, object]:
+    return {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": text}}
 
-    FAIL-CLOSED: a bare ref posted to the genuinely-public
-    ``souliane/teatree`` is still blocked; the same ref posted to a
-    configured internal namespace is allowed; a Slack send (no resolvable
-    repo destination) stays blocked.
+
+# Golden symmetric must-ALLOW / must-DENY corpus rows for destination-awareness.
+_MUST_ALLOW: list[tuple[str, dict]] = [
+    ("external_bare_id", _bash('gh pr create --title t --body "see #1764 and !7546"')),
+    ("external_bare_url", _bash('gh issue comment 5 --body "see https://github.com/souliane/teatree/issues/1764"')),
+    ("external_forge_api_write", _bash("gh api repos/o/r/issues/5/comments -f body='see #1764'")),
+    ("user_facing_plain_url", _slack("see https://github.com/souliane/teatree/issues/1764")),
+    ("user_facing_markdown", _slack("see [#1764](https://github.com/souliane/teatree/issues/1764)")),
+    ("user_facing_verbatim_block", _slack("Their PR description said:\n```\nfixes #1764 via !7546\n```")),
+]
+_MUST_DENY: list[tuple[str, dict, str]] = [
+    ("user_facing_slack_bare_id", _slack("see #1764"), "#1764"),
+    ("user_facing_commit_bare_id", _bash("git commit -m 'reverts the change from #1764'"), "#1764"),
+]
+
+
+class TestDestinationAwareCorpus:
+    """Golden symmetric must-ALLOW / must-DENY corpus for destination-awareness (#1530).
+
+    The gate had a known OVER-BLOCK failure mode (it rejected bare ids and
+    even bare URLs on external-forge posts, blocking a ``gh pr create``), so
+    the must-ALLOW direction is mandatory, not optional. Each row pins one
+    (destination, ref-shape) -> verdict cell of the rule:
+
+    - EXTERNAL post + bare id  -> ALLOW
+    - EXTERNAL post + bare URL  -> ALLOW
+    - USER-facing post + bare id  -> DENY (helpful message)
+    - USER-facing post + plain URL  -> ALLOW (NOT forced to markdown)
+    - USER-facing post + markdown link  -> ALLOW
+    - USER-facing post + bare id in a verbatim/quoted block  -> ALLOW
     """
 
-    @pytest.fixture
-    def _internal_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            '[teatree]\ninternal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
-
-    @pytest.mark.usefixtures("_internal_config")
-    def test_bare_ref_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create -R souliane/teatree --title t --body "see #1500"'
-        blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is True
-        assert _out(capsys)["permissionDecision"] == "deny"
-
-    @pytest.mark.usefixtures("_internal_config")
-    def test_bare_ref_to_internal_namespace_is_allowed(self, capsys: pytest.CaptureFixture[str]) -> None:
-        cmd = 'gh pr create -R internalcorp/private-svc --title t --body "see #1500"'
-        blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is False
+    @pytest.mark.parametrize(("name", "data"), _MUST_ALLOW)
+    def test_must_allow(self, name: str, data: dict, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_bare_reference_pretool(data) is False, name
         assert capsys.readouterr().out == ""
 
-    @pytest.mark.usefixtures("_internal_config")
-    def test_internal_glab_api_raw_rest_is_scanned_not_skipped(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Raw-REST ``gh api`` / ``glab api`` can target any surface, so the
-        # destination gate never SKIPS an api segment even when its URL path
-        # resolves to an internal project -- mirroring the carve-out, which
-        # excludes api from its eligible verbs.
-        cmd = "glab api projects/acme-internal%2Fapp/issues -f body='see #1500'"
-        blocked = handle_bare_reference_pretool(_bash(cmd))
-        assert blocked is True
-        assert _out(capsys)["permissionDecision"] == "deny"
-
-    @pytest.mark.usefixtures("_internal_config")
-    def test_bare_ref_in_slack_send_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Slack has no resolvable repo destination → PUBLIC → still blocked.
-        blocked = handle_bare_reference_pretool(
-            {"tool_name": "mcp__claude_ai_Slack__slack_send_message", "tool_input": {"text": "see #1500"}}
-        )
-        assert blocked is True
-        assert _out(capsys)["permissionDecision"] == "deny"
+    @pytest.mark.parametrize(("name", "data", "ref"), _MUST_DENY)
+    def test_must_deny(self, name: str, data: dict, ref: str, capsys: pytest.CaptureFixture[str]) -> None:
+        assert handle_bare_reference_pretool(data) is True, name
+        decision = _out(capsys)
+        assert decision["permissionDecision"] == "deny"
+        assert ref in decision["permissionDecisionReason"]
+        # The deny reason must be HELPFUL: name the clickable-link and plain-URL
+        # remedies, not just refuse.
+        assert "clickable link" in decision["permissionDecisionReason"]
+        assert "URL" in decision["permissionDecisionReason"]
 
 
 class TestHookChainRegistration:
