@@ -136,22 +136,28 @@ class TestReviewerPrRefRendering:
         assert "[teatree] !123" in action_blob, repr(action_blob)
 
 
-def _disposition_action(*, reason: str, payload_extra: dict[str, object]) -> DispatchAction:
+def _disposition_action(
+    *,
+    reason: str,
+    payload_extra: dict[str, object],
+    ticket_number: str = "77",
+) -> DispatchAction:
     """Mirror what ``dispatch._dispatch_one`` builds for ``unassigned``/etc.
 
     The disposition scanner ships ``reason`` plus the ticket coordinates;
     ``payload_extra`` adds the reason-specific fields (``old_owner`` /
-    ``new_owners`` for ``unassigned``).
+    ``new_owners`` for ``unassigned``). ``ticket_number`` lets a test vary
+    the ticket so dedup-by-ticket behaviour can be exercised.
     """
     return DispatchAction(
         kind="statusline",
         zone="action_needed",
-        detail=f"Ticket 77 — {reason}",
+        detail=f"Ticket {ticket_number} — {reason}",
         payload={
             "reason": reason,
             "overlay": "teatree",
-            "ticket_number": "77",
-            "issue_url": "https://example.com/issues/77",
+            "ticket_number": ticket_number,
+            "issue_url": f"https://example.com/issues/{ticket_number}",
             **payload_extra,
         },
     )
@@ -262,6 +268,73 @@ class TestSelfReassignmentSuppression:
         blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
         assert "reassigned (from souliane → to colleague):" in blob, repr(blob)
         assert "op-alt" not in blob, repr(blob)
+
+
+# The reported-noise shape: one human owning three handles (a GitHub login,
+# a GitLab username, and the canonical name). The real handles are personal
+# accounts kept out of this public repo; the structure is what matters.
+_REPORTED_ALIASES: tuple[tuple[str, ...], ...] = (("souliane", "op-gh", "op-gl"),)
+
+
+class TestReportedReassignNoise:
+    """The user-visible noise: intra-self reassigns leaking + duplicated per source handle.
+
+    Reproduces the reported statusline::
+
+        reassigned (from op-gh → to souliane): #12 ·
+        reassigned (from op-gh → to souliane): #69 ·
+        reassigned (from op-gl → to souliane): #12 ·
+        reassigned (from op-gl → to souliane): #69 · ...
+
+    All three handles are one human, so every one of those rows is a no-op
+    self-handoff and must vanish.
+    """
+
+    def test_all_intra_self_reassigns_render_zero_output(self) -> None:
+        actions = [
+            _disposition_action(
+                reason="unassigned",
+                payload_extra={"old_owner": old, "new_owners": ["souliane"]},
+                ticket_number=num,
+            )
+            for old in ("op-gh", "op-gl")
+            for num in ("12", "69")
+        ]
+        zones = zones_for(actions, colorize=False, identity_aliases=_REPORTED_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert "reassigned" not in blob, repr(blob)
+
+    def test_mixed_feed_shows_only_boundary_crossing_deduped(self) -> None:
+        actions = [
+            # Same ticket #12 surfaced twice, each row crossing the self
+            # boundary from a DISTINCT non-self source owner — the two rows
+            # stay distinct even after canonicalization, so the equality-based
+            # dedup keeps both. A ticket is one observable thing regardless of
+            # which source handle the reassign came from: dedup to one row.
+            _disposition_action(
+                reason="unassigned",
+                payload_extra={"old_owner": "colleague-a", "new_owners": ["souliane"]},
+                ticket_number="12",
+            ),
+            _disposition_action(
+                reason="unassigned",
+                payload_extra={"old_owner": "colleague-b", "new_owners": ["souliane"]},
+                ticket_number="12",
+            ),
+            # Pure intra-self handoff — must be suppressed entirely.
+            _disposition_action(
+                reason="unassigned",
+                payload_extra={"old_owner": "op-gh", "new_owners": ["souliane"]},
+                ticket_number="69",
+            ),
+        ]
+        zones = zones_for(actions, colorize=False, identity_aliases=_REPORTED_ALIASES)
+        blob = "".join(item if isinstance(item, str) else item.text for item in zones.action_needed)
+        assert blob.count("reassigned") == 1, repr(blob)
+        assert "#12" in blob, repr(blob)
+        assert "#69" not in blob, repr(blob)
+        assert "op-gh" not in blob, repr(blob)
+        assert "op-gl" not in blob, repr(blob)
 
 
 def _stale_action(*, number: str, state: str, age: int, overlay: str = "teatree") -> DispatchAction:

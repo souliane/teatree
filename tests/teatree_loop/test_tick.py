@@ -443,6 +443,39 @@ def test_identity_aliases_for_request_unions_across_backends(
     )
 
 
+def test_identity_aliases_for_request_falls_back_to_operator_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No explicit ``identity_aliases`` → ``backend.identities`` is the self-group (#1113).
+
+    The deployment that surfaced the noise configures only the flat
+    ``user_identity_aliases`` (→ ``backend.identities``), never the grouped
+    ``identity_aliases``. The render path must apply the same self-group
+    fallback the scanner path already had, or every intra-self reassignment
+    between the operator's own handles renders as ``reassigned`` churn.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+    from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
+
+    overlay = MagicMock(spec=OverlayBase)
+    overlay.config = MagicMock()
+    overlay.config.identity_aliases = []  # no grouped aliases configured
+    backend = OverlayBackends(
+        name="teatree",
+        hosts=(MagicMock(spec=CodeHostBackend),),
+        messaging=None,
+        ready_labels=(),
+        overlay=overlay,
+        identities=("souliane", "op-gh", "op-gl"),
+    )
+    monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
+    assert _identity_aliases_for_request(TickRequest(backends=[backend])) == (("souliane", "op-gh", "op-gl"),)
+
+
 def test_identity_aliases_for_request_empty_without_backends() -> None:
     from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
 
