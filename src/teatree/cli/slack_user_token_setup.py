@@ -33,6 +33,7 @@ import typer
 # the exact regex — drift between the two would let a token shape pass
 # capture but fail at construction, or vice versa.
 from teatree.backends.slack_token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
+from teatree.cli.slack_app_resolve import derive_app_id_from_token
 from teatree.cli.slack_setup import _USER_SCOPES
 from teatree.config import CONFIG_PATH
 from teatree.utils.secrets import read_pass, write_pass
@@ -155,6 +156,12 @@ def _store_and_verify(token: str, previous_scopes: list[str]) -> tuple[list[str]
 
 
 def _resolve_overlay_app_id(config_path: Path) -> str:
+    """Return the first ``slack_app_id`` recorded on any overlay block, else ``""``.
+
+    The shared xoxp token is overlay-agnostic, so any overlay's app id is a
+    valid OAuth-page target. Per-overlay derivation lives in
+    :func:`teatree.cli.slack_app_resolve.resolve_overlay_app_id`.
+    """
     if not config_path.is_file():
         return ""
     import tomlkit  # noqa: PLC0415
@@ -189,41 +196,11 @@ def _detect_and_backup_xoxb_mis_install(*, echo: Callable[[str], None]) -> None:
     write_pass(BOT_TOKEN_PASS_KEY, current)
 
 
-def _derive_app_id_from_bot(token: str) -> str:
-    """Derive the Slack app_id from any bot or user token via ``auth.test`` + ``bots.info``.
-
-    Returns the empty string when derivation fails for any reason — callers
-    fall back to the manual "open https://api.slack.com/apps" message.
-    """
-    if not token:
-        return ""
-    try:
-        auth = httpx.post(
-            "https://slack.com/api/auth.test",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=30,
-        )
-        auth.raise_for_status()
-        auth_body = auth.json()
-        if not auth_body.get("ok"):
-            return ""
-        bot_id = auth_body.get("bot_id")
-        if not bot_id:
-            return ""
-        info = httpx.post(
-            "https://slack.com/api/bots.info",
-            headers={"Authorization": f"Bearer {token}"},
-            data={"bot": bot_id},
-            timeout=30,
-        )
-        info.raise_for_status()
-        info_body = info.json()
-        if not info_body.get("ok"):
-            return ""
-        app_id = (info_body.get("bot") or {}).get("app_id")
-        return str(app_id) if app_id else ""
-    except httpx.HTTPError:
-        return ""
+# Source of truth for the derive-from-token chain is
+# ``teatree.cli.slack_app_resolve`` so ``slack-bot``, ``slack-provision`` and
+# this command share one implementation (#1686). Re-exported under the local
+# name for backward-compat with callers and tests that import it from here.
+_derive_app_id_from_bot = derive_app_id_from_token
 
 
 def slack_user_token_setup(

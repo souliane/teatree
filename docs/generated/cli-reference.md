@@ -1819,6 +1819,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │                   tokens via ``pass``.                                       │
 │ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
 │                   via ``pass``.                                              │
+│ slack-provision   Run the full Slack app lifecycle (manifest, scopes,        │
+│                   channels, tokens) idempotently.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1857,6 +1859,29 @@ Usage: t3 setup slack-user-token [OPTIONS]
 │ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
 │                       [default: /Users/adrien/.teatree.toml]                 │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-provision`
+
+```
+Usage: t3 setup slack-provision [OPTIONS]
+
+ Run the full Slack app lifecycle (manifest, scopes, channels, tokens)
+ idempotently.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay                              TEXT  Overlay to provision (default:  │
+│                                              every Slack-backed overlay in   │
+│                                              config).                        │
+│ --config                               PATH  Path to teatree config          │
+│                                              (default: ~/.teatree.toml).     │
+│                                              [default:                       │
+│                                              /Users/adrien/.teatree.toml]    │
+│ --open-browser    --no-open-browser          Open the OAuth (re)install URL  │
+│                                              in the browser.                 │
+│                                              [default: open-browser]         │
+│ --help                                       Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
