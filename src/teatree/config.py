@@ -603,15 +603,8 @@ class UserSettings:
     # as the escape hatch.
     self_update_disabled: bool = False
     self_update_cadence_hours: int = 1
-    # CI-gated auto-reinstall for the self-update scanner.
-    # ``auto_update_require_green_main`` (default ON, fail closed) refuses a
-    # ff-pull unless the default branch's CI is explicitly green — red /
-    # pending / unknown all skip. ``auto_update_reinstall`` (default OFF —
-    # the genuinely new side-effect on the running orchestrator) queues a
-    # deferred reinstall on an actual update so the next tick's fresh
-    # subprocess re-anchors the running editable install. Both are
-    # per-overlay overridable; ``T3_LOOP_AUTO_UPDATE`` env wins for the
-    # reinstall flag.
+    # ``T3_LOOP_AUTO_UPDATE`` env overrides ``auto_update_reinstall``;
+    # ``auto_update_require_green_main`` fails closed on non-green default-branch CI.
     auto_update_reinstall: bool = False
     auto_update_require_green_main: bool = True
     # #128 Resource-pressure scanner — teatree-controlled auto-free before

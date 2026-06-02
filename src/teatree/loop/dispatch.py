@@ -105,10 +105,8 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # #129 TODO-sweep — an orphaned (unverifiable) task surfaces for operator
     # review; the completion path routes through the mechanical handler below.
     "todo.orphaned": "action_needed",
-    # #1760 self-update CI-green gate — a ff-pull HELD because the default
-    # branch's CI is red / pending / unknown. Only these CI-verdict
-    # ``self_update.skipped`` signals reach here (see _is_self_update_ci_skip);
-    # a wedged clone behind a red main must be visible, not silently stale.
+    # Only the CI-green-gate skips reach here (see _is_self_update_ci_skip); a
+    # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
 }
 
@@ -129,9 +127,7 @@ _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 # ledger; the statusline is the wrong surface for it.
 #
 # ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
-# (``recent_marker`` / up-to-date / advanced) EXCEPT the CI-green
-# fail-closed skips, which :func:`_self_update_ci_skip_action` surfaces
-# before this drop (#1760); ``pull_main_clone.*`` — the main-clone pull marker;
+# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
 # ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
 # ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
 # explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
@@ -150,10 +146,6 @@ _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 )
 
 
-# The self-update scanner's CI-green fail-closed skips are the one
-# ``self_update.*`` family that IS user-facing (#1760): a refused ff-pull
-# because the default branch's CI is red / pending / unknown is a held update
-# the user should see, unlike the dropped up-to-date / cadence / advanced noise.
 _SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
 
 
