@@ -856,3 +856,128 @@ def test_get_mr_approvals_falls_back_when_left_absent() -> None:
     state = host.get_mr_approvals(repo="org/repo", pr_iid=12)
 
     assert state["approvals_left"] == 2
+
+
+_PARENT_URL = "https://gitlab.com/org/repo/-/work_items/8545"
+_PARENT_GID = "gid://gitlab/WorkItem/100"
+_CHILD_GID = "gid://gitlab/WorkItem/200"
+_TASK_TYPE_GID = "gid://gitlab/WorkItems::Type/5"
+
+
+def _graphql_router(*, child_iid: int, convert_errors=None, link_errors=None):
+    """Route create_sub_issue's GraphQL calls by query/mutation content."""
+
+    def _route(query: str, variables: dict | None = None) -> dict:
+        iid = (variables or {}).get("iid")
+        if "workItemTypes" in query:
+            return {"data": {"workspace": {"workItemTypes": {"nodes": [{"id": _TASK_TYPE_GID, "name": "Task"}]}}}}
+        if "workItems(iids" in query:
+            gid = _PARENT_GID if iid == "8545" else _CHILD_GID
+            return {"data": {"project": {"workItems": {"nodes": [{"id": gid}]}}}}
+        if "workItemConvert" in query:
+            return {"data": {"workItemConvert": {"workItem": {"id": _CHILD_GID}, "errors": convert_errors or []}}}
+        return {"data": {"workItemUpdate": {"workItem": {"id": _CHILD_GID}, "errors": link_errors or []}}}
+
+    _ = child_iid
+    return _route
+
+
+def _host_for_create_sub(child_iid: int = 8546, **kwargs) -> tuple[GitLabCodeHost, MagicMock]:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {
+        "iid": child_iid,
+        "web_url": f"https://gitlab.com/org/repo/-/work_items/{child_iid}",
+    }
+    client.graphql.side_effect = _graphql_router(child_iid=child_iid, **kwargs)
+    return GitLabCodeHost(client=client), client
+
+
+def test_create_sub_issue_creates_converts_and_links() -> None:
+    host, client = _host_for_create_sub()
+
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="Finding 1", body="desc", labels=["sec"])
+
+    assert result["iid"] == 8546
+    assert result["web_url"] == "https://gitlab.com/org/repo/-/work_items/8546"
+    client.post_json.assert_called_once_with(
+        "projects/42/issues",
+        {"title": "Finding 1", "description": "desc", "labels": "sec"},
+    )
+    convert_call = next(c for c in client.graphql.call_args_list if "workItemConvert" in c.args[0])
+    assert convert_call.args[1] == {"id": _CHILD_GID, "typeId": _TASK_TYPE_GID}
+    link_call = next(c for c in client.graphql.call_args_list if "workItemUpdate" in c.args[0])
+    assert link_call.args[1] == {"id": _CHILD_GID, "parentId": _PARENT_GID}
+
+
+def test_create_sub_issue_rejects_non_gitlab_url() -> None:
+    host, _ = _host_for_create_sub()
+    result = host.create_sub_issue(parent_url="https://example.com/foo", title="t", body="")
+    assert result == {"error": "Not a GitLab issue URL: https://example.com/foo"}
+
+
+def test_create_sub_issue_errors_on_unknown_type() -> None:
+    host, _ = _host_for_create_sub()
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="", child_type="Bogus")
+    assert result == {"error": "Unknown work item type: Bogus"}
+
+
+def test_create_sub_issue_surfaces_convert_errors() -> None:
+    host, _ = _host_for_create_sub(convert_errors=["not allowed"])
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert result == {"error": "Convert to Task failed: not allowed"}
+
+
+def test_create_sub_issue_surfaces_link_errors() -> None:
+    host, _ = _host_for_create_sub(link_errors=["it's not allowed to add this type of parent item"])
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert result == {"error": "Parent link failed: it's not allowed to add this type of parent item"}
+
+
+def test_create_sub_issue_errors_when_create_returns_no_iid() -> None:
+    host, client = _host_for_create_sub()
+    client.post_json.return_value = {"web_url": "https://gitlab.com/org/repo/-/issues/9"}
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert "no iid" in result["error"]
+
+
+def test_create_sub_issue_errors_when_project_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert result == {"error": "Could not resolve project: org/repo"}
+
+
+def test_create_sub_issue_errors_when_parent_gid_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.graphql.return_value = {"data": {"project": {"workItems": {"nodes": []}}}}
+    host = GitLabCodeHost(client=client)
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert result == {"error": f"Could not resolve parent work item: {_PARENT_URL}"}
+
+
+def test_create_sub_issue_propagates_create_issue_error() -> None:
+    host, _ = _host_for_create_sub()
+    with patch.object(host, "create_issue", return_value={"error": "Could not resolve project: org/repo"}):
+        result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert result == {"error": "Could not resolve project: org/repo"}
+
+
+def test_create_sub_issue_errors_when_child_gid_unresolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.post_json.return_value = {"iid": 8546, "web_url": "https://gitlab.com/org/repo/-/work_items/8546"}
+
+    def _route(query: str, variables: dict | None = None) -> dict:
+        if "workItemTypes" in query:
+            return {"data": {"workspace": {"workItemTypes": {"nodes": [{"id": _TASK_TYPE_GID, "name": "Task"}]}}}}
+        if (variables or {}).get("iid") == "8545":
+            return {"data": {"project": {"workItems": {"nodes": [{"id": _PARENT_GID}]}}}}
+        return {"data": {"project": {"workItems": {"nodes": []}}}}
+
+    client.graphql.side_effect = _route
+    host = GitLabCodeHost(client=client)
+    result = host.create_sub_issue(parent_url=_PARENT_URL, title="t", body="")
+    assert "Could not resolve created child work item" in result["error"]

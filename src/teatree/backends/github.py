@@ -374,6 +374,23 @@ class GitHubCodeHost:
         data = _gh_api_post(f"repos/{repo}/issues", payload, token=self._token)
         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
 
+    def create_sub_issue(
+        self,
+        *,
+        parent_url: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+        child_type: str = "Task",
+    ) -> RawAPIDict:
+        _ = (title, body, labels)
+        return {
+            "error": (
+                f"GitHub child work items are not supported (token={'set' if self._token else 'unset'}, "
+                f"parent={parent_url}, type={child_type})"
+            ),
+        }
+
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]:
         """Return open issues on ``owner/repo`` matching the free-text *query*.
 
