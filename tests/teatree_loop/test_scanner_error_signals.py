@@ -24,7 +24,7 @@ import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.backends import slack_bot
+from teatree.backends import slack_http
 from teatree.backends.protocols import ApprovalState, ReviewState
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
@@ -269,9 +269,9 @@ class TestSlackFetchChannelHistoryAuthFailure:
             return _slack_response({"ok": False, "error": "missing_scope"})
 
         # _channel_token consults conversations.info via _post; stub it too.
-        monkeypatch.setattr(slack_bot.httpx, "get", fake_get)
+        monkeypatch.setattr(slack_http.httpx, "get", fake_get)
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "missing_scope"}),
         )
@@ -283,12 +283,12 @@ class TestSlackFetchChannelHistoryAuthFailure:
 
     def test_invalid_auth_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "get",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "invalid_auth"}),
         )
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "invalid_auth"}),
         )
@@ -300,12 +300,12 @@ class TestSlackFetchChannelHistoryAuthFailure:
 
     def test_rate_limited_raises_scanner_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "get",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "ratelimited"}),
         )
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "ratelimited"}),
         )
@@ -323,12 +323,12 @@ class TestSlackFetchChannelHistoryAuthFailure:
         (auth/scope/ratelimit) raise.
         """
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "get",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "channel_not_found"}),
         )
         monkeypatch.setattr(
-            slack_bot.httpx,
+            slack_http.httpx,
             "post",
             lambda url, **kwargs: _slack_response({"ok": False, "error": "channel_not_found"}),
         )
