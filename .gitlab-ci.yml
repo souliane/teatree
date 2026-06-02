@@ -28,9 +28,12 @@ eval-gate:
   before_script:
     - apk add --no-cache python3 glab curl jq
   script:
-    # Pull the project's MRs (iid + created_at) for the ISO-week decision.
+    # Pull the project's MRs (iid + created_at) for the ISO-week decision,
+    # most-recent-first so the current ISO week is on the first page even for a
+    # project with thousands of MRs. first_pr_of_week.py also keeps the newest
+    # window as a second line of defence regardless of platform ordering.
     - >-
-      glab api "projects/$CI_PROJECT_ID/merge_requests?state=all&order_by=created_at&sort=asc&per_page=100"
+      glab api "projects/$CI_PROJECT_ID/merge_requests?state=all&order_by=created_at&sort=desc&per_page=100"
       > mrs.json || echo "[]" > mrs.json
     - >-
       if python3 scripts/eval/first_pr_of_week.py
@@ -57,6 +60,8 @@ eval-weekly:
     # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
     # weekly job runs the suite if a CLI is provisioned and is a no-op otherwise.
     - uv run t3 eval trigger-qa
+    # The needs_db regression checks open the self-DB, so migrate it first.
+    - uv run python -m teatree migrate --no-input
     - uv run t3 eval regression
     - uv run t3 eval run --trials 3 --require any
   allow_failure: false

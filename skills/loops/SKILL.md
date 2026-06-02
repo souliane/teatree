@@ -17,7 +17,7 @@ metadata:
 
 A SHORT, read-only view of every loop's live state. `/t3:loops` never ticks, claims, or starts work — it computes the status from the DB, prints it, and stops.
 
-It exists because `t3 loop status` prints the *cached* statusline written at the last tick, so its countdowns go stale — it can read "loop running" while the loop has actually been dead for hours. `t3 loop list` recomputes the state live on every call.
+It exists because `t3 loop status` prints the *cached* statusline written at the last tick, so its countdowns go stale — it can still show a live-looking loop line while the loop has actually been dead for hours. `t3 loop list` recomputes the state live on every call.
 
 ## When to load
 

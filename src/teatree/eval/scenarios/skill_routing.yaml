@@ -1,0 +1,260 @@
+# Skill-routing integration evals: every task (including dynamically-spawned
+# reviews) must load the skill set the active overlay declares. The overlay
+# declares it on ``OverlayConfig.companion_skills`` (the standing dev + project
+# skills) and ``OverlayBase.get_review_companion_skills()`` →
+# ``[pr_review_companion, *companion_skills]`` (the reviewer's set), threaded
+# through ``SkillLoadingPolicy.select_for_runtime_phase(review_skills=…)``. These
+# scenarios pin the BEHAVIOUR that a compliant trajectory actually loads them —
+# the gap that produces a null review when a reviewer runs without the overlay
+# skill and the project's legal-entity review skill.
+#
+# Core stays overlay-agnostic (BLUEPRINT § 1), so fixtures use placeholder
+# identities: ``t3-widget`` is the placeholder overlay skill, ``widget-le`` its
+# legal-entity review skill, ``widget-product`` / ``widget-workspace`` its repos.
+# An installed overlay supplies the real names via its own
+# ``eval/scenarios/`` directory; the contract under test is identical.
+#
+# Coverage axes (see README § "Skill-routing coverage matrix"):
+#   phase        : reviewing | coding | planning
+#   skill tier   : core (/t3:review, /t3:code, /t3:teatree-plan)
+#                | companion (ac-django / ac-python, the language bibles)
+#                | overlay (/t3-widget, /widget-le, /backend-dev, /frontend-dev)
+#   direction    : regression (the exact must-load case is named in the prompt)
+#                | generalization (a HELD-OUT case — the prompt states the RULE
+#                  but never names the skills, so a green trajectory has to
+#                  derive the right set itself, not pattern-match the prompt).
+# A generalization scenario whose prompt enumerated the skills would only test
+# instruction-following, not the routing rule, so those prompts deliberately
+# withhold the skill names.
+
+- name: overlay_repo_task_loads_overlay_skill
+  scenario: "a task touching an overlay repo loads the overlay skill alongside the dev skill, before editing"
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 4
+  tools: [Skill, Bash, Edit]
+  prompt: >-
+    You are about to implement a backend feature in the overlay repo
+    `widget-product` (a Django service). This overlay declares its standing
+    skill set on `OverlayConfig.companion_skills`: you must work with
+    `/t3-widget` (the overlay multi-repo workspace playbook) and `/backend-dev`
+    (the Django/DRF dev skill) loaded alongside the coding phase skill. The
+    `UserPromptSubmit` loader did not fire, so self-load the right skills
+    yourself per `/t3:rules` § "Invoke Skills Before ANY Response". Take the
+    first actions you would take now, before touching any code.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "(backend-dev|frontend-dev)"'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "\.py$"'
+
+- name: overlay_review_loads_overlay_review_skill_set
+  scenario: "a review on an overlay legal-entity repo loads the overlay-declared review set (overlay skill, /t3:review, dev skill, legal-entity skill)"
+  agent_path: skills/review/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash]
+  prompt: >-
+    You are about to review a merge request in the overlay repo
+    `widget-le-service`. The active overlay declares the reviewer's skill set
+    via `OverlayBase.get_review_companion_skills()` —
+    `[pr_review_companion, *companion_skills]` — which for this legal-entity
+    repo resolves to `/t3-widget`, `/t3:review`, `/backend-dev`, and
+    `/widget-le`. Skill prose does not auto-load into a review context, so
+    self-load that exact set before reading the diff. (A past review ran
+    without `/t3-widget` and `/widget-le` and produced a null review; the
+    reviewing-phase evidence gate exists to stop that.) Take the first
+    actions you would take now, before reading the diff.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "widget-le"'
+    - tool_call: Skill
+      args.skill: '~ "(t3:review|review)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) (approve|review)"'
+
+- name: workflow_spawned_review_loads_overlay_skill_set
+  scenario: "a review running inside a dynamically-spawned sub-agent loads the overlay skill set passed in its dispatch prompt, instead of diving straight into the diff"
+  agent_path: skills/ship/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash, Task]
+  prompt: >-
+    You are a freshly-spawned review sub-agent dispatched inside a Workflow —
+    you start cold with NONE of the parent's skills loaded, because skill
+    prose does not propagate into a spawned agent's context. Your dispatch
+    prompt named the overlay-declared review skill set you must hold before
+    reviewing this overlay `widget-workspace` (legal-entity) MR:
+    `/t3-widget`, `/t3:review`, `/frontend-dev`, and `/widget-le`. Self-load
+    that exact set first; do not start reading or judging the diff until they
+    are loaded. Take the first actions you would take now.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "widget-le"'
+    - no_tool_call_matching:
+        bash.command: '~ "git (diff|show|log).*(main|HEAD)"'
+
+- name: non_overlay_task_does_not_require_overlay_skill
+  scenario: "a teatree-only task loads its framework skill but does NOT pull in the overlay skill (overlay skills are scoped to overlay repos)"
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 4
+  tools: [Skill, Bash]
+  prompt: >-
+    You are about to implement a small change inside the `souliane/teatree`
+    repo itself — teatree is its own Django project, not an overlay repo, and
+    no project overlay is active here. Per `/t3:rules` § "Invoke Skills Before
+    ANY Response", load the skill(s) that actually apply to a teatree Django
+    change and start the work. Do not load skills that belong to a different
+    project's overlay. Take the first actions you would take now.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "(ac-django|code|teatree)"'
+    - no_tool_call_matching:
+        Skill.skill: '~ "t3-widget"'
+
+# --- CODING × companion tier (regression) ---------------------------------
+# The overlay's Django repo needs the language bible loaded too: /backend-dev
+# is the project dev skill but ac-django is the generic Django bible it layers
+# on (the overlay workspace skill documents "always load the companion bible").
+# A trajectory that loads the overlay + dev skill but skips the companion bible
+# is the exact class flagged in practice (loading only the project dev skill,
+# never the generic language bible underneath it).
+- name: overlay_django_coding_loads_companion_bible
+  scenario: "coding an overlay Django repo loads the companion language bible (ac-django) alongside the overlay skill and dev skill, not just the dev skill"
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash, Edit]
+  prompt: >-
+    You are about to add a Django model field plus migration in the overlay
+    repo `widget-product` (a Django/DRF service). The full skill set for this
+    task is the overlay workspace skill `/t3-widget`, the project dev skill
+    `/backend-dev`, AND the generic Django bible `/ac-django` it layers on —
+    all three before you touch a model. The `UserPromptSubmit` loader did not
+    fire; self-load them per `/t3:rules` § "Invoke Skills Before ANY Response".
+    Take the first actions you would take now, before editing any model.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "backend-dev"'
+    - tool_call: Skill
+      args.skill: '~ "ac-django"'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "models\.py$"'
+
+# --- CODING × companion tier (GENERALIZATION, held-out) --------------------
+# Held-out: the prompt states the RULE (load the language bible for the file's
+# language) but never names ac-python. A Python microservice (not Django) must
+# pull /ac-python, not /ac-django. A trajectory that loaded ac-django here, or
+# loaded nothing, would be pattern-matching the Django case rather than routing
+# by language — that is the generalization failure this pins.
+- name: overlay_python_coding_generalizes_to_python_bible
+  scenario: "coding a pure-Python (non-Django) overlay microservice generalizes the language-bible rule to /ac-python without the prompt naming it"
+  agent_path: skills/code/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash, Edit]
+  prompt: >-
+    You are about to implement a CLI entrypoint in the overlay repo
+    `widget-microservice` — a standalone Python service with NO Django (no
+    models, no ORM, plain `argparse` + stdlib). The rule: load the overlay
+    workspace skill `/t3-widget`, the project dev skill `/backend-dev`, and
+    the generic language bible that matches THIS service's language and
+    framework. Decide which language bible applies here and self-load the
+    right set before writing code. Take the first actions you would take now.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "ac-python"'
+    - no_tool_call_matching:
+        Skill.skill: '~ "ac-django"'
+
+# --- REVIEW × overlay tier (GENERALIZATION, held-out) ---------------------
+# Held-out: the prompt does NOT enumerate the review skill set. It only states
+# that the active overlay declares it via get_review_companion_skills() and that
+# skill prose does not auto-load. A green trajectory has to derive the set
+# (overlay skill + /t3:review + dev skill) itself. A trajectory that dived into
+# the diff with only the generic review skill is the null-review regression,
+# now tested in the GENERALIZATION direction (no spoon-fed names).
+- name: overlay_review_generalizes_to_declared_skill_set
+  scenario: "a review on an overlay repo derives and loads the overlay-declared review skill set even though the prompt never names the skills"
+  agent_path: skills/review/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash]
+  prompt: >-
+    You are about to cold-review a merge request in the overlay repo
+    `widget-product`. The active overlay declares the reviewer's skill set
+    via `OverlayBase.get_review_companion_skills()`; skill prose does NOT
+    auto-load into a review context, and a review run without the overlay's
+    declared set is null. Work out which skills that declared set contains for
+    this overlay repo and self-load them before you read the diff. Take the
+    first actions you would take now, before reading the diff.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - tool_call: Skill
+      args.skill: '~ "(t3:review|review)"'
+    - no_tool_call_matching:
+        bash.command: '~ "(gh|glab) (pr|mr) (approve|review)"'
+
+# --- REVIEW × overlay tier (negative: non-overlay review) -----------------
+# A review of a non-overlay repo must NOT load the overlay skill. A review of
+# teatree itself (its own Django project, no project overlay active) loads
+# /t3:review + the framework's own skill, but pulling the overlay skill here is
+# the over-load failure symmetric to the missing-overlay-skill one.
+- name: non_overlay_review_does_not_load_overlay_skill
+  scenario: "a review of a teatree-only branch loads /t3:review but does NOT pull in the overlay skill (overlay review skills are scoped to overlay repos)"
+  agent_path: skills/review/SKILL.md
+  model: haiku
+  max_turns: 4
+  tools: [Skill, Bash]
+  prompt: >-
+    You are about to cold-review a branch in the `souliane/teatree` repo
+    itself — teatree is its own Django project, not an overlay repo, and no
+    project overlay is active here. Load the review skill(s) that actually
+    apply to a teatree review per `/t3:rules` § "Invoke Skills Before ANY
+    Response", and do not load skills that belong to a different project's
+    overlay. Take the first actions you would take now, before reading the diff.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "(t3:review|review)"'
+    - no_tool_call_matching:
+        Skill.skill: '~ "t3-widget"'
+
+# --- PLANNING × core+overlay tier (regression) ----------------------------
+# Planning an overlay change loads the planning skill set: the core planning
+# skill plus the overlay workspace skill so the plan respects the overlay's
+# multi-repo boundaries. (#1640: the planning signal is implementation
+# planning, distinct from teatree-plan board prioritization — the prompt names
+# the planning skill explicitly so the scenario stays overlay-agnostic.)
+- name: overlay_planning_loads_planning_and_overlay_skill
+  scenario: "planning an overlay feature loads the planning skill plus the overlay workspace skill before drafting the plan"
+  agent_path: skills/architecture-design/SKILL.md
+  model: haiku
+  max_turns: 5
+  tools: [Skill, Bash, Write]
+  prompt: >-
+    You are about to plan a multi-repo feature spanning the overlay repos
+    `widget-product` (backend) and `widget-workspace` (frontend) before any
+    code is written. Load the architecture/planning skill `/t3:architecture-design`
+    and the overlay workspace skill `/t3-widget` (so the plan honours the
+    overlay's repo boundaries) BEFORE you draft or write any plan file. The
+    `UserPromptSubmit` loader did not fire; self-load them per `/t3:rules`.
+    Take the first actions you would take now, before writing a plan.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "(architecture-design|t3:architecture|plan)"'
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - no_tool_call_matching:
+        Write.file_path: '~ "(plan|PLAN).*\.md$"'

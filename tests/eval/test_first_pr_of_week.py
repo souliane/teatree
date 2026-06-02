@@ -3,6 +3,7 @@
 import datetime as dt
 import importlib.util
 import json
+from operator import itemgetter
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -15,6 +16,7 @@ _MOD = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MOD)
 
 is_first_mr_of_week = _MOD.is_first_mr_of_week
+select_gate_records = _MOD.select_gate_records
 main = _MOD.main
 
 NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=dt.UTC)  # Wednesday, ISO week 23
@@ -65,6 +67,69 @@ class TestIsFirstMrOfWeek:
             {"iid": 12, "created_at": "2026-06-01T10:00:00Z"},
         ]
         assert is_first_mr_of_week(mrs, current_iid=12, now=NOW) is True
+
+
+class TestSelectGateRecords:
+    def test_keeps_current_week_record_buried_past_the_oldest_hundred(self) -> None:
+        old = [
+            {"number": i, "created_at": f"2025-01-{(i % 27) + 1:02d}T09:00:00Z"}
+            for i in range(1, 1700)  # ~1700 records, none in week 23 of 2026
+        ]
+        current_week = {"number": 1701, "created_at": "2026-06-01T09:00:00Z"}  # Monday, week 23
+        corpus = [*old, current_week]
+
+        selected = select_gate_records(corpus, now=NOW)
+
+        assert any(rec.get("number") == 1701 for rec in selected)
+
+    def test_drops_the_oldest_history_beyond_the_window(self) -> None:
+        corpus = [{"number": i, "created_at": f"2025-03-{(i % 27) + 1:02d}T09:00:00Z"} for i in range(1, 500)]
+
+        selected = select_gate_records(corpus, now=NOW, per_page=100)
+
+        assert len(selected) == 100
+
+    def test_always_includes_the_full_current_week_even_past_the_window(self) -> None:
+        history = [{"number": i, "created_at": f"2025-03-{(i % 27) + 1:02d}T09:00:00Z"} for i in range(1, 300)]
+        this_week = [{"number": 900 + i, "created_at": "2026-06-01T09:00:00Z"} for i in range(150)]
+        corpus = [*this_week, *history]
+
+        selected = select_gate_records(corpus, now=NOW, per_page=100)
+
+        selected_numbers = {rec["number"] for rec in selected}
+        assert all((900 + i) in selected_numbers for i in range(150))
+
+    def test_gate_runs_on_current_week_pr_from_a_full_history(self) -> None:
+        old = [{"number": i, "created_at": f"2025-03-{(i % 27) + 1:02d}T09:00:00Z"} for i in range(1, 1700)]
+        current_week = {"number": 1701, "created_at": "2026-06-02T09:00:00Z"}  # Tuesday, week 23
+        corpus = [*old, current_week]
+
+        selected = select_gate_records(corpus, now=NOW)
+
+        assert is_first_mr_of_week(selected, current_iid=1701, now=NOW) is True
+
+    def test_skips_entries_without_a_usable_created_at(self) -> None:
+        corpus = [
+            {"number": 1},  # no created_at
+            {"number": 2, "created_at": ""},  # falsy created_at
+            {"number": 3, "created_at": "not-a-date"},  # unparsable
+            {"number": 4, "created_at": "2026-06-01T09:00:00Z"},  # week 23
+        ]
+
+        selected = select_gate_records(corpus, now=NOW)
+
+        assert [rec["number"] for rec in selected] == [4]
+
+    def test_oldest_first_page_is_inert_but_selection_fixes_it(self) -> None:
+        old = [{"number": i, "created_at": f"2025-01-{(i % 27) + 1:02d}T09:00:00Z"} for i in range(1, 1700)]
+        current_week = {"number": 1701, "created_at": "2026-06-01T09:00:00Z"}  # Monday, week 23
+        corpus = [*old, current_week]
+
+        oldest_first_page = sorted(corpus, key=itemgetter("created_at"))[:100]
+        assert is_first_mr_of_week(oldest_first_page, current_iid=1701, now=NOW) is False
+
+        selected = select_gate_records(corpus, now=NOW)
+        assert is_first_mr_of_week(selected, current_iid=1701, now=NOW) is True
 
 
 class TestMain:

@@ -4039,44 +4039,37 @@ def handle_read_dedup(data: dict) -> None:
     )
 
 
-# ── PostToolUse: capture TodoWrite into durable per-session state ──
+# ── PostToolUse: refresh the harness TODO statusline view ──────────
 #
-# Issue #970: the recovery snapshot was missing the active TODO list.
-# When ``TodoWrite`` fires, persist the latest todos to
-# ``<session>.todos`` so the PreCompact snapshot can quote them back.
-# Anthropic's newer ``TaskCreate``/``TaskUpdate`` tools currently bypass
-# PostToolUse (documented regression in ``docs/claude-code-internals.md``);
-# whenever they start firing hooks again, register them here too.
+# Issue #970 captured the active TODO list for the recovery snapshot via
+# the ``TodoWrite`` PostToolUse. Issue #1734 retired that path: the
+# harness migrated to the ``TaskCreate`` / ``TaskUpdate`` store, which
+# bypasses PostToolUse entirely, so the ``TodoWrite`` capture stopped
+# firing and ``<session>.todos`` went stale. The canonical live source is
+# now the harness task store, read by ``read_harness_todos``. This handler
+# materialises that store into ``<session>.todos`` on every PostToolUse so
+# the fast statusline keeps reading a fresh file rather than a dead one.
 
 
 def handle_track_todos(data: dict) -> None:
-    """Persist the current ``TodoWrite`` todo list to ``<session>.todos``.
+    """Refresh ``<session>.todos`` from the live harness task store.
 
-    Stores one ``- [status] content`` line per todo so the snapshot
-    renderer can include it verbatim. Overwrites on each TodoWrite so
-    completed/removed items don't linger — TodoWrite is the source of
-    truth for the active list. No-op for any other tool name.
+    Reads the current harness TODO list via ``read_harness_todos`` (#1734)
+    and overwrites ``<session>.todos`` with one ``- [status] content`` line
+    per item, so the statusline summary and the PreCompact snapshot read
+    the live store rather than the retired ``TodoWrite`` capture file.
+    No-op without a session id; never raises — capture must not block.
     """
-    if data.get("tool_name") != "TodoWrite":
-        return
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    todos = data.get("tool_input", {}).get("todos", [])
-    if not isinstance(todos, list):
-        return
 
+    from teatree.core.management.commands.tasks_session_view import read_harness_todos  # noqa: PLC0415
+
+    todos = read_harness_todos(session_id)
     _ensure_state_dir()
     todos_file = _state_file(session_id, "todos")
-    lines: list[str] = []
-    for todo in todos:
-        if not isinstance(todo, dict):
-            continue
-        content = str(todo.get("content", "")).strip()
-        if not content:
-            continue
-        status = str(todo.get("status", "pending")).strip() or "pending"
-        lines.append(f"- [{status}] {content}")
+    lines = [f"- [{status}] {content}" for status, content in todos]
     todos_file.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
@@ -4336,9 +4329,8 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
     additionally pins, when ``data`` carries the harness ``cwd``: the
     current worktree, branch, HEAD short SHA, uncommitted/unpushed
     counts, and the live open PRs for that repo (best-effort, never
-    blocking). Captured TODOs (via :func:`handle_track_todos`) round out
-    "what was I about to do next" from the durable side, since the Tasks
-    API doesn't fire ``PostToolUse``.
+    blocking). The live harness TODO list (via :func:`read_harness_todos`,
+    #1734) rounds out "what was I about to do next" from the durable side.
     """
     data = data or {}
     lines = [
@@ -4395,9 +4387,11 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
 
     lines += _render_no_commit_section(session_id)
 
-    todos = _read_lines(_state_file(session_id, "todos"))
+    from teatree.core.management.commands.tasks_session_view import read_harness_todos  # noqa: PLC0415
+
+    todos = read_harness_todos(session_id)
     if todos:
-        lines += ["", "## Pending TODOs", *todos]
+        lines += ["", "## Pending TODOs", *(f"- [{status}] {content}" for status, content in todos)]
 
     active = _read_lines(_state_file(session_id, "active"))
     if active:
@@ -6646,11 +6640,14 @@ def _slack_open_dm(bot_token: str, user_id: str, *, timeout: float) -> str:
     return cid if isinstance(cid, str) else ""
 
 
-def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float) -> bool:
+def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float, thread_ts: str = "") -> bool:
     """Post ``text`` to ``channel``. Return True iff Slack acknowledged success."""
     import urllib.request  # noqa: PLC0415
 
-    payload = json.dumps({"channel": channel, "text": text}).encode()
+    body: dict[str, str] = {"channel": channel, "text": text}
+    if thread_ts:
+        body["thread_ts"] = thread_ts
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         "https://slack.com/api/chat.postMessage",
         data=payload,
@@ -6663,20 +6660,42 @@ def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: flo
     return bool(isinstance(resp, dict) and resp.get("ok") is True)
 
 
+def _active_dm_thread_for_channel(channel: str) -> str:
+    """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
+
+    Threads the mirrored question under the conversation the user is
+    already in instead of opening a new top-level message. Fail-open:
+    any bootstrap or DB error yields ``""`` (post at root) so the hook
+    stays crash-proof.
+    """
+    if not channel or not _bootstrap_teatree_django():
+        return ""
+    try:
+        from teatree.core.models import IncomingEvent  # noqa: PLC0415
+
+        return IncomingEvent.objects.active_dm_thread(channel=channel)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> None:
     """Post ``text`` to ``user_id``'s DM. Resolves channel via cache when possible.
 
     Cache hit → single ``chat.postMessage`` call (sub-second on a normal
     connection, fits inside the 3s hook timeout). Cache miss or
     ``channel_not_found`` → open the DM, cache the channel id, retry.
+    Threads under the user's active DM conversation when one exists.
     """
     cached = _read_dm_channel_cache(user_id)
-    if cached and _slack_post_message(bot_token, cached, text, timeout=timeout):
-        return
+    if cached:
+        thread_ts = _active_dm_thread_for_channel(cached)
+        if _slack_post_message(bot_token, cached, text, timeout=timeout, thread_ts=thread_ts):
+            return
     channel = _slack_open_dm(bot_token, user_id, timeout=timeout)
     if not channel:
         return
-    if _slack_post_message(bot_token, channel, text, timeout=timeout):
+    thread_ts = _active_dm_thread_for_channel(channel)
+    if _slack_post_message(bot_token, channel, text, timeout=timeout, thread_ts=thread_ts):
         _write_dm_channel_cache(user_id, channel)
 
 

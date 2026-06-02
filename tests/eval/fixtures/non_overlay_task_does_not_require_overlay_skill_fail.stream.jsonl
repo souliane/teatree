@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-non_overlay_task_does_not_require_overlay_skill-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Loading the project overlay even though this is a teatree change."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "ac-django"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Skill", "input": {"skill": "t3-widget"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}

@@ -11,10 +11,11 @@
 #     exactly one home, the loop line.
 #  2. Live per-session info from Claude's stdin JSON: model, context-window %,
 #     5-hour and 7-day rate-limit usage, skills loaded this session, a compact
-#     summary of this session's harness TODO list (TodoWrite), and a
+#     summary of this session's harness TODO list, and a
 #     per-session loop-owner badge — the skills and TODO summaries are
 #     populated by hook_router.py into ${state_dir}/<session_id>.skills and
-#     ${state_dir}/<session_id>.todos, the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
+#     ${state_dir}/<session_id>.todos (the TODO file is materialised from the
+#     live harness task store), the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
 #     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
 #     different session owns it, or "unclaimed" (dim) when the registry has
 #     no live owner. Unlike the shared loop line, this badge is resolved
@@ -57,11 +58,12 @@ if [ -n "$session_id" ]; then
     if [ -r "$skills_file" ]; then
         skills=$(paste -sd ' ' "$skills_file")
     fi
-    # This session's harness TODO list (TodoWrite), persisted by hook_router.py
-    # as one ``- [status] content`` line per todo. Rendered as a fixed-width
-    # ``TODO done/total ✓ · Nwip`` summary — never item content, so width is
-    # bounded no matter how many todos exist. Distinct from the loop work
-    # queue (rendered Python-side); this is the current session's checklist.
+    # This session's harness TODO list, materialised by hook_router.py from
+    # the live harness task store as one ``- [status] content`` line per
+    # todo. Rendered as a fixed-width ``TODO done/total ✓ · Nwip`` summary —
+    # never item content, so width is bounded no matter how many todos exist.
+    # Distinct from the loop work queue (rendered Python-side); this is the
+    # current session's checklist.
     todos_file="$state_dir/${session_id}.todos"
     if [ -r "$todos_file" ]; then
         _total=$(grep -c '^- \[' "$todos_file" 2>/dev/null || true)
@@ -253,9 +255,9 @@ if [ -n "$todos_total" ] && [ "$todos_total" -gt 0 ] 2>/dev/null; then
 fi
 
 # Loop / tick info is intentionally NOT built here (#130). The single
-# dedicated loop line (``loop running · <name> <Nm> · …``) is rendered by
-# the fat loop into the zones file and cat'd below; duplicating it in this
-# header is the pollution the dashboard rework removed.
+# dedicated loop line (``<name> <Nm> · …``) is rendered by the fat loop into
+# the zones file and cat'd below; duplicating it in this header is the
+# pollution the dashboard rework removed.
 
 # RAM usage (macOS/Linux)
 # NOTE(#962): this computation is slated to move into `teatree.system.memory`
@@ -442,37 +444,42 @@ fi
 [ -n "$header" ] && printf '%s\n' "$header"
 [ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
 
-# The zones file holds the dedicated ``loop running · …`` line (and the
-# per-overlay anchors). The per-session loop-owner badge is appended to that
-# loop line so all loop state shares one visual home. If the zones file has no
-# ``loop running`` line (loops not currently live), the badge is still surfaced
+# The zones file holds the dedicated loop line (and the per-overlay anchors).
+# The per-session loop-owner badge is PREPENDED to that loop line so the user
+# reads ownership first and all loop state shares one visual home. If the zones
+# file has no loop line (loops not currently live), the badge is still surfaced
 # on its own trailing line so per-session ownership context is never lost.
 _zones_body=""
 [[ -r "$target" ]] && _zones_body=$(cat "$target")
-# The production zones file is colorized: each anchor is wrapped as
+# The loop line is the FIRST line of the zones body when loops are live: it is
+# always prepended above the per-overlay anchors, and every per-overlay anchor
+# carries an ``[overlay]`` prefix the loop line lacks. So line 1 IS the loop
+# line iff it does not start with ``[`` (after any leading ANSI escape). The
+# production zones file is colorized — each anchor is wrapped as
 # ``\033[38;5;244m{text}\033[0m``, so the loop line starts with the CSI escape,
-# not ``l``. awk owns both the match decision and the append (its
+# not its first letter. awk owns both the match decision and the prepend (its
 # ``sprintf("%c", 27)`` is a literal escape byte across awk implementations,
-# unlike grep's \x1b which only some greps interpret): it appends the badge to
-# the first ``loop running`` line whether or not a leading ANSI escape prefixes
-# it, placing it BEFORE any trailing reset so the badge rides the same visible
-# line in both colorized and NO_COLOR paths, and exits non-zero when there is
-# no loop line so the shell falls back to a trailing badge line.
+# unlike grep's \x1b which only some greps interpret): it inserts the badge at
+# the front of line 1, AFTER any leading ANSI escape so the badge keeps its own
+# color rather than inheriting the line's dim wrap, in both colorized and
+# NO_COLOR paths, and exits non-zero when line 1 is not a loop line (an overlay
+# anchor, no loop currently live) so the shell falls back to a trailing badge.
 if [ -n "$_loop_owner_badge" ] && [ -n "$_zones_body" ]; then
-    if ! printf '%s\n' "$_zones_body" | awk -v badge="${isep}${_loop_owner_badge}" '
+    if ! printf '%s\n' "$_zones_body" | awk -v badge="${_loop_owner_badge}${isep}" '
         function esc() { return sprintf("%c", 27) }
-        $0 ~ ("(^|" esc() "\\[[0-9;]*m)loop running") && !appended {
-            reset = esc() "[0m"
-            if (substr($0, length($0) - length(reset) + 1) == reset) {
-                printf "%s%s%s\n", substr($0, 1, length($0) - length(reset)), badge, reset
+        NR == 1 && $0 ~ "[^[:space:]]" && $0 !~ ("^(" esc() "\\[[0-9;]*m)?\\[") {
+            csi = "^" esc() "\\[[0-9;]*m"
+            if (match($0, csi)) {
+                lead = substr($0, 1, RLENGTH)
+                printf "%s%s%s\n", lead, badge, substr($0, RLENGTH + 1)
             } else {
-                printf "%s%s\n", $0, badge
+                printf "%s%s\n", badge, $0
             }
-            appended = 1
+            prepended = 1
             next
         }
         { print }
-        END { exit(appended ? 0 : 1) }
+        END { exit(prepended ? 0 : 1) }
     '; then
         printf '%s\n' "$_loop_owner_badge"
     fi

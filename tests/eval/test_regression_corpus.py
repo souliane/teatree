@@ -13,13 +13,32 @@ The corpus runs under :class:`~django.test.TestCase` so the DB-backed checks
 
 from unittest.mock import patch
 
+from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
 from teatree.core import branch_currency, merge_execution
 from teatree.core.models import LoopLease
 from teatree.eval import regression_corpus
-from teatree.eval.regression_corpus import RegressionCheck, run_regression_corpus
+from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
 from teatree.hooks import bare_reference_scanner
+
+
+def _linear_core_graph() -> MigrationGraph:
+    graph = MigrationGraph()
+    graph.add_node(("core", "0001"), None)
+    graph.add_node(("core", "0002"), None)
+    graph.add_dependency(None, ("core", "0002"), ("core", "0001"))
+    return graph
+
+
+def _forked_core_graph() -> MigrationGraph:
+    graph = MigrationGraph()
+    graph.add_node(("core", "0001"), None)
+    graph.add_node(("core", "0002_a"), None)
+    graph.add_node(("core", "0002_b"), None)
+    graph.add_dependency(None, ("core", "0002_a"), ("core", "0001"))
+    graph.add_dependency(None, ("core", "0002_b"), ("core", "0001"))
+    return graph
 
 
 class TestRegressionCorpusGreen(TestCase):
@@ -78,6 +97,16 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("loop-owner hijack" in r.check.failure_class for r in report.failures)
+
+    def test_leaf_count_predicate_flags_a_synthetic_forked_graph(self) -> None:
+        assert _count_core_leaves(_linear_core_graph()) == 1
+        assert _count_core_leaves(_forked_core_graph()) > 1
+
+    def test_migration_fork_check_fails_when_the_live_graph_forks(self) -> None:
+        with patch.object(regression_corpus, "_count_core_leaves", return_value=2):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("migration-fork" in r.check.failure_class for r in report.failures)
 
     def test_skips_db_checks_when_django_not_configured(self) -> None:
         with patch.object(regression_corpus, "_django_ready", return_value=False):

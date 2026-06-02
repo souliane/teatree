@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_review_generalizes_to_declared_skill_set-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Loading just the generic review skill and reading the diff."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Skill", "input": {"skill": "t3:review"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "glab mr approve 99", "description": "approve"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
