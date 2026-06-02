@@ -380,6 +380,25 @@ def _dedup_in_order[T](items: list[T]) -> list[T]:
     return out
 
 
+def _dedup_reassign_by_ticket(refs: list[_ReassignRef]) -> list[_ReassignRef]:
+    """Collapse reassign rows for the same ticket, first-occurrence wins.
+
+    ``_dedup_in_order`` keys on full ``_ReassignRef`` equality, so the same
+    ticket reassigned from two distinct source handles survives twice. A
+    ticket is one observable thing regardless of source handle — key on its
+    identity (issue URL, else label).
+    """
+    seen: set[str] = set()
+    out: list[_ReassignRef] = []
+    for ref in refs:
+        key = ref.ref.url or ref.ref.label
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ref)
+    return out
+
+
 def _dedup_active_tickets_across_overlays(
     by_overlay: dict[str, list[tuple[str, str, str, str]]],
 ) -> dict[str, list[tuple[str, str, str, str]]]:
@@ -457,7 +476,7 @@ def _dedup_classified(c: _ClassifiedActions) -> None:
     for overlay, refs in list(c.inflight_prs.items()):
         c.inflight_prs[overlay] = _dedup_in_order(refs)
     for overlay, reass in list(c.reassign_refs.items()):
-        c.reassign_refs[overlay] = _dedup_in_order(reass)
+        c.reassign_refs[overlay] = _dedup_reassign_by_ticket(_dedup_in_order(reass))
     for overlay, dms in list(c.dms.items()):
         c.dms[overlay] = _dedup_in_order(dms)
     for reason_map in c.disposition_refs.values():
