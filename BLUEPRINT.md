@@ -194,6 +194,8 @@ Request parameters are grouped into frozen `slots=True` dataclasses (`PullReques
 
 **Reaction surface (#1281).** `t3 slack react` is the only sanctioned reaction surface. `reactions.add` failures (`missing_scope`, `not_in_channel`, `mcp_externally_shared_channel_restricted`, …) raise `SlackReactionError` from `backends/slack_react_errors.py` — never silently return `False` — so callers cannot fall back to a `chat.postMessage(text=":emoji:")` thread reply. The CLI translates the raise into a structured exit-1 message pointing at `t3 setup slack-user-token` and souliane/teatree#1232. `SlackBotBackend.post_message` / `post_reply` reject bodies matching `^:[a-z0-9_+\-]+:$` with `SingleEmojiBodyRefusedError`, foreclosing the failure-mode shape at the backend boundary. FSM-side wrappers (`add_reactions_for_transition`, `add_approval_reaction`) catch the raise locally so Slack auth gaps cannot roll back FSM transitions.
 
+**Destination-routed post/react ([#1750](https://github.com/souliane/teatree/issues/1750)).** `t3 notify post`/`react` pick the token by *destination* via `SlackBotBackend._route_token`: user's own DM → bot; colleague/channel → personal `xoxp`.
+
 **Sync ABC (`core/sync.py`).** `SyncBackend` is an ABC with `is_configured(overlay)` and `sync(overlay) → SyncResult`. Implementations: `GitHubSyncBackend`, `GitLabSyncBackend`. Both consume `CodeHostBackend` — platform-specific code lives only in the Protocol implementation, not in sync logic.
 
 ---

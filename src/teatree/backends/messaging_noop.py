@@ -62,6 +62,16 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def post_routed(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        _ = channel, text, thread_ts
+        return {}
+
+    @staticmethod
+    def react_routed(*, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        _ = channel, ts, emoji
+        return {}
+
+    @staticmethod
     def resolve_user_id(handle: str) -> str:
         _ = handle
         return ""
