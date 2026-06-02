@@ -94,23 +94,15 @@ class ToolInput(TypedDict, total=False):
 _MARKDOWN_LINK_RE: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]\([^)]*\)")
 _ANGLE_LINK_RE: Final[re.Pattern[str]] = re.compile(r"<[^>\s]+(?:\|[^>]*)?>")
 
-# Verbatim external blocks excised before bare-token matching (exemption
-# 0). A fenced code block (a ``` ``` ```-delimited span, DOTALL across
-# lines) or a ``>`` blockquote line is reproduced external content; its
-# id form is the source's, not the agent's, so a bare ref inside is left
-# untouched. The fence pattern tolerates an info string after the opener
-# (``` ```diff ```); the blockquote is anchored to ``^`` (MULTILINE).
+# Verbatim external spans (exemption 0) — reproduced ids keep the source's form.
 _FENCED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
 _BLOCKQUOTE_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*>.*$", re.MULTILINE)
 
 
 _BARE_ISSUE_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w/])([#!]\d+)\b")
 _BARE_SLACK_TS_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w.])(\d{10}\.\d{6})(?![\w.])")
-# A bare forge/Notion/Slack URL is ALWAYS allowed (it is already
-# clickable everywhere), so it is no longer part of the bare-token
-# detection. The pattern is retained ONLY as an export for
-# ``core.review_findings``, which wraps bare URLs into ``<url>`` autolinks
-# in its own neutralizer.
+# Bare URLs are always allowed; this is exported only for
+# ``core.review_findings`` to autolink them in its own neutralizer.
 _BARE_URL_RE: Final[re.Pattern[str]] = re.compile(
     r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com|notion\.so|notion\.site|slack\.com)/\S+",
 )

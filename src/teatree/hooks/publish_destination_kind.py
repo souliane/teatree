@@ -53,22 +53,15 @@ from teatree.hooks.publish_surface import _GH_ELIGIBLE_VERBS, _GLAB_ELIGIBLE_VER
 # A posting segment is ``<tool> <sub> <verb>`` at minimum (``gh pr create``).
 _FORGE_POSTING_WORD_COUNT: Final[int] = 3
 
-# t3 verb-segment substrings whose destination is an EXTERNAL FORGE (a
-# filed issue, a posted PR/MR comment, a draft review note). Mirrors the
-# forge-bound entries of ``_command_parser._T3_PUBLISH_SUBSTRINGS``;
-# ``notify send`` and ``slack react`` are deliberately EXCLUDED -- they
-# target the user's Slack, a USER-FACING surface.
+# Forge-bound t3 wrappers only; ``notify send`` / ``slack react`` are
+# user-facing and live in ``_T3_USER_FACING_SUBSTRINGS`` below.
 _T3_FORGE_SUBSTRINGS: Final[tuple[str, ...]] = (
     "review post-comment",
     "review post-draft-note",
     "ticket create-issue",
 )
 
-# Markers whose presence in a non-forge publish segment makes it a
-# USER-FACING post: a ``chat.postMessage`` curl, a ``t3 notify send`` /
-# ``t3 slack react``, or a ``git commit`` message. A non-forge,
-# non-publish segment (``cd``, ``echo``, ``git push``) is inert -- it
-# neither flips the command to user-facing nor counts as a forge post.
+# Inert non-forge segments (``cd``, ``echo``, ``git push``) match neither set.
 _T3_USER_FACING_SUBSTRINGS: Final[tuple[str, ...]] = ("notify send", "slack react")
 _CURL_USER_FACING_MARKERS: Final[tuple[str, ...]] = ("chat.postmessage",)
 
