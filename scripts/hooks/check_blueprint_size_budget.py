@@ -124,7 +124,11 @@ _BUDGET_TOP_LEVEL_BYTES = 90_000
 # the #1697 `ReviewVerdict` row already on main, the merged appendix corpus
 # overflowed the prior 111,500 budget; raised one minimal step to 113,000 to
 # admit the row.
-_BUDGET_APPENDICES_BYTES = 113_000
+# Reviewed bump: the per-overlay turn-budget and autonomy-CLI config rows plus
+# the eval-suite appendix additions push the appendix corpus to 113,049 B, just
+# over the prior 113,000 budget. Raised one minimal step to 114,000 to admit the
+# reviewed rows; the coupling invariant tracks the total-budget raise below.
+_BUDGET_APPENDICES_BYTES = 114_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
@@ -160,7 +164,12 @@ _BUDGET_APPENDICES_BYTES = 113_000
 # 201,500 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
 # Raised one minimal step to 202,000 to restore the >=4 KB headroom (~4,249 B).
 # Coupling invariant holds: 202,000 - 90,000 = 112,000 <= 113,000.
-_BUDGET_TOTAL_BYTES = 202_000
+# Reviewed bump: the turn-budget + autonomy-CLI config rows and the eval-suite
+# docs bring the merged corpus to 198,693 B, leaving only ~3.3 KB under the prior
+# 202,000 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard. Raised
+# to 204,000 to restore the >=4 KB headroom (~5,307 B). Coupling invariant holds:
+# 204,000 - 90,000 = 114,000 <= 114,000.
+_BUDGET_TOTAL_BYTES = 204_000
 
 
 def _repo_root() -> pathlib.Path:
