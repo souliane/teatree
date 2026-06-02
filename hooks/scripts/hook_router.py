@@ -6646,11 +6646,14 @@ def _slack_open_dm(bot_token: str, user_id: str, *, timeout: float) -> str:
     return cid if isinstance(cid, str) else ""
 
 
-def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float) -> bool:
+def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float, thread_ts: str = "") -> bool:
     """Post ``text`` to ``channel``. Return True iff Slack acknowledged success."""
     import urllib.request  # noqa: PLC0415
 
-    payload = json.dumps({"channel": channel, "text": text}).encode()
+    body: dict[str, str] = {"channel": channel, "text": text}
+    if thread_ts:
+        body["thread_ts"] = thread_ts
+    payload = json.dumps(body).encode()
     req = urllib.request.Request(
         "https://slack.com/api/chat.postMessage",
         data=payload,
@@ -6663,20 +6666,42 @@ def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: flo
     return bool(isinstance(resp, dict) and resp.get("ok") is True)
 
 
+def _active_dm_thread_for_channel(channel: str) -> str:
+    """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
+
+    Threads the mirrored question under the conversation the user is
+    already in instead of opening a new top-level message. Fail-open:
+    any bootstrap or DB error yields ``""`` (post at root) so the hook
+    stays crash-proof.
+    """
+    if not channel or not _bootstrap_teatree_django():
+        return ""
+    try:
+        from teatree.core.models import IncomingEvent  # noqa: PLC0415
+
+        return IncomingEvent.objects.active_dm_thread(channel=channel)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> None:
     """Post ``text`` to ``user_id``'s DM. Resolves channel via cache when possible.
 
     Cache hit → single ``chat.postMessage`` call (sub-second on a normal
     connection, fits inside the 3s hook timeout). Cache miss or
     ``channel_not_found`` → open the DM, cache the channel id, retry.
+    Threads under the user's active DM conversation when one exists.
     """
     cached = _read_dm_channel_cache(user_id)
-    if cached and _slack_post_message(bot_token, cached, text, timeout=timeout):
-        return
+    if cached:
+        thread_ts = _active_dm_thread_for_channel(cached)
+        if _slack_post_message(bot_token, cached, text, timeout=timeout, thread_ts=thread_ts):
+            return
     channel = _slack_open_dm(bot_token, user_id, timeout=timeout)
     if not channel:
         return
-    if _slack_post_message(bot_token, channel, text, timeout=timeout):
+    thread_ts = _active_dm_thread_for_channel(channel)
+    if _slack_post_message(bot_token, channel, text, timeout=timeout, thread_ts=thread_ts):
         _write_dm_channel_cache(user_id, channel)
 
 
