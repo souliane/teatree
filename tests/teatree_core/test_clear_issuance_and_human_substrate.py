@@ -23,6 +23,10 @@ Only the unstoppable external — the ``gh`` subprocess — is stubbed; every
 teatree model / FSM / DB write is real.
 """
 
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -30,13 +34,23 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge_execution import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 
 pytestmark = pytest.mark.django_db
 
 _SHA = "c" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
+
+
+@contextmanager
+def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
+    """Stage a ``~/.teatree.toml`` setting ``overlay`` to ``autonomy`` and wire it in."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Path(tmp) / ".teatree.toml"
+        cfg.write_text(f'[teatree]\n[overlays.{overlay}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
+        with patch("teatree.config.CONFIG_PATH", cfg):
+            yield
 
 
 def _gh_stub(argv: list[str]) -> tuple[int, str, str]:
@@ -593,3 +607,145 @@ class TestPrMergeRedirectedToKeystone(TestCase):
         assert not result["merged"]
         assert "ticket merge" in result["error"]
         assert "ticket clear" in result["error"]
+
+
+def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
+    defaults: dict[str, object] = {
+        "ticket": ticket,
+        "pr_id": 1730,
+        "slug": "souliane/teatree",
+        "reviewed_sha": _SHA,
+        "reviewer_identity": "cold-reviewer",
+        "gh_verify_result": MergeClear.VerifyResult.GREEN,
+        "blast_class": MergeClear.BlastClass.SUBSTRATE,
+    }
+    defaults.update(overrides)
+    return MergeClear.objects.create(**defaults)
+
+
+def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "") -> object:
+    with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        return assert_merge_preconditions(
+            clear=clear,
+            executing_loop_identity="merge-loop",
+            slug=clear.slug,
+            pr_id=clear.pr_id,
+            human_authorized=human_authorized,
+        )
+
+
+class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
+    """Invariant 4 carve-out: an overlay at ``autonomy = full`` is the standing human approval.
+
+    The substrate per-PR sign-off is satisfied by EITHER a per-CLEAR
+    ``human_authorizer`` OR the CLEAR's overlay standing at ``autonomy = full``.
+    The quality/safety floor (independent cold-review, reviewed-SHA bind,
+    CI-green, not-draft, maker≠checker) is never relaxed by this knob — only
+    the per-PR human sign-off is what ``full`` removes.
+    """
+
+    def test_full_autonomy_substrate_passes_without_human_authorizer(self) -> None:
+        """MUST-ALLOW: full + substrate + reviewer!=maker + green + not-draft + no authorizer."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket)
+        with _overlay_autonomy("t3-teatree", "full"):
+            precheck = _assert_preconditions(clear)
+        assert precheck is not None
+
+    def test_full_autonomy_substrate_merges_end_to_end_without_human_authorizer(self) -> None:
+        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1731)
+        with (
+            _overlay_autonomy("t3-teatree", "full"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub),
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop"),
+            )
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert result["merged"]
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+
+    def test_notify_autonomy_substrate_without_authorizer_still_refused(self) -> None:
+        """MUST-DENY: notify (not full) keeps the per-PR human authorizer mandatory."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1732)
+        with _overlay_autonomy("t3-teatree", "notify"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_babysit_autonomy_substrate_without_authorizer_still_refused(self) -> None:
+        """MUST-DENY: babysit (the default) keeps the per-PR human authorizer mandatory."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1733)
+        with _overlay_autonomy("t3-teatree", "babysit"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
+    def test_full_autonomy_does_not_relax_maker_checker_floor(self) -> None:
+        """MUST-DENY: full + reviewer==maker still refuses — the maker≠checker floor is intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1734, reviewer_identity="coding-agent")
+        with (
+            _overlay_autonomy("t3-teatree", "full"),
+            pytest.raises(MergePreconditionError, match=r"non-reviewer role|independent cold reviewer"),
+        ):
+            _assert_preconditions(clear)
+
+    def test_full_autonomy_does_not_relax_sha_bind_floor(self) -> None:
+        """MUST-DENY: full + head moved off reviewed_sha still refuses — the SHA bind is intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40)
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="head moved"):
+            _assert_preconditions(clear)
+
+    def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
+        """MUST-DENY: full + non-green recorded verdict still refuses — the CI floor is intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1736, gh_verify_result=MergeClear.VerifyResult.FAILED)
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="not green"):
+            _assert_preconditions(clear)
+
+    def test_full_autonomy_does_not_relax_not_draft_floor(self) -> None:
+        """MUST-DENY: full + draft PR still refuses — the not-draft floor is intact."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1737)
+
+        def _draft_stub(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "isDraft" in joined:
+                return (0, "true", "")
+            return _gh_stub(argv)
+
+        with (
+            _overlay_autonomy("t3-teatree", "full"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=_draft_stub),
+            pytest.raises(MergePreconditionError, match="draft"),
+        ):
+            assert_merge_preconditions(
+                clear=clear,
+                executing_loop_identity="merge-loop",
+                slug=clear.slug,
+                pr_id=clear.pr_id,
+            )
+
+    def test_full_on_other_overlay_does_not_leak(self) -> None:
+        """MUST-DENY: full on overlay A never relaxes substrate on overlay B (B stays gated)."""
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1738)
+        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
+            _assert_preconditions(clear)
+
+    def test_per_clear_human_authorizer_still_works_under_babysit(self) -> None:
+        """A matching per-CLEAR ``human_authorizer`` is the unchanged path for non-full overlays."""
+        ticket = Ticket.objects.create(overlay="t3-client", state=Ticket.State.IN_REVIEW)
+        clear = _substrate_clear(ticket, pr_id=1739, human_authorizer="owner:adrien")
+        with _overlay_autonomy("t3-client", "babysit"):
+            precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
+        assert precheck is not None

@@ -379,7 +379,7 @@ Why this architecture exists, observed repeatedly: durability comes from **enfor
 
 3. **Topology.** The orchestrator is the synthesis brain (retro synthesis, code-health triage, enforcement escalation, merge/clear decisions). Sub-agents are sensors/hands emitting structured signal into durable state, never self-judging. Skills carry judgment/methodology; teatree code carries the deterministic loops, gates, and intake. Corollary: mechanics → code, judgment → skill.
 
-4. **Blast-radius rule.** Changes to the healing/gate substrate itself require an explicit recorded human approval (`MergeClear.human_authorizer`) and are draft-locked by default. Approval is the gate — the agent then executes the merge via `t3 <overlay> ticket merge <clear_id> --human-authorized <id>` (§17.4.3). Only the approval is human; the human never performs the merge.
+4. **Blast-radius rule.** Substrate changes are draft-locked and need a recorded human sign-off, satisfied by EITHER a per-PR `MergeClear.human_authorizer` OR the overlay standing at `autonomy = full` (`t3 <overlay> autonomy set full`) — the owner's standing grant to merge substrate without a per-PR sign-off. Either way the agent runs the `t3 <overlay> ticket merge` keystone (§17.4.3); the human never performs the merge. The carve-out removes ONLY the per-PR sign-off — the floor (cold-review `reviewer != maker`, SHA-bind, CI-green, not-draft, never-lockout, privacy/leak scan) holds on every substrate merge; below `full` the `human_authorizer` stays mandatory.
 
 5. **Durability discipline is load-bearing.** Durable task/state plus pre-compaction snapshots let the orchestrator brain survive compaction/restart; keep them.
 

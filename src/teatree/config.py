@@ -121,12 +121,17 @@ class Autonomy(StrEnum):
         (derived ``notify_on_behalf``) and the user's MR merges only after a
         colleague approval (per-diff CLEAR, never self-approve).
     *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
-        ``solo_overlay`` merge bypass is reachable here only.
+        ``solo_overlay`` merge bypass is reachable here only, and the substrate
+        per-PR sign-off is satisfied by this standing grant (the §17.4.3 step 5
+        carve-out — see :func:`teatree.core.merge_execution.assert_merge_preconditions`)
+        so a substrate CLEAR needs no per-CLEAR ``human_authorizer``.
 
     Both autonomous tiers collapse the three gates and pin ``mode = auto`` (see
     :func:`_apply_autonomy`). An explicit per-gate value always wins. The
-    safety floor (privacy/leak gate, cold-review, CI-green, never-lockout,
-    substrate keystone) is out of scope and never touched.
+    safety floor (privacy/leak gate, cold-review with reviewer != maker,
+    CI-green, not-draft, never-lockout, the SHA-bound audited keystone
+    transition) is out of scope and never touched — under ``full`` the substrate
+    carve-out removes ONLY the per-PR human sign-off, never a floor guard.
     """
 
     BABYSIT = "babysit"
