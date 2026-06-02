@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-test_e2e_specs_live_in_e2e_repo-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "touch src/product/login.spec.ts", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

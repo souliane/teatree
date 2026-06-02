@@ -1,0 +1,89 @@
+"""The committed generated corpus matches its declaration.
+
+The themed scenario YAML under ``src/teatree/eval/scenarios/`` and their
+``stream-json`` fixtures under ``tests/eval/fixtures/`` are emitted from the
+declaration in ``scripts/eval/corpus_gen``. This test re-runs the emitter in
+memory and asserts every planned file is committed with identical content, so a
+catalog edit without a regenerate (or a hand-edit of a generated file) fails CI
+instead of shipping drift.
+
+It also re-checks the anti-vacuous contract directly from the declaration: each
+scenario's ``_pass`` fixture grades GREEN, its ``_fail`` fixture grades RED, and
+(when it has a negative matcher) its ``_noop`` fixture grades RED — the same
+guarantee the on-disk anti-vacuous gate enforces, here pinned at the source.
+"""
+
+import dataclasses
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from scripts.eval.corpus_gen.all_scenarios import ALL_SCENARIOS
+from scripts.eval.corpus_gen.model import Scenario, fixture_stream
+from scripts.eval.generate_corpus import planned_files
+from teatree.eval.loader import load_eval_yaml
+from teatree.eval.report import evaluate
+from teatree.eval.runner import ClaudePRunner
+
+
+@dataclasses.dataclass
+class _FakeCompleted:
+    stdout: str
+    stderr: str = ""
+    returncode: int = 0
+
+
+def _grade(scenario: Scenario, variant: str, tmp_path: Path) -> bool:
+    spec_path = tmp_path / f"{scenario.name}.yaml"
+    from scripts.eval.corpus_gen.model import scenario_yaml  # noqa: PLC0415
+
+    spec_path.write_text(scenario_yaml(scenario), encoding="utf-8")
+    spec = load_eval_yaml(spec_path)[0]
+    fixture_text = fixture_stream(scenario, variant)
+
+    def _fake_run(cmd: list[str], **kwargs: object) -> _FakeCompleted:
+        return _FakeCompleted(stdout=fixture_text)
+
+    with (
+        patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+        patch("teatree.utils.run.subprocess.run", side_effect=_fake_run),
+    ):
+        run = ClaudePRunner(workspace=tmp_path).run(spec)
+    return evaluate(spec, run).passed
+
+
+def test_committed_files_match_declaration() -> None:
+    yaml_files, fixture_files = planned_files()
+    planned = {**yaml_files, **fixture_files}
+    assert planned, "the catalog declared no files"
+    mismatched: list[str] = []
+    for path, expected in planned.items():
+        if not path.is_file():
+            mismatched.append(f"missing: {path}")
+        elif path.read_text(encoding="utf-8") != expected:
+            mismatched.append(f"stale: {path}")
+    assert not mismatched, (
+        "generated corpus is out of date with scripts/eval/corpus_gen — run "
+        "`uv run python scripts/eval/generate_corpus.py`:\n  " + "\n  ".join(mismatched)
+    )
+
+
+def test_scenario_names_are_unique() -> None:
+    names = [s.name for s in ALL_SCENARIOS]
+    assert len(names) == len(set(names))
+
+
+@pytest.mark.parametrize("scenario", ALL_SCENARIOS, ids=lambda s: s.name)
+class TestDeclarationIsAntiVacuous:
+    def test_pass_fixture_grades_green(self, scenario: Scenario, tmp_path: Path) -> None:
+        assert scenario.has_positive, f"{scenario.name} has no positive matcher to satisfy"
+        assert _grade(scenario, "pass", tmp_path) is True
+
+    def test_fail_fixture_grades_red(self, scenario: Scenario, tmp_path: Path) -> None:
+        assert _grade(scenario, "fail", tmp_path) is False
+
+    def test_noop_fixture_grades_red_when_negative(self, scenario: Scenario, tmp_path: Path) -> None:
+        if not scenario.has_negative:
+            pytest.skip("no negative matcher; noop fixture not emitted")
+        assert _grade(scenario, "noop", tmp_path) is False

@@ -71,7 +71,7 @@ class TestClaudePRunner:
         assert cmd[cmd.index("--max-turns") + 1] == "3"
         assert cmd[cmd.index("--max-budget-usd") + 1] == "0.10"
         assert cmd[cmd.index("--model") + 1] == "haiku"
-        assert cmd[cmd.index("--fallback-model") + 1] == "sonnet"
+        assert cmd[cmd.index("--fallback-model") + 1] == "claude-sonnet-4-6"
         assert "--no-session-persistence" in cmd
         assert "--disable-slash-commands" in cmd
         assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"

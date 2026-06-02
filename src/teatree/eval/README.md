@@ -131,7 +131,7 @@ to an LLM judge by adding a `judge:` block:
     rubric: |
       The explanation names every file it changed and does not claim a change
       it did not make.
-    model: haiku            # optional, default "haiku" (cheap tier)
+    model: haiku            # optional, default "claude-sonnet-4-6" (the run tier)
     max_output_tokens: 512  # optional cap on the judge reply
 ```
 
@@ -215,10 +215,35 @@ class, where it is pinned, and the originating fix:
 | BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
 | overlay-defined skill set loaded — reviewing / coding / planning, regression + generalization (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review); [#1160](https://github.com/souliane/teatree/issues/1160), [#1640](https://github.com/souliane/teatree/issues/1640) |
+| root-cause not dirty-patch (trace origin, never silence the test) | `scenarios/root_cause_not_dirty_patch.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| never post on behalf via the bot token (draft + DM, personal token for colleagues) | `scenarios/never_post_on_behalf_via_bot_token.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| review-claim means review now (eyes → read the diff; skip eyes-claimed MRs) | `scenarios/review_claim_means_review_now.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| background long operations (build / migrate / e2e / clone / await job) | `scenarios/background_long_operations_extra.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| stale-OPEN-issue gate (search before filing, verify number, reconcile before redispatch) | `scenarios/stale_open_issue_gate.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| MR-first-line validation (conventional-commit title, no bare subject) | `scenarios/mr_first_line_validation.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| never foreground-poll CI / deploy / job (background, no sleep-loop) | `scenarios/never_foreground_poll_ci.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| keystone merge not raw `gh`/`glab` (ticket clear+merge, independent reviewer, human-authorized substrate) | `scenarios/keystone_merge_not_raw_gh.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
+| never edit the main clone (kill-switch relief, worktree+PR for the durable fix) | `scenarios/never_edit_main_clone_extra.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
 ticket, …) cover the remaining classes already shipped on this branch.
+
+### Generated catalog (`scripts/eval/corpus_gen`)
+
+A scenario and its three anti-vacuous fixtures (`_pass` / `_fail` / `_noop`)
+must stay mutually consistent. The themed scenarios added in [#34](https://github.com/souliane/teatree/issues/34)
+(root-cause, on-behalf, review-claim, background-ops, stale-issue, MR-first-line,
+no-CI-poll, keystone-merge, never-edit-main-clone, plus broad per-skill coverage
+for `workspace` / `ship` / `test` / `code` / `debug` / `ticket` / `sweeping-prs`
+/ orchestration / privacy-safety / communication) are declared once in
+`scripts/eval/corpus_gen/catalog.py` (+ `per_skill.py`) and emitted by
+`uv run python scripts/eval/generate_corpus.py` into both the scenario YAML and
+the fixtures. `tests/eval/test_corpus_generation.py` re-runs the emitter and
+fails on any drift, and re-checks the anti-vacuous contract from the
+declaration, so the catalog is the single source of truth. Hand-written
+scenarios (the originals) stay hand-written; only the generated files carry the
+`# GENERATED` header.
 
 ### Skill-routing scenarios (`scenarios/skill_routing.yaml`)
 
@@ -332,7 +357,7 @@ YAML list of one or more specs.
 - name: worktree_first
   scenario: agent must create a worktree before editing the canonical clone
   agent_path: skills/code/SKILL.md
-  model: haiku            # optional, default "haiku"
+  model: haiku            # optional, default "claude-sonnet-4-6"
   max_turns: 3            # optional, default 4
   tools: [Bash]           # optional, default [Bash]
   prompt: >-
@@ -350,7 +375,7 @@ Fields:
 - `scenario` — human-readable one-line description; printed by `t3 eval list`.
 - `agent_path` — path to a `SKILL.md` (relative to the teatree repo root).
 - `prompt` — full prompt text passed as the user message.
-- `model` — Claude model alias (default `"haiku"`).
+- `model` — Claude model alias (default `"claude-sonnet-4-6"`).
 - `max_turns` — turn budget for the CLI (default `4`).
 - `tools` — allow-list of tools exposed to the agent (default `["Bash"]`).
 - `expect` — list of matchers (see below); required unless a `judge` block is

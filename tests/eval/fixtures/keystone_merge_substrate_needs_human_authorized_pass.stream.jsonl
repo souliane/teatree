@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-keystone_merge_substrate_needs_human_authorized-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 widget ticket merge 7 --human-authorized u-42", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

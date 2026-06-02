@@ -18,10 +18,10 @@ import yaml
 from teatree.eval.models import AnyOf, EvalSpec, ExpectItem, JudgeSpec, Matcher
 
 DEFAULT_AGENT_PATH = "skills/code/SKILL.md"
-DEFAULT_MODEL = "haiku"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TURNS = 4
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
-DEFAULT_JUDGE_MODEL = "haiku"
+DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
 
 _OP_PATTERN = re.compile(r'^(contains|~)\s+"(.*)"$')

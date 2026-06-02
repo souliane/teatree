@@ -10,8 +10,8 @@ plus the rubric to a judge model and parses a PASS/FAIL verdict.
 
 Cost controls, by construction:
 
-*   the judge model defaults to a cheap tier (``haiku``) and is per-scenario
-    overridable;
+*   the judge model defaults to the same Sonnet tier as a run
+    (``claude-sonnet-4-6``) and is per-scenario overridable to a cheaper tier;
 *   ``--max-budget-usd`` caps spend per judge call and ``--max-output-tokens``
     caps the reply (a judge needs one line, not an essay);
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,

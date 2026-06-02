@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-keystone_merge_uses_ticket_clear_not_raw_gh-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 widget ticket clear 51 feat-x --reviewed-sha abc123 --reviewer-identity codex --blast-class logic", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
