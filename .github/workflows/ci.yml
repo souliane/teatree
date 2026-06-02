@@ -292,7 +292,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: uv sync
+      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
       - name: Decide whether this is the first PR of the ISO week
         id: gate
         env:
@@ -318,6 +325,12 @@ jobs:
       - name: Regression corpus (deterministic, free; also gated every PR via pytest)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval regression
+      # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
       - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
         if: steps.gate.outputs.run_eval == 'true'
-        run: uv run t3 eval run --trials 3 --require any
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: uv run t3 eval run --trials 3 --require any
