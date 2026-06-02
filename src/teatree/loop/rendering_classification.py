@@ -270,7 +270,7 @@ def _emit_pending_task_summaries(
     No individual task id or phase is listed — the raw phase token never
     surfaces as a pseudo-description, and the ~50-row dump collapses to a
     single compact line per overlay. The label is ``teatree tasks`` (the loop's
-    claimable task queue), distinct from the session's Claude TODO list.
+    claimable task queue), distinct from the session's harness TODO list.
     """
     for overlay, by_status in sorted(status_counts.items()):
         prefix = f"[{overlay}] " if overlay else ""
