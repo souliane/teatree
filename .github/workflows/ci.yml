@@ -281,6 +281,9 @@ jobs:
       - name: Trigger-QA (deterministic, free)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval trigger-qa
+      - name: Migrate the self-DB (the needs_db regression checks open it)
+        if: steps.gate.outputs.run_eval == 'true'
+        run: uv run python -m teatree migrate --no-input
       - name: Regression corpus (deterministic, free; also gated every PR via pytest)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval regression
