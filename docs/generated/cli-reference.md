@@ -1432,6 +1432,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
+│ comment-density      Flag added comments that merely restate the code        │
+│                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
@@ -1649,6 +1651,30 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 tool comment-density`
+
+```
+Usage: t3 tool comment-density [OPTIONS]
+
+ Flag added comments that merely restate the code (near-zero-comments rule).
+
+ Content-blind density pass over a unified diff. Reusable by any overlay:
+ the dedicated prek hook and the CI job both call this command. Exits ``1``
+ when a file's added lines are comment-dense, ``0`` when clean. Never a
+ PreToolUse gate, so it can never lock the agent's tools.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --diff            PATH  Read the unified diff from this file instead of      │
+│                         stdin.                                               │
+│ --staged                Scan `git diff --cached` (the pre-push / pre-commit  │
+│                         diff).                                               │
+│ --base-ref        TEXT  Scan the diff of HEAD vs this base ref (the PR diff; │
+│                         used by CI).                                         │
+│ --json                  Emit machine-readable JSON.                          │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 tool ai-sig-scan`
 
 ```
@@ -1819,6 +1845,8 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │                   tokens via ``pass``.                                       │
 │ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
 │                   via ``pass``.                                              │
+│ slack-provision   Run the full Slack app lifecycle (manifest, scopes,        │
+│                   channels, tokens) idempotently.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1857,6 +1885,29 @@ Usage: t3 setup slack-user-token [OPTIONS]
 │ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
 │                       [default: /Users/adrien/.teatree.toml]                 │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup slack-provision`
+
+```
+Usage: t3 setup slack-provision [OPTIONS]
+
+ Run the full Slack app lifecycle (manifest, scopes, channels, tokens)
+ idempotently.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay                              TEXT  Overlay to provision (default:  │
+│                                              every Slack-backed overlay in   │
+│                                              config).                        │
+│ --config                               PATH  Path to teatree config          │
+│                                              (default: ~/.teatree.toml).     │
+│                                              [default:                       │
+│                                              /Users/adrien/.teatree.toml]    │
+│ --open-browser    --no-open-browser          Open the OAuth (re)install URL  │
+│                                              in the browser.                 │
+│                                              [default: open-browser]         │
+│ --help                                       Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2743,7 +2794,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ availability  24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).    │
 │ questions     Manage the away-mode deferred-question backlog (#58).          │
 │ pending_chat  Manage the inbound Slack-DM queue (#1063).                     │
-│ notify        Bot→user Slack DM from the shell (#1030).                      │
+│ notify        Slack egress from the shell (#1030, #1750).                    │
 │ retro         Retrospective enforcement tooling (#1573).                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5398,14 +5449,18 @@ Usage: t3 teatree pending_chat mark-answered [OPTIONS] SLACK_TS
 ```
 Usage: t3 teatree notify [OPTIONS] COMMAND [ARGS]...
 
- Bot→user Slack DM from the shell (#1030).
+ Slack egress from the shell (#1030, #1750).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ send  DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct         │
-│       notify).                                                               │
+│ send   DM the user; exit 0 on delivery, 1 otherwise (sub-agent direct        │
+│        notify).                                                              │
+│ post   Post, token routed by destination (self-DM→bot,                       │
+│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
+│ react  React, token routed by destination (self-DM→bot,                      │
+│        colleague/channel→xoxp); exit 0 on ``ok``.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5433,6 +5488,51 @@ Usage: t3 teatree notify send [OPTIONS] BODY
 │    --overlay                TEXT  Set T3_OVERLAY_NAME for the call           │
 │                                   (per-overlay bot routing).                 │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify post`
+
+```
+Usage: t3 teatree notify post [OPTIONS]
+
+ Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp
+ (exit 0 on ``ok``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --channel        TEXT  Destination: the user's own DM (→bot) or a         │
+│                           colleague/channel (→xoxp).                         │
+│                           [required]                                         │
+│ *  --text           TEXT  Slack mrkdwn body. Use ``-`` to read the body from │
+│                           stdin.                                             │
+│                           [required]                                         │
+│    --thread         TEXT  Thread ``ts`` to reply into (omit to post a new    │
+│                           top-level message).                                │
+│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
+│                           credentials).                                      │
+│    --help                 Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree notify react`
+
+```
+Usage: t3 teatree notify react [OPTIONS]
+
+ React on a destination, token chosen by it: self-DM→bot,
+ colleague/channel→xoxp (exit 0 on ``ok``).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --channel        TEXT  Destination the message is in: self-DM (bot) or    │
+│                           colleague/channel (xoxp).                          │
+│                           [required]                                         │
+│ *  --ts             TEXT  Timestamp ``ts`` of the message to react to.       │
+│                           [required]                                         │
+│ *  --emoji          TEXT  Emoji name (with or without surrounding colons).   │
+│                           [required]                                         │
+│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
+│                           credentials).                                      │
+│    --help                 Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
