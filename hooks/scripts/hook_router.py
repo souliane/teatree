@@ -5208,14 +5208,20 @@ def _loop_self_pump(data: dict) -> bool | None:
         return None
 
     marker.write_text("1", encoding="utf-8")
-    # Tag the tick with the owner session id so its re-claim heartbeat
-    # always lands under the real session (and records its pid) instead of
-    # resolving to "" in the Bash-tool subprocess (#1107). The id IS the
-    # owner session here (the self-pump only fires for the owner), so the
-    # pid-anchored claim keeps the lease anchored to this session (#1073).
+    # Tag the tick with the owner session id AND the durable session pid so
+    # its re-claim heartbeat always lands under the real session and anchors
+    # the lease on the long-lived session process — instead of resolving the
+    # id to "" and the pid to os.getppid() of the torn-down Bash-tool shell
+    # (#1107/#1722). The session id IS the owner here (the self-pump only
+    # fires for the owner), and os.getppid() in this Stop hook IS that
+    # durable session process (the same value SessionStart records in the
+    # loop registry), so the pid-anchored claim keeps the lease anchored
+    # even when the tick subprocess cannot read the registry (#1073).
+    session_pid = os.getppid()
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
         f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
+        f"T3_LOOP_SESSION_PID={session_pid} "
         "t3 loop tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
