@@ -181,7 +181,7 @@ class, where it is pinned, and the originating fix:
 | do-work-now (run the command, don't hand back) | `scenarios/do_work_now.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
 | BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
-| overlay-defined skill set loaded (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review) |
+| overlay-defined skill set loaded — reviewing / coding / planning, regression + generalization (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review); [#1160](https://github.com/souliane/teatree/issues/1160), [#1640](https://github.com/souliane/teatree/issues/1640) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
@@ -201,32 +201,79 @@ not a hardcoded list. The overlay's declaration is the ground truth:
   `agents.skill_bundle.active_overlay_review_skills()`.
 
 Core stays overlay-agnostic (BLUEPRINT § 1), so the prompts use placeholder
-identities — `t3-widget` for the overlay skill, `widget-le` for its
-legal-entity review skill, `widget-product` / `widget-workspace` for its repos.
-An installed overlay supplies the real names via its own `eval/scenarios/`
-directory; the contract under test is identical. Each prompt names that
-overlay-declared set and grading inspects the agent's `Skill` tool calls
-(`input.skill`). Four cases:
+identities — `t3-widget` for the overlay workspace skill, `widget-le` for its
+legal-entity review skill, `widget-product` / `widget-workspace` /
+`widget-microservice` for its repos. An installed overlay supplies the real
+names via its own `eval/scenarios/` directory (it maps the placeholder
+workspace skill to its own overlay skill, the placeholder legal-entity skill to
+its own, and reuses `backend-dev` / `frontend-dev` unchanged); the contract
+under test is identical. Grading inspects the agent's `Skill` tool calls
+(`input.skill`).
 
-- **Positive — overlay task** (`overlay_repo_task_loads_overlay_skill`): a task
-  in an overlay repo must load the overlay skill and the dev skill before
-  editing. Missing the overlay skill → FAIL.
-- **Positive — overlay review**
-  (`overlay_review_loads_overlay_review_skill_set`): a review on an overlay
-  legal-entity repo must load the overlay skill, `/t3:review`, the dev skill,
-  and the legal-entity skill. This is the null-review incident (a review ran
-  without the overlay and legal-entity skills); the reviewing-phase evidence
-  gate ([review-skill evidence gate](https://github.com/souliane/teatree/issues/1539))
-  is the code-side complement.
-- **Positive — dynamic-workflow review**
+#### Coverage matrix
+
+The user's requirement is that **every** phase load the right skill set —
+across core / companion / overlay tiers, in both the *regression* direction
+(the exact must-load case) and the *generalization* direction (a held-out case
+where the prompt states the rule but withholds the skill names, so a green
+trajectory has to derive the set rather than pattern-match the prompt).
+
+| phase | tier(s) under test | direction | scenario |
+|---|---|---|---|
+| coding | overlay + dev | regression | `overlay_repo_task_loads_overlay_skill` |
+| coding | overlay + dev + **companion** (`ac-django`) | regression | `overlay_django_coding_loads_companion_bible` |
+| coding | overlay + dev + **companion** (`ac-python`) | **generalization** | `overlay_python_coding_generalizes_to_python_bible` |
+| coding | non-overlay (must NOT load overlay skill) | regression (negative) | `non_overlay_task_does_not_require_overlay_skill` |
+| reviewing | overlay + `/t3:review` + dev + legal-entity | regression | `overlay_review_loads_overlay_review_skill_set` |
+| reviewing | overlay + `/t3:review` + dev | **generalization** | `overlay_review_generalizes_to_declared_skill_set` |
+| reviewing | dynamic-workflow spawned (overlay set from dispatch prompt) | regression | `workflow_spawned_review_loads_overlay_skill_set` |
+| reviewing | non-overlay (must NOT load the overlay skill) | regression (negative) | `non_overlay_review_does_not_load_overlay_skill` |
+| planning | core planning + overlay | regression | `overlay_planning_loads_planning_and_overlay_skill` |
+
+Notes on the load-bearing cases:
+
+- **Companion bible on coding** (`overlay_django_coding_loads_companion_bible`,
+  `overlay_python_coding_generalizes_to_python_bible`): the project dev skill
+  (`/backend-dev`) is not enough — the generic language bible it layers on
+  (`/ac-django` for Django, `/ac-python` for plain Python) must load too. The
+  Python case is held out: the prompt says "load the bible that matches THIS
+  service's language" but never names `ac-python`, and loading `ac-django`
+  there (pattern-matching the Django case) FAILS. This is the exact class the
+  user flagged ("I'd been loading only `/backend-dev`//`/frontend-dev`").
+- **Overlay review, generalization**
+  (`overlay_review_generalizes_to_declared_skill_set`): the prompt does NOT
+  enumerate the review set — it only states the overlay declares it via
+  `get_review_companion_skills()` and that a review without that set is null. A
+  green trajectory derives `overlay skill + /t3:review + dev` itself. This puts
+  the null-review incident under test without spoon-feeding the skill names.
+- **Dynamic-workflow review**
   (`workflow_spawned_review_loads_overlay_skill_set`): a review running inside a
   spawned sub-agent starts cold (skill prose does not propagate into a spawned
   agent — see `skills/ship/SKILL.md` § "Review Gate"), so the overlay set named
-  in its dispatch prompt must be self-loaded before the diff is read.
-- **Negative — non-overlay task**
-  (`non_overlay_task_does_not_require_overlay_skill`): a teatree-only change
-  loads its framework skill but must NOT pull in the overlay skill; absence of
-  the overlay skill is the PASS condition there.
+  in its dispatch prompt must be self-loaded before the diff is read. The
+  reviewing-phase evidence gate
+  ([review-skill evidence gate](https://github.com/souliane/teatree/issues/1539))
+  is the code-side complement.
+- **Negative directions**: a teatree-only change/review loads its framework
+  skill but must NOT pull in the overlay skill — the over-load failure
+  symmetric to the missing-overlay-skill one
+  (`non_overlay_task_does_not_require_overlay_skill`,
+  `non_overlay_review_does_not_load_overlay_skill`).
+- **Planning** (`overlay_planning_loads_planning_and_overlay_skill`): planning
+  an overlay change loads the core planning skill plus the overlay workspace
+  skill before any plan file is written. Per [#1640](https://github.com/souliane/teatree/issues/1640)
+  the planning signal is *implementation* planning (architecture-design), not
+  `teatree-plan` board prioritization.
+
+#### Anti-vacuity
+
+Every scenario ships three fixtures — `_pass` (compliant → GREEN), `_fail`
+(regressing → RED), and `_noop` (no tool calls → RED). The `_noop` fixture is
+what proves the scenario is not vacuous: a spec made only of negative matchers
+(`no_tool_call_matching`) is trivially satisfied by an agent that does nothing,
+so each scenario carries a positive `Skill` matcher that a no-op transcript
+fails. `tests/eval/test_scenarios_anti_vacuous.py` runs all three directions on
+every PR, so a toothless skill-routing matcher cannot merge.
 
 ## Run history and baselines
 
