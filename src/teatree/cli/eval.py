@@ -18,7 +18,7 @@ from teatree.cli.eval_run_modes import (
     render_subscription_text,
     with_model,
 )
-from teatree.eval.backends import SDK_BACKEND, UnknownBackendError, make_runner
+from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.models import EvalSpec
@@ -115,12 +115,13 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         help="Max number of LLM-judge calls per run (cost cap).",
     ),
     backend: str = typer.Option(
-        SDK_BACKEND,
+        SUBSCRIPTION_BACKEND,
         "--backend",
         help=(
-            "Execution backend for a single-trial run: 'sdk' (metered claude -p, reserved for CI with "
-            "ANTHROPIC_API_KEY) or 'subscription' (grade subscription-produced transcripts; see "
-            "`t3 eval prepare-subscription`). --trials and --models always use the sdk runner."
+            "Execution backend for a single-trial run: 'subscription' (default — grade "
+            "subscription-produced transcripts, no API spend; see `t3 eval prepare-subscription`) "
+            "or 'sdk' (metered claude -p, reserved for CI with ANTHROPIC_API_KEY). --trials and "
+            "--models always use the metered sdk runner regardless of this flag."
         ),
     ),
     transcript_dir: Path | None = typer.Option(
@@ -141,10 +142,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     baseline for its model — the reference ``--gate-regressions`` compares a
     later candidate run against (a regression exits non-zero).
 
-    ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the CI
-    job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
-    transcripts produced on the subscription via an in-session sub-agent (run
+    ``--backend subscription`` (default) grades transcripts produced on the
+    subscription via an in-session sub-agent — no API spend (run
     ``t3 eval prepare-subscription`` first for the prompts + expected paths).
+    ``--backend sdk`` shells the metered ``claude -p`` runner — the CI job's path
+    (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
+    always use the metered ``sdk`` runner regardless of ``--backend``.
     """
     _bootstrap_django()
     if output_format not in _VALID_FORMATS:
@@ -152,6 +155,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
+    if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
+        typer.echo(
+            "note: --trials/--models force the metered sdk runner (claude -p, API-billed); "
+            "the 'subscription' default does not apply to multi-trial / matrix runs",
+            err=True,
+        )
     if models is not None:
         _run_model_matrix(
             specs,
@@ -186,6 +195,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         raise typer.Exit(code=2) from None
     results = [evaluate(spec, runner.run(spec), judge=grader) for spec in specs]
     typer.echo(render_json(results) if output_format == "json" else render_text(results))
+    if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
+        _hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     regressed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
@@ -428,6 +439,32 @@ def regression(
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
     if not report.ok:
         sys.exit(1)
+
+
+def _hint_missing_transcripts(runner: SubscriptionTranscriptRunner, missing: list[EvalSpec]) -> None:
+    """Print a clear next-step hint for each scenario the subscription backend could not grade.
+
+    With ``subscription`` the default, a bare ``t3 eval run`` before any
+    transcript exists would otherwise read as a silent skip. Name each missing
+    scenario, the exact transcript path the backend expects, and the
+    ``prepare-subscription`` command that emits the prompt to produce it.
+    """
+    if not missing:
+        return
+    typer.echo(
+        f"\n{len(missing)} scenario(s) skipped — no subscription transcript on disk.",
+        err=True,
+    )
+    for spec in missing:
+        typer.echo(f"  - {spec.name}: expected transcript at {runner.transcript_path(spec)}", err=True)
+    names = " ".join(spec.name for spec in missing)
+    typer.echo(
+        "Produce them with the subscription (no API spend): run "
+        f"`t3 eval prepare-subscription {names}` for each scenario's prompt + path, drive each prompt "
+        "via an in-session sub-agent (`--output-format stream-json`), save to the path above, then "
+        "re-run `t3 eval run --backend subscription`.",
+        err=True,
+    )
 
 
 def _require_spec(name: str) -> EvalSpec:

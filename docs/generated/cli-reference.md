@@ -1190,10 +1190,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
  baseline for its model — the reference ``--gate-regressions`` compares a
  later candidate run against (a regression exits non-zero).
 
- ``--backend sdk`` (default) shells the metered ``claude -p`` runner — the CI
- job's path (``ANTHROPIC_API_KEY``). ``--backend subscription`` grades
- transcripts produced on the subscription via an in-session sub-agent (run
+ ``--backend subscription`` (default) grades transcripts produced on the
+ subscription via an in-session sub-agent — no API spend (run
  ``t3 eval prepare-subscription`` first for the prompts + expected paths).
+ ``--backend sdk`` shells the metered ``claude -p`` runner — the CI job's path
+ (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
+ always use the metered ``sdk`` runner regardless of ``--backend``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
@@ -1232,17 +1234,19 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                per run (cost cap).           │
 │                                                [default: 20]                 │
 │ --backend                             TEXT     Execution backend for a       │
-│                                                single-trial run: 'sdk'       │
-│                                                (metered claude -p, reserved  │
-│                                                for CI with                   │
-│                                                ANTHROPIC_API_KEY) or         │
-│                                                'subscription' (grade         │
-│                                                subscription-produced         │
-│                                                transcripts; see `t3 eval     │
-│                                                prepare-subscription`).       │
-│                                                --trials and --models always  │
-│                                                use the sdk runner.           │
-│                                                [default: sdk]                │
+│                                                single-trial run:             │
+│                                                'subscription' (default —     │
+│                                                grade subscription-produced   │
+│                                                transcripts, no API spend;    │
+│                                                see `t3 eval                  │
+│                                                prepare-subscription`) or     │
+│                                                'sdk' (metered claude -p,     │
+│                                                reserved for CI with          │
+│                                                ANTHROPIC_API_KEY). --trials  │
+│                                                and --models always use the   │
+│                                                metered sdk runner regardless │
+│                                                of this flag.                 │
+│                                                [default: subscription]       │
 │ --transcript-dir                      PATH     Directory of <scenario>.jsonl │
 │                                                transcripts for the           │
 │                                                'subscription' backend        │
