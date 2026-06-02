@@ -43,7 +43,7 @@ class TestCleanupWorktreeRecoversDirtyOrUnpushedWork(TestCase):
         self.temp_root = tmp_path / "systmp"
         self.temp_root.mkdir()
         monkeypatch.setattr(
-            "teatree.core.worktree_recovery.tempfile.gettempdir",
+            "teatree.core.worktree_snapshot.tempfile.gettempdir",
             lambda: str(self.temp_root),
         )
 
@@ -436,7 +436,7 @@ class TestWorktreeRecoveryEdgeCases(TestCase):
     def test_unpushed_probe_failure_fails_open_to_capture(self) -> None:
         """An inconclusive probe must be treated as "might have unpushed work"."""
         with patch(
-            "teatree.core.worktree_recovery.git.commits_absent_from_all_remotes",
+            "teatree.core.worktree_snapshot.git.commits_absent_from_all_remotes",
             side_effect=CommandFailedError(["git"], 128, "", "corrupt"),
         ):
             assert _has_unpushed_commits(Path("/repo"), "some-branch") is True
@@ -447,12 +447,12 @@ class TestWorktreeRecoveryEdgeCases(TestCase):
         temp_root.mkdir()
         wt = self.tmp_path / "wt"
         wt.mkdir()
-        self.monkeypatch.setattr("teatree.core.worktree_recovery.tempfile.gettempdir", lambda: str(temp_root))
+        self.monkeypatch.setattr("teatree.core.worktree_snapshot.tempfile.gettempdir", lambda: str(temp_root))
         with (
-            patch("teatree.core.worktree_recovery.git.status_porcelain", return_value=" M f"),
-            patch("teatree.core.worktree_recovery.git.commits_absent_from_all_remotes", return_value=[]),
+            patch("teatree.core.worktree_snapshot.git.status_porcelain", return_value=" M f"),
+            patch("teatree.core.worktree_snapshot.git.commits_absent_from_all_remotes", return_value=[]),
             patch(
-                "teatree.core.worktree_recovery.git.bundle_create",
+                "teatree.core.worktree_snapshot.git.bundle_create",
                 side_effect=CommandFailedError(["git"], 128, "", "no repo"),
             ),
             pytest.raises(CommandFailedError),

@@ -10,12 +10,12 @@ state. The better fix is to make the destructive step **recoverable**: before
 removing such a worktree, write a self-contained, restorable artifact under the
 system temp dir, then proceed with removal.
 
-A ``git bundle`` of the branch (all local commits) is preferred over relocating
-the worktree directory: a moved worktree leaves git's worktree admin pointing at
-a stale path, whereas a bundle is self-contained and trivially restorable
-(``git clone`` / ``git fetch`` from the bundle). The uncommitted working-tree
-changes — staged, unstaged, and untracked — are captured alongside as a single
-``git diff`` patch applicable with ``git apply``.
+The capture mechanics (``git bundle`` of the branch + a single ``git diff``
+patch of staged/unstaged/untracked changes) live in the Django-free
+:mod:`teatree.core.worktree_snapshot` so the ``SubagentStop`` hook (#1764),
+which runs under a bare ``python3``, shares the exact same primitive. This
+module is the ORM-aware adapter: it extracts ``branch`` and the ticket label
+from a :class:`~teatree.core.models.Worktree` row and delegates.
 
 **Out of scope by design:** no TTL, quota, or purge logic. The artifacts live in
 the OS temp directory and are reaped by the OS's own policy (macOS: the daily
@@ -26,83 +26,26 @@ period. This keeps the implementation minimal and lets the OS manage its own
 temp lifecycle.
 """
 
-import logging
-import shutil
-import tempfile
-from datetime import UTC, datetime
 from pathlib import Path
 
 from teatree.core.models import Worktree
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError
+from teatree.core.worktree_snapshot import _has_unpushed_commits, capture_worktree_snapshot
 
-logger = logging.getLogger(__name__)
-
-_BUNDLE_NAME = "branch.bundle"
-_DIFF_NAME = "working-tree.diff"
-
-
-def _has_unpushed_commits(repo_main: Path, branch: str) -> bool:
-    """Return whether ``branch`` has commits absent from every remote ref.
-
-    Fails *open* for capture: an inconclusive probe (corrupt repo, missing
-    branch) is treated as "might have unpushed work", so we still capture rather
-    than risk silently dropping commits we could not prove are pushed.
-    """
-    try:
-        return bool(git.commits_absent_from_all_remotes(str(repo_main), branch))
-    except CommandFailedError:
-        return True
+__all__ = ["_has_unpushed_commits", "capture_recovery_artifact"]
 
 
 def capture_recovery_artifact(repo_main: Path, wt_path: str, worktree: Worktree) -> Path | None:
     """Capture a restorable artifact for a dirty/unpushed worktree, or do nothing.
 
-    Returns the recovery directory when an artifact was written (the worktree
-    had uncommitted changes and/or unpushed commits), or ``None`` when there was
-    nothing to lose (clean working tree whose branch is fully pushed) — the
-    clean+merged hard-delete path is unchanged.
-
-    The artifact directory ``<tempdir>/t3-recover-<id>-<UTC timestamp>/``
-    contains two files. ``branch.bundle`` is a ``git bundle create`` of the
-    whole branch, restorable via ``git clone <bundle>`` / ``git fetch
-    <bundle>``. ``working-tree.diff`` is a single ``git diff`` patch covering
-    staged, unstaged, and untracked changes, restorable via ``git apply``.
+    ORM-aware adapter over :func:`teatree.core.worktree_snapshot.capture_worktree_snapshot`:
+    resolves the branch and the ticket label from the :class:`Worktree` row, then
+    delegates the capture. Returns the recovery directory when an artifact was
+    written, or ``None`` when there was nothing to lose (clean working tree whose
+    branch is fully pushed) — the clean+merged hard-delete path is unchanged.
     """
-    wt = Path(wt_path)
-    if not wt.is_dir():
-        return None
-
-    dirty = bool(git.status_porcelain(str(wt)))
-    unpushed = _has_unpushed_commits(repo_main, worktree.branch)
-    if not dirty and not unpushed:
-        return None
-
-    label = worktree.ticket.ticket_number
-    safe_label = "".join(c if c.isalnum() or c in "-_" else "-" for c in label)
-    timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    prefix = f"t3-recover-{safe_label}-{timestamp}-"
-    recovery_dir = Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
-
-    try:
-        bundle_path = recovery_dir / _BUNDLE_NAME
-        git.bundle_create(str(repo_main), str(bundle_path), worktree.branch)
-
-        diff_path = recovery_dir / _DIFF_NAME
-        diff_path.write_text(git.full_worktree_diff(str(wt)), encoding="utf-8")
-    except Exception:
-        # A half-written artifact is worse than none and a stray empty temp dir
-        # is litter — drop our own partial dir, then re-raise so the caller logs
-        # and surfaces the failure. The caller (#1506) re-checks whether the
-        # worktree actually had work to lose and aborts the prune for it if so;
-        # only a proven clean+pushed worktree is still reaped on capture failure.
-        shutil.rmtree(recovery_dir, ignore_errors=True)
-        raise
-
-    logger.warning(
-        "%s (%s): dirty/unpushed worktree — wrote recovery artifact to %s before prune",
-        worktree.repo_path,
-        worktree.branch,
-        recovery_dir,
+    return capture_worktree_snapshot(
+        repo_main,
+        wt_path,
+        branch=worktree.branch,
+        label=worktree.ticket.ticket_number,
     )
-    return recovery_dir
