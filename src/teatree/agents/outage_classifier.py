@@ -59,9 +59,22 @@ def is_outage_death(result: AgentResultBlob, *, error: str = "") -> bool:
     "API Error" phrase counts only when a connection phrase co-occurs, so a
     legitimate summary that merely discusses API-error handling is not flagged.
     """
+    return bool(outage_signature(result, error=error))
+
+
+def outage_signature(result: AgentResultBlob, *, error: str = "") -> str:
+    """Return the matched outage signature, or ``""`` when not an outage death.
+
+    The signature is the diagnostic the recorder stamps onto the FAILED attempt
+    (``error="outage_death: <sig>"``). A direct connection signature returns
+    itself; the "API Error" path returns the co-occurring connection phrase.
+    """
     haystack = _scan_text(result, error)
-    if any(signature in haystack for signature in _CONNECTION_SIGNATURES):
-        return True
+    for signature in _CONNECTION_SIGNATURES:
+        if signature in haystack:
+            return signature
     if _API_ERROR_PHRASE in haystack:
-        return any(phrase in haystack for phrase in _CONNECTION_COOCCURRENCE_PHRASES)
-    return False
+        for phrase in _CONNECTION_COOCCURRENCE_PHRASES:
+            if phrase in haystack:
+                return f"{_API_ERROR_PHRASE} + {phrase}"
+    return ""
