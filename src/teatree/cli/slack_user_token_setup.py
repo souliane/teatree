@@ -4,9 +4,11 @@ The personal token at ``pass slack/user-oauth-token`` is the credential that
 ``SlackBotBackend`` uses to post and react in Slack-Connect externally-shared
 channels (where the bot token is rejected with
 ``mcp_externally_shared_channel_restricted``). Several scopes that recent
-backend work depends on — notably ``reactions:write``, ``chat:write.public``
-and ``chat:write.customize`` — are missing from existing installations because
-they were not yet in the manifest when the user last consented.
+backend work depends on — notably ``reactions:write`` and ``chat:write`` —
+are missing from existing installations because they were not yet in the
+manifest when the user last consented. (``chat:write.public`` and
+``chat:write.customize`` are bot-only and are intentionally absent from the
+user-scope set; see ``slack_setup._BOT_ONLY_SCOPES``.)
 
 This command walks the user through reinstalling the Slack app to re-prompt
 OAuth consent for an updated user-scope set, then captures the new ``xoxp-…``

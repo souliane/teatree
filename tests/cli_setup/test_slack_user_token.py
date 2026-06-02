@@ -35,9 +35,14 @@ class TestUserTokenPattern:
 
 
 class TestRequiredUserScopes:
-    def test_includes_new_connect_write_scopes(self) -> None:
-        for scope in ("reactions:write", "chat:write.public", "chat:write.customize"):
+    def test_includes_connect_write_and_reaction_scopes(self) -> None:
+        for scope in ("reactions:write", "reactions:read", "chat:write"):
             assert scope in REQUIRED_USER_SCOPES
+
+    def test_excludes_bot_only_scopes(self) -> None:
+        from teatree.cli.slack_setup import _BOT_ONLY_SCOPES  # noqa: PLC0415
+
+        assert _BOT_ONLY_SCOPES.isdisjoint(REQUIRED_USER_SCOPES)
 
     def test_preserves_existing_user_capabilities(self) -> None:
         for scope in ("chat:write", "users:read", "users:read.email", "canvases:write"):
@@ -180,7 +185,7 @@ class TestCliWalkthrough:
 
     def test_missing_scope_fails_loudly(self, tmp_path: Path) -> None:
         config = tmp_path / "teatree.toml"
-        granted = [s for s in REQUIRED_USER_SCOPES if s != "chat:write.public"]
+        granted = [s for s in REQUIRED_USER_SCOPES if s != "reactions:write"]
         with (
             patch("teatree.cli.slack_user_token_setup.read_pass", return_value=""),
             patch("teatree.cli.slack_token_store.read_pass", return_value=""),
@@ -190,7 +195,7 @@ class TestCliWalkthrough:
         ):
             result = self._run(["--config", str(config)], inputs="xoxp-new-token\n")
         assert result.exit_code == 1
-        assert "chat:write.public" in result.output
+        assert "reactions:write" in result.output
 
     def test_default_mode_prompts_before_overwriting_existing(self, tmp_path: Path) -> None:
         config = tmp_path / "teatree.toml"
