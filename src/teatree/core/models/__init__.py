@@ -30,6 +30,7 @@ from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApp
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
 from teatree.core.models.pending_chat_injection import PendingChatInjection
+from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
@@ -90,6 +91,7 @@ __all__ = [
     "OutboundClaim",
     "PendingArticleSuggestion",
     "PendingChatInjection",
+    "PendingReinstall",
     "Ports",
     "PullMainCloneMarker",
     "PullRequest",

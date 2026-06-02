@@ -199,6 +199,12 @@ class Command(TyperCommand):
             )
             return
 
+        # Re-anchor a deferred reinstall before any scanner module is imported,
+        # so the about-to-change modules load fresh with no mixed-code window.
+        from teatree.loop.self_update_reinstall import drain_pending_reinstall  # noqa: PLC0415
+
+        drain_pending_reinstall()
+
         # #786 WS2: DB lease/heartbeat replaces the flock/pidfile singleton.
         # The lease row is queryable and reapable by expiry, so loop
         # ownership survives context compaction (re-acquirable) instead of
