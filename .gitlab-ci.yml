@@ -71,5 +71,8 @@ eval-weekly:
     # The needs_db regression checks open the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
     - uv run t3 eval regression
-    - uv run t3 eval run --trials 3 --require any
+    # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
+    # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
+    # spend). Mirrors the GitHub `eval-weekly` job.
+    - uv run t3 eval run --trials 3 --require any --backend sdk
   allow_failure: false

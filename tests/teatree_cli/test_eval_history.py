@@ -65,7 +65,9 @@ class TestRunPersists(TestCase):
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _stub_runner(outcomes)),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", *args])
+            # The sdk runner is what these persistence tests stub; the default
+            # backend is now subscription, so name sdk explicitly.
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", *args])
         assert "Traceback" not in result.output, result.output
 
     def test_run_records_one_row_per_scenario_with_signals(self) -> None:

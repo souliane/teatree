@@ -17,7 +17,7 @@ operate on plain captured tool calls.
 
 ```bash
 t3 eval list                                # show available scenarios
-t3 eval run                                 # run all (persists to run-history)
+t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
 t3 eval run worktree_first --max-turns 5    # override max_turns
@@ -32,13 +32,46 @@ t3 eval history                               # list past recorded runs (newest 
 t3 eval history --baseline                    # show the current baseline run(s)
 t3 eval history --mark-baseline 7             # promote run #7 to its model's baseline
 t3 eval history --model opus --format json    # filter + JSON
-t3 eval run --backend subscription            # grade subscription-produced transcripts
+t3 eval run --backend subscription            # explicit subscription (the default)
+t3 eval run --backend sdk                       # metered claude -p path (CI; ANTHROPIC_API_KEY)
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
 t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
 t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
 ```
+
+### Execution backends and the cost split (default = subscription)
+
+A single-trial `t3 eval run` picks one of two backends; **the default is
+`subscription`** so a local run never accidentally bills the API after the
+2026-06-15 metered-Agent-SDK change.
+
+| Backend | Spend | Who runs it | What it does |
+|---|---|---|---|
+| `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
+| `sdk` | metered `claude -p` (`ANTHROPIC_API_KEY`) | CI (`eval-weekly`, explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live |
+
+The free, no-model commands — `trigger-qa`, `regression`, and
+`transcript-replay` — never invoke any model and are unaffected by the backend.
+
+`--trials`/`--models` always force the metered `sdk` runner regardless of
+`--backend` (a multi-trial / matrix run cannot be served from a single saved
+transcript); combining them with the subscription default prints a one-line
+metered notice on stderr.
+
+**CI stays on the API path explicitly.** The `eval-weekly` jobs in
+`.github/workflows/ci.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
+the budgeted `claude -p` path while LOCAL defaults to `subscription`. (CI also
+passes `--trials 3`, which already forces the sdk runner; the explicit
+`--backend sdk` is the debuggable statement of that intent.)
+
+**Missing-transcript UX.** With `subscription` the default, a bare `t3 eval run`
+before any transcript exists prints, per skipped scenario, the exact expected
+path plus the `t3 eval prepare-subscription` + re-run recipe (on stderr) and
+exits cleanly — not a silent no-op.
+
+#### sdk backend (`claude -p`)
 
 Each scenario invocation shells out to `claude -p` in `--output-format
 stream-json` mode with a 120-second wall-clock watchdog and a

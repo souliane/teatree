@@ -76,7 +76,7 @@ class TestEvalRun:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
         assert result.exit_code == 0, result.output
         assert "PASS alpha" in result.output
         assert "PASS beta" in result.output
@@ -95,7 +95,7 @@ class TestEvalRun:
             patch("teatree.cli.eval.find_spec", return_value=specs[0]),
             patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "alpha", "--backend", "sdk", "--no-persist"])
         assert result.exit_code == 0
         assert "alpha" in result.output
         assert "PASS beta" not in result.output
@@ -165,7 +165,7 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--format", "json", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--format", "json", "--no-persist"])
         assert result.exit_code == 0
         # Other pytest plugins (e.g. inline-snapshot) can write banners to
         # stdout during the test session; isolate the JSON document by
@@ -190,7 +190,7 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
         assert result.exit_code == 1
         assert "FAIL alpha" in result.output
 
@@ -209,7 +209,7 @@ class TestTranscriptReplay:
             patch("teatree.cli.eval.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
         ):
-            result = CliRunner().invoke(app, ["eval", "run", "--max-turns", "9", "--no-persist"])
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--max-turns", "9", "--no-persist"])
         assert result.exit_code == 0
         assert captured["max_turns_override"] == 9
 
@@ -357,6 +357,45 @@ class TestEvalBackend:
         assert result.exit_code == 0, result.output
         assert "PASS worktree_first" in result.output
 
+    def test_default_backend_is_subscription(self, tmp_path: Path) -> None:
+        # A bare `t3 eval run` must NOT shell the metered sdk runner: it grades a
+        # saved subscription transcript. Pointed at a transcript dir holding one,
+        # the scenario passes without `--backend` ever being given.
+        specs = [_spec("worktree_first")]
+        transcript = (Path(__file__).parents[1] / "eval" / "fixtures" / "worktree_first_pass.stream.jsonl").read_text(
+            encoding="utf-8"
+        )
+        (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
+
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--transcript-dir", str(tmp_path), "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "PASS worktree_first" in result.output
+
+    def test_default_backend_missing_transcript_prints_clear_hint(self, tmp_path: Path) -> None:
+        # The missing-transcript UX: a bare run with no transcripts skips cleanly
+        # (exit 0) and names the scenario, the expected path, and the recipe to
+        # produce it — never a silent no-op.
+        specs = [_spec("worktree_first")]
+        with patch("teatree.cli.eval.discover_specs", return_value=specs):
+            result = CliRunner().invoke(app, ["eval", "run", "--transcript-dir", str(tmp_path), "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "SKIP worktree_first" in result.output
+        assert str(tmp_path / "worktree_first.jsonl") in result.output
+        assert "prepare-subscription" in result.output
+
+    def test_trials_with_default_backend_warns_metered(self, tmp_path: Path) -> None:
+        # `--trials` forces the metered sdk runner even under the subscription
+        # default; the user is told so.
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "metered sdk runner" in result.output
+
 
 @pytest.mark.django_db
 class TestEvalPersistAndHistory:
@@ -367,7 +406,7 @@ class TestEvalPersistAndHistory:
             patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value="sha123"),
         ):
-            run_result = CliRunner().invoke(app, ["eval", "run"])
+            run_result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk"])
             assert run_result.exit_code == 0, run_result.output
             history_result = CliRunner().invoke(app, ["eval", "history"])
         assert history_result.exit_code == 0, history_result.output
@@ -385,7 +424,7 @@ class TestEvalPersistAndHistory:
             patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk"])
             result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["runs"][0]["passed"] == 1
@@ -398,7 +437,7 @@ class TestEvalPersistAndHistory:
             patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            CliRunner().invoke(app, ["eval", "run", "--baseline"])
+            CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--baseline"])
             result = CliRunner().invoke(app, ["eval", "history", "--baseline"])
         assert result.exit_code == 0, result.output
         assert "[baseline]" in result.output
@@ -410,7 +449,7 @@ class TestEvalPersistAndHistory:
             patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            first = CliRunner().invoke(app, ["eval", "run", "--baseline"])
+            first = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--baseline"])
             assert first.exit_code == 0, first.output
 
         class _FailRunner:
@@ -424,7 +463,7 @@ class TestEvalPersistAndHistory:
             patch("teatree.eval.backends.ClaudePRunner", _FailRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
-            second = CliRunner().invoke(app, ["eval", "run", "--gate-regressions"])
+            second = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--gate-regressions"])
 
         assert second.exit_code == 1, second.output
         assert "REGRESSED alpha" in second.output
