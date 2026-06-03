@@ -14,7 +14,7 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
-from teatree.core.models.implemented_issue_marker import ImplementedIssueMarker
+from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
 from teatree.core.models.live_post_approval import (
@@ -54,6 +54,7 @@ from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
     "LIVE_POST_APPROVAL_TTL_MINUTES",
+    "NEEDS_TRIAGE_LABEL",
     "AssessFinding",
     "AssessSweepRun",
     "BotPing",

@@ -23,6 +23,7 @@ import teatree.cli.agent as _agent
 import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
+import teatree.cli.speak as _speak
 from teatree.cli import (
     comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
 )
@@ -38,6 +39,7 @@ from teatree.cli import (
 from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
 )
+from teatree.cli import verify_gates as _verify_gates  # noqa: F401  (side-effect: registers verify-gates onto tool_app)
 from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
@@ -127,6 +129,7 @@ app.command()(_info.docs)
 app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_cost.cost)
+app.command()(_speak.speak)
 app.command()(_info.info)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")

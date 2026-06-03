@@ -12,7 +12,7 @@ prefixed by its FSM ``state:`` group label (#130):
     ``[overlay] started: #N (topic !chips)``.
 
 Example shape (overlay name sanitised for this public repo):
-``[acme-fleet] started: #8495 (extra margin !6264 !7491 !7490 !7487)``
+``[acme-fleet] started: #8495 (widget margin !6264 !7491 !7490 !7487)``
 """
 
 import re
@@ -74,7 +74,7 @@ class TestAnchorWithFourGitlabMrsMatchesShape:
         actions = [
             _active(
                 "8495",
-                title="extra margin",
+                title="widget margin",
                 overlay="acme-fleet",
                 issue_url=ticket_url,
             ),
@@ -86,7 +86,7 @@ class TestAnchorWithFourGitlabMrsMatchesShape:
         zones = zones_for(actions, colorize=True)
         anchor = _visible(_blob(zones.anchors))
         anchor_line = next((line for line in anchor.splitlines() if line.startswith("[acme-fleet]")), "")
-        assert anchor_line == "[acme-fleet] started: #8495 (extra margin !6264 !7491 !7490 !7487)", repr(anchor_line)
+        assert anchor_line == "[acme-fleet] started: #8495 (widget margin !6264 !7491 !7490 !7487)", repr(anchor_line)
 
 
 class TestGithubChipsUseHash:

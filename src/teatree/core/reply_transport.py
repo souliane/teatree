@@ -27,7 +27,7 @@ from django.db import IntegrityError, transaction
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.slack_mrkdwn import normalize_slack_message
+from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
@@ -279,6 +279,32 @@ class NoopReplier(_BaseReplier):
         return ""
 
 
+def _linkify_for_slack(body: str) -> str:
+    """Deterministically rewrite bare ``!N`` / ``#N`` refs to Slack mrkdwn links.
+
+    The send-time chokepoint for the clickable-references rule on the Slack
+    surface (#654 transport). Resolution is code-only — the active overlay's
+    ``resolve_mr_token`` / ``resolve_issue_token`` (DB ``PullRequest`` store
+    first, repo-context construction fallback) supply each URL, so the model
+    is never asked to rewrite. An unresolvable ref is left bare for the
+    bare-reference gate to handle. Best-effort: any resolver/overlay failure
+    returns the body unchanged so a Slack post never crashes on linkifying.
+    """
+    if not body:
+        return body
+    try:
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
+    except Exception:  # noqa: BLE001 — overlay resolution is best-effort; never crash a post
+        return slack_linkify(body)
+    return slack_linkify(
+        body,
+        mr_resolver=overlay.resolve_mr_token,
+        issue_resolver=overlay.resolve_issue_token,
+    )
+
+
 class SlackReplier(_BaseReplier):
     """Posts via the Slack Web API (``SlackBotBackend``)."""
 
@@ -291,7 +317,7 @@ class SlackReplier(_BaseReplier):
         # to a lead. Thread/comment replies always go back to the
         # originating event's channel/thread; the spec's target_ref there
         # is the composite recorded for audit, not a routing override.
-        normalized = normalize_slack_message(spec.body)
+        normalized = normalize_slack_message(_linkify_for_slack(spec.body))
         if spec.action_name == "post_dm":
             channel = self._bot.open_dm(spec.target_ref)
             if not channel:

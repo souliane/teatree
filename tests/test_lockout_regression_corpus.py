@@ -333,19 +333,25 @@ class TestSkillLoadingLockoutDimension:
     def test_must_allow_bare_demand_namespaced_loaded(self, skill_gate: None) -> None:
         self._write("sess-skill-allow", "pending", ["rules"])
         self._write("sess-skill-allow", "skills", ["t3:rules"])
-        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-allow", "tool_name": "Bash"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-skill-allow", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
         assert blocked is False, "LOCKOUT regression — bare demand 'rules' not cleared by loaded 't3:rules'."
 
     def test_must_deny_distinct_namespace_not_conflated(self, skill_gate: None) -> None:
         self._write("sess-skill-distinct", "pending", ["code"])
         self._write("sess-skill-distinct", "skills", ["other:code"])
-        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-distinct", "tool_name": "Bash"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-skill-distinct", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
         assert blocked is True, "CONFLATION regression — demand 't3:code' wrongly cleared by loaded 'other:code'."
 
     def test_must_deny_genuinely_unloaded_skill(self, skill_gate: None) -> None:
         self._write("sess-skill-deny", "pending", ["code"])
         self._write("sess-skill-deny", "skills", ["rules"])
-        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-deny", "tool_name": "Bash"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-skill-deny", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
         assert blocked is True, "BYPASS regression — genuinely-unloaded 'code' was allowed."
 
     def test_must_deny_distinct_when_owned_set_unreadable(
@@ -361,8 +367,58 @@ class TestSkillLoadingLockoutDimension:
         monkeypatch.setattr(router, "_plugin_owned_skills", lambda: (_ for _ in ()).throw(OSError("unreadable")))
         self._write("sess-skill-unreadable", "pending", ["code"])
         self._write("sess-skill-unreadable", "skills", ["t3:rules"])
-        blocked = handle_enforce_skill_loading({"session_id": "sess-skill-unreadable", "tool_name": "Bash"})
+        blocked = handle_enforce_skill_loading(
+            {
+                "session_id": "sess-skill-unreadable",
+                "tool_name": "Bash",
+                "tool_input": {"command": "uv run pytest -q"},
+            }
+        )
         assert blocked is True, "STRICT-DEGRADE regression — demand 'code' wrongly cleared while owned set unreadable."
+
+    # MUST-NOT-FIRE (over-block dimension): with a resolvable Python skill
+    # pending and unloaded, a NON-code-work call must pass — the gate is scoped
+    # to genuine Python/Django work. These are symmetric to the must-deny cases
+    # above and exist so the over-block recurrence (#107-class) is caught in CI.
+
+    def test_must_not_fire_on_markdown_edit(self, skill_gate: None) -> None:
+        self._write("sess-md", "pending", ["code"])
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-md", "tool_name": "Edit", "tool_input": {"file_path": "README.md"}}
+        )
+        assert blocked is False, "OVER-BLOCK regression — a markdown edit was gated for a Python skill."
+
+    def test_must_not_fire_on_yaml_edit(self, skill_gate: None) -> None:
+        self._write("sess-yml", "pending", ["code"])
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-yml", "tool_name": "Write", "tool_input": {"file_path": ".github/ci.yml"}}
+        )
+        assert blocked is False, "OVER-BLOCK regression — a yaml edit was gated for a Python skill."
+
+    def test_must_not_fire_on_git_status(self, skill_gate: None) -> None:
+        self._write("sess-gs", "pending", ["code"])
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-gs", "tool_name": "Bash", "tool_input": {"command": "git status"}}
+        )
+        assert blocked is False, "OVER-BLOCK regression — git status was gated for a Python skill."
+
+    def test_must_not_fire_on_dotfiles_commit(self, skill_gate: None) -> None:
+        self._write("sess-dot", "pending", ["code"])
+        blocked = handle_enforce_skill_loading(
+            {
+                "session_id": "sess-dot",
+                "tool_name": "Bash",
+                "tool_input": {"command": "git commit -am 'chore: update dotfiles'"},
+            }
+        )
+        assert blocked is False, "OVER-BLOCK regression — a dotfiles commit was gated for a Python skill."
+
+    def test_must_not_fire_on_ask_user_question(self, skill_gate: None) -> None:
+        self._write("sess-ask", "pending", ["code"])
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "sess-ask", "tool_name": "AskUserQuestion", "tool_input": {"questions": []}}
+        )
+        assert blocked is False, "OVER-BLOCK regression — AskUserQuestion was gated (must NEVER be gated)."
 
 
 class TestMustDenyMerge:

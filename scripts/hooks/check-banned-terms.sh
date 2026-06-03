@@ -2,7 +2,7 @@
 # Pre-commit hook: reject files containing banned terms.
 #
 # Reads banned_terms from a TOML config file (e.g., ~/.teatree.toml):
-#   --config <path>  TOML file with a *banned_terms array in any section.
+#   --config <path>  TOML file with a banned_terms array in any section.
 #
 # Example .pre-commit-config.yaml entry:
 #   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
@@ -12,92 +12,29 @@
 #   banned_terms = ["term1", "term2"]
 #
 # If no config or no banned_terms key, exits 0 (no-op).
-# Matches that only appear inside email addresses are ignored so author/contact
-# metadata can stay intact while still blocking leaked tenant/project terms.
+#
+# This is a THIN wrapper: all matching is delegated to
+# ``teatree.hooks.banned_terms_cli`` (which uses ``teatree.hooks.term_match``),
+# so the shell hook, the in-process posting gate and the overlay-leak gate all
+# run ONE matcher. The hook reimplemented the tokenizer in bash-inlined Python
+# before; that second copy could drift silently from term_match. A parity
+# meta-test (tests/test_banned_terms_parity.py) pins all entry points to the
+# same verdict on a golden corpus so they cannot diverge again.
 
 set -euo pipefail
 
-config=""
+# Resolve the repo root from this script's own location
+# (scripts/hooks/check-banned-terms.sh -> repo root) so the CLI runs against
+# THIS clone's teatree install regardless of the caller's cwd.
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/../.." && pwd)"
 
-# Parse --config argument
-if [[ "${1:-}" == "--config" ]]; then
-  config="${2:-}"
-  shift 2
-  if [ -n "$config" ]; then
-    config="${config/#\~/$HOME}"
-  fi
-fi
-
-if [ -z "$config" ] || [ ! -f "$config" ]; then
-  exit 0
-fi
-
-# Extract banned_terms from TOML using tomllib (stdlib since Python 3.11)
-terms="$(python3 -c "
-import tomllib, pathlib, sys
-data = tomllib.loads(pathlib.Path(sys.argv[1]).read_text())
-for v in list(data.values()) + [data]:
-    if isinstance(v, dict) and 'banned_terms' in v:
-        print(','.join(v['banned_terms']))
-        break
-" "$config" 2>/dev/null || true)"
-
-if [ -z "$terms" ]; then
-  exit 0
-fi
-
-# Build a grep pattern from comma-separated terms
-pattern=""
-IFS=',' read -ra term_array <<< "$terms"
-for term in "${term_array[@]}"; do
-  term="$(echo "$term" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  [ -z "$term" ] && continue
-  if [ -n "$pattern" ]; then
-    pattern="$pattern|$term"
-  else
-    pattern="$term"
-  fi
-done
-
-if [ -z "$pattern" ]; then
-  exit 0
-fi
-
-# Check each staged file passed by pre-commit
-found=0
-for file in "$@"; do
-  [ -f "$file" ] || continue
-  matches=$(python3 - "$file" "$pattern" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-pattern = re.compile(rf"\b({sys.argv[2]})\b", re.IGNORECASE)
-email_pattern = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
-for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-    email_spans = [match.span() for match in email_pattern.finditer(line)]
-    has_non_email_match = False
-    for match in pattern.finditer(line):
-        if any(start <= match.start() and match.end() <= end for start, end in email_spans):
-            continue
-        has_non_email_match = True
-        break
-    if has_non_email_match:
-        print(f"{line_number}:{line}")
-PY
-)
-  if [ -n "$matches" ]; then
-    echo "BANNED TERM in $file:"
-    echo "$matches" | sed 's/^/  /'
-    found=1
-  fi
-done
-
-if [ "$found" -ne 0 ]; then
-  echo ""
-  echo "Banned terms: $terms"
-  echo "These terms must not appear in this repo."
-  exit 1
+# Prefer ``uv run`` so the matcher comes from this repo's environment (critical
+# in a worktree, where a bare ``python3`` may import a different editable
+# install). Fall back to ``python3 -m`` when uv is unavailable.
+if command -v uv >/dev/null 2>&1; then
+  exec uv run --project "${repo_root}" python -m teatree.hooks.banned_terms_cli "$@"
+else
+  exec env PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    python3 -m teatree.hooks.banned_terms_cli "$@"
 fi

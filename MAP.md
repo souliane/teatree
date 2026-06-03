@@ -44,7 +44,7 @@ lightweight entry-point packages. The Python source lives under
 | Directory | Purpose |
 |---|---|
 | `skills/` | Workflow skills loaded as `/t3:*` (`SKILL.md` + `references/`) — `code`, `ship`, `review`, `workspace`, `rules`, ... |
-| `agents/` | Phase sub-agent definitions (`orchestrator`, `coder`, `reviewer`, `tester`, `shipper`, `debugger`, `e2e`, `followup`) |
+| `agents/` | Phase sub-agent definitions (`orchestrator`, `coder`, `reviewer`, `tester`, `shipper`, `debugger`, `e2e`, `followup`, `answerer`, `scanning-news`) |
 | `hooks/` | Plugin hooks: `hooks.json` event→script mapping and the `scripts/` hook router (UserPromptSubmit, PreToolUse, PreCompact, Stop) |
 | `.claude-plugin/` | Plugin manifest — `plugin.json` (identity) and `marketplace.json` |
 | `tests/` | Pytest suite, mirroring the `src/` module path (`teatree_core/`, `teatree_cli/`, `integration/`, ...). E2E lives here, not in a separate top-level dir |

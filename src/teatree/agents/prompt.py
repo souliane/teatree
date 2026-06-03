@@ -10,6 +10,9 @@ _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
 _REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
+# Symmetric to the reviewer set: a headless BUILDER loses every loaded skill, so
+# the enumerate-and-preserve architecture pass must embed in full, not be demoted.
+_CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
 
 
 def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
@@ -110,43 +113,65 @@ def _parent_result_summary(task: Task) -> str:
     return "\n".join(parts)
 
 
+_VERIFY_GATES_COMMAND = "t3 tool verify-gates"
+
+
+def _coding_phase_directive() -> list[str]:
+    """Return the forced-load + behavior-preservation + verify directive lines.
+
+    Symmetric to ``build_reviewer_dispatch_prompt``: a headless builder loses
+    every loaded skill (rules § Sub-Agent Limitations), so the architecture /
+    code disciplines and the CI-parity verify step must reach it inline. Shared
+    by ``build_task_prompt`` (the loop builder's work prompt) and the coding
+    branch of ``build_system_context`` so the contract cannot drift between the
+    two builder entry points.
+    """
+    return [
+        "REQUIRED: before writing code, call the Skill tool for /t3:architecture-design and /t3:code.",
+        "Do this FIRST — these carry the design-first and TDD disciplines a dispatched builder",
+        "does not auto-load.",
+        "",
+        "BEHAVIOR PRESERVATION (non-negotiable): When you rewrite or REPLACE existing code, first",
+        "enumerate every behavior/case the old code handled — especially safety/privacy/leak-gate",
+        "coverage and the regression tests that pin it — and preserve each, or STOP and request input.",
+        "NEVER silently narrow a gate; NEVER invert a must-block test to must-not-block; weakening a",
+        "public-repo privacy gate is a BLOCKER, not a self-approved trade-off.",
+        "",
+        "NO AI SIGNATURE: Never add an AI/Claude signature or footer to commit messages OR to PR/issue",
+        "bodies posted on the user's behalf (no 'Generated with Claude Code', no robot-emoji footer,",
+        "no Co-Authored-By).",
+        "",
+        f"VERIFY (CI-parity): before declaring done, run `{_VERIFY_GATES_COMMAND}`. It runs BOTH the",
+        "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
+        "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
+        "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
+    ]
+
+
+def _task_header_lines(task: Task, extra: dict) -> list[str]:
+    """Return the ticket/issue/title/labels/phase/reason header lines."""
+    ticket: Ticket = task.ticket
+    lines = [f"Work on ticket {ticket.ticket_number}."]
+    if ticket.issue_url:
+        lines.append(f"Issue: {ticket.issue_url}")
+    if title := extra.get("issue_title"):
+        lines.append(f"Title: {title}")
+    if labels := extra.get("labels"):
+        lines.append(f"Labels: {', '.join(labels)}")
+    if task.phase:
+        lines.append(f"Current phase: {task.phase}")
+    if task.execution_reason:
+        lines.append(f"Reason: {task.execution_reason}")
+    return lines
+
+
 def build_task_prompt(task: Task) -> str:
     """Build a work prompt for a headless agent."""
     ticket: Ticket = task.ticket
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
 
-    lines = [f"Work on ticket {ticket.ticket_number}."]
-
-    if ticket.issue_url:
-        lines.append(f"Issue: {ticket.issue_url}")
-
-    if title := extra.get("issue_title"):
-        lines.append(f"Title: {title}")
-
-    if labels := extra.get("labels"):
-        lines.append(f"Labels: {', '.join(labels)}")
-
-    if task.phase:
-        lines.append(f"Current phase: {task.phase}")
-
-    if task.execution_reason:
-        lines.append(f"Reason: {task.execution_reason}")
-
-    # PR context
-    prs = extra.get("prs", {})
-    if isinstance(prs, dict) and prs:
-        lines.extend(("", "Open pull requests:"))
-        for pr in prs.values():
-            if not isinstance(pr, dict):
-                continue
-            url = pr.get("url", "")
-            title = pr.get("title", "")
-            draft = " (draft)" if pr.get("draft") else ""
-            pipeline = pr.get("pipeline_status", "")
-            pipeline_info = f" — pipeline: {pipeline}" if pipeline else ""
-            lines.append(f"  - {url}{draft}{pipeline_info}")
-            if title:
-                lines.append(f"    {title}")
+    lines = _task_header_lines(task, extra)
+    lines.extend(_format_pr_context(extra))
 
     lines.extend(
         (
@@ -158,9 +183,14 @@ def build_task_prompt(task: Task) -> str:
             "4. If you need human input (design decision, access, clarification) — STOP immediately.",
             '   Do NOT attempt to guess or work around it. Set "needs_user_input": true and "user_input_reason": "..."',
             "   in your JSON result. The pipeline will create an interactive session for a human to continue.",
-            "5. Run tests before declaring done",
+            f"5. Before declaring done, run the FULL CI-equivalent local gate set: `{_VERIFY_GATES_COMMAND}`.",
+            "   It runs BOTH commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the",
+            "   push-stage gates CI re-runs. Report its exit code as the green-proof.",
         ),
     )
+
+    if task.phase == "coding":
+        lines.extend(("", "PHASE: coding", *_coding_phase_directive()))
 
     return "\n".join(lines)
 
@@ -258,6 +288,10 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             if task.phase == "reviewing":
                 review_primary, explicit_load_skills = _review_phase_scoping(skills)
                 primary_skills |= review_primary
+            elif task.phase == "coding":
+                # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
+                # not the ignorable "load if needed" summary the builder would skip.
+                primary_skills |= _CODING_PHASE_ALWAYS_FULL
             skill_content = _read_skill_contents_scoped(
                 skills,
                 primary_skills=primary_skills,
@@ -267,6 +301,9 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             skill_content = _read_skill_contents(skills)
         if skill_content:
             lines.extend(("", "# Loaded Skills", "", skill_content))
+
+    if task.phase == "coding":
+        lines.extend(("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive()))
 
     if task.phase == "reviewing":
         lines.extend(

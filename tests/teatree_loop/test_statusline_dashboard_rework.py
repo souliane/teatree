@@ -31,6 +31,8 @@ _LEAKING_SIGNALS: tuple[tuple[str, dict[str, str]], ...] = (
     ("outbound.drift", {"overlay": "acme", "reason": "drift"}),
     ("review_nag.ping", {"overlay": "acme", "reason": "ping"}),
     ("review_nag.stale_no_dm", {"overlay": "acme", "reason": "stale_no_dm"}),
+    ("review_request_merge_react.reacted", {"overlay": "acme", "mr_url": "https://x/pull/1"}),
+    ("review_request_merge_react.react_failed", {"overlay": "acme", "error": "not_in_channel"}),
     ("architectural_review.queued", {"overlay": "acme"}),
     ("dogfood_smoke.queued", {"overlay": "acme"}),
     ("scanning_news.queued", {}),
@@ -56,6 +58,7 @@ class TestScannerBookkeepingDropped:
         leaking_fragments = (
             "pr_sweep",
             "review_nag",
+            "review_request_merge_react",
             "architectural_review",
             "dogfood_smoke",
             "scanning_news",
@@ -64,6 +67,26 @@ class TestScannerBookkeepingDropped:
         )
         for fragment in leaking_fragments:
             assert fragment not in body, (fragment, body)
+
+
+class TestMergeReactMissingScopeSurfaces:
+    """The merged-review-request missing-scope config gap reaches the statusline.
+
+    The rest of the ``review_request_merge_react.*`` family is dropped as
+    per-MR bookkeeping; ``missing_scope`` is the one outcome an operator
+    must act on (the personal xoxp token lacks ``reactions:write``), so it
+    is exempted from the drop and renders in ``action_needed``.
+    """
+
+    def test_missing_scope_produces_an_action(self) -> None:
+        signal = ScanSignal(
+            kind="review_request_merge_react.missing_scope",
+            summary="needs reactions:write",
+            payload={"overlay": "acme", "needed": "reactions:write"},
+        )
+        actions = dispatch([signal])
+        assert actions, actions
+        assert any(a.zone == "action_needed" for a in actions), actions
 
 
 class TestBareQuestionDispositionDropped:

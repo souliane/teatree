@@ -317,15 +317,13 @@ repos:
         stages: [manual]
 
   # Phase 8b - Pre-push
+  # No full-suite pytest gate here on purpose: the test suite is CI's job, never
+  # the local push path. A host under load times out unrelated wall-clock and
+  # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
+  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) stay as
+  # explicit opt-ins. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
-      - id: pytest-fast
-        name: pytest (fast gate, Python 3.13, parallel — matches CI)
-        language: script
-        entry: dev/test-fast.sh
-        pass_filenames: false
-        always_run: true
-        stages: [push]
       - id: doc-update-gate
         name: README/BLUEPRINT update gate (#1461)
         language: system

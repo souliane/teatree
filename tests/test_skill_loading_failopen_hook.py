@@ -76,12 +76,42 @@ def _write_loaded(session_id: str, skills: list[str]) -> None:
     (router.STATE_DIR / f"{session_id}.skills").write_text("\n".join(skills) + "\n", encoding="utf-8")
 
 
+def _as_code_work(data: dict) -> dict:
+    """Normalize the gate input so it targets Python code work.
+
+    The gate is scoped to genuine Python/Django work (a ``.py`` Edit/Write or a
+    Python-tooling Bash command). These tests exercise the orthogonal
+    resolution / canonical-matching / escape logic, so each call is rewritten to
+    a code-work shape while preserving any embedded ``[skill-load-ok:]`` token
+    and a no-input shape (``{"tool_name": "Bash"}``) is given a code-work
+    command. A test that already supplies a ``.py`` file or a Python command is
+    left untouched.
+    """
+    tool_input = dict(data.get("tool_input") or {})
+    tool_name = data.get("tool_name", "")
+    if tool_name in {"Edit", "Write"} and not str(tool_input.get("file_path", "")).endswith((".py", ".pyi")):
+        tool_input.setdefault("new_string", tool_input.get("new_string", "x = 1"))
+        tool_input["file_path"] = "src/teatree/core/probe.py"
+    elif tool_name == "Bash":
+        command = str(tool_input.get("command", ""))
+        if command.startswith("echo "):
+            # Token-cap test: keep the long body but make the leading verb a
+            # Python tool so the call counts as code work.
+            tool_input["command"] = "uv run python -c '' && " + command
+        elif "[skill-load-ok:" in command:
+            token = command[command.find("# [skill-load-ok:") :]
+            tool_input["command"] = f"uv run pytest -q  {token}".rstrip()
+        else:
+            tool_input["command"] = "uv run pytest -q"
+    return {**data, "tool_input": tool_input}
+
+
 def _run(data: dict) -> tuple[bool, dict | None, str]:
     """Invoke the gate, capturing its deny payload (stdout) and warning (stderr)."""
     out = StringIO()
     err = StringIO()
     with patch("sys.stdout", out), patch("sys.stderr", err):
-        blocked = handle_enforce_skill_loading(data)
+        blocked = handle_enforce_skill_loading(_as_code_work(data))
     payload = None
     raw = out.getvalue().strip()
     if raw:

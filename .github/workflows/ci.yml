@@ -93,13 +93,14 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
-  comment-density-gate:
-    # Near-zero-comments gate (souliane/teatree#1369). The pre-push hook
-    # runs against staged changes; CI re-runs the SAME check on the PR diff
-    # so an agent that bypasses prek still trips the gate. Stages the
-    # PR-vs-base diff into the index so the hook's ``git diff --cached``
-    # query sees the PR contents — identical code path to prek and to
-    # ``t3 tool comment-density --staged``.
+  comment-density-warning:
+    # Near-zero-comments check (souliane/teatree#1369). Advisory: the script
+    # prints any comment-dense file as a warning and exits 0, so the job
+    # never fails the pipeline. The pre-push hook surfaces the same warning
+    # against staged changes; CI re-runs the SAME check on the PR diff so the
+    # signal is visible on every PR. Stages the PR-vs-base diff into the index
+    # so the hook's ``git diff --cached`` query sees the PR contents —
+    # identical code path to prek and to ``t3 tool comment-density --staged``.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -325,16 +326,39 @@ jobs:
       - name: Regression corpus (deterministic, free; also gated every PR via pytest)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run t3 eval regression
+      # Decide whether the behavioral suite can actually execute. The runner
+      # SKIPs every scenario when `claude` is not on PATH or no key is
+      # configured, and a fully-skipped suite reports green with ZERO behavioral
+      # coverage. When ANTHROPIC_API_KEY IS configured, arm `--require-executed`
+      # so a fully-skipped run exits non-zero instead of passing decoratively
+      # (souliane/teatree#1811). With no key the metered path cannot run, so the
+      # suite skips and the gate stays disarmed — trigger-qa + regression above
+      # carry the deterministic coverage.
+      - name: Decide eval-execution enforcement
+        id: eval_exec
+        if: steps.gate.outputs.run_eval == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "require_executed=--require-executed" >> "$GITHUB_OUTPUT"
+          else
+            echo "require_executed=" >> "$GITHUB_OUTPUT"
+          fi
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
       # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
       # explicitly. LOCAL `t3 eval run` defaults to the subscription backend (no API
       # spend); CI is the budgeted exception. (`--trials` already forces the sdk
       # runner, so the flag is the explicit, debuggable statement of that intent.)
-      - name: Behavioral eval suite (pass@k; SKIPs cleanly without the claude CLI)
+      # `--require-executed` (armed only when a key is configured) fails the job
+      # if the suite collected scenarios but executed none — no silent decorative pass.
+      - name: Behavioral eval suite (pass@k; --require-executed armed when a key is set)
         if: steps.gate.outputs.run_eval == 'true'
         uses: nick-fields/retry@v3
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           timeout_minutes: 30
           max_attempts: 3
           retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any --backend sdk
+          command: uv run t3 eval run --trials 3 --require any --backend sdk ${{ steps.eval_exec.outputs.require_executed }}

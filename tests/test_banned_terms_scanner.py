@@ -83,7 +83,9 @@ class TestScanText:
         assert banned_terms_scanner.scan_text("we ship next week", config_path=config) is None
 
     def test_match_is_case_insensitive(self, config: Path) -> None:
-        assert banned_terms_scanner.scan_text("AcmeCorp ships", config_path=config) == "acmecorp"
+        # All-caps keeps it a single token (no camelCase boundary) so this
+        # isolates case-insensitivity rather than the camelCase split.
+        assert banned_terms_scanner.scan_text("ACMECORP ships", config_path=config) == "acmecorp"
 
     def test_email_only_match_is_ignored(self, config: Path) -> None:
         # Mirrors check-banned-terms.sh: a term only inside an email is allowed.
@@ -104,6 +106,75 @@ class TestScanText:
 
     def test_fail_closed_sentinel_blocks_even_without_config(self, tmp_path: Path) -> None:
         assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
+
+
+class TestWholeTokenMatching:
+    """The posting gate matches whole tokens, not substrings (over-block fix).
+
+    A short configured term must not surface inside a longer unbroken word
+    (the real failing case was a short term blocking a longer English word
+    that merely contained it). The synthetic ``acme`` term proves the same
+    class of bug without naming any real customer/overlay value.
+    """
+
+    @pytest.fixture
+    def short_term_config(self, tmp_path: Path) -> Path:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-corp", "foo_bar"]\n', encoding="utf-8")
+        return cfg
+
+    @pytest.mark.parametrize("text", ["a cooperative effort", "pacme builds", "an acmeology lecture"])
+    def test_single_word_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
+        # The single-word ``acme`` must not surface inside a longer unbroken word.
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        # camelCase/Pascal split + lowercase-glued fallback for multi-word terms.
+        [
+            ("acmecorp ships next week", "acme-corp"),
+            ("the acmeCorp service", "acme"),
+            ("the AcmeCorp service", "acme"),
+            ("a fooBar value", "foo_bar"),
+        ],
+    )
+    def test_camelcase_and_glued_multiword_blocks(self, short_term_config: Path, text: str, expected: str) -> None:
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("rolling out acme today", "acme"),
+            ("see x-acme-y in the diff", "acme"),
+            ("Acme, hi there", "acme"),
+            # ``acme`` is the first configured term and is a whole token of
+            # ``acme-corp``, so it is the one reported — the block still fires.
+            ("the acme-corp account", "acme"),
+            ("set foo_bar = 1", "foo_bar"),
+            ("the foo bar value", "foo_bar"),
+        ],
+    )
+    def test_whole_token_run_blocks(self, short_term_config: Path, text: str, expected: str) -> None:
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
+
+    def test_isolated_multi_token_term_blocks_and_is_reported(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acme-corp"]\n', encoding="utf-8")
+        assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
+
+
+class TestMatchedTermAttribution:
+    """``_matched_term`` attributes by whole-token match, never substring.
+
+    A flagged line that contains a longer word must not be attributed to a
+    short term that is merely its substring.
+    """
+
+    def test_attribution_is_not_a_substring_coincidence(self) -> None:
+        # ``wid`` is a substring of ``widget`` but is NOT a whole token in the
+        # flagged line, so the real whole-token term is reported instead.
+        report = "BANNED TERM in /tmp/x.txt:\n  1:the acme widget shipped\n\nBanned terms: wid, acme\n"
+        assert banned_terms_scanner._matched_term(report) == "acme"
 
 
 class TestExtractSecretScanSurfaces:
@@ -234,6 +305,83 @@ class TestExtractPublishPayload:
         assert "acmecorp" in payload
 
 
+class TestBodyFileWriteThenPostResolution:
+    """An in-command write paired with a later ``--body-file <path>`` resolves.
+
+    A ``printf``/``echo > path`` write paired with a later ``--body-file
+    <path>`` in the SAME command resolves to the written body — the file does
+    NOT exist on disk at PreToolUse scan time, so the gate must read the body
+    from the writer's operands rather than fail closed on every body (the
+    indirection-body bug). Safety is preserved: a ``--body-file`` whose body is
+    NOT written in-command (a bare shell variable, a missing literal file)
+    still fails closed.
+    """
+
+    def test_printf_redirect_to_var_path_resolves_clean_body(self) -> None:
+        # ``f=$(mktemp); printf '%s' '<clean>' > "$f"; gh ... --body-file "$f"``.
+        # The $f token is identical in the write and the reference, so the
+        # resolver pairs them even though neither is expanded at scan time.
+        cmd = 'f=$(mktemp); printf "%s" "ship next week" > "$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "ship next week" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_echo_redirect_to_var_path_resolves_clean_body(self) -> None:
+        cmd = 'f=$(mktemp); echo "ship next week" > "$f"; glab mr note create 7 --repo o/r --body-file "$f"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "ship next week" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_attached_redirect_no_space_resolves_clean_body(self) -> None:
+        # ``printf '%s' 'x' >"$f"`` — the unspaced redirect lexes as a single
+        # glued ``>$f`` token; the target must still pair with --body-file "$f".
+        cmd = 'f=$(mktemp); printf "%s" "ship next week" >"$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "ship next week" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_append_redirect_resolves_clean_body(self) -> None:
+        cmd = 'f=$(mktemp); printf "%s" "ship next week" >> "$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "ship next week" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_printf_redirect_to_literal_path_resolves_clean_body(self, tmp_path: Path) -> None:
+        body_file = tmp_path / "post-body.txt"
+        cmd = f'printf "%s" "ship next week" > {body_file}; gh pr comment 5 --repo o/r --body-file {body_file}'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "ship next week" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_write_then_post_with_banned_term_resolves_and_carries_term(self) -> None:
+        # The gate checks the RESOLVED content, so a banned term written via
+        # printf and posted via --body-file is surfaced for the matcher.
+        cmd = 'f=$(mktemp); printf "%s" "ship to acmecorp" > "$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_body_file_var_without_in_command_write_fails_closed(self) -> None:
+        # No in-command write to $BODY and no on-disk file — genuinely
+        # unresolvable, so the gate must STILL fail closed.
+        cmd = 'gh pr comment 5 --repo o/r --body-file "$BODY"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_body_file_missing_literal_path_fails_closed(self) -> None:
+        cmd = "gh pr comment 5 --repo o/r --body-file /no/such/body-file-xyz.txt"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
 class TestOverride:
     def test_flag_in_first_segment_bypasses(self) -> None:
         cmd = 'gh issue create --title t --body "acmecorp" --allow-banned-term'
@@ -317,6 +465,33 @@ class TestHookHandlerEndToEnd:
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
         assert "acmecorp" in decision["permissionDecisionReason"]
+
+    def test_write_then_post_clean_body_via_body_file_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The indirection-body bug: a clean body materialised with printf into a
+        # mktemp file and posted via --body-file used to fail closed on EVERY
+        # body. It must now resolve and pass the gate.
+        cmd = 'f=$(mktemp); printf "%s" "ship next week" > "$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_write_then_post_banned_body_via_body_file_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The gate checks the RESOLVED body content, not a placeholder, so a
+        # banned term written via printf and posted via --body-file is blocked.
+        cmd = 'f=$(mktemp); printf "%s" "ship to acmecorp" > "$f"; gh pr comment 5 --repo o/r --body-file "$f"'
+        blocked = handle_banned_terms_pretool(_bash(cmd))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert "acmecorp" in decision["permissionDecisionReason"]
+
+    def test_unresolvable_body_file_still_fails_closed(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # A --body-file whose body is NOT written in-command and is not on disk
+        # is genuinely unresolvable — the gate must STILL block (fail closed),
+        # never pass an unscanned public body.
+        blocked = handle_banned_terms_pretool(_bash('gh pr comment 5 --repo o/r --body-file "$BODY"'))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_short_body_file_flag_is_read_and_blocks(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -514,6 +689,70 @@ class TestPrivateRepoCarveOut:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_private_repo_commit_bodyfile_relative_path_reset_cwd_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The real cold-hook failure: a ``git -C <worktree> commit -F <relpath>``
+        # where the harness cwd has reset AWAY from the worktree. The body file
+        # lives INSIDE the private worktree and carries the repo's own domain
+        # word. Reading the ``-F`` path against the reset cwd fails, so the
+        # parser fail-closes to the sentinel and the carve-out never consults
+        # the private origin -> a false hard-block. The body file IS resolvable
+        # from the commit's own repo dir, so the carve-out must downgrade.
+        repo = _private_repo(tmp_path)
+        (repo / "commit_body.txt").write_text("fix the acmecorp refinery\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)  # reset-away cwd, not the worktree
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F commit_body.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_public_repo_commit_bodyfile_relative_path_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression guard symmetric to the fix: the same ``-F <relpath>`` shape
+        # whose body the gate now resolves from the commit's repo dir must STILL
+        # hard-block when that repo is PUBLIC. The resolution fix must not weaken
+        # the real protection -- a banned term in a body file committed to a
+        # public repo is a leak.
+        repo = tmp_path / "pub"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
+        (repo / "commit_body.txt").write_text("ship to acmecorp\n", encoding="utf-8")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F commit_body.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_commit_bodyfile_genuinely_missing_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A ``-F`` path that exists NOWHERE (not in cwd, not in the repo dir)
+        # is a genuinely unresolvable body: it must keep failing closed even on
+        # a private repo, so the resolution fallback never masks an unscannable
+        # body. This preserves the #1207 fail-closed sentinel contract.
+        repo = _private_repo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F does_not_exist.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_public_repo_commit_with_banned_term_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

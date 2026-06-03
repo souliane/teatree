@@ -296,6 +296,97 @@ class TestEvalPassAtK:
         assert "SKIP alpha" in result.output
 
 
+class _SkippingRunner:
+    def __init__(self, *_, **__) -> None: ...
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        return _run(spec.name, terminal_reason="skipped: claude binary not on PATH")
+
+
+class TestEvalRequireExecuted:
+    """`--require-executed` turns a decorative (collected>0, ran==0) run red."""
+
+    def test_single_trial_all_skipped_exits_nonzero_when_required(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--no-persist"])
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
+
+    def test_single_trial_all_skipped_stays_green_without_flag(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--no-persist"])
+        assert result.exit_code == 0, result.output
+
+    def test_single_trial_with_execution_passes_under_flag(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _PassingRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _PassingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "PASS alpha" in result.output
+
+    def test_pass_at_k_all_skipped_exits_nonzero_when_required(self) -> None:
+        specs = [_spec("alpha"), _spec("beta")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
+
+    def test_pass_at_k_all_skipped_stays_green_without_flag(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
+        assert result.exit_code == 0, result.output
+
+    def test_pass_at_k_with_execution_passes_under_flag(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _PassingRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _PassingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "PASS alpha" in result.output
+
+    def test_zero_collected_stays_green_under_flag(self) -> None:
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=[]),
+            patch("teatree.eval.backends.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--no-persist"])
+        assert result.exit_code == 0, result.output
+
+
 class TestEvalTriggerQA:
     def test_shipped_corpus_passes(self) -> None:
         result = CliRunner().invoke(app, ["eval", "trigger-qa"])
@@ -533,6 +624,27 @@ class TestEvalModelMatrix:
             history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
         assert payload["runs"][0]["model"] == "opus,haiku"
+
+    def test_matrix_all_skipped_exits_nonzero_when_required(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(
+                app, ["eval", "run", "--models", "opus,haiku", "--require-executed", "--no-persist"]
+            )
+        assert result.exit_code != 0, result.output
+        assert "executed 0" in result.output
+
+    def test_matrix_all_skipped_stays_green_without_flag(self) -> None:
+        specs = [_spec("alpha")]
+        with (
+            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
+        assert result.exit_code == 0, result.output
 
 
 class TestPrepareSubscription:

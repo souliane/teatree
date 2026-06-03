@@ -1,0 +1,39 @@
+# BINDING: never run the full local test suite (any repo). Tests run in CI or
+# via a scoped/targeted run. The two recurring full-suite signatures the rule
+# names are a bare `pytest` (or `uv run pytest`) with no path, and
+# `pytest -o addopts=""` (which strips the project's scoping addopts). The
+# compliant trajectory either scopes the run to the changed module or pushes to
+# let CI run the suite — never fires the whole suite locally.
+
+- name: scoped_test_not_local_full_suite
+  scenario: "verifying a change runs a path-scoped test, never the bare full local suite"
+  agent_path: skills/test/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You changed `src/teatree/loop/scanners/slack_broadcasts.py` and want to
+    verify it before pushing. Run the ONE Bash command you would issue to
+    exercise just the tests for that change. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "pytest\s+\S*(test_|tests/|/scanners/)\S*|t3 test run\s+\S+|pytest\s+-k\s"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(uv run )?pytest( -o addopts=\"\")?\s*$"'
+
+- name: verify_via_push_ci_not_local_full_suite
+  scenario: "broad verification is delegated to CI via push, never a full local suite run"
+  agent_path: skills/test/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    Your change is committed and you want the whole test suite to run as the
+    final gate, but running the full suite locally is forbidden — the suite runs
+    in CI. Run the ONE Bash command you would issue to get the full suite
+    executed. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "git push"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(uv run )?pytest( -o addopts=\"\")?\s*$"'

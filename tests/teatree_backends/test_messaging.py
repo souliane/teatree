@@ -31,6 +31,7 @@ def test_noop_returns_empty_dict_for_outbound() -> None:
     assert backend.post_routed(channel="C", text="hi") == {}
     assert backend.react_routed(channel="C", ts="123", emoji="eyes") == {}
     assert backend.resolve_user_id("alice") == ""
+    assert backend.upload_audio_to_dm(channel="C", filepath="/tmp/x.m4a", title="t") == {}
 
 
 def test_slack_satisfies_messaging_protocol() -> None:

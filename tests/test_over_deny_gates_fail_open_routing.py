@@ -127,7 +127,7 @@ class TestSkillLoadingGateRouting:
         return {
             "session_id": "s1",
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/x", "old_string": "a", "new_string": "b"},
+            "tool_input": {"file_path": "/x.py", "old_string": "a", "new_string": "b"},
         }
 
     def test_denies_with_unloaded_resolvable_skill_when_fail_open_off(self, home: Path, skills_dir: Path) -> None:

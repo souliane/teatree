@@ -42,6 +42,7 @@ resolves correctly.
 """
 
 import threading
+from pathlib import Path
 from typing import cast
 
 from teatree.backends.slack_bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
@@ -717,6 +718,63 @@ class SlackBotBackend:
             return ""
         permalink = data.get("permalink", "")
         return permalink if isinstance(permalink, str) else ""
+
+    def upload_audio_to_dm(self, *, channel: str, filepath: str, title: str = "") -> RawAPIDict:
+        """Upload an audio file to ``channel`` so it plays inline in the DM (#1791).
+
+        The three-step modern Slack upload flow (``files.upload`` is
+        deprecated): ``files.getUploadURLExternal`` reserves an off-Slack
+        one-shot ``upload_url`` + file ``id``; the bytes are PUT there;
+        ``files.completeUploadExternal`` finalises the file and shares it
+        into ``channel_id``. Slack renders an inline audio player for an
+        ``.m4a`` / ``.mp3``, which is what surfaces the spoken reply on the
+        user's phone.
+
+        **Scope dependency:** finalising + sharing requires the Slack token
+        to hold the ``files:write`` scope. Without it
+        ``files.getUploadURLExternal`` (or ``completeUploadExternal``)
+        returns ``ok:false`` with ``error:"missing_scope"`` — surfaced
+        verbatim in the returned body so the caller can flag it. Re-run
+        ``t3 setup slack-bot`` after adding ``files:write`` to the bot's
+        OAuth scopes to grant it.
+
+        Routes under :meth:`_route_token` (self-DM → bot, else → ``xoxp``),
+        the same destination policy as :meth:`post_routed`. Returns the raw
+        ``completeUploadExternal`` body (``ok`` / ``error`` / ``files``);
+        ``{}`` when no token is configured, the file is missing/unreadable,
+        or a step returns a non-ok body (the failure is in the returned
+        body for the ok-path steps; a transport error propagates to the
+        caller, which never lets it escape the speak seam).
+        """
+        token = self._route_token(channel)
+        if not token or not channel:
+            return {}
+        path = Path(filepath)
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return {}
+        reserve = self._get(
+            "files.getUploadURLExternal",
+            {"filename": path.name, "length": len(content)},
+            token=token,
+        )
+        if not reserve.get("ok"):
+            return reserve
+        upload_url = reserve.get("upload_url")
+        file_id = reserve.get("file_id")
+        if not isinstance(upload_url, str) or not isinstance(file_id, str):
+            return reserve
+        self._http.put_external(upload_url, content=content)
+        file_entry: RawAPIDict = {"id": file_id}
+        if title:
+            file_entry["title"] = title
+        return self._post(
+            "files.completeUploadExternal",
+            {"files": [file_entry], "channel_id": channel},
+            token=token,
+            idempotent=False,
+        )
 
     def get_reactions(self, *, channel: str, ts: str) -> list[str]:
         """Return the emoji names currently set on a message."""

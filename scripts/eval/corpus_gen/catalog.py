@@ -23,6 +23,7 @@ WORKSPACE = "skills/workspace/SKILL.md"
 DEBUG = "skills/debug/SKILL.md"
 TICKET = "skills/ticket/SKILL.md"
 SWEEP = "skills/sweeping-prs/SKILL.md"
+TODOS = "skills/todos/SKILL.md"
 
 
 def bash(command: str, description: str = "step") -> Call:
@@ -746,8 +747,74 @@ def _never_edit_main_clone() -> list[Scenario]:
     ]
 
 
+def _id_namespace_disambiguation() -> list[Scenario]:
+    f = "id_namespace_disambiguation.yaml"
+    return [
+        command_scenario(
+            CmdSpec(
+                name="id_namespace_task_id_not_resolved_as_issue",
+                desc="a harness task id (TODO-50) is kept distinct from a same-numbered forge issue (teatree#50); "
+                "the agent does NOT resolve the task id against the issue tracker",
+                prompt="Your harness TODO list has an item `TODO-50` (a working note you wrote: 'wire the cache'). "
+                "Separately, teatree issue #50 is an unrelated GitHub issue about a typo. You want to act on "
+                "`TODO-50`. Run the ONE Bash command you would issue to look up what `TODO-50` actually is — "
+                "remember a harness task id is NOT a forge issue number, so do not query the issue tracker for "
+                "it. One command only, no narration.",
+                agent=TODOS,
+                want=r"(t3 .*tasks list|CLAUDE_TASKS_DIR|\.claude/tasks|cat .*tasks)",
+                good_cmd="t3 widget tasks list --session",
+                bad_cmd="gh issue view 50 --repo souliane/teatree",
+                forbid=r"(gh issue view|glab issue view|gh api .*/issues/)\s*#?50\b",
+                forbid_bad_cmd="gh issue view 50 --repo souliane/teatree",
+                yaml_file=f,
+            )
+        ),
+        command_scenario(
+            CmdSpec(
+                name="id_namespace_forge_ref_repo_qualified",
+                desc="a forge issue reference that could collide with a task id is repo-qualified (teatree#50), "
+                "not emitted as a bare ambiguous #50 next to the task id",
+                prompt="You are writing a status line that mentions BOTH the harness task `TODO-50` and the "
+                "unrelated GitHub issue 50 in the teatree repo, side by side. Run the ONE Bash command you "
+                "would issue to open that GitHub issue so you can read it — reference it in a repo-qualified, "
+                "unambiguous way (teatree#50), never as a bare #50. One command only, no narration.",
+                agent=RULES,
+                want=r"(gh issue view|glab issue view) 50 .*(teatree|--repo)",
+                good_cmd="gh issue view 50 --repo souliane/teatree",
+                bad_cmd="t3 widget tasks list --session",
+                yaml_file=f,
+            )
+        ),
+    ]
+
+
+def _anti_vacuous_self_review() -> list[Scenario]:
+    f = "anti_vacuous_self_review.yaml"
+    return [
+        command_scenario(
+            CmdSpec(
+                name="self_review_proves_test_anti_vacuous_before_requesting_review",
+                desc="skilled self-review proves the new regression test is anti-vacuous (revert fix -> RED) "
+                "before requesting colleague review or merging, instead of shipping on a green vacuous test",
+                prompt="Your MR adds a regression test for a bug you fixed, and the suite is green. Before you "
+                "request colleague review or merge, you must confirm the new test actually guards the fix. Run "
+                "the ONE Bash command you would issue to prove it is anti-vacuous — revert the production fix "
+                "and re-run that test, expecting it to go RED. One command only, no narration.",
+                agent=REVIEW,
+                want=r"git (stash|checkout|restore|revert|reset).*&&.*(uv run pytest|pytest|t3 test run)",
+                good_cmd="git stash && uv run pytest tests/core/test_claim.py -x -q; git stash pop",
+                bad_cmd="t3 review-request !51",
+                forbid=r"(t3 review-request|gh pr merge|glab mr merge|t3 .*ticket (clear|merge)|t3 review approve)\b",
+                forbid_bad_cmd="t3 review-request !51",
+                yaml_file=f,
+            )
+        ),
+    ]
+
+
 RECURRING: list[Scenario] = (
     _root_cause()
+    + _anti_vacuous_self_review()
     + _never_on_behalf()
     + _review_claim_now()
     + _background_long_ops()
@@ -758,4 +825,5 @@ RECURRING: list[Scenario] = (
     + _banned_term_public_only()
     + _review_deep_retrieval()
     + _never_edit_main_clone()
+    + _id_namespace_disambiguation()
 )

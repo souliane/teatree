@@ -16,6 +16,12 @@ from typing import ClassVar
 from django.db import models
 from django.utils import timezone
 
+#: A maintainer applies this label to withhold an issue from the autonomous
+#: factory until they have reviewed it. The issue-implementer claim path
+#: filters out any open issue carrying it at selection time — never claimed,
+#: never dispatched — regardless of which implementer label it also carries.
+NEEDS_TRIAGE_LABEL = "needs-triage"
+
 
 class ImplementedIssueMarkerManager(models.Manager["ImplementedIssueMarker"]):
     def claim(self, issue_url: str, overlay: str = "", **kw: object) -> "ImplementedIssueMarker | None":
