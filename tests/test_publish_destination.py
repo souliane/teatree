@@ -99,6 +99,36 @@ class TestResolvePublishDestination:
     def test_gh_api_non_repos_path_is_none(self) -> None:
         assert publish_destination.resolve_publish_destination("gh api user/repos") is None
 
+    def test_github_issue_url_positional_resolves_target(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "gh issue comment https://github.com/owner/repo/issues/5 --body x"
+        )
+        assert dest is not None
+        assert dest.slug == "owner/repo"
+        assert dest.via == "url"
+
+    def test_gitlab_mr_url_positional_with_dash_infix_resolves_nested_namespace(self) -> None:
+        dest = publish_destination.resolve_publish_destination(
+            "glab mr note https://gitlab.com/group/sub/repo/-/merge_requests/3 --message x"
+        )
+        assert dest is not None
+        assert dest.slug == "group/sub/repo"
+
+    def test_bare_repo_url_positional_strips_git_suffix(self) -> None:
+        dest = publish_destination.resolve_publish_destination("gh pr create https://github.com/owner/repo.git")
+        assert dest is not None
+        assert dest.slug == "owner/repo"
+
+    def test_url_positional_wins_over_cwd_remote(self, tmp_path: Path) -> None:
+        # A forge URL positional is more specific than the cwd remote, so it
+        # resolves the target even when cwd is a different repo.
+        repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
+        dest = publish_destination.resolve_publish_destination(
+            "gh issue comment https://github.com/owner/repo/issues/5 --body x", repo
+        )
+        assert dest is not None
+        assert dest.slug == "owner/repo"
+
     def test_gh_pr_create_no_flag_resolves_current_repo(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "r", "git@github.com:acme-internal/app.git")
         dest = publish_destination.resolve_publish_destination("gh pr create --title x", repo)
