@@ -9,6 +9,7 @@ never to a single chaining orchestrator. The table is the contract — adding
 
 import json
 from io import StringIO
+from pathlib import Path
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -27,6 +28,21 @@ EXPECTED_AUTHOR_AGENT: dict[str, str] = {
     "reviewing": "t3:reviewer",
     "shipping": "t3:shipper",
 }
+
+#: Repo-root ``agents/`` directory — the canonical sub-agent definitions the
+#: ``Agent`` tool resolves a ``t3:<name>`` value against. ``plugins/t3/agents``
+#: is the same directory reached through the ``plugins/t3 -> ..`` setup symlink.
+AGENTS_DIR: Path = Path(__file__).resolve().parents[2] / "agents"
+
+
+def _agent_name(subagent: str) -> str:
+    """Strip the ``t3:`` namespace prefix from a ``SUBAGENT_BY_PHASE`` value.
+
+    Every value is namespaced (asserted by
+    ``test_every_mapped_subagent_uses_the_t3_namespace``); ``removeprefix``
+    is a no-op for any future un-namespaced value rather than raising.
+    """
+    return subagent.removeprefix("t3:")
 
 
 class TestSubagentForPhaseConformance(TestCase):
@@ -108,4 +124,49 @@ class TestPendingTaskSignalConformance(TestCase):
             zones = {a.zone for a in actions if a.kind == "agent"}
             assert CHAINING_ORCHESTRATOR not in zones, (
                 f"author phase {phase!r} must not route to the chaining orchestrator (zones={zones})"
+            )
+
+
+class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
+    """Every ``SUBAGENT_BY_PHASE`` value must resolve to a real agent file.
+
+    The loop dispatches a phase by passing its ``t3:<name>`` value as the
+    ``Agent`` tool's ``subagent_type``; the tool resolves that against an
+    ``agents/<name>.md`` definition. A phase mapped to a value with no
+    matching file errors at spawn time (``Agent type 't3:<name>' not
+    found``), so the work unit can never run. This scans the *whole* map —
+    not just the four FSM phases — so a phase added to ``SUBAGENT_BY_PHASE``
+    without its agent definition fails here, at conformance time.
+    """
+
+    def test_agents_dir_exists(self) -> None:
+        assert AGENTS_DIR.is_dir(), f"agents directory not found at {AGENTS_DIR}"
+
+    def test_every_mapped_subagent_has_an_agent_definition(self) -> None:
+        missing = {
+            (role, phase): subagent
+            for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
+            if not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
+        }
+        assert missing == {}, (
+            f"phases mapped to a sub-agent with no agents/<name>.md definition: {missing}. "
+            f"Spawning these via the Agent tool errors \"Agent type '<value>' not found\"."
+        )
+
+    def test_every_mapped_subagent_uses_the_t3_namespace(self) -> None:
+        offenders = {
+            (role, phase): subagent
+            for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
+            if not subagent.startswith("t3:")
+        }
+        assert offenders == {}, f"sub-agent values must be namespaced 't3:<name>': {offenders}"
+
+    def test_agent_definition_name_matches_its_filename(self) -> None:
+        for (role, phase), subagent in SUBAGENT_BY_PHASE.items():
+            name = _agent_name(subagent)
+            agent_file = AGENTS_DIR / f"{name}.md"
+            text = agent_file.read_text(encoding="utf-8")
+            assert f"name: {name}\n" in text, (
+                f"{agent_file} frontmatter 'name:' must equal {name!r} so the Agent tool "
+                f"resolves {subagent!r} dispatched for ({role}, {phase})"
             )
