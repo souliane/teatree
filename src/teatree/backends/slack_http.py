@@ -182,6 +182,23 @@ class SlackHttpClient:
 
         return cast("RawAPIDict", self._run(attempt, idempotent=True).json())
 
+    def put_external(self, url: str, *, content: bytes) -> int:
+        """PUT raw ``content`` to an off-Slack upload URL, returning the status code.
+
+        The Slack ``files.getUploadURLExternal`` step returns a one-shot
+        ``upload_url`` on Slack's file storage host (not ``slack.com/api``)
+        that the caller PUTs the file bytes to before
+        ``files.completeUploadExternal``. The PUT carries no token (the URL
+        is itself the capability) and the upload is idempotent — the same
+        bytes to the same one-shot URL — so it is retried under the standard
+        bounded-backoff like any read.
+        """
+
+        def attempt() -> httpx.Response:
+            return httpx.put(url, content=content, timeout=self._timeout)
+
+        return self._run(attempt, idempotent=True).status_code
+
     def _run(self, attempt: AttemptFn, *, idempotent: bool) -> httpx.Response:
         # The final iteration (retries_left == 0) always returns or re-raises,
         # so the loop is exhaustive — no unreachable fall-through.

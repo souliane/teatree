@@ -79,3 +79,8 @@ class NoopMessagingBackend:
     @staticmethod
     def auth_test() -> RawAPIDict:
         return {}
+
+    @staticmethod
+    def upload_audio_to_dm(*, channel: str, filepath: str, title: str = "") -> RawAPIDict:
+        _ = channel, filepath, title
+        return {}
