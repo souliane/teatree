@@ -66,19 +66,11 @@ class TestStateTransitions:
         assert row is not None
         return row
 
-    def test_mark_eyes_added_transitions_pending_row(self) -> None:
-        row = self._row()
-        assert row.mark_eyes_added() is True
-        assert row.state == ReviewAssignment.State.EYES_ADDED
-
-    def test_mark_eyes_added_is_no_op_after_first(self) -> None:
-        row = self._row()
-        row.mark_eyes_added()
-        assert row.mark_eyes_added() is False
-
     def test_mark_approved_stamps_timestamp(self) -> None:
+        # #113/#86: the scanner no longer posts a discovery-time :eyes: claim,
+        # so a row approves straight from PENDING (the approve path is
+        # reachable from any non-approved state).
         row = self._row()
-        row.mark_eyes_added()
         assert row.mark_approved() is True
         assert row.state == ReviewAssignment.State.APPROVED
         assert row.approved_at is not None

@@ -9,9 +9,11 @@ shape — durable, single-row-per-trigger, scoped, idempotent — applied to
 reviewer assignment instead of inbound chat injection. The
 ``(overlay, mr_url, user_id)`` key is the canonical idempotency tuple: the
 scanner can over-poll Slack safely because the unique constraint
-deduplicates, and the state field lets the scanner observe what's already
-been done so the next tick doesn't double-post the ``:eyes:`` reaction or
-re-dispatch the reviewer agent.
+deduplicates, so the next tick does not re-dispatch the reviewer agent for
+an MR it has already seen. The scanner never posts a ``:eyes:`` claim
+reaction — a claim reaction belongs to review-DONE, not to discovery
+(#113/#86); the row records the *intent* to review, and the FSM transition
+path posts the outcome reaction once a review lands.
 """
 
 from dataclasses import dataclass
@@ -42,13 +44,12 @@ class ReviewIntent:
 class ReviewAssignment(models.Model):
     """One user-intent-to-review record for a specific MR seen in Slack.
 
-    The lifecycle is monotonic ``pending`` → ``eyes_added`` (optional, only
-    when the scanner is the one adding the ack reaction) → ``approved``
-    (when the MR lands an approve transition). ``approved`` is reachable
-    from any non-approved state — the user may approve without the scanner
-    ever having posted ``:eyes:``. Each transition stamps the matching
-    timestamp so audit questions ("when did t3 first see this MR?", "was
-    it the user who reacted or t3 acking a mention?") have an answer.
+    The lifecycle is monotonic ``pending`` → ``approved`` (when the MR
+    lands an approve transition). ``approved`` is reachable from any
+    non-approved state. The historic ``eyes_added`` state is retained as a
+    valid enum value for rows written before #113 moved the claim reaction
+    off discovery, but no code path transitions a row into it any more —
+    the scanner never posts a ``:eyes:`` claim at discovery time.
     """
 
     class State(models.TextChoices):
@@ -105,17 +106,6 @@ class ReviewAssignment(models.Model):
             },
         )
         return row if created else None
-
-    def mark_eyes_added(self) -> bool:
-        """Mark this row as ``eyes_added`` after the bot posted ``:eyes:``.
-
-        Idempotent: a second call is a no-op. Returns ``True`` on the
-        transition so the caller can emit audit lines only once.
-        """
-        updated = type(self).objects.filter(pk=self.pk, state=self.State.PENDING).update(state=self.State.EYES_ADDED)
-        if updated:
-            self.refresh_from_db(fields=["state"])
-        return bool(updated)
 
     def mark_approved(self) -> bool:
         """Mark this row as ``approved`` when the MR landed an approve transition."""

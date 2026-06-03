@@ -16,14 +16,15 @@ via the injected :class:`MrStateClassifier`, persists a
 ``(channel, slack_ts)``), and reacts on the Slack message:
 
 * **All merged + approved** → react ``:white_check_mark:`` and skip
-    reviewer dispatch. Matches the rule from #1131: the reaction is
-    sufficient acknowledgement, the agent does not re-review already-done
-    work.
-* **At least one open MR** → react ``:eyes:`` and emit one
-    ``slack.review_intent`` signal per open MR. The existing dispatcher
-    routes each signal to the ``t3:reviewer`` agent — no separate
-    Task-model plumbing in this PR (see follow-up #1234 / #1235 — TODO,
-    filed as part of #1131's smallest-atomic-slice scope decision).
+    reviewer dispatch. This is an *outcome* reaction (review-DONE), deduped
+    against existing reactors and the ``OutboundClaim`` ledger so it is
+    posted at most once. The agent does not re-review already-done work.
+* **At least one open MR** → emit one ``slack.review_intent`` signal per
+    open MR (the dispatcher routes each to the ``t3:reviewer`` agent). No
+    ``:eyes:`` reaction is posted: a claim reaction must appear only at
+    review-DONE, never at discovery (#113/#86). The review-intent dispatch
+    itself is gated on the review-loop-enabled state, so a stopped review
+    loop queues nothing (#79).
 
 Idempotency
 -----------
@@ -60,6 +61,7 @@ from django.db import OperationalError, ProgrammingError
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.review_candidate import eyes_reacted_by_other
+from teatree.loop.review_claim import filter_review_intent_signals, reaction_already_present, record_reaction_claim
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -356,7 +358,7 @@ class SlackBroadcastsScanner:
         user_named: bool,
     ) -> list[ScanSignal]:
         if row.classification == ScannedBroadcast.Classification.ALL_MERGED:
-            self._react(row.channel, row.slack_ts, "white_check_mark")
+            self._react_done(row.channel, row.slack_ts, "white_check_mark", message=message)
             # #1295 cap C: cross-channel sweep — once a broadcast resolves
             # to all-merged on its own channel, replicate the
             # ``:white_check_mark:`` to every other broadcast channel that
@@ -366,18 +368,21 @@ class SlackBroadcastsScanner:
             return []
         open_states = _open_subset(states)
         if self._all_authored_by_me(open_states):
-            # #1384: every open MR in this broadcast is the user's own — the
-            # ``:eyes:`` reaction ("I'm looking at this colleague's MR") is
-            # meaningless noise on one's own MR, and there is nothing to
-            # dispatch a reviewer for. Skip both. Sibling of #1321.
+            # #1384: every open MR in this broadcast is the user's own — there
+            # is nothing to dispatch a reviewer for on one's own MR.
             return []
         if not user_named and eyes_reacted_by_other(message, user_id=self._user_id()):
             # A colleague has already :eyes:-claimed this review. Dispatching
             # ``t3:reviewer`` anyway duplicates their in-flight work. An
             # explicit ``<@user_slack_id>`` mention re-opens dispatch.
             return []
-        self._react(row.channel, row.slack_ts, "eyes")
-        return [_signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states]
+        # #113/#86: the ``:eyes:`` reaction is a CLAIM and must not be posted at
+        # discovery time — only when a review is DONE (the FSM transition path
+        # posts the outcome reaction). #79: a review-intent dispatch is the
+        # work-queue signal; when the review loop is stopped it must not fire.
+        return filter_review_intent_signals(
+            _signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states
+        )
 
     def _user_id(self) -> str:
         return getattr(self.backend, "user_id", "") or self.user_slack_id
@@ -411,9 +416,18 @@ class SlackBroadcastsScanner:
             sibling_urls = sibling_row.mr_urls if isinstance(sibling_row.mr_urls, list) else []
             if not mr_urls.intersection(sibling_urls):
                 continue
-            self._react(sibling_row.channel, sibling_row.slack_ts, "white_check_mark")
+            self._react_done(sibling_row.channel, sibling_row.slack_ts, "white_check_mark", message=None)
 
-    def _react(self, channel: str, ts: str, emoji: str) -> None:
+    def _react_done(self, channel: str, ts: str, emoji: str, *, message: RawAPIDict | None) -> None:
+        """Post an outcome reaction once, deduped against existing reactors + the ledger.
+
+        #113/#123: skip when the emoji is already present (colleague or bot)
+        or recorded in the :class:`OutboundClaim` ledger, so a reaction is
+        never double-posted across reactors or re-fired on a later tick.
+        Records the claim on success so the next tick dedups against it.
+        """
+        if reaction_already_present(message=message, channel=channel, ts=ts, emoji=emoji):
+            return
         try:
             self.backend.react(channel=channel, ts=ts, emoji=emoji)
         except ConnectChannelBotRestrictedError:
@@ -427,6 +441,8 @@ class SlackBroadcastsScanner:
             if _looks_like_connect_restriction(exc):
                 raise ConnectChannelBotRestrictedError(channel) from exc
             logger.exception("Failed to react :%s: on %s/%s", emoji, channel, ts)
+            return
+        record_reaction_claim(channel=channel, ts=ts, emoji=emoji)
 
 
 def _looks_like_connect_restriction(exc: BaseException) -> bool:

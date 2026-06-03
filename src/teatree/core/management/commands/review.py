@@ -143,6 +143,7 @@ class Command(TyperCommand):
             f"  recorded {recorded.verdict} verdict {recorded.pk} for "
             f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
         )
+        self._emit_review_done_signal(recorded)
         return {
             "recorded": True,
             "verdict_id": int(recorded.pk),
@@ -151,6 +152,30 @@ class Command(TyperCommand):
             "verdict": recorded.verdict,
             "findings_count": len(findings),
         }
+
+    def _emit_review_done_signal(self, recorded: ReviewVerdict) -> None:
+        """Post the review-DONE Slack reaction set for *recorded* (#113/#88).
+
+        ``:eyes:`` + the verdict emoji (``:white_check_mark:`` clean /
+        ``:question:`` blocking) on the PR's review-broadcast message — the
+        ONLY Slack signal a finished review produces, never an author DM.
+        Best-effort: any failure logs and continues — a Slack outage must not
+        turn a recorded verdict into a command failure.
+        """
+        from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
+        from teatree.loop.review_claim import emit_review_done_reactions  # noqa: PLC0415
+
+        try:
+            posted = emit_review_done_reactions(
+                slug=recorded.slug,
+                pr_id=int(recorded.pr_id),
+                emojis=recorded.done_reaction_emojis(),
+                messaging=messaging_from_overlay(),
+            )
+        except Exception:  # noqa: BLE001 — the Slack signal must never break verdict recording.
+            return
+        if posted:
+            self.stdout.write(f"  posted review-DONE reaction(s) {', '.join(':' + e + ':' for e in posted)}")
 
     @command()
     def status(self, mr_url: str) -> StatusResult:
