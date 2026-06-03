@@ -20,6 +20,7 @@ from django.test import TestCase
 
 from teatree.core import merge_execution
 from teatree.core.merge_execution import (
+    MergeHeadMovedError,
     MergeOutcome,
     MergePreconditionError,
     execute_bound_merge,
@@ -298,6 +299,86 @@ class TestExecuteBoundMergeGitLab(TestCase):
                 expected_head_oid=_SHA,
                 host_kind="gitlab",
             )
+
+    def test_head_moved_raises_head_moved_error(self) -> None:
+        def _sha_mismatch(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "/merge" in joined and "PUT" in argv:
+                return (1, "", "SHA does not match HEAD of source branch (409)")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution._run_glab", side_effect=_sha_mismatch),
+            pytest.raises(MergeHeadMovedError),
+        ):
+            execute_bound_merge(
+                slug=_GITLAB_SLUG,
+                pr_id=_PR_IID,
+                expected_head_oid=_SHA,
+                host_kind="gitlab",
+            )
+
+    def test_transient_response_is_retried_then_succeeds(self) -> None:
+        attempts = {"merge": 0}
+
+        def _transient_then_ok(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "/merge" in joined and "PUT" in argv:
+                attempts["merge"] += 1
+                if attempts["merge"] == 1:
+                    return (1, "", "unexpected end of JSON input")
+                return (0, json.dumps({"merge_commit_sha": "glab-merged-0"}), "")
+            # Pre-retry merge-state probe: still OPEN (the failed call did not land).
+            if "/merge_requests/" in joined:
+                return (0, json.dumps({"iid": _PR_IID, "state": "opened", "sha": _SHA}), "")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_glab", side_effect=_transient_then_ok),
+        ):
+            result = execute_bound_merge(
+                slug=_GITLAB_SLUG,
+                pr_id=_PR_IID,
+                expected_head_oid=_SHA,
+                host_kind="gitlab",
+            )
+        assert result == "glab-merged-0"
+        assert attempts["merge"] == 2, "the GitLab transient response was not retried to success"
+
+    def test_non_dict_merge_response_falls_back_to_expected_head(self) -> None:
+        def _list_body(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "/merge" in joined and "PUT" in argv:
+                return (0, "[1, 2, 3]", "")
+            return (0, "", "")
+
+        with patch("teatree.core.merge_execution._run_glab", side_effect=_list_body):
+            result = execute_bound_merge(
+                slug=_GITLAB_SLUG,
+                pr_id=_PR_IID,
+                expected_head_oid=_SHA,
+                host_kind="gitlab",
+            )
+        assert result == _SHA
+
+    def test_unparseable_merge_response_falls_back_to_expected_head(self) -> None:
+        # rc 0 but a non-JSON body (success, garbled payload): fall back to
+        # the bound expected_head_oid rather than crashing.
+        def _garbled_body(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "/merge" in joined and "PUT" in argv:
+                return (0, "not-json-at-all", "")
+            return (0, "", "")
+
+        with patch("teatree.core.merge_execution._run_glab", side_effect=_garbled_body):
+            result = execute_bound_merge(
+                slug=_GITLAB_SLUG,
+                pr_id=_PR_IID,
+                expected_head_oid=_SHA,
+                host_kind="gitlab",
+            )
+        assert result == _SHA
 
 
 class TestGitLabEndToEndMerge(TestCase):
