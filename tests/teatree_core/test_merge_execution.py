@@ -22,7 +22,9 @@ from teatree.core.merge_execution import (
     MergeOutcome,
     MergePreconditionError,
     MergeReplayError,
+    MergeTransientError,
     assert_merge_preconditions,
+    execute_bound_merge,
     merge_ticket_pr,
     record_merge_and_advance,
 )
@@ -840,3 +842,252 @@ class TestMergeKeystoneTransientLockResilience(TestCase):
         assert call_count["n"] >= 2, "MergeClear.issue did not retry past the transient lock"
         assert clear.pk is not None
         assert MergeClear.objects.filter(pk=clear.pk).count() == 1
+
+
+class TestIsTransientMergeResponse(TestCase):
+    """The pure classifier separating a transient forge response from a refusal."""
+
+    def test_zero_rc_is_never_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(0, '{"sha": "x"}', "") is False
+
+    def test_empty_body_failure_is_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(1, "", "") is True
+
+    def test_truncated_json_marker_is_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
+
+    def test_5xx_marker_is_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(1, "", "503 Service Unavailable") is True
+
+    def test_policy_refusal_is_not_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
+
+    def test_policy_marker_wins_over_a_transient_token(self) -> None:
+        # A refusal mentioning a transient-looking token is still a refusal.
+        assert merge_execution._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
+
+    def test_explicit_non_transient_message_is_not_transient(self) -> None:
+        assert merge_execution._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
+
+
+def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, str] | None:
+    """The constant §17.4.3 GET-probe responses (head / draft / checks all healthy).
+
+    Returns ``None`` when *joined* is not one of the three read-only probes, so
+    a stub can fall through to its own merge / merge-state branches without
+    repeating these three identical conditionals.
+    """
+    if "headRefOid" in joined:
+        return (0, head, "")
+    if "isDraft" in joined:
+        return (0, "false", "")
+    if "statusCheckRollup" in joined:
+        return (0, _GREEN, "")
+    return None
+
+
+class _TransientThenSuccessGhStub:
+    """A merge call that returns a truncated-JSON failure N times, then succeeds.
+
+    Models the #1804 window: ``gh api PUT .../merge`` returns a non-zero exit
+    with ``unexpected end of JSON input`` on a truncated/empty API response.
+    The PR is NOT yet merged on those failing attempts (the merge did not
+    land), so the merge-state probe keeps reporting OPEN. After
+    ``fail_times`` transient failures the call succeeds and the merge lands.
+    """
+
+    def __init__(self, *, fail_times: int = 2, head: str = _SHA) -> None:
+        self.fail_times = fail_times
+        self.head = head
+        self.merge_attempts = 0
+        self.merged = False
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: list[str]) -> tuple[int, str, str]:
+        self.calls.append(argv)
+        joined = " ".join(argv)
+        probe = _green_probe_response(joined, head=self.head)
+        if probe is not None:
+            return probe
+        if "state,mergeCommit" in joined:
+            state = "MERGED" if self.merged else "OPEN"
+            commit = '{"oid": "merged0deadbeef"}' if self.merged else "null"
+            return (0, f'{{"state": "{state}", "mergeCommit": {commit}}}', "")
+        if "pulls" in joined and "merge" in joined:
+            self.merge_attempts += 1
+            if self.merge_attempts <= self.fail_times:
+                return (1, "", "unexpected end of JSON input")
+            self.merged = True
+            return (0, '{"sha": "merged0deadbeef"}', "")
+        return (0, "", "")
+
+
+class TestTransientMergeRetry(TestCase):
+    """#1813: a transient/empty-JSON forge merge response is retried, not stranded.
+
+    The keystone merge step used to treat any non-head-moved ``gh api PUT
+    .../merge`` failure as a fatal ``MergePreconditionError`` with no retry,
+    so a truncated ``unexpected end of JSON input`` response left a fully
+    cleared PR OPEN with its single-use CLEAR unconsumed. The retry must be
+    guaranteed: classify a transient response distinctly, retry a bounded
+    number of times, and never consume the CLEAR on a transient failure.
+    """
+
+    def test_truncated_json_merge_response_is_retried_then_succeeds(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        stub = _TransientThenSuccessGhStub(fail_times=2)
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+        ):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert stub.merge_attempts == 3, "the transient merge response was not retried to success"
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert MergeAudit.objects.filter(clear=clear).count() == 1
+        assert outcome.merged_sha == "merged0deadbeef"
+
+    def test_transient_failure_until_exhausted_escalates_without_consuming_clear(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        # Never succeeds — every merge attempt is a truncated-JSON transient.
+        stub = _TransientThenSuccessGhStub(fail_times=99)
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            pytest.raises(MergeTransientError, match="transient"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert stub.merge_attempts >= 3, "the transient merge response was not retried before escalating"
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        # The CLEAR is idempotently reusable: a transient failure never
+        # consumes it, so a manual / loop retry of the SAME CLEAR can merge.
+        assert ticket.state == Ticket.State.IN_REVIEW
+        assert clear.consumed_at is None
+        assert not MergeAudit.objects.filter(clear=clear).exists()
+
+    def test_policy_refusal_is_not_retried_and_escalates(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        attempts = {"merge": 0}
+
+        def _policy_refusal(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
+                return (0, _SHA, "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "pulls" in joined and "merge" in joined:
+                attempts["merge"] += 1
+                return (1, "", "Pull Request is not mergeable (405)")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep") as sleep,
+            patch("teatree.core.merge_execution._run_gh", side_effect=_policy_refusal),
+            pytest.raises(MergePreconditionError, match="failed"),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert attempts["merge"] == 1, "a policy refusal must NOT be retried"
+        assert not isinstance(sleep.call_args, tuple) or sleep.call_count == 0
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert clear.consumed_at is None
+
+    def test_head_moved_is_not_retried(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        attempts = {"merge": 0}
+
+        def _head_moved(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
+                return (0, _SHA, "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
+            if "pulls" in joined and "merge" in joined:
+                attempts["merge"] += 1
+                return (1, "", "Head branch was modified. Review and try the merge again. (409)")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=_head_moved),
+            pytest.raises(MergeHeadMovedError),
+        ):
+            merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert attempts["merge"] == 1, "a head-moved refusal must NOT be retried"
+
+    def test_transient_response_that_actually_landed_reconciles_no_second_merge(self) -> None:
+        # The forge returned a truncated body but the merge DID land. The
+        # retry's pre-attempt merge-state probe sees MERGED at reviewed_sha
+        # and reconciles instead of re-issuing the (now 405-bricking) merge.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        state = {"merged": False, "merge_calls": 0}
+
+        def _transient_but_landed(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            probe = _green_probe_response(joined)
+            if probe is not None:
+                return probe
+            if "state,mergeCommit" in joined:
+                if state["merged"]:
+                    return (0, '{"state": "MERGED", "mergeCommit": {"oid": "landed0commit"}}', "")
+                return (0, '{"state": "OPEN", "mergeCommit": null}', "")
+            if "pulls" in joined and "merge" in joined:
+                state["merge_calls"] += 1
+                # The merge lands at GitHub but the response is truncated.
+                state["merged"] = True
+                return (1, "", "unexpected end of JSON input")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=_transient_but_landed),
+        ):
+            outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+
+        assert state["merge_calls"] == 1, "the merge must not be re-issued once it has landed"
+        ticket.refresh_from_db()
+        clear.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
+        assert clear.consumed_at is not None
+        assert outcome.merged_sha == "landed0commit"
+
+    def test_execute_bound_merge_classifies_empty_output_as_transient(self) -> None:
+        # A bare empty response (rc != 0, no stderr marker) on the merge call
+        # is transient — the truncated/empty-JSON class the #1804 window hit.
+        attempts = {"merge": 0}
+
+        def _empty_then_fail(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "state,mergeCommit" in joined:
+                return (0, '{"state": "OPEN", "mergeCommit": null}', "")
+            if "pulls" in joined and "merge" in joined:
+                attempts["merge"] += 1
+                return (1, "", "")
+            return (0, "", "")
+
+        with (
+            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge_execution._run_gh", side_effect=_empty_then_fail),
+            pytest.raises(MergeTransientError, match="transient"),
+        ):
+            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+
+        assert attempts["merge"] >= 3, "an empty/truncated merge response was not retried"
