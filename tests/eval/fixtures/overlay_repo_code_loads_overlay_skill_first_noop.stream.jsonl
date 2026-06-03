@@ -1,0 +1,3 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-overlay_repo_code_loads_overlay_skill_first-noop", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Considering the change; no tool calls yet."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-reviewed_pr_brought_current_by_merge_not_rebase-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Merging main in to preserve the reviewed commits and line comments."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git merge origin/main"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
