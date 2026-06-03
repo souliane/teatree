@@ -50,7 +50,7 @@ _REVIEW_LOOP_NAME = "review"
 def review_loop_enabled() -> bool:
     """Read the current review-mini-loop enable state (#79 reads, never invents).
 
-    Resolves through :func:`teatree.config.loop_enabled_by_name` — the same
+    Resolves through :func:`teatree.loop_enabled.loop_enabled_by_name` — the same
     env-kill-switch → per-loop → global doctrine the orchestrator and the
     live-tick fan-out apply via :class:`LoopsConfig`, factored into the
     config layer so this :mod:`teatree.loop` module reaches an identical
