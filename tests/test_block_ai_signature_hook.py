@@ -94,20 +94,28 @@ class TestFileBasedMessageIsScanned:
         assert "Co-Authored-By" in run.call_args[1]["input"]
 
     def test_glab_mr_description_file_is_read(self, tmp_path):
+        # glab's FILE flag is ``--description-file`` (``--description`` takes an
+        # inline string, not a path). The shared canonical parser reads the
+        # ``--description-file`` body file; the previous hand-rolled regex
+        # mistakenly treated ``--description <path>`` as a file too.
         desc = tmp_path / "mr.md"
         desc.write_text(self._TRAILER, encoding="utf-8")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"glab mr create --title t --description {desc}"}}
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"glab mr create --title t --description-file {desc}"},
+        }
         payload = _extract_ai_sig_payload(data)
         assert payload is not None
         assert "Co-Authored-By" in payload
 
-    def test_git_commit_minus_c_reuse_file_is_read(self, tmp_path):
-        msg = tmp_path / "src_commit"
-        msg.write_text(self._TRAILER, encoding="utf-8")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -C {msg}"}}
-        payload = _extract_ai_sig_payload(data)
-        assert payload is not None
-        assert "Co-Authored-By" in payload
+    def test_git_commit_minus_c_reuse_ref_is_not_a_body_surface(self, tmp_path):
+        # ``git commit -C <commit>`` REUSES the message of an existing commit
+        # OBJECT (by ref/SHA) — it does NOT read a file path, so there is no
+        # hook-readable body to scan and the command is not a body surface. The
+        # previous hand-rolled ``-[FC]`` regex misread ``-C`` as a file path; the
+        # canonical parser correctly scopes file resolution to ``-F``.
+        data = {"tool_name": "Bash", "tool_input": {"command": "git commit -C HEAD~1"}}
+        assert _extract_ai_sig_payload(data) is None
 
     def test_git_commit_glued_minus_f_no_separator_is_blocked(self, monkeypatch, tmp_path):
         """Glued ``git commit -F<path>`` (no separator) must be scanned.
@@ -126,13 +134,11 @@ class TestFileBasedMessageIsScanned:
         assert blocked is True
         assert "Co-Authored-By" in run.call_args[1]["input"]
 
-    def test_git_commit_glued_minus_c_no_separator_is_read(self, tmp_path):
-        msg = tmp_path / "glued_reuse"
-        msg.write_text(self._TRAILER, encoding="utf-8")
-        data = {"tool_name": "Bash", "tool_input": {"command": f"git commit -C{msg}"}}
-        payload = _extract_ai_sig_payload(data)
-        assert payload is not None
-        assert "Co-Authored-By" in payload
+    def test_git_commit_glued_minus_c_no_separator_is_not_a_body_surface(self, tmp_path):
+        # Glued ``git commit -CHEAD~1`` is the same reuse-by-ref semantics as the
+        # spaced form (see ``test_git_commit_minus_c_reuse_ref_is_not_a_body_surface``).
+        data = {"tool_name": "Bash", "tool_input": {"command": "git commit -CHEAD~1"}}
+        assert _extract_ai_sig_payload(data) is None
 
     def test_existing_space_and_equals_short_forms_still_blocked(self, tmp_path):
         """Glued-form fix must not regress ``-F path`` / ``-F=path``."""

@@ -169,7 +169,27 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         channel=str(channel),
         posted_ts=posted_ts,
     )
+    _maybe_speak(text)
     return True
+
+
+def _maybe_speak(text: str) -> None:
+    """Read the just-delivered IM/DM text aloud when ``speak_mode`` is on (#1791).
+
+    The IM/DM egress chokepoint: :func:`teatree.core.speak.speak` is the
+    seam for both ``im-only`` and ``all`` (it refuses only ``off`` and the
+    binary-absent case, and dispatches non-blocking). A deferred import
+    keeps :mod:`teatree.core.speak` (and its config read) off the hot
+    ``notify_user`` import path, mirroring this module's other side-path
+    deferred imports. Best-effort: a speak failure never breaks the
+    notification path.
+    """
+    from teatree.core.speak import speak  # noqa: PLC0415
+
+    try:
+        speak(text)
+    except Exception as exc:  # noqa: BLE001 — speak must never break the notify path
+        logger.debug("notify_user speak failed: %s", exc)
 
 
 def _maybe_stamp_answered(*, idempotency_key: str, answering_slack_ts: str) -> None:

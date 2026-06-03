@@ -11,7 +11,13 @@ the *same* publish-surface detection and body extraction
 (``teatree.hooks._command_parser``) so a single token-aware parser feeds
 both gates, then delegates the *matching* to the existing
 ``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list — it
-does NOT reimplement matching or add any new term config.
+adds no new term config. The shell scanner and this module both match on
+WHOLE TOKENS (``teatree.hooks.term_match``): a configured term matches
+only when its own tokens appear as a contiguous run of whole tokens, so a
+short term never surfaces inside a longer unbroken word (a neutral example:
+a term ``acme`` no longer matches ``acmecorp`` / ``pacme``). That same
+matcher attributes which term tripped a flagged line, so the reported term
+is never a substring coincidence.
 
 The module is pure detection. The PreToolUse hook in
 ``hooks/scripts/hook_router.py`` is the only place that knows about
@@ -35,6 +41,7 @@ from teatree.hooks._command_parser import extract_secret_scan_text as _extract_s
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 _OVERRIDE_FLAG = "--allow-banned-term"
@@ -83,19 +90,24 @@ def _scanner_script() -> Path:
     return repo_root / "scripts" / "hooks" / "check-banned-terms.sh"
 
 
-def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the text-to-scan from a tool invocation, or ``None`` if not a publish.
 
     Reuses the #1213 ``_command_parser`` so the publish-surface catalogue
     and body extraction (``--body``, ``--body-file``, ``-d``/``--field``
     JSON, ``-m``, heredocs) stay in one place across both gates.
+
+    ``cwd`` is the harness-provided working directory; it is the fallback base
+    for resolving a ``git commit -F <relpath>`` body file when the command
+    names no commit dir of its own, so a relative body file unreadable from
+    the cold hook's reset cwd is still scanned.
     """
     if tool_name != "Bash":
         return None
     command = tool_input.get("command", "")
     if not _is_publish_command(command):
         return None
-    return _extract_bash_payload(command, fail_closed_body_file=True)
+    return _extract_bash_payload(command, fail_closed_body_file=True, cwd=cwd)
 
 
 def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
@@ -234,8 +246,13 @@ def _matched_term(report: str) -> str | None:
     The script prints ``BANNED TERM in <file>:`` followed by indented
     ``<lineno>:<line>`` rows, then a trailing ``Banned terms: a, b, c``
     line listing every configured term. The offending term is whichever
-    configured term appears in a flagged line — the first such match is
-    reported.
+    configured term's tokens appear as a whole-token run in a flagged line.
+
+    Attribution uses the SAME whole-token matcher the shell scanner used to
+    flag the line (``teatree.hooks.term_match``), so the reported term can
+    never be a substring coincidence (the old ``term in haystack`` check
+    would, for a neutral example, name ``acme`` for a line that only said
+    ``acmecorp``).
     """
     lines = report.splitlines()
     configured: list[str] = []
@@ -245,10 +262,9 @@ def _matched_term(report: str) -> str | None:
             configured = [t.strip() for t in line.removeprefix("Banned terms:").split(",") if t.strip()]
         elif line.startswith("  ") and ":" in line:
             flagged.append(line)
-    haystack = "\n".join(flagged).lower()
-    for term in configured:
-        if term.lower() in haystack:
-            return term
+    term = _matched_token_term("\n".join(flagged), tuple(configured))
+    if term is not None:
+        return term
     return configured[0] if configured else None
 
 

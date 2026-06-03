@@ -18,6 +18,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ speak           Read text aloud per the resolved speak_mode + speak_target   │
+│                 (no-op when off).                                            │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ config          Configuration and autoloading.                               │
@@ -143,6 +145,24 @@ Usage: t3 cost [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the structured report as JSON.                          │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 speak`
+
+```
+Usage: t3 speak [OPTIONS] TEXT
+
+ Read text aloud per the resolved speak_mode + speak_target (no-op when off).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │
+│                      [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
+│                        creds).                                               │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1197,6 +1217,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
  (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
  always use the metered ``sdk`` runner regardless of ``--backend``.
 
+ ``--require-executed`` fails the run when the suite collected scenarios but
+ executed none (every scenario skipped — typically ``claude`` not on PATH /
+ no ``ANTHROPIC_API_KEY``), so a decorative all-skipped run cannot pass green.
+ CI arms it only when a key is configured; local runs leave it off so the
+ subscription backend's legitimate pre-transcript all-skip stays green.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1251,6 +1277,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                transcripts for the           │
 │                                                'subscription' backend        │
 │                                                (default: cwd).               │
+│ --require-executed                             Fail when the suite collected │
+│                                                scenarios but executed none   │
+│                                                (all skipped) — the CI gate   │
+│                                                so a decorative run with no   │
+│                                                claude/ANTHROPIC_API_KEY      │
+│                                                can't pass green.             │
 │ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1438,7 +1470,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
-│ comment-density      Flag added comments that merely restate the code        │
+│ comment-density      Warn on added comments that merely restate the code     │
 │                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
@@ -1452,6 +1484,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
 │ triage-issues        Scan for resolved-but-open and stale issues.            │
+│ verify-gates         Run the FULL CI-equivalent local gate set (commit AND   │
+│                      push stages).                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1662,12 +1696,13 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Flag added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (near-zero-comments rule).
 
  Content-blind density pass over a unified diff. Reusable by any overlay:
- the dedicated prek hook and the CI job both call this command. Exits ``1``
- when a file's added lines are comment-dense, ``0`` when clean. Never a
- PreToolUse gate, so it can never lock the agent's tools.
+ the dedicated prek hook and the CI job both call this command. The check
+ is **advisory** — it prints the findings as a warning but **always exits
+ 0**, so it never blocks a commit, push, or pipeline, and it is never a
+ PreToolUse gate.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --diff            PATH  Read the unified diff from this file instead of      │
@@ -1832,6 +1867,25 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool verify-gates`
+
+```
+Usage: t3 tool verify-gates [OPTIONS]
+
+ Run the FULL CI-equivalent local gate set (commit AND push stages).
+
+ Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
+ pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
+ what catches the gates CI fails on but a bare ``prek run --all-files``
+ cannot see (comment-density, doc-update, ensure-pr, pytest-fast, the
+ public-repo leak gate). Report this command's exit code as the green-proof
+ before declaring a branch review-ready -- not a commit-stage-only run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3153,6 +3207,11 @@ Usage: t3 teatree worktree provision [OPTIONS]
  the runner also runs synchronously here so the operator sees
  immediate output. Idempotent — re-running is safe.
 
+ ``--ticket`` pins attribution: a manually-added worktree
+ (``git worktree add``) has no DB row, so resolution would auto-register
+ and could cross-attach to an unrelated workspace sibling. The flag
+ binds it to the named ticket instead.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path                               TEXT  Worktree path (auto-detects from  │
 │                                            PWD if empty).                    │
@@ -3160,6 +3219,9 @@ Usage: t3 teatree worktree provision [OPTIONS]
 │                                            provided.                         │
 │ --overlay                            TEXT  Overlay name (auto-detects if     │
 │                                            empty).                           │
+│ --ticket                             TEXT  Pin attribution to this ticket    │
+│                                            number (overrides auto-register   │
+│                                            for a manual worktree).           │
 │ --slow-import    --no-slow-import          Allow slow DB fallbacks           │
 │                                            (pg_restore, remote dump).        │
 │                                            DSLR-only by default.             │
@@ -4651,6 +4713,8 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │                          (sanctioned session-retire).                        │
 │ record-review-skill-run  Record evidence the configured review skill ran     │
 │                          (reviewing-phase gate).                             │
+│ record-review-context    Record referenced-context retrieval before          │
+│                          reviewing (deep-retrieval gate).                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4732,6 +4796,35 @@ Usage: t3 teatree lifecycle record-review-skill-run [OPTIONS] TICKET_ID SKILL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-review-context`
+
+```
+Usage: t3 teatree lifecycle record-review-context [OPTIONS] TICKET_ID
+
+ Record durable evidence the referenced context was retrieved + analyzed.
+
+ Reviewing carries the same responsibility as implementing: this stamps
+ ``ticket.extra['review_context']`` so the ``-> reviewing`` deep-retrieval
+ gate can attest the work item was fetched from its source, its links
+ followed, and each referenced document downloaded + analyzed against the
+ diff before ``visit-phase ... reviewing`` records the attestation. A
+ record missing the work item, any document, or the analysis does not
+ satisfy the gate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --work-item        TEXT  The work item / ticket URL fetched from its source  │
+│                          (Notion / GitLab / tracker).                        │
+│ --documents        TEXT  Comma-separated referenced documents downloaded and │
+│                          read (spec, design doc, schedule).                  │
+│ --analysis         TEXT  How the implementation was analyzed against the     │
+│                          specified requirements + rules.                     │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -41,7 +41,6 @@ from teatree.utils.ports import get_worktree_ports
 from ._base import ProvisionedWorktree, ProvisioningIntegrationBase
 
 _BUNDLED_OVERLAY = "t3-teatree"
-_TIME_CAP_SECONDS = 120.0
 _MULTI_REPO_THRESHOLD = 1
 
 
@@ -110,9 +109,6 @@ class TestExternalOverlayProvisioning(ProvisioningIntegrationBase):
     def concurrency(self) -> int:
         return 1
 
-    def time_cap_seconds(self) -> float:
-        return _TIME_CAP_SECONDS
-
     def _backend_root(self) -> Path:
         workspace_dir = load_config().user.workspace_dir.expanduser()
         return workspace_dir / Path(_resolvable_repos(self.overlay())[0]).name
@@ -171,10 +167,6 @@ class TestExternalOverlayProvisioning(ProvisioningIntegrationBase):
         worktrees = self.provision_all(root, register_finalizer)
         assert len(worktrees) == 1
 
-        import time  # noqa: PLC0415
-
-        start = time.monotonic()
         self.run_concurrently(worktrees)
-        elapsed = time.monotonic() - start
 
-        assert elapsed <= self.time_cap_seconds(), f"took {elapsed:.1f}s, cap {self.time_cap_seconds()}s"
+        self.assert_concurrently_alive(worktrees)

@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import run_provision_steps
 from teatree.types import RunCommand
@@ -25,7 +25,7 @@ class ServiceLauncher(RunnerBase):
     def __init__(self, worktree: "Worktree", service: str, *, overlay: "OverlayBase | None" = None) -> None:
         self.worktree = worktree
         self.service = service
-        self.overlay = overlay or get_overlay()
+        self.overlay = overlay or get_overlay_for_worktree(worktree)
 
     @staticmethod
     def _collect_steps(overlay: "OverlayBase", worktree: "Worktree", services: list[str]) -> "list[ProvisionStep]":
@@ -41,7 +41,7 @@ class ServiceLauncher(RunnerBase):
 
     @classmethod
     def prepare_all(cls, worktree: "Worktree", services: list[str], *, overlay: "OverlayBase | None" = None) -> None:
-        overlay = overlay or get_overlay()
+        overlay = overlay or get_overlay_for_worktree(worktree)
         run_provision_steps(cls._collect_steps(overlay, worktree, services), stop_on_required_failure=False)
 
     def prepare(self) -> None:

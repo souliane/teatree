@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from teatree.paths import DATA_DIR, get_data_dir
-from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode
+from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakMode, SpeakTarget
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
@@ -332,6 +332,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_cadence_hours": int,
     "architectural_review_after_merge_count": int,
     "review_skill": str,
+    "require_review_context": bool,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
@@ -361,6 +362,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
+    "speak_mode": SpeakMode.parse,
+    "speak_target": SpeakTarget.parse,
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
     "review_nag_enabled": bool,
@@ -567,6 +570,9 @@ class UserSettings:
     # Distinct from ``architectural_review_skill`` (the periodic cadence
     # scanner) — this one gates a single ticket's reviewing attestation.
     review_skill: str = ""
+    # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
+    # default false = NO-OP. Per-overlay overridable.
+    require_review_context: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
@@ -676,6 +682,10 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
+    # #1791 What is read aloud — see :class:`SpeakMode` + blueprint §10.1.1.
+    speak_mode: SpeakMode = SpeakMode.OFF
+    # #1791 Where spoken audio lands — see :class:`SpeakTarget` + §10.1.1.
+    speak_target: SpeakTarget = SpeakTarget.LOCAL
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these
     # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
@@ -829,6 +839,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
         architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
         review_skill=str(teatree.get("review_skill", "")),
+        require_review_context=bool(teatree.get("require_review_context", False)),
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
@@ -860,6 +871,8 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
+        speak_mode=_resolve_speak_mode(teatree),
+        speak_target=_resolve_speak_target(teatree),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
@@ -903,6 +916,30 @@ def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceC
         if scoped is not None:
             return SlackVoiceClassifierMode.parse(scoped)
     return SlackVoiceClassifierMode.WARN
+
+
+def _resolve_speak_mode(teatree: dict[str, Any]) -> SpeakMode:
+    """Resolve ``speak_mode`` from a flat ``[teatree] speak_mode`` key (#1791).
+
+    Absent → :attr:`SpeakMode.OFF` (the feature ships disabled). A typo
+    surfaces a clean ``ValueError`` from :meth:`SpeakMode.parse` rather
+    than silently mis-resolving. This is the CONFIGURED value only; the
+    binary-presence gate that forces ``off`` when ``say`` is absent lives
+    in :func:`teatree.core.speak.resolve_mode` so the prerequisite check
+    is applied at the single egress seam, not duplicated in the loader.
+    """
+    raw = teatree.get("speak_mode")
+    return SpeakMode.parse(raw) if raw is not None else SpeakMode.OFF
+
+
+def _resolve_speak_target(teatree: dict[str, Any]) -> SpeakTarget:
+    """Resolve ``speak_target`` from a flat ``[teatree] speak_target`` key (#1791).
+
+    Absent → :attr:`SpeakTarget.LOCAL` (the zero-dependency macOS default).
+    A typo surfaces a clean ``ValueError`` from :meth:`SpeakTarget.parse`.
+    """
+    raw = teatree.get("speak_target")
+    return SpeakTarget.parse(raw) if raw is not None else SpeakTarget.LOCAL
 
 
 def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:

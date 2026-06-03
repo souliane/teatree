@@ -106,6 +106,25 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
+def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
+    """Actionable refusal when a `review` verdict lacks recorded context, else ``""``.
+
+    Mirrors the ``review_context_satisfied`` FSM condition the workflow path
+    (``Task.complete()``) and the lifecycle ``reviewing``-phase path also
+    consult, so the direct-CLI review driver gets a fix-it message instead of a
+    generic "not allowed".
+    """
+    if transition_name != "review" or ticket.review_context_satisfied():
+        return ""
+    return (
+        f"Transition 'review' refused: require_review_context is on but no referenced-context "
+        f"retrieval is recorded for ticket {ticket.pk}. Fetch the work item from its source, follow "
+        f"its links, download + analyze the referenced documents, then `t3 <overlay> lifecycle "
+        f"record-review-context {ticket.pk} --work-item <url> --documents <urls> "
+        f"--analysis <how-checked>` and retry."
+    )
+
+
 class Command(TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
@@ -132,8 +151,11 @@ class Command(TyperCommand):
                 method()
                 ticket.save()
         except TransitionNotAllowed:
+            # Surface the deep-retrieval refusal reason when that blocked the
+            # `review` transition, else the generic not-allowed message.
+            context_refusal = _review_context_refusal(ticket, transition_name)
             return {
-                "error": f"Transition '{transition_name}' not allowed from state '{ticket.state}'",
+                "error": context_refusal or f"Transition '{transition_name}' not allowed from state '{ticket.state}'",
             }
         except InvalidTransitionError as exc:
             # Dirty-worktree / missing-E2E DoD refusals: the FSM stays put

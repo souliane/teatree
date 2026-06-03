@@ -19,6 +19,7 @@ from django.core.exceptions import ImproperlyConfigured
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from teatree.core.models import Ticket, Worktree
     from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,31 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
 
     msg = f"Multiple overlays found ({', '.join(sorted(overlays))}). Pass an explicit name to get_overlay()."
     raise ImproperlyConfigured(msg)
+
+
+def get_overlay_for_ticket(ticket: "Ticket") -> "OverlayBase":
+    """Resolve the overlay a ticket belongs to.
+
+    The queued FSM workers run a ticket's runners in a process where every
+    installed overlay is registered, so a bare :func:`get_overlay` raises
+    ``Multiple overlays found`` (souliane/teatree#1814). The ticket records
+    its own overlay, so resolution is unambiguous regardless of how many
+    overlays are installed; an empty value falls through to the ambient
+    single-overlay default.
+    """
+    return get_overlay(ticket.overlay or None)
+
+
+def get_overlay_for_worktree(worktree: "Worktree") -> "OverlayBase":
+    """Resolve the overlay a worktree belongs to.
+
+    Like :func:`get_overlay_for_ticket` but keyed on the worktree's own
+    ``overlay`` field, falling back to the owning ticket for rows created
+    before the field was populated (souliane/teatree#1814).
+    """
+    if worktree.overlay:
+        return get_overlay(worktree.overlay)
+    return get_overlay_for_ticket(worktree.ticket)
 
 
 def get_overlay_for_repo(repo: str = ".") -> "OverlayBase | None":

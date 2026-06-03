@@ -56,6 +56,8 @@ Everything you write and everything you review aims at six attributes. Treat the
 
 When `review_skill` (env `T3_REVIEW_SKILL`) is configured, the reviewing-phase evidence gate (#1539) hardens this further: `lifecycle visit-phase <id> reviewing` refuses unless a `review_skill_run` artifact attests the configured skill ran. After running the skill, stamp the evidence with `t3 <overlay> lifecycle record-review-skill-run <id> <skill>`, then record the phase. With `review_skill` unset the gate is a NO-OP (opt-in default).
 
+Reviewing carries the same responsibility as implementing, so deep retrieval is a **constraint, not a rule**: when `require_review_context` is set, the FSM `→ reviewing` transition (`teatree.core.review_context_gate`) mechanically refuses until the work item is fetched from its source (Notion / GitLab — follow the MR description's links), every referenced document is downloaded + read, and the implementation is analyzed against them — stamp it with `t3 <overlay> lifecycle record-review-context <id> --work-item <url> --documents <urls> --analysis <how-checked>`. A diff-only verdict cannot enter `reviewing`.
+
 The "Self-Review Before Finalization" workflow below is a **complement** to the sub-agent pass, not a replacement. Run it first to catch the obvious things, then spawn the reviewer.
 
 ### Self-Review Before Finalization
@@ -115,6 +117,18 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
 
 This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
 
+#### File-Hierarchy & Module-Placement Check (Non-Negotiable)
+
+The Module-Level Architectural Check above asks *what's inside* each touched file. This one asks *where the changed files live* — but **scoped strictly to the diff**, never a whole-tree audit. Examine only files the change adds, moves, or renames, plus the directories they land in:
+
+1. **New files in the wrong directory or module.** For each added file, confirm it sits in the package whose concern it shares. A scanner belongs under the scanners package, a CLI command under the CLI package, a model under the models package — flag a file dropped beside unrelated neighbors with a concrete "this new file should live at `X`" suggestion.
+2. **Should the change have created or moved into a subpackage?** When a diff adds the third or fourth sibling file all serving one new concern into an already-crowded directory, flag that the cohesive set should become its own subpackage (with the proposed path).
+3. **Files added at the repo root that belong under a directory.** A new script, config, or module dropped at the repo root is a finding unless the repo's conventions place it there — name the directory it should move under.
+4. **Diffs that worsen module cohesion or scoping.** Flag a change that widens a module's responsibility (an unrelated concern bolted onto an existing file), leaks a private helper across a package boundary, or imports across a layer the architecture keeps separate — point at the boundary the change crosses.
+5. **Obvious reorg opportunities the change reveals.** When implementing the change makes a misplacement plain (e.g. the file you just edited clearly belongs next to the collaborators it now calls), surface the concrete move — but only for files this diff touches.
+
+Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
+
 #### Read BLUEPRINT.md Before Designing (Non-Negotiable)
 
 Before proposing a design that changes how existing code is structured, read `BLUEPRINT.md` and any architectural-invariants doc FIRST, not last. Inventory existing patterns touching the same subsystem before proposing new ones. If the proposed design reverses a BLUEPRINT invariant, surface that to the user BEFORE designing around it — the user decides whether to overturn the invariant; if yes, update BLUEPRINT.md in the same change.
@@ -142,6 +156,20 @@ When the diff adds or modifies test files, verify the new tests follow the repo'
 4. **Coverage preservation.** Any test rebalancing (removing units, adding integration) must keep the coverage gate satisfied. Report the before/after coverage number in the review.
 
 Accept a mock-heavy test only when the PR description justifies why a higher-level test couldn't cover the same behavior (e.g., a rare error branch that's painful to trigger through the real entry point).
+
+### The Skilled Lifecycle Is the Bar Before Requesting Review or Merging (Non-Negotiable)
+
+Correctness is the **maker's** responsibility, not the reviewer's. Colleagues review shallowly and a wrong MR sent to them ships — so the gate that catches our bugs is the maker's own *skilled* lifecycle, run before the work ever leaves our hands. Before requesting colleague review **or** merging any MR (in any repo — this repo and every overlay alike), confirm every step below was actually done, using the relevant skills at each step:
+
+1. **Retrieved and analyzed in depth** — the ticket / Notion / spec and every linked document were fetched and read (the deep-retrieval constraint above), and the diff was mapped against the acceptance criteria, not assumed.
+2. **Planned in depth using the overlay skills** — the architecture pass (`/t3:architecture-design`) and the overlay's coding skill informed the approach before code was written.
+3. **Coded using the skills** — implementation followed the loaded coding skills, not improvised.
+4. **Self-reviewed using the skills** — the checklist above plus the **anti-vacuity proof on every NEW regression test**: revert the production fix and confirm the test goes **RED**; if it stays green it guards nothing. The canonical vacuity pattern is a guard that **skips the failing case** — a `seen >= 2` / `>= N` gate, a first-iteration skip, an assertion on a structurally-guaranteed post-condition the buggy code also satisfies. The full rule is the source of truth in [`../code/SKILL.md`](../code/SKILL.md) § "TDD Discipline" ("A regression test is only valid if it has been observed to FAIL on the pre-fix code"); do not duplicate it, apply it.
+5. **E2E created when relevant** — UI / cross-service behavior carries a Playwright spec (`/t3:e2e`).
+
+A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
+
+**Independent adversarial review is an *optional escalation*, not a requirement.** For a complicated implementation — subtle concurrency, a wide blast radius, a contract change across services — escalate to an independent adversarial pass (e.g. a `codex` cold-review, reviewer ≠ maker) to falsify the diff against each acceptance criterion. For ordinary changes the skilled self-review above is the bar; don't gate every MR on a second reviewer.
 
 ### Quality Gate Verification (Verify-Fix-Repeat)
 

@@ -74,5 +74,9 @@ eval-weekly:
     # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
     # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
     # spend). Mirrors the GitHub `eval-weekly` job.
-    - uv run t3 eval run --trials 3 --require any --backend sdk
+    # `--require-executed` (armed only when ANTHROPIC_API_KEY is set) fails the job
+    # if the suite collected scenarios but executed none, so a fully-skipped run
+    # cannot pass green with zero behavioral coverage (souliane/teatree#1811).
+    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
+    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
   allow_failure: false

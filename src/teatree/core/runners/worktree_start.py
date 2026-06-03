@@ -5,7 +5,7 @@ from pathlib import Path
 
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree_env import write_env_cache
@@ -74,7 +74,7 @@ class WorktreeStartRunner(RunnerBase):
         timeouts: TimeoutConfig | None = None,
     ) -> None:
         self.worktree = worktree
-        self.overlay = overlay or get_overlay()
+        self.overlay = overlay or get_overlay_for_worktree(worktree)
         self.timeouts = timeouts or load_timeouts(self.overlay)
 
     def run(self) -> RunnerResult:

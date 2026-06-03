@@ -7,10 +7,10 @@ from pathlib import Path
 
 import typer
 
-from teatree.claude_sessions import list_sessions
 from teatree.cli.eval_run_modes import (
     build_subscription_manifest,
     gate_run_regressions,
+    guard_executed,
     make_grader,
     persist_matrix_run,
     persist_pass_at_k_run,
@@ -18,6 +18,7 @@ from teatree.cli.eval_run_modes import (
     render_subscription_text,
     with_model,
 )
+from teatree.cli.eval_transcript_replay import resolve_transcript
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
@@ -129,6 +130,14 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         "--transcript-dir",
         help="Directory of <scenario>.jsonl transcripts for the 'subscription' backend (default: cwd).",
     ),
+    require_executed: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--require-executed",
+        help=(
+            "Fail when the suite collected scenarios but executed none (all skipped) — "
+            "the CI gate so a decorative run with no claude/ANTHROPIC_API_KEY can't pass green."
+        ),
+    ),
 ) -> None:
     """Run one scenario by name, or all scenarios when no name is given.
 
@@ -148,6 +157,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     ``--backend sdk`` shells the metered ``claude -p`` runner — the CI job's path
     (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
     always use the metered ``sdk`` runner regardless of ``--backend``.
+
+    ``--require-executed`` fails the run when the suite collected scenarios but
+    executed none (every scenario skipped — typically ``claude`` not on PATH /
+    no ``ANTHROPIC_API_KEY``), so a decorative all-skipped run cannot pass green.
+    CI arms it only when a key is configured; local runs leave it off so the
+    subscription backend's legitimate pre-transcript all-skip stays green.
     """
     _bootstrap_django()
     if output_format not in _VALID_FORMATS:
@@ -173,6 +188,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             baseline=baseline,
             gate_regressions=gate_regressions,
             grader=grader,
+            require_executed=require_executed,
         )
         return
     if trials > 1:
@@ -186,6 +202,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             baseline=baseline,
             gate_regressions=gate_regressions,
             grader=grader,
+            require_executed=require_executed,
         )
         return
     try:
@@ -197,6 +214,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     typer.echo(render_json(results) if output_format == "json" else render_text(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
         _hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
+    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
     regressed = False
     if persist:
         record = persist_single(results, specs=specs, max_turns=max_turns, baseline=baseline)
@@ -217,6 +235,7 @@ def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI f
     gate_regressions: bool = False,
     model_override: str | None = None,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+    require_executed: bool = False,
 ) -> bool:
     """Run the pass@k path; return ``True`` when any scenario failed or regressed."""
     if require not in {"any", "all"}:
@@ -256,6 +275,7 @@ def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI f
                 continue
             status = "PASS" if r.ok else "FAIL"
             typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
+    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
     regressed = False
     if persist:
         model_name = model_override or (effective_specs[0].model if effective_specs else "")
@@ -279,6 +299,7 @@ def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CL
     baseline: bool,
     gate_regressions: bool,
     grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
+    require_executed: bool = False,
 ) -> None:
     """Run the suite once per model and render a per-model comparison."""
     model_list = [m.strip() for m in models.split(",") if m.strip()]
@@ -295,6 +316,7 @@ def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CL
         typer.echo(render_matrix_json(rows, model_list, specs))
     else:
         typer.echo(render_matrix_text(rows, model_list, specs))
+    guard_executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed)
     regressed = False
     if persist:
         record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
@@ -477,34 +499,6 @@ def _require_spec(name: str) -> EvalSpec:
     return spec
 
 
-def _resolve_transcript(*, latest: bool, session: str | None, file: Path | None) -> Path | None:
-    """Resolve which on-disk session JSONL to replay, or ``None`` when none found.
-
-    Scoped to the current project slug (the cwd-derived project directory) so
-    the replay never reads another project's logs. ``--file`` wins; then
-    ``--session`` looks up a session id within scope; otherwise the most recent
-    session for the cwd's project is replayed when ``--latest`` (the default).
-    ``--no-latest`` with no ``--session``/``--file`` resolves to nothing.
-    """
-    if file is not None:
-        return file if file.is_file() else None
-    if session is not None:
-        match = next((s for s in list_sessions(limit=200) if s.session_id == session), None)
-    elif latest:
-        sessions = list_sessions(limit=200)
-        match = sessions[0] if sessions else None
-    else:
-        match = None
-    if match is None:
-        return None
-    projects_dir = Path.home() / ".claude" / "projects"
-    for project_path in projects_dir.iterdir() if projects_dir.is_dir() else []:
-        candidate = project_path / f"{match.session_id}.jsonl"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 @eval_app.command("transcript-replay")
 def transcript_replay(
     latest: bool = typer.Option(True, "--latest/--no-latest", help="Replay the newest session for the cwd's project."),  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
@@ -521,7 +515,7 @@ def transcript_replay(
     transcript is found. The report names only invariant ids and event indexes —
     never a tool input, prompt, hook output, or quote.
     """
-    transcript = _resolve_transcript(latest=latest, session=session, file=file)
+    transcript = resolve_transcript(latest=latest, session=session, file=file)
     if transcript is None:
         typer.echo("SKIP transcript-replay: no session transcript found in scope", err=True)
         return

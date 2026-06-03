@@ -7,7 +7,7 @@ are the durable regression guard).
 
 Findings covered: F1 (double-space substring), F2 (gh/glab api create
 endpoint), F3 (core.hooksPath bypass), F4 (double-space glab api
-review-post), F5 (missing glab mr edit / gh pr comment), F6 (readonly-
+review-post), F5 (missing glab mr update / gh pr comment), F6 (readonly-
 prefix chain bypass), F7 (ls -lRa missed), F8 (pipeline auto-merge).
 """
 
@@ -403,28 +403,30 @@ class TestF4DoubleSpaceReviewPostBypass:
         assert _is_raw_review_write("glab  api projects/42/merge_requests/7/discussions") is False
 
 
-# ── F5: missing glab mr edit / gh pr comment in AI-sig gate ─────────────
+# ── F5: missing glab mr update / gh pr comment in AI-sig gate ─────────────
 
 
 class TestF5MissingEditCommentInAiSig:
-    """F5 MEDIUM: `glab mr edit` and `gh pr comment` can carry AI signatures.
+    """F5 MEDIUM: `glab mr update` and `gh pr comment` can carry AI signatures.
 
-    `_extract_ai_sig_payload`'s `pr_cmds` tuple only contained create/update
-    verbs, so editing an MR description or posting a PR comment with a banned
-    trailer was not scanned.
+    The MR description edit-class command (`glab mr update`) and a PR comment
+    both carry a body the AI-signature gate must scan. (`glab mr edit` is NOT a
+    real glab subcommand — glab 1.80.x uses `update`; the previous hand-rolled
+    regex defensively included a non-existent `edit` verb. The shared canonical
+    parser tracks glab's real surface: `create` / `update` / `note`.)
     """
 
-    def test_f5_glab_mr_edit_triggers_ai_sig_scan(self, monkeypatch, capsys):
-        """Glab mr edit with a banned trailer in --description must be blocked."""
+    def test_f5_glab_mr_update_triggers_ai_sig_scan(self, monkeypatch, capsys):
+        """Glab mr update with a banned trailer in --description must be blocked."""
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="banned", stderr="")
         data = {
             "tool_name": "Bash",
-            "tool_input": {"command": "glab mr edit 7 --description 'fix: x\n\nGenerated with [Claude Code]'"},
+            "tool_input": {"command": "glab mr update 7 --description 'fix: x\n\nGenerated with [Claude Code]'"},
         }
         with patch.object(router.subprocess, "run", return_value=rejected):
             blocked = handle_block_ai_signature(data)
-        assert blocked is True, "glab mr edit with banned trailer must be blocked"
+        assert blocked is True, "glab mr update with banned trailer must be blocked"
 
     def test_f5_gh_pr_comment_triggers_ai_sig_scan(self, monkeypatch, capsys):
         """Gh pr comment with a banned trailer must be blocked."""
@@ -438,11 +440,11 @@ class TestF5MissingEditCommentInAiSig:
             blocked = handle_block_ai_signature(data)
         assert blocked is True, "gh pr comment with banned trailer must be blocked"
 
-    def test_f5_glab_mr_edit_payload_extracted(self):
-        """_extract_ai_sig_payload returns a payload for glab mr edit."""
-        data = {"tool_name": "Bash", "tool_input": {"command": "glab mr edit 7 --description 'the body'"}}
+    def test_f5_glab_mr_update_payload_extracted(self):
+        """_extract_ai_sig_payload returns a payload for glab mr update."""
+        data = {"tool_name": "Bash", "tool_input": {"command": "glab mr update 7 --description 'the body'"}}
         payload = _extract_ai_sig_payload(data)
-        assert payload is not None, "glab mr edit must be recognised by _extract_ai_sig_payload"
+        assert payload is not None, "glab mr update must be recognised by _extract_ai_sig_payload"
 
     def test_f5_gh_pr_comment_payload_extracted(self):
         """_extract_ai_sig_payload returns a payload for gh pr comment."""
@@ -450,11 +452,11 @@ class TestF5MissingEditCommentInAiSig:
         payload = _extract_ai_sig_payload(data)
         assert payload is not None, "gh pr comment must be recognised by _extract_ai_sig_payload"
 
-    def test_f5_clean_glab_mr_edit_allowed(self, monkeypatch):
-        """Glab mr edit with a clean body must pass."""
+    def test_f5_clean_glab_mr_update_allowed(self, monkeypatch):
+        """Glab mr update with a clean body must pass."""
         monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="clean", stderr="")
-        data = {"tool_name": "Bash", "tool_input": {"command": "glab mr edit 7 --description 'clean body'"}}
+        data = {"tool_name": "Bash", "tool_input": {"command": "glab mr update 7 --description 'clean body'"}}
         with patch.object(router.subprocess, "run", return_value=ok):
             assert handle_block_ai_signature(data) is False
 

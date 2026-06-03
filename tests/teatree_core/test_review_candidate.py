@@ -5,10 +5,28 @@ memory to apply these rules; this module is the canonical structural fix.
 """
 
 from teatree.core.review_candidate import (
+    author_is_self,
     eyes_reacted_by_other,
     should_review_candidate,
     should_review_candidate_reasons,
 )
+
+
+class TestAuthorIsSelf:
+    def test_matches_primary_identity(self) -> None:
+        assert author_is_self("alice", current_user="alice") is True
+
+    def test_matches_secondary_alias(self) -> None:
+        assert author_is_self("alice-gh", current_user="alice", self_identities=("alice-gh",)) is True
+
+    def test_does_not_match_colleague(self) -> None:
+        assert author_is_self("bob", current_user="alice", self_identities=("alice-gh",)) is False
+
+    def test_empty_author_never_matches(self) -> None:
+        assert author_is_self("", current_user="alice", self_identities=("alice-gh",)) is False
+
+    def test_no_identities_never_matches(self) -> None:
+        assert author_is_self("alice", current_user="") is False
 
 
 class TestSkipSelfAuthor:

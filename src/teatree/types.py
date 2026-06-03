@@ -40,6 +40,82 @@ class SlackVoiceClassifierMode(enum.StrEnum):
             raise ValueError(message) from exc
 
 
+class SpeakMode(enum.StrEnum):
+    """What agent text is read aloud by the local text-to-speech seam (#1791).
+
+    Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config` can
+    parse the ``[teatree] speak_mode`` setting without importing the
+    :mod:`teatree.core.speak` implementation (the ``teatree.core →
+    teatree.config`` edge is allowed but ``teatree.config →
+    teatree.core`` would cycle).
+
+    The whole feature is additionally gated on the ``say`` binary being
+    on ``PATH`` (:func:`teatree.core.speak.binary_available`); when it is
+    absent the resolved mode is forced to :attr:`OFF` regardless of the
+    configured value, so the feature is simply inert off macOS.
+
+    *   :attr:`OFF` (default) — nothing is spoken.
+    *   :attr:`IM_ONLY` — speak only text egressed to the user through the
+        IM/DM channel abstraction (today the Slack DM in
+        :func:`teatree.core.notify.notify_user`). The name is
+        provider-neutral on purpose — it tracks the IM/DM channel, not
+        the Slack backend.
+    *   :attr:`ALL` — additionally speak every free-text agent reply (the
+        Stop hook reads the transcript's last assistant text block).
+    """
+
+    OFF = "off"
+    IM_ONLY = "im-only"
+    ALL = "all"
+
+    @classmethod
+    def parse(cls, value: str) -> "SpeakMode":
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            message = f"Invalid speak_mode {value!r}; valid values: {valid}"
+            raise ValueError(message) from exc
+
+
+class SpeakTarget(enum.StrEnum):
+    """Where spoken audio is delivered for the text-to-speech seam (#1791).
+
+    Orthogonal to :class:`SpeakMode` (which decides *what* is spoken):
+    one config pair controls the mode, this one the delivery surface so
+    the same spoken text can reach the user's speakers, his phone, or both.
+
+    *   :attr:`LOCAL` (default) — synthesise with the macOS ``say`` binary
+        and play through the local speakers. Inert off macOS.
+    *   :attr:`SLACK_AUDIO` — synthesise an audio file and upload it to the
+        user's Slack DM so he hears it on his phone. Requires the Slack
+        token's ``files:write`` scope (see
+        :meth:`teatree.backends.slack_bot.SlackBotBackend.upload_audio_to_dm`).
+    *   :attr:`BOTH` — deliver to local speakers *and* the Slack DM.
+    """
+
+    LOCAL = "local"
+    SLACK_AUDIO = "slack-audio"
+    BOTH = "both"
+
+    @classmethod
+    def parse(cls, value: str) -> "SpeakTarget":
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            message = f"Invalid speak_target {value!r}; valid values: {valid}"
+            raise ValueError(message) from exc
+
+    def includes_local(self) -> bool:
+        return self in {SpeakTarget.LOCAL, SpeakTarget.BOTH}
+
+    def includes_slack(self) -> bool:
+        return self in {SpeakTarget.SLACK_AUDIO, SpeakTarget.BOTH}
+
+
 class ScannerErrorClass(enum.StrEnum):
     """Classes of recoverable scanner failure surfaced to the dispatcher (#1287).
 
