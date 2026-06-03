@@ -145,6 +145,20 @@ When the diff adds or modifies test files, verify the new tests follow the repo'
 
 Accept a mock-heavy test only when the PR description justifies why a higher-level test couldn't cover the same behavior (e.g., a rare error branch that's painful to trigger through the real entry point).
 
+### The Skilled Lifecycle Is the Bar Before Requesting Review or Merging (Non-Negotiable)
+
+Correctness is the **maker's** responsibility, not the reviewer's. Colleagues review shallowly and a wrong MR sent to them ships — so the gate that catches our bugs is the maker's own *skilled* lifecycle, run before the work ever leaves our hands. Before requesting colleague review **or** merging any MR (in any repo — this repo and every overlay alike), confirm every step below was actually done, using the relevant skills at each step:
+
+1. **Retrieved and analyzed in depth** — the ticket / Notion / spec and every linked document were fetched and read (the deep-retrieval constraint above), and the diff was mapped against the acceptance criteria, not assumed.
+2. **Planned in depth using the overlay skills** — the architecture pass (`/t3:architecture-design`) and the overlay's coding skill informed the approach before code was written.
+3. **Coded using the skills** — implementation followed the loaded coding skills, not improvised.
+4. **Self-reviewed using the skills** — the checklist above plus the **anti-vacuity proof on every NEW regression test**: revert the production fix and confirm the test goes **RED**; if it stays green it guards nothing. The canonical vacuity pattern is a guard that **skips the failing case** — a `seen >= 2` / `>= N` gate, a first-iteration skip, an assertion on a structurally-guaranteed post-condition the buggy code also satisfies. The full rule is the source of truth in [`../code/SKILL.md`](../code/SKILL.md) § "TDD Discipline" ("A regression test is only valid if it has been observed to FAIL on the pre-fix code"); do not duplicate it, apply it.
+5. **E2E created when relevant** — UI / cross-service behavior carries a Playwright spec (`/t3:e2e`).
+
+A vacuous regression test passing green is **not** evidence the fix works — it is the failure mode this gate exists to catch. If the anti-vacuity proof can't be produced (the test stays green with the fix reverted), the work is not review-ready: fix the test and the code first, then re-run the proof.
+
+**Independent adversarial review is an *optional escalation*, not a requirement.** For a complicated implementation — subtle concurrency, a wide blast radius, a contract change across services — escalate to an independent adversarial pass (e.g. a `codex` cold-review, reviewer ≠ maker) to falsify the diff against each acceptance criterion. For ordinary changes the skilled self-review above is the bar; don't gate every MR on a second reviewer.
+
 ### Quality Gate Verification (Verify-Fix-Repeat)
 
 Before declaring review-ready, run all gates and **iterate until they pass**. Do not declare review-ready after a single pass — re-run gates after every fix, because fixes can introduce new failures.
