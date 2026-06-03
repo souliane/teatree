@@ -4651,6 +4651,8 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │                          (sanctioned session-retire).                        │
 │ record-review-skill-run  Record evidence the configured review skill ran     │
 │                          (reviewing-phase gate).                             │
+│ record-review-context    Record referenced-context retrieval before          │
+│                          reviewing (deep-retrieval gate).                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4732,6 +4734,35 @@ Usage: t3 teatree lifecycle record-review-skill-run [OPTIONS] TICKET_ID SKILL
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-review-context`
+
+```
+Usage: t3 teatree lifecycle record-review-context [OPTIONS] TICKET_ID
+
+ Record durable evidence the referenced context was retrieved + analyzed.
+
+ Reviewing carries the same responsibility as implementing: this stamps
+ ``ticket.extra['review_context']`` so the ``-> reviewing`` deep-retrieval
+ gate can attest the work item was fetched from its source, its links
+ followed, and each referenced document downloaded + analyzed against the
+ diff before ``visit-phase ... reviewing`` records the attestation. A
+ record missing the work item, any document, or the analysis does not
+ satisfy the gate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --work-item        TEXT  The work item / ticket URL fetched from its source  │
+│                          (Notion / GitLab / tracker).                        │
+│ --documents        TEXT  Comma-separated referenced documents downloaded and │
+│                          read (spec, design doc, schedule).                  │
+│ --analysis         TEXT  How the implementation was analyzed against the     │
+│                          specified requirements + rules.                     │
+│ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
