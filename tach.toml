@@ -7,69 +7,93 @@ exclude = [
   "**/venv"
 ]
 source_roots = ["tests", "src", "e2e"]
+layers = [
+  "interface",
+  "orchestration",
+  "integration",
+  "domain",
+  "platform",
+  "foundation"
+]
 
 [[modules]]
 path = "teatree.paths"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.types"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.config"
+layer = "platform"
 depends_on = ["teatree.paths", "teatree.types", "teatree.utils", "teatree.update_check"]
 
 [[modules]]
 path = "teatree.update_check"
+layer = "platform"
 depends_on = ["teatree.paths", "teatree.utils"]
 
 [[modules]]
 path = "teatree.templates"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.claude_sessions"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.overlay_init"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.utils"
+layer = "foundation"
 depends_on = ["teatree.paths"]
 
 [[modules]]
 path = "teatree.self_update"
+layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.hooks"
+layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.timeouts"
+layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.repo_mode"
+layer = "platform"
 depends_on = ["teatree.paths", "teatree.utils", "teatree.config"]
 
 [[modules]]
 path = "teatree.skill_loading"
+layer = "platform"
 depends_on = ["teatree.types", "teatree.utils", "teatree.skill_deps"]
 
 [[modules]]
 path = "teatree.skill_schema"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.skill_ref_validator"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.core"
+layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.paths",
@@ -89,6 +113,7 @@ depends_on = [
 
 [[modules]]
 path = "teatree.agents"
+layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.core",
@@ -99,6 +124,7 @@ depends_on = [
 
 [[modules]]
 path = "teatree.backends"
+layer = "domain"
 depends_on = [
   "teatree.types",
   "teatree.utils",
@@ -108,10 +134,12 @@ depends_on = [
 
 [[modules]]
 path = "teatree.contrib"
+layer = "integration"
 depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.docker", "teatree.utils", "teatree.visual_qa"]
 
 [[modules]]
 path = "teatree.cli"
+layer = "interface"
 depends_on = [
   "teatree.paths",
   "teatree.config",
@@ -140,10 +168,12 @@ depends_on = [
 
 [[modules]]
 path = "teatree.eval"
+layer = "integration"
 depends_on = ["teatree.core", "teatree.hooks", "teatree.utils", "teatree.trigger_parser"]
 
 [[modules]]
 path = "teatree.core.management"
+layer = "interface"
 depends_on = [
   "teatree.core",
   "teatree.agents",
@@ -161,10 +191,12 @@ depends_on = [
 
 [[modules]]
 path = "teatree.loop_enabled"
+layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.loop"
+layer = "orchestration"
 depends_on = [
   "teatree.types",
   "teatree.paths",
@@ -180,6 +212,7 @@ depends_on = [
 
 [[modules]]
 path = "teatree.loops"
+layer = "orchestration"
 depends_on = [
   "teatree.config",
   "teatree.core",
@@ -191,68 +224,85 @@ depends_on = [
 
 [[modules]]
 path = "teatree.docker"
+layer = "platform"
 depends_on = ["teatree.types", "teatree.utils"]
 
 [[modules]]
 path = "teatree.visual_qa"
+layer = "integration"
 depends_on = ["teatree.core", "teatree.utils"]
 
 [[modules]]
 path = "teatree.identity"
+layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.on_behalf_gate"
+layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
 path = "teatree.notify"
+layer = "integration"
 depends_on = ["teatree.core"]
 
 [[modules]]
 path = "teatree.messaging"
+layer = "integration"
 depends_on = ["teatree.core", "teatree.notify", "teatree.backends"]
 
 [[modules]]
 path = "teatree.outbound_claim"
+layer = "integration"
 depends_on = ["teatree.core"]
 
 [[modules]]
 path = "teatree.slack_mrkdwn"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.settings"
+layer = "platform"
 depends_on = ["teatree.config", "teatree.paths"]
 
 [[modules]]
 path = "teatree.cli_reference"
+layer = "interface"
 depends_on = ["teatree.cli"]
 
 [[modules]]
 path = "teatree.triage"
+layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.url_title_fetcher"
+layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.skill_deps"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.skill_map"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.memory_audit"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.trigger_parser"
+layer = "foundation"
 depends_on = []
 
 [[modules]]
 path = "teatree.quality"
+layer = "foundation"
 depends_on = []
