@@ -188,6 +188,10 @@ class _FakeMessaging:
     def auth_test(self) -> dict[str, object]:
         return {}
 
+    def upload_audio_to_dm(self, *, channel: str, filepath: str, title: str = "") -> dict[str, object]:
+        _ = (channel, filepath, title)
+        return {}
+
 
 def test_ci_service_protocol_is_structural() -> None:
     assert isinstance(_FakeCIService(), CIService)
