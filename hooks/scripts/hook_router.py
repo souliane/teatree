@@ -7237,17 +7237,7 @@ def _run_bare_reference_stop(data: dict) -> bool | None:
     return True
 
 
-# ── Stop: read the final reply aloud when speak_mode == all (#1791) ──────────
-#
-# The "all" arm of the local text-to-speech feature: when the agent finishes a
-# turn, read the transcript's last assistant text block aloud. The IM/DM arm
-# ("im-only") rides ``notify_user`` in-process; this is the additional arm
-# ``all`` enables. It NEVER blocks/denies (returns None, writes no stdout JSON
-# so it cannot be read as a Stop decision) and NEVER delays the session: the
-# whole job is handed to a detached ``t3 speak`` subprocess that synthesises +
-# plays + uploads on its own time and outlives this fast hook. The effective
-# mode (binary gate + config) is re-checked inside ``t3 speak`` (a clean no-op
-# when off); a cheap toml pre-check here avoids spawning Django on every Stop.
+# ── Stop: speak-on-stop arm (speak_mode == all, #1791) ──────────────────────
 
 
 def _speak_mode_setting() -> str:
@@ -7277,9 +7267,10 @@ def _speak_mode_setting() -> str:
 def handle_speak_all_on_stop(data: dict) -> None:
     """Speak the final assistant reply when ``speak_mode == all`` (#1791).
 
-    Pre-checks the toml setting (only ``all`` triggers this arm — ``im-only``
-    is handled in ``notify_user``) and the ``say`` binary, then hands the
-    last assistant text to a detached ``t3 speak`` subprocess. Returns
+    The toml pre-check (only ``all`` triggers this arm — ``im-only`` is handled
+    in ``notify_user``) keeps the fast hook from spawning Django on every Stop;
+    after it and the ``say`` binary check pass, the last assistant text is handed
+    to a detached ``t3 speak`` subprocess that outlives the hook. Returns
     ``None`` unconditionally (a Stop side-effect handler, never a decision)
     and is crash-proof: any error is contained to a stderr line.
     """
