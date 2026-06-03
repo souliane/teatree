@@ -117,6 +117,18 @@ After verifying repo rules, **check the full file** (not just changed lines) of 
 
 This step prevents architectural drift. Each diff looks fine in isolation — this check catches the cumulative effect by examining the full module.
 
+#### File-Hierarchy & Module-Placement Check (Non-Negotiable)
+
+The Module-Level Architectural Check above asks *what's inside* each touched file. This one asks *where the changed files live* — but **scoped strictly to the diff**, never a whole-tree audit. Examine only files the change adds, moves, or renames, plus the directories they land in:
+
+1. **New files in the wrong directory or module.** For each added file, confirm it sits in the package whose concern it shares. A scanner belongs under the scanners package, a CLI command under the CLI package, a model under the models package — flag a file dropped beside unrelated neighbors with a concrete "this new file should live at `X`" suggestion.
+2. **Should the change have created or moved into a subpackage?** When a diff adds the third or fourth sibling file all serving one new concern into an already-crowded directory, flag that the cohesive set should become its own subpackage (with the proposed path).
+3. **Files added at the repo root that belong under a directory.** A new script, config, or module dropped at the repo root is a finding unless the repo's conventions place it there — name the directory it should move under.
+4. **Diffs that worsen module cohesion or scoping.** Flag a change that widens a module's responsibility (an unrelated concern bolted onto an existing file), leaks a private helper across a package boundary, or imports across a layer the architecture keeps separate — point at the boundary the change crosses.
+5. **Obvious reorg opportunities the change reveals.** When implementing the change makes a misplacement plain (e.g. the file you just edited clearly belongs next to the collaborators it now calls), surface the concrete move — but only for files this diff touches.
+
+Each finding must name the suggested target path so the implementer can act without re-deriving it. **Full-tree reorganization audits are out of scope here** — sweeping the entire repository's layout for misplaced modules is the `ac-reviewing-codebase` skill's job (the periodic holistic review dispatched by the architectural-review loop). Keep this per-change check scoped to the diff so the two surfaces complement rather than duplicate each other.
+
 #### Read BLUEPRINT.md Before Designing (Non-Negotiable)
 
 Before proposing a design that changes how existing code is structured, read `BLUEPRINT.md` and any architectural-invariants doc FIRST, not last. Inventory existing patterns touching the same subsystem before proposing new ones. If the proposed design reverses a BLUEPRINT invariant, surface that to the user BEFORE designing around it — the user decides whether to overturn the invariant; if yes, update BLUEPRINT.md in the same change.
