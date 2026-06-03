@@ -729,6 +729,61 @@ def test_get_pr_open_state_any_exception_fails_open_to_unknown() -> None:
     assert host.get_pr_open_state(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == PrOpenState.UNKNOWN
 
 
+# ── #1838 self-author skip: get_pr_author on GitLabCodeHost ─────────────
+
+
+def test_get_pr_author_returns_username() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"author": {"username": "adrien.cossa"}}
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == "adrien.cossa"
+    client.get_json.assert_called_once_with("projects/42/merge_requests/12")
+
+
+def test_get_pr_author_author_less_payload_is_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = {"state": "opened"}
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == ""
+
+
+def test_get_pr_author_unparsable_url_is_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
+    client.resolve_project.assert_not_called()
+
+
+def test_get_pr_author_unresolved_project_is_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == ""
+
+
+def test_get_pr_author_non_dict_payload_is_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.get_json.return_value = ["not", "a", "dict"]
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == ""
+
+
+def test_get_pr_author_any_exception_fails_safe_to_empty() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.side_effect = RuntimeError("network down / auth error")
+    host = GitLabCodeHost(client=client)
+
+    assert host.get_pr_author(pr_url="https://gitlab.com/org/repo/-/merge_requests/12") == ""
+
+
 # ── #1295 cap B: assign_reviewer on GitLabCodeHost ──────────────────────
 
 
