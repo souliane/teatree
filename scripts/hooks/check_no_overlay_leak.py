@@ -10,18 +10,26 @@ The list of forbidden tokens is loaded at runtime from
 with an empty default — each operator extends it locally with the
 overlay-scoped names that must never reach core.
 
-Word-boundary matching is used so generic substrings do not trigger.
+Whole-token matching (``teatree.hooks.term_match``) is used so a generic
+word that merely *contains* a configured term as a substring does not
+trigger — the SAME matcher the ``[teatree].banned_terms`` posting gate
+uses. A term matches only when its own tokens appear as a contiguous run
+of whole tokens, with ``-``, ``_``, whitespace, punctuation AND camelCase
+boundaries all acting as separators (so a glued ``acmeProduct`` or
+``DemoCorp`` still trips a configured ``acme`` / ``demo-corp``; the examples
+are synthetic). See that module for the matching rules.
 
 Exit code: 0 if clean, 1 if any configured term appears in the scanned
 files.
 """
 
 import os
-import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+from teatree.hooks.term_match import matched_term
 
 
 def _load_terms() -> tuple[str, ...]:
@@ -64,36 +72,6 @@ TEXT_SUFFIXES: tuple[str, ...] = (
 )
 
 
-def _term_variants(term: str) -> set[str]:
-    """Generate kebab/snake/camel/Pascal variants of *term*.
-
-    For a multi-word term like ``demo-tenant`` returns
-    ``{"demo-tenant", "demo_tenant", "demoTenant", "DemoTenant"}``.
-    Single-word terms produce only the original token.
-    """
-    parts = re.split(r"[-_]", term)
-    variants: set[str] = {term}
-    if len(parts) <= 1:
-        return variants
-    variants.add("-".join(parts))
-    variants.add("_".join(parts))
-    variants.add(parts[0] + "".join(p.capitalize() for p in parts[1:]))
-    variants.add("".join(p.capitalize() for p in parts))
-    return variants
-
-
-def _build_pattern() -> re.Pattern[str] | None:
-    all_variants: set[str] = set()
-    for term in OVERLAY_LEAK_TERMS:
-        all_variants.update(_term_variants(term))
-    if not all_variants:
-        return None
-    escaped_variants = [re.escape(v) for v in all_variants]
-    escaped_variants.sort(key=len, reverse=True)
-    escaped = "|".join(escaped_variants)
-    return re.compile(rf"\b({escaped})\b", re.IGNORECASE)
-
-
 def _staged_files() -> list[Path]:
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
@@ -119,8 +97,7 @@ def _is_in_scan_roots(path: Path) -> bool:
 
 
 def _scan(paths: list[Path]) -> list[tuple[Path, int, str, str]]:
-    pattern = _build_pattern()
-    if pattern is None:
+    if not OVERLAY_LEAK_TERMS:
         return []
     findings: list[tuple[Path, int, str, str]] = []
     for path in paths:
@@ -133,7 +110,9 @@ def _scan(paths: list[Path]) -> list[tuple[Path, int, str, str]]:
         except (OSError, UnicodeDecodeError):
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
-            findings.extend((path, lineno, match.group(0), line.strip()) for match in pattern.finditer(line))
+            term = matched_term(line, OVERLAY_LEAK_TERMS)
+            if term is not None:
+                findings.append((path, lineno, term, line.strip()))
     return findings
 
 

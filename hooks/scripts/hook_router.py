@@ -3130,7 +3130,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
         return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
 
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
     if payload is None:
         return False
 
@@ -3215,7 +3215,7 @@ def _run_bare_reference_pretool(data: dict) -> bool:
         return False
     tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
 
-    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
     if payload is None:
         return False
 
