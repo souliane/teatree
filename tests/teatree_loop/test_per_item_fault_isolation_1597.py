@@ -41,6 +41,13 @@ from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 # ---------------------------------------------------------------------------
 # Shared fakes
@@ -161,6 +168,9 @@ class _FakeMessaging:
             raise self.react_raises
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        return self.react(channel=channel, ts=ts, emoji=emoji)
 
     def resolve_user_id(self, handle: str) -> str:
         _ = handle

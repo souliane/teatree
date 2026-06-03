@@ -33,6 +33,13 @@ from teatree.loop.scanners.review_request_merge_react import (
     react_merge_on_post,
 )
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 _USER_LOGIN = "souliane"
 _COLLEAGUE_LOGIN = "a-colleague"

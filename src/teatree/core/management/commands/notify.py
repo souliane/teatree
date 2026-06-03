@@ -46,6 +46,7 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.notify import NotifyKind, notify_user
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 
 _MISSING_SCOPE_ERRORS = frozenset({"missing_scope", "no_permission"})
@@ -184,7 +185,19 @@ class Command(TyperCommand):
 
         with _overlay_env(overlay):
             backend = self._resolve_backend(overlay)
-            response = backend.post_routed(channel=channel, text=body, thread_ts=thread)
+            try:
+                response = OnBehalfSlackEgress(backend).post(
+                    channel=channel,
+                    text=body,
+                    target=channel,
+                    action="cli_notify_post",
+                    thread_ts=thread,
+                    destination=channel,
+                    summary=body,
+                )
+            except OnBehalfPostBlockedError as blocked:
+                self.stderr.write(str(blocked))
+                raise SystemExit(2) from blocked
 
         self._require_ok(response, action="post")
         ts = str(response.get("ts") or "")
@@ -218,7 +231,18 @@ class Command(TyperCommand):
 
         with _overlay_env(overlay):
             backend = self._resolve_backend(overlay)
-            response = backend.react_routed(channel=channel, ts=ts, emoji=name)
+            try:
+                response = OnBehalfSlackEgress(backend).react(
+                    channel=channel,
+                    ts=ts,
+                    emoji=name,
+                    target=channel,
+                    action="cli_notify_react",
+                    destination=channel,
+                )
+            except OnBehalfPostBlockedError as blocked:
+                self.stderr.write(str(blocked))
+                raise SystemExit(2) from blocked
 
         self._require_ok(response, action="react")
         return f"reacted :{name}: on {channel} ({ts})."

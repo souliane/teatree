@@ -15,15 +15,23 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.config import TeaTreeConfig, UserSettings
+from teatree.config import OnBehalfPostMode, TeaTreeConfig, UserSettings
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.review_nag import ReviewNagScanner
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 CHANNEL = "C0DEMOCHAN1"
 BOT_THREAD_TS = "1700000000.001"
@@ -61,6 +69,9 @@ class FakeSlack:
         self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
         return {"ok": True, "ts": f"reply.{len(self.posts)}"}
 
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        return self.post_message(channel=channel, text=text, thread_ts=thread_ts)
+
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         return self.post_message(channel=channel, text=text, thread_ts=ts)
 
@@ -72,6 +83,10 @@ class FakeSlack:
         return f"https://slack.example/{channel}/p{ts.replace('.', '')}"
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.react_calls.append((channel, ts, emoji))
+        return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
 
@@ -103,7 +118,9 @@ class TestReviewNagCoversBothPaths(TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
+        enabled = TeaTreeConfig(
+            user=UserSettings(review_nag_enabled=True, on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE),
+        )
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()
         self.addCleanup(patcher.stop)
