@@ -56,6 +56,7 @@ from teatree.loop.scanners import (
     ResourcePressureScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
+    ReviewRequestMergeReactScanner,
     Scanner,
     ScanningNewsScanner,
     SelfUpdateScanner,
@@ -1024,14 +1025,23 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
         for code_host in backend.hosts
     ]
     if backend.messaging is not None:
-        jobs.append(
-            _ScannerJob(
-                scanner=ReviewNagScanner(
-                    messaging=backend.messaging,
-                    user_slack_id=_user_slack_id_for_overlay(tag),
-                    host=backend.host,
+        jobs.extend(
+            (
+                _ScannerJob(
+                    scanner=ReviewNagScanner(
+                        messaging=backend.messaging,
+                        user_slack_id=_user_slack_id_for_overlay(tag),
+                        host=backend.host,
+                    ),
+                    overlay=tag,
                 ),
-                overlay=tag,
+                _ScannerJob(
+                    scanner=ReviewRequestMergeReactScanner(
+                        messaging=backend.messaging,
+                        host=backend.host,
+                    ),
+                    overlay=tag,
+                ),
             ),
         )
     return jobs

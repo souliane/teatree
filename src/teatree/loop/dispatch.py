@@ -108,6 +108,10 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Only the CI-green-gate skips reach here (see _is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
+    # A merged review-request whose :merge: reaction is blocked by a missing
+    # ``reactions:write`` scope is a config gap the operator must close — the
+    # rest of the family is dropped as per-MR bookkeeping (see prefixes below).
+    "review_request_merge_react.missing_scope": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -131,15 +135,19 @@ _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 # ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
 # ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
 # explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
-# reviewer-ping reconciler's per-MR bookkeeping; and the ``*.queued``
-# dispatch markers (``architectural_review``, ``dogfood_smoke``,
-# ``scanning_news``) that only record an agent was queued.
+# reviewer-ping reconciler's per-MR bookkeeping;
+# ``review_request_merge_react.*`` — the merged-review-request reaction's
+# per-MR outcome (the reaction itself is the Slack-side signal, not a
+# statusline row), save the ``missing_scope`` config gap exempted below;
+# and the ``*.queued`` dispatch markers (``architectural_review``,
+# ``dogfood_smoke``, ``scanning_news``) that only record an agent was queued.
 _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "self_update.",
     "pull_main_clone.",
     "pr_sweep.",
     "outbound.",
     "review_nag.",
+    "review_request_merge_react.",
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
@@ -166,6 +174,8 @@ def _is_self_update_ci_skip(signal: ScanSignal) -> bool:
 def _is_statusline_dropped(signal: ScanSignal) -> bool:
     """True when *signal* is diagnostic-only and must not reach the statusline."""
     if _is_self_update_ci_skip(signal):
+        return False
+    if signal.kind == "review_request_merge_react.missing_scope":
         return False
     return signal.kind in _STATUSLINE_DROP_KINDS or signal.kind.startswith(_STATUSLINE_DROP_PREFIXES)
 
