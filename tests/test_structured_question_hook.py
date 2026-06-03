@@ -20,6 +20,7 @@ handler.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -446,6 +447,77 @@ class TestClassifierRelaxExemption:
 
         assert _decision(capsys).get("decision") == "block"
         assert result is True
+
+
+class TestGateIsLoopDrivenContextAware:
+    """The inline-question gate enforces only on an autonomous/loop-driven turn.
+
+    Its whole rationale is that an inline question is invisible in an
+    autonomous/loop run (it reads as a log line). In an attended interactive
+    session a human IS reading the prose, so the gate is pointless nagging. It
+    keys off ``_session_drives_loop`` (this session owns the tick, OR no live
+    owner) and skips only when a *different* live session owns the loop. The
+    over-block (must-not-fire) and under-block (must-fire) dimensions are
+    asserted symmetrically; the degradation contract (unknown ⇒ fail-safe fire)
+    is covered by the no-session/no-owner must-fire cases.
+    """
+
+    @staticmethod
+    def _owner_record(session_id: str, pid: int) -> dict[str, dict]:
+        return {
+            router._OWNER_LOOP: {
+                "session_id": session_id,
+                "agent_id": "a",
+                "pid": pid,
+                "heartbeat_ts": 0,
+            }
+        }
+
+    @pytest.fixture(autouse=True)
+    def _registry_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg = tmp_path / "data"
+        reg.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg))
+
+    def _inline_question_transcript(self, tmp_path: Path) -> Path:
+        return _write_transcript(
+            tmp_path,
+            [_user("implement the feature"), _assistant("Done. Should I push the branch now?")],
+        )
+
+    def test_must_fire_for_owning_loop_session(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The owning (loop-driven) session: an inline question is invisible to
+        # the loop, so the gate MUST block it.
+        router._write_loop_registry(self._owner_record("s", os.getpid()))
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "s"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_must_fire_for_no_owner_session_fail_safe(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # No live owner anywhere: we cannot prove the turn is attended, so the
+        # gate FAILS SAFE and still fires (degradation contract).
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "lonely"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_must_not_fire_for_non_owner_attended_session(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A DIFFERENT live session owns the loop; this is the attended,
+        # non-owner interactive session a human is reading — no block.
+        router._write_loop_registry(self._owner_record("owner-1", os.getpid()))
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "attended"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
 
 
 class TestWiredIntoRouter:

@@ -1027,7 +1027,14 @@ def _loop_registration_exempt(data: dict) -> bool:
         killed every spawned coder/reviewer in the incident;
     - the durable kill-switch ``[teatree] loop_registration_gate_enabled =
         false`` is set (disable without a code edit);
-    - there is no ``session_id`` (no per-session marker to key on).
+    - there is no ``session_id`` (no per-session marker to key on);
+    - this session is NOT the loop driver — a *different* live session already
+        owns the tick (``_session_drives_loop`` is False), so this is an
+        attended, non-owner interactive session. Nagging it to ``CronCreate`` a
+        competing ``t3 loop tick`` would only spawn a duplicate loop the
+        non-owner tick gate would SKIP anyway; the rightful owner (or, with no
+        live owner, the next eligible session — see ``_session_drives_loop``)
+        still gets nagged, so the loop is never left unregistered.
     """
     if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
         return True
@@ -1035,7 +1042,9 @@ def _loop_registration_exempt(data: dict) -> bool:
         return True
     if not _loop_registration_gate_enabled():
         return True
-    return not data.get("session_id")
+    if not data.get("session_id"):
+        return True
+    return not _session_drives_loop(data["session_id"])
 
 
 def handle_enforce_loop_registration(data: dict) -> bool:
@@ -5322,6 +5331,41 @@ def _session_owns_loop(session_id: str) -> bool:
     return owner is not None and owner.get("session_id") == session_id
 
 
+def _session_drives_loop(session_id: str) -> bool:
+    """True when this session is (or is the one expected to become) the loop driver.
+
+    The single signal both the loop-registration nudge and the inline-question
+    Stop gate share to decide "is this an autonomous/loop-driven turn vs an
+    attended interactive one". Reuses the existing pid-anchored tick-owner
+    registry (``_OWNER_LOOP`` / ``_session_owns_loop`` / ``_prune_dead_owner``)
+    — no new ownership primitive. A session drives the loop when EITHER:
+
+    - it already owns the live tick-owner record (the autonomous loop runner), OR
+    - there is currently NO live owner anywhere (bootstrap / fresh machine /
+        dead-owner prune). A no-owner session is the one expected to claim the
+        loop at its next SessionStart, so it must still be treated as a driver —
+        otherwise nobody is ever nagged to register and the loop never starts.
+
+    It does NOT drive the loop only when a *different* live session owns the
+    tick: that is the attended, non-owner interactive session the user is
+    actually reading, so neither gate should fire there.
+
+    DEGRADATION CONTRACT — FAIL SAFE (keep the gates firing): when ownership is
+    unknown/unreadable the substrate already biases to "no owner" — a missing or
+    corrupt registry makes ``_read_loop_registry`` return ``{}``, and an
+    unimportable ``teatree`` makes ``_prune_dead_owner`` return ``{}``. Both land
+    in the no-owner branch, so an unreadable signal yields ``True`` (driver) and
+    both gates keep enforcing. An empty ``session_id`` is likewise treated as a
+    driver here; the callers apply their own ``session_id`` exemptions.
+    """
+    if not session_id:
+        return True
+    owner = _prune_dead_owner(_read_loop_registry()).get(_OWNER_LOOP)
+    if owner is None:
+        return True
+    return owner.get("session_id") == session_id
+
+
 def _self_pump_recently_armed(marker: Path) -> bool:
     if not marker.is_file():
         return False
@@ -5799,8 +5843,21 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     because it contains decision cues but no tool call.  We detect it by
     ``_is_classifier_relax_explanation`` and let it through, avoiding the
     infinite block → explain → block loop.
+
+    Context-aware: this gate exists because an inline question is invisible in
+    an autonomous/loop run (it reads as a log line, so the decision is lost). In
+    an attended interactive session a human IS reading the prose, so the gate is
+    pointless nagging. It therefore only enforces on a loop-driven turn —
+    ``_session_drives_loop`` is the same signal the loop-registration gate uses
+    (this session owns the tick, OR there is no live owner). When a *different*
+    live session owns the loop, this is the attended session and the gate is
+    skipped. DEGRADATION CONTRACT — FAIL SAFE: an unknown/unreadable ownership
+    signal yields a driver verdict (see ``_session_drives_loop``), so the gate
+    keeps firing.
     """
     if data.get("stop_hook_active"):
+        return None
+    if not _session_drives_loop(data.get("session_id", "")):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
