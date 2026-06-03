@@ -249,6 +249,37 @@ class SelfUpdateStatuslineTests(TestCase):
         assert self._zone("self_update.failed", "fetch:boom") is None
 
 
+class PrSweepFlagStatuslineTests(TestCase):
+    """#68/#78: pr_sweep flag-level signals surface; the rest of the family is dropped."""
+
+    def _action(self, kind: str, reason: str) -> DispatchAction | None:
+        signal = ScanSignal(
+            kind=kind,
+            summary=f"souliane/teatree#42 {reason}",
+            payload={"slug": "souliane/teatree", "pr_id": 42, "reason": reason, "merged": False},
+        )
+        actions = dispatch([signal])
+        return actions[0] if actions else None
+
+    def test_conflict_flag_surfaces_in_action_needed(self) -> None:
+        action = self._action("pr_sweep.flag_conflict", "conflict")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
+    def test_no_review_flag_surfaces_in_action_needed(self) -> None:
+        action = self._action("pr_sweep.flag_no_review", "solo_overlay_no_review")
+        assert action is not None
+        assert action.kind == "statusline"
+        assert action.zone == "action_needed"
+
+    def test_diagnostic_pr_sweep_outcomes_still_dropped(self) -> None:
+        # Anti-vacuous: the exemption is flag-only — a normal merged/skip
+        # outcome stays diagnostic noise off the statusline.
+        assert self._action("pr_sweep.merged", "all_green") is None
+        assert self._action("pr_sweep.skip", "no_clear_for_head") is None
+
+
 def test_payload_propagates_through_dispatch() -> None:
     payload: dict[str, object] = {"url": "https://example.com/mr/1"}
     actions = dispatch([ScanSignal(kind="reviewer_pr.new_sha", summary="x", payload=payload)])
