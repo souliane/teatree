@@ -47,6 +47,7 @@ from django.utils import timezone
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review_candidate import author_is_self
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
@@ -178,10 +179,22 @@ def react_merge_on_post(
     if not _claim_post(post):
         return None
     try:
-        response = messaging.react_routed(
+        response = OnBehalfSlackEgress(messaging).react(
             channel=post.slack_channel_id,
             ts=post.slack_thread_ts,
             emoji=MERGE_REACTION_EMOJI,
+            target=post.mr_url,
+            action="merge_reaction",
+            destination=f"review-request for {post.mr_url}",
+            artifact_url=post.mr_url,
+            summary=":merge: on merged review-request",
+        )
+    except OnBehalfPostBlockedError as blocked:
+        _release_post(post)
+        return ScanSignal(
+            kind="review_request_merge_react.gated",
+            summary=str(blocked),
+            payload={"mr_url": post.mr_url, "post_id": post.pk},
         )
     except Exception as exc:  # noqa: BLE001 — a Slack transport error must not crash the tick.
         _release_post(post)
