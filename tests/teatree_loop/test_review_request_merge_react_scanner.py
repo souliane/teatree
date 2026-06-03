@@ -49,6 +49,10 @@ class FakeHost:
     states_by_url: dict[str, PrOpenState] = field(default_factory=dict)
     raise_on_lookup: Exception | None = None
     lookups: list[str] = field(default_factory=list)
+    user: str = ""
+    author: str = ""
+    authors_by_url: dict[str, str] = field(default_factory=dict)
+    raise_on_author: Exception | None = None
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState:
         self.lookups.append(pr_url)
@@ -58,6 +62,14 @@ class FakeHost:
             return self.states_by_url[pr_url]
         assert self.open_state is not None
         return self.open_state
+
+    def current_user(self) -> str:
+        return self.user
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        if self.raise_on_author is not None:
+            raise self.raise_on_author
+        return self.authors_by_url.get(pr_url, self.author)
 
 
 class _SeedMixin:

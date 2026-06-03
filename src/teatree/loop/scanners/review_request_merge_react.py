@@ -28,15 +28,26 @@ cannot both react — the tick that loses the claim matches zero rows and
 skips. A transient Slack failure (``not_in_channel``, a raised transport
 error) releases the claim so a future tick retries; a definitive
 ``missing_scope`` keeps the row closed.
+
+Self-authored skip (#1838): the bot must never react on a review-request
+the *user themselves* posted for their *own* MR. Before claiming the row
+the merge author is fetched from the code host and matched against the
+user's forge identities via :func:`teatree.core.review_candidate.author_is_self`
+— the same notion of "self" the review-candidate skip-conditions use.
+A self-authored merged MR closes the row (so the nag train stops too)
+without reacting; an unresolved author is not provably self, so it is
+left for a later tick rather than risk reacting on the user's own MR.
 """
 
 import logging
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from django.utils import timezone
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
+from teatree.core.review_candidate import author_is_self
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -51,6 +62,50 @@ _REACTION_PRESENT_ERRORS = frozenset({"already_reacted"})
 def _claim_post(post: ReviewRequestPost) -> bool:
     updated = ReviewRequestPost.objects.filter(pk=post.pk, done_at__isnull=True).update(done_at=timezone.now())
     return updated == 1
+
+
+def _resolve_self_identities(host: CodeHostBackend | None, identities: Iterable[str]) -> set[str]:
+    """Union of configured identity aliases and the host's current user.
+
+    Configured ``identities`` come from ``user_identity_aliases``; the
+    host's ``current_user`` is folded in so the self-author skip still
+    works when no aliases are configured (legacy single-identity setups).
+    A failed ``current_user`` lookup is non-fatal — the configured aliases
+    still apply.
+    """
+    resolved = {name for name in identities if name}
+    if host is not None:
+        try:
+            current = host.current_user()
+        except Exception as exc:  # noqa: BLE001 — a current-user lookup must never crash a tick.
+            logger.warning("review_request_merge_react: current_user lookup failed: %s", exc)
+            current = ""
+        if current:
+            resolved.add(current)
+    return resolved
+
+
+def _is_self_authored(post: ReviewRequestPost, host: CodeHostBackend | None, identities: Iterable[str]) -> bool:
+    """Return True iff the MR for *post* was authored by the user themselves.
+
+    Fail-closed on a *resolved* self-identity set but no author: when we
+    know who the user is and the author lookup returns ``""`` (transient
+    failure / unparsable URL), the author is not provably *not* self, so we
+    report ``True`` to suppress the reaction rather than risk reacting on
+    the user's own MR. With no resolvable self-identity at all there is
+    nothing to protect, so the colleague path proceeds.
+    """
+    self_identities = _resolve_self_identities(host, identities)
+    if not self_identities or host is None:
+        return False
+    try:
+        author = host.get_pr_author(pr_url=post.mr_url)
+    except Exception as exc:  # noqa: BLE001 — author lookup must never crash a tick.
+        logger.warning("review_request_merge_react: author lookup failed for %s: %s", post.mr_url, exc)
+        author = ""
+    if not author:
+        return True
+    return author_is_self(author, current_user="", self_identities=self_identities)
 
 
 def _release_post(post: ReviewRequestPost) -> None:
@@ -83,7 +138,23 @@ def _signal_for_react_response(post: ReviewRequestPost, response: RawAPIDict) ->
     )
 
 
-def react_merge_on_post(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
+def _close_self_authored(post: ReviewRequestPost) -> ScanSignal:
+    """Close *post* without reacting — the user authored their own MR (#1838)."""
+    ReviewRequestPost.objects.filter(pk=post.pk, done_at__isnull=True).update(done_at=timezone.now())
+    return ScanSignal(
+        kind="review_request_merge_react.self_authored",
+        summary=f":merge: reaction skipped for {post.mr_url} — the user authored this MR",
+        payload={"mr_url": post.mr_url, "post_id": post.pk},
+    )
+
+
+def react_merge_on_post(
+    post: ReviewRequestPost,
+    messaging: MessagingBackend,
+    *,
+    host: CodeHostBackend | None = None,
+    identities: Iterable[str] = (),
+) -> ScanSignal | None:
     """Atomically claim *post* and react ``:merge:`` on its tracked Slack message.
 
     The single entry point shared by the merge-react scanner and the nag
@@ -94,9 +165,16 @@ def react_merge_on_post(post: ReviewRequestPost, messaging: MessagingBackend) ->
     failure releases the claim for a later retry; ``missing_scope`` keeps
     the row closed. Returns ``None`` when there is no thread to react on or
     the claim is lost.
+
+    Self-authored skip (#1838): when the MR was authored by the user
+    themselves (matched against ``identities`` plus ``host.current_user()``),
+    the row is closed and a ``self_authored`` signal returned WITHOUT
+    reacting — the bot must never react on the user's own review-request.
     """
     if not post.slack_thread_ts:
         return None
+    if _is_self_authored(post, host, identities):
+        return _close_self_authored(post)
     if not _claim_post(post):
         return None
     try:
@@ -134,6 +212,7 @@ class ReviewRequestMergeReactScanner:
 
     messaging: MessagingBackend | None
     host: CodeHostBackend | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
     name: str = "review_request_merge_react"
 
     def scan(self) -> list[ScanSignal]:
@@ -158,7 +237,7 @@ class ReviewRequestMergeReactScanner:
             return None
         if self._open_state(host, post.mr_url) is not PrOpenState.MERGED:
             return None
-        return react_merge_on_post(post, messaging)
+        return react_merge_on_post(post, messaging, host=host, identities=self.identities)
 
     @staticmethod
     def _open_state(host: CodeHostBackend, mr_url: str) -> PrOpenState:
