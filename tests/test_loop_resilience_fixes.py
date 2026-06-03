@@ -338,7 +338,7 @@ class TestF7PrSweepShaFetchFailureSurfaced(TestCase):
         After a successful merge, if the SHA-fetch subprocess fails (rc!=0),
         the returned SHA must not be silently empty string.
         """
-        from teatree.loop.scanners.pr_sweep import GhPrApiClient  # noqa: PLC0415
+        from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
 
         # GhPrApiClient uses slots=True so patch.object won't work on an instance.
         # Subclass to override _run_gh instead.
@@ -370,7 +370,7 @@ class TestPrSweepListLimit(TestCase):
     """``gh pr list`` must request more than the 30-PR default cap."""
 
     def test_list_open_prs_passes_limit_at_least_100(self) -> None:
-        from teatree.loop.scanners.pr_sweep import GhPrApiClient  # noqa: PLC0415
+        from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
 
         captured: list[list[str]] = []
 
