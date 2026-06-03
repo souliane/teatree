@@ -313,6 +313,20 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 
 **The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
 
+## Self-Apply `needs-triage` on Agent-Filed Issues (Non-Negotiable)
+
+`needs-triage` is a maintainer-review gate: the autonomous loop's issue-implementer claim path filters out any open issue carrying it (`IssueImplementerScanner` skips it at selection time, before the claim), so the factory never starts an issue the maintainer has not cleared.
+
+The complication is that the factory files its own backlog issues **as the maintainer's own account** (e.g. `souliane`). The auto-apply GitHub Action keys on the issue author, so it cannot distinguish a human maintainer's issue from an agent-filed one — both look like the maintainer. The author-only Action therefore can't gate agent-filed issues on its own.
+
+The convention closes that gap: **an agent self-applies `needs-triage` by default on anything it files that is not a direct user implementation order.** Concretely:
+
+- When the agent files an issue autonomously (a backlog item surfaced mid-session, a retro/review enforcement gap, a research finding), include `needs-triage` in the labels.
+- Omit `needs-triage` only when the user explicitly directed the implementation (the issue is the tracking record for work the user asked for now).
+- Teatree's programmatic filing path encodes this: `FilingContext.auto_filed` defaults to `True` and adds `NEEDS_TRIAGE_LABEL`; a user-directed caller sets `auto_filed=False`.
+
+When in doubt, apply `needs-triage` — a withheld issue costs the maintainer one label-removal; an un-withheld one risks the factory implementing something the maintainer never decided to build.
+
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 
 When remediating a privacy leak on a public repo (force-push to drop PII, delete a comment that exposed a credential, rewrite a branch that leaked internal data), **every public artifact produced during the remediation must be neutral**. Do not name what leaked, do not name that a leak occurred, do not describe the scrub. Announcing the remediation on a public surface amplifies the leak (Streisand effect) — the commit subject, the PR comment, and the branch name are all crawled, cached, and indexed.
