@@ -123,6 +123,7 @@ Both layers (the gate and the attestation) run on every PR — the gate runs det
 2. **Read** the repo's `AGENTS.md` (or equivalent agent instructions file).
 3. **For each changed file**, verify compliance against every applicable rule — commit message format, architectural patterns, banned patterns, feature flags.
 4. Fix any violations **before** pushing.
+5. **Run the full CI-equivalent local gate set:** `t3 tool verify-gates`. It runs BOTH `prek run --all-files` AND `prek run --all-files --hook-stage pre-push`, so the push-stage gates (comment-density, doc-update, ensure-pr, pytest-fast, the public-repo leak gate) — which a bare `prek run --all-files` STRUCTURALLY skips but CI re-runs — are exercised locally. Report its exit code as the green-proof; a commit-stage-only run is not proof.
 
 Skipping this step is the #1 cause of wasted push-fix-push cycles. The rules exist in `t3:review` and the project's code-review skill — this step ensures they are applied even when the agent goes directly from code to ship without a formal review phase.
 
@@ -290,7 +291,7 @@ When fixing review comments on an already-existing PR:
 0. **Verify branch alignment.** Confirm the worktree is on the PR's source branch (`git branch --show-current` vs PR metadata). If the worktree uses a different branch name, resolve the mismatch **before** editing: either checkout the PR branch or plan to cherry-pick onto it after committing. Discovering the mismatch mid-push wastes time on branch gymnastics.
 1. **Fix the issues** as requested.
 2. **Merge the default branch** if needed: `git merge origin/main`. **Never rebase** — the branch has already been reviewed.
-3. **Run lint/pre-commit** (`prek run --all-files` or equivalent) after merging — merges can expose new lint violations in your code even without conflicts.
+3. **Run the full local gate set** (`t3 tool verify-gates` — both commit- and push-stage hooks) after merging — merges can expose new lint violations in your code even without conflicts.
 4. **Push without squashing or rebasing** (regular commits on top).
 5. **Reply to the review comments on the PR.**
 6. **Do NOT send a review request notification** — reviewers are already watching.
