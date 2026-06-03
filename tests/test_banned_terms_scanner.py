@@ -465,6 +465,70 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
+    def test_private_repo_commit_bodyfile_relative_path_reset_cwd_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The real cold-hook failure: a ``git -C <worktree> commit -F <relpath>``
+        # where the harness cwd has reset AWAY from the worktree. The body file
+        # lives INSIDE the private worktree and carries the repo's own domain
+        # word. Reading the ``-F`` path against the reset cwd fails, so the
+        # parser fail-closes to the sentinel and the carve-out never consults
+        # the private origin -> a false hard-block. The body file IS resolvable
+        # from the commit's own repo dir, so the carve-out must downgrade.
+        repo = _private_repo(tmp_path)
+        (repo / "commit_body.txt").write_text("fix the acmecorp refinery\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)  # reset-away cwd, not the worktree
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F commit_body.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_public_repo_commit_bodyfile_relative_path_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression guard symmetric to the fix: the same ``-F <relpath>`` shape
+        # whose body the gate now resolves from the commit's repo dir must STILL
+        # hard-block when that repo is PUBLIC. The resolution fix must not weaken
+        # the real protection -- a banned term in a body file committed to a
+        # public repo is a leak.
+        repo = tmp_path / "pub"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
+        (repo / "commit_body.txt").write_text("ship to acmecorp\n", encoding="utf-8")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F commit_body.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_commit_bodyfile_genuinely_missing_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A ``-F`` path that exists NOWHERE (not in cwd, not in the repo dir)
+        # is a genuinely unresolvable body: it must keep failing closed even on
+        # a private repo, so the resolution fallback never masks an unscannable
+        # body. This preserves the #1207 fail-closed sentinel contract.
+        repo = _private_repo(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git -C {repo} commit -F does_not_exist.txt"},
+            "cwd": str(tmp_path),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     def test_public_repo_commit_with_banned_term_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

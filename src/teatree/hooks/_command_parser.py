@@ -34,7 +34,7 @@ classifiers there, so an interspersed persistent flag cannot break detection
 import json
 import re
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from teatree.hooks._publish_detection import (
     command_has_opaque_forge_transport,
@@ -43,6 +43,9 @@ from teatree.hooks._publish_detection import (
     segment_word_lists,
 )
 from teatree.hooks._shell_lexer import Token, TokenKind, is_command_separator, split_commands, tokenize
+
+if TYPE_CHECKING:
+    from teatree.hooks._body_file_resolution import BodyFileContext
 
 # ── Publish-surface substring catalogues ────────────────────────────
 
@@ -213,13 +216,6 @@ _BODY_FLAG_NAMES: Final[frozenset[str]] = frozenset(
     {"--body", "--description", "--message", "--title"},
 )
 
-# Long options that point at a FILE whose content we should read. If the
-# file is missing or unreadable the parser appends the fail-closed
-# sentinel.
-_BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset(
-    {"--body-file", "--description-file", "--file"},
-)
-
 # Short body-bearing flags used by ``gh`` / ``glab`` / ``git commit``.
 _BODY_SHORT_FLAGS: Final[frozenset[str]] = frozenset({"-m", "-b"})
 
@@ -233,11 +229,27 @@ _CURL_DATA_LONG_FLAGS: Final[frozenset[str]] = frozenset(
 )
 
 
-def _read_file_arg(path: str) -> str | None:
-    try:
-        return Path(path).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
+def read_file_arg(path: str, base: Path | None = None) -> str | None:
+    """Return the text of ``path``, trying ``base / path`` as a fallback.
+
+    The bare ``path`` is read first (an absolute path, or one relative to the
+    process cwd). When that fails and ``base`` is set, the same path is retried
+    relative to ``base`` -- the dir whose repo a ``git commit`` LANDS in. At
+    PreToolUse the cold hook subprocess's cwd has often reset away from the
+    worktree, so a ``git -C <worktree> commit -F <relpath>`` body file is
+    unreadable from the cwd yet readable from the commit's own repo dir.
+    Resolving against ``base`` lets the gate scan that body and apply the
+    private-repo carve-out instead of fail-closing on an unread body.
+    """
+    candidates = [Path(path)]
+    if base is not None and not Path(path).is_absolute():
+        candidates.append(base / path)
+    for candidate in candidates:
+        try:
+            return candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
 
 
 def _json_body_fields(blob: str) -> list[str]:
@@ -251,7 +263,7 @@ def _json_body_fields(blob: str) -> list[str]:
     return [str(decoded[key]) for key in ("text", "message", "body") if key in decoded]
 
 
-def _attached_value(token: str, prefix: str) -> str | None:
+def attached_value(token: str, prefix: str) -> str | None:
     """Return the attached value of ``-X<value>`` / ``-X=<value>``, if any.
 
     Returns the substring AFTER ``prefix`` when ``token`` starts with the
@@ -293,7 +305,7 @@ def _record_curl_value(value: str, payloads: list[str]) -> None:
 def _curl_long_flag_attached(word: str) -> str | None:
     """Return the value of ``--data=VALUE`` / ``--json=VALUE`` if attached."""
     for flag in _CURL_DATA_LONG_FLAGS:
-        attached = _attached_value(word, flag + "=")
+        attached = attached_value(word, flag + "=")
         if attached is not None:
             return attached
     return None
@@ -307,7 +319,7 @@ def _curl_short_d_attached(word: str) -> str | None:
     """
     if word.startswith(("--data", "--json")):
         return None
-    return _attached_value(word, "-d")
+    return attached_value(word, "-d")
 
 
 def _walk_curl_args(words: list[str], payloads: list[str]) -> None:
@@ -358,7 +370,7 @@ def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
             i += 2
             continue
         for flag in _BODY_FLAG_NAMES:
-            attached = _attached_value(word, flag + "=")
+            attached = attached_value(word, flag + "=")
             if attached is not None:
                 payloads.append(attached)
                 break
@@ -369,96 +381,12 @@ def _walk_body_flags(words: list[str], payloads: list[str]) -> None:
         i += 1
 
 
-def _walk_body_file_flags(
-    words: list[str],
-    payloads: list[str],
-    *,
-    is_git: bool,
-    heredoc_files: dict[str, str],
-    fail_closed_body_file: bool,
-) -> None:
-    """Extract ``--body-file``/``--file``/``-F`` style file payloads.
-
-    The git-style ``-F <path>`` form is a file reference ONLY for the
-    ``git`` command (codex round-3 #6 — ``gh api -F body=x`` is a field
-    assignment, NOT a file reference). The ``is_git`` flag scopes the
-    short-form ``-F`` reader.
-
-    ``heredoc_files`` maps a path written by a ``> path <<EOF … EOF``
-    redirect earlier in the same command to its body, so a ``-F <path>``
-    reference resolves to the in-command heredoc when the file does not
-    exist on disk yet (#126).
-
-    ``fail_closed_body_file`` decides what an UNREADABLE ``gh``/``glab`` body
-    file does — ``True`` (the destination-aware gates) appends the fail-closed
-    sentinel, ``False`` (the quote scanner) appends nothing (#126). The git
-    ``-F`` commit-message path always fails closed regardless.
-    """
-    i = 0
-    n = len(words)
-    while i < n:
-        word = words[i]
-        if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=fail_closed_body_file)
-            i += 2
-            continue
-        attached: str | None = None
-        for flag in _BODY_FILE_FLAG_NAMES:
-            attached = _attached_value(word, flag + "=")
-            if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files, fail_closed=fail_closed_body_file)
-                break
-        if attached is not None:
-            i += 1
-            continue
-        if is_git and word == "-F" and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, heredoc_files, fail_closed=True)
-            i += 2
-            continue
-        if is_git:
-            attached = _attached_value(word, "-F")
-            if attached is not None:
-                _append_file_payload(attached, payloads, heredoc_files, fail_closed=True)
-                i += 1
-                continue
-        i += 1
-
-
-def _append_file_payload(path: str, payloads: list[str], heredoc_files: dict[str, str], *, fail_closed: bool) -> None:
-    """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
-
-    Resolution order: the on-disk file, then an in-command heredoc that
-    writes to that path (``cat > path <<EOF … EOF``), then the
-    ``fail_closed`` branch. The heredoc fallback closes the #126 false
-    positive where a body written to a temp file and committed via ``-F``
-    in the same command was unreadable at PreToolUse scan time (the hook
-    runs BEFORE the file is created).
-
-    ``fail_closed`` selects what an unresolvable path does. ``True`` appends
-    the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
-    always uses it (#1207), as does a ``gh``/``glab`` body file for the
-    destination-aware banned-terms / bare-reference scanners, so a PUBLIC post
-    whose body the gate cannot read hard-blocks rather than slip through unread
-    (a destination-internal post is skipped before the payload is scanned, so
-    the sentinel never over-blocks it). ``False`` appends NOTHING — the quote
-    scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
-    "needs-inline", not a fail-closed HIGH (#126).
-    """
-    content = _read_file_arg(path)
-    if content is None:
-        content = heredoc_files.get(path)
-    if content is not None:
-        payloads.append(content)
-    elif fail_closed:
-        payloads.append(FAIL_CLOSED_SENTINEL)
-
-
 def _handle_api_input(arg: str, payloads: list[str]) -> None:
     """Read a ``--input`` argument: stdin or missing file → fail closed."""
     if arg == "-":
         payloads.append(FAIL_CLOSED_SENTINEL)
         return
-    content = _read_file_arg(arg)
+    content = read_file_arg(arg)
     if content is None:
         payloads.append(FAIL_CLOSED_SENTINEL)
         return
@@ -486,7 +414,7 @@ def _walk_api_fields(words: list[str], payloads: list[str]) -> None:
             _handle_api_input(words[i + 1], payloads)
             i += 2
             continue
-        attached = _attached_value(word, "--input=")
+        attached = attached_value(word, "--input=")
         if attached is not None:
             _handle_api_input(attached, payloads)
         i += 1
@@ -524,10 +452,10 @@ def _first_two_words(segment: list[Token]) -> tuple[str, str]:
     return first, second
 
 
-def _walk_command_segment(
-    segment: list[Token], payloads: list[str], heredoc_files: dict[str, str], *, fail_closed_body_file: bool
-) -> None:
+def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyFileContext") -> None:
     """Route a single command segment to the right argument walkers."""
+    from teatree.hooks._body_file_resolution import walk_body_file_flags  # noqa: PLC0415
+
     words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
     if not words:
         return
@@ -535,13 +463,7 @@ def _walk_command_segment(
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads)
-    _walk_body_file_flags(
-        words,
-        payloads,
-        is_git=(first == "git"),
-        heredoc_files=heredoc_files,
-        fail_closed_body_file=fail_closed_body_file,
-    )
+    walk_body_file_flags(words, payloads, is_git=(first == "git"), ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, payloads)
@@ -552,7 +474,7 @@ def _walk_command_segment(
 # ── Body extraction ─────────────────────────────────────────────────
 
 
-def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False) -> str:
+def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, cwd: Path | None = None) -> str:
     r"""Concatenate every body-like fragment the command surface carries.
 
     The command is tokenized once via :mod:`teatree.hooks._shell_lexer`
@@ -573,12 +495,25 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False) -
     destination-aware banned-terms / bare-reference gates) appends the
     fail-closed sentinel so a PUBLIC file-body post whose body the gate
     cannot read hard-blocks instead of slipping through unread.
+
+    A ``git commit -F <relpath>`` body file is resolved against the dir whose
+    repo the commit LANDS in (the command's own ``cd``/``-C``/``--git-dir``,
+    via :func:`_body_file_resolution.commit_body_file_base`), else the
+    harness-provided ``cwd``, when it is unreadable from the cold hook's reset
+    cwd — so the gate scans the real body and applies the private-repo carve-out
+    instead of fail-closing on an unread body.
     """
+    from teatree.hooks._body_file_resolution import BodyFileContext, commit_body_file_base  # noqa: PLC0415
+
     parts: list[str] = []
-    heredoc_files = _heredoc_file_bodies(command)
+    ctx = BodyFileContext(
+        heredoc_files=_heredoc_file_bodies(command),
+        fail_closed_body_file=fail_closed_body_file,
+        base=commit_body_file_base(command) or cwd,
+    )
     tokens = tokenize(command)
     for segment in split_commands(tokens):
-        _walk_command_segment(segment, parts, heredoc_files, fail_closed_body_file=fail_closed_body_file)
+        _walk_command_segment(segment, parts, ctx)
     # Heredocs still need to be parsed against the raw command — the
     # lexer treats them as regular content since heredoc bodies live on
     # subsequent physical lines. The regex below tolerates that shape.

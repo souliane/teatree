@@ -83,19 +83,24 @@ def _scanner_script() -> Path:
     return repo_root / "scripts" / "hooks" / "check-banned-terms.sh"
 
 
-def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the text-to-scan from a tool invocation, or ``None`` if not a publish.
 
     Reuses the #1213 ``_command_parser`` so the publish-surface catalogue
     and body extraction (``--body``, ``--body-file``, ``-d``/``--field``
     JSON, ``-m``, heredocs) stay in one place across both gates.
+
+    ``cwd`` is the harness-provided working directory; it is the fallback base
+    for resolving a ``git commit -F <relpath>`` body file when the command
+    names no commit dir of its own, so a relative body file unreadable from
+    the cold hook's reset cwd is still scanned.
     """
     if tool_name != "Bash":
         return None
     command = tool_input.get("command", "")
     if not _is_publish_command(command):
         return None
-    return _extract_bash_payload(command, fail_closed_body_file=True)
+    return _extract_bash_payload(command, fail_closed_body_file=True, cwd=cwd)
 
 
 def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
