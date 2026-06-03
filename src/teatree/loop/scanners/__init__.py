@@ -21,11 +21,11 @@ from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
-from teatree.loop.scanners.pr_sweep import (
+from teatree.loop.scanners.pr_sweep import PrSweepScanner
+from teatree.loop.scanners.pr_sweep_adapters import (
     CallCommandMergeKeystone,
     GhPrApiClient,
     NullMergeNotifier,
-    PrSweepScanner,
     SlackMergeNotifier,
 )
 from teatree.loop.scanners.provision_smoke import ProvisionSmokeScanner

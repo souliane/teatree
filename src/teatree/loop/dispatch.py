@@ -108,6 +108,13 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Only the CI-green-gate skips reach here (see _is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
+    # pr_sweep flag-level signals the scanner refuses to act on autonomously
+    # (see _is_pr_sweep_flag): a conflicted open PR (#78) and a green
+    # solo-overlay PR with no recorded independent cold-review (#68). Both
+    # need an operator decision, so they surface in action_needed rather than
+    # being dropped with the rest of the diagnostic pr_sweep.* family.
+    "pr_sweep.flag_conflict": "action_needed",
+    "pr_sweep.flag_no_review": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -148,6 +155,18 @@ _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
 
 _SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})
 
+# pr_sweep flag-level kinds the scanner deliberately did NOT act on (a merge
+# conflict, or a missing independent cold-review on a solo overlay). They share
+# the ``pr_sweep.`` prefix for log grouping but must escape the diagnostic drop
+# so the operator sees them — the same exemption shape as the CI-green-gate
+# self_update skip above.
+_PR_SWEEP_FLAG_KINDS: frozenset[str] = frozenset({"pr_sweep.flag_conflict", "pr_sweep.flag_no_review"})
+
+
+def _is_pr_sweep_flag(signal: ScanSignal) -> bool:
+    """True for a pr_sweep flag-level signal that must reach the statusline."""
+    return signal.kind in _PR_SWEEP_FLAG_KINDS
+
 
 def _is_self_update_ci_skip(signal: ScanSignal) -> bool:
     """True for a ``self_update.skipped`` held by the CI-green fail-closed gate.
@@ -165,7 +184,7 @@ def _is_self_update_ci_skip(signal: ScanSignal) -> bool:
 
 def _is_statusline_dropped(signal: ScanSignal) -> bool:
     """True when *signal* is diagnostic-only and must not reach the statusline."""
-    if _is_self_update_ci_skip(signal):
+    if _is_self_update_ci_skip(signal) or _is_pr_sweep_flag(signal):
         return False
     return signal.kind in _STATUSLINE_DROP_KINDS or signal.kind.startswith(_STATUSLINE_DROP_PREFIXES)
 

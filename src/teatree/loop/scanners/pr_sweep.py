@@ -8,39 +8,41 @@ turns green; the loop closes itself.
 
 Decision ladder per open PR:
 
-1. ``draft: true`` → skip
-2. open ``CHANGES_REQUESTED`` review → skip
-3. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
-    → skip (collaborative-overlay default) OR fall through to
-    ``gh pr merge --squash`` (solo-overlay carve-out, #1309 — see
-    ``solo_overlay`` on :class:`PrSweepScanner`)
-4. CI ``test(3.13)`` not green AND red checks include something
+1. ``mergeable == CONFLICTING`` / ``mergeStateStatus == DIRTY``
+    → flag (``pr_sweep.flag_conflict``) — flag only, never an
+    auto-rebase (#78)
+2. ``draft: true`` → skip
+3. open ``CHANGES_REQUESTED`` review → skip
+4. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
+    → skip (collaborative-overlay default) OR the solo-overlay
+    carve-out (#1309 — see ``solo_overlay`` on :class:`PrSweepScanner`):
+    merge via ``gh pr merge --squash`` ONLY when a recorded independent
+    cold-review (``merge_safe`` ``ReviewVerdict`` at the head,
+    ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
+    #68)
+5. CI ``test(3.13)`` not green AND red checks include something
     other than ``uv-audit`` → skip
-5. only red check is ``uv-audit`` AND ``main`` is also red on
+6. only red check is ``uv-audit`` AND ``main`` is also red on
     ``uv-audit`` → ``--fallback-uv-audit``
-6. all required checks green → merge through the keystone
+7. all required checks green → merge through the keystone
 
-Step 5's ``--fallback-uv-audit`` switch documents the scanner's standing
+Step 6's ``--fallback-uv-audit`` switch documents the scanner's standing
 authorisation to escalate to ``gh pr merge --squash`` when the keystone
 transition refuses on the same fallback path (a pre-existing-on-``main``
 failing audit job is a deterministic gate, not an ad-hoc judgement —
 exactly the case §17.4.3 step 7 reserves for the scanner).
 
-The scanner posts a Slack DM only on actual merges (acceptance gate);
-skips log to the periodic-task log but never DM, to keep the DM channel
-quiet.
+The scanner posts a Slack DM only on actual merges (acceptance gate) and
+on a flag-level signal; ordinary skips log to the periodic-task log but
+never DM, to keep the DM channel quiet.
 """
 
-import json
 import logging
-import os
-import shutil
-from dataclasses import dataclass, field
-from typing import Protocol, TypedDict, cast, runtime_checkable
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from teatree.core.models.merge_clear import MergeClear
-from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
-from teatree.utils.run import run_allowed_to_fail
+from teatree.loop.scanners.base import ScannerError, ScanSignal
 
 logger = logging.getLogger(__name__)
 
@@ -48,35 +50,14 @@ logger = logging.getLogger(__name__)
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
 UV_AUDIT_CHECK_NAME = "uv-audit"
-_GH_NOT_INSTALLED_RC = 127
 
-
-class GhPrJson(TypedDict, total=False):
-    """Shape of one ``gh pr list --json …`` entry the scanner consumes."""
-
-    number: int
-    headRefOid: str
-    isDraft: bool
-    url: str
-    title: str
-    reviews: list[object]
-    statusCheckRollup: list[object]
-
-
-class GhReviewJson(TypedDict, total=False):
-    """Shape of one review entry inside ``GhPrJson.reviews``."""
-
-    state: str
-
-
-class GhCheckJson(TypedDict, total=False):
-    """Shape of one check entry inside ``GhPrJson.statusCheckRollup``."""
-
-    name: str
-    context: str
-    conclusion: str
-    status: str
-    state: str
+# GitHub surfaces a merge conflict two ways: ``mergeable == "CONFLICTING"``
+# and ``mergeStateStatus == "DIRTY"``. Either is a hard conflict (a behind-
+# but-clean branch is ``BEHIND``/``MERGEABLE``, never these). ``UNKNOWN`` /
+# empty is GitHub still computing mergeability — never flagged, to avoid a
+# false conflict alarm on a freshly-pushed head.
+GH_CONFLICT_MERGEABLE = "CONFLICTING"
+GH_CONFLICT_MERGE_STATE = "DIRTY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +91,7 @@ class PrSummary:
     checks: tuple[CheckResult, ...]
     url: str = ""
     title: str = ""
+    is_conflicted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +104,7 @@ class MergeAttempt:
     merged: bool = False
     merged_sha: str = ""
     reason: str = ""
+    url: str = ""
 
 
 @runtime_checkable
@@ -152,9 +135,19 @@ class MergeKeystone(Protocol):
 
 @runtime_checkable
 class MergeNotifier(Protocol):
-    """Post a Slack DM only when a merge actually lands (acceptance gate)."""
+    """Post a Slack DM on an actual merge, and on a flag-level signal.
+
+    ``announce`` is the merge acceptance gate (a DM only when a merge
+    lands). ``flag`` is the optional Slack mirror for a flag-level signal
+    the scanner refuses to act on autonomously — a conflicted open PR, or
+    a green solo-overlay PR with no recorded independent cold-review. The
+    statusline always carries the flag; the Slack DM is the optional
+    escalation rung, mirroring the ``forgotten_merge`` detector ladder.
+    """
 
     def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None: ...  # pragma: no branch
+
+    def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None: ...  # pragma: no branch
 
 
 @dataclass(slots=True)
@@ -188,6 +181,21 @@ class PrSweepScanner:
     keeps the cold-reviewer attestation as the default and only relaxes
     it for the overlay configuration the user has already declared
     "trust the agent end-to-end".
+
+    Even on a solo overlay the bypass is gated on a recorded INDEPENDENT
+    cold-review: a :class:`teatree.core.models.review_verdict.ReviewVerdict`
+    that is ``merge_safe``, bound to the live head SHA, and whose reviewer
+    is not the maker/coding-agent/loop (the ``ReviewVerdict.record`` factory
+    refuses a self-attested verdict via ``is_non_reviewer_role``). With no
+    such record the scanner does NOT auto-merge — it emits a flag-level
+    signal (``decision=flag_no_review``) so a maker can never self-merge by
+    being the only identity on the repo.
+
+    A conflicted open PR (GitHub ``mergeable == CONFLICTING`` or
+    ``mergeStateStatus == DIRTY``) is surfaced as a flag-level signal
+    (``decision=flag_conflict``) — FLAG ONLY, never an auto-rebase. The
+    scanner reads the conflict state from the same ``gh pr list --json``
+    call that already drives the merge decision.
     """
 
     repos: tuple[str, ...]
@@ -233,37 +241,59 @@ class PrSweepScanner:
             return []
 
     def _evaluate(self, pr: PrSummary) -> MergeAttempt:
+        if pr.is_conflicted:
+            return self._flag_conflict(pr)
         skip_reason = _precondition_skip_reason(pr)
         if skip_reason is not None:
             return _skip(pr, reason=skip_reason)
         clear = _find_actionable_clear(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha)
         if clear is None:
-            if self.solo_overlay:
-                return self._evaluate_solo_overlay(pr)
-            return _skip(pr, reason="no_clear_for_head")
-        check_verdict = _classify_checks(pr.checks)
-        if check_verdict in {"failed", "pending"}:
-            return _skip(pr, reason="ci_red" if check_verdict == "failed" else "ci_pending")
-        fallback = check_verdict == "green_with_uv_audit_red"
-        if fallback and not self._main_uv_audit_red(slug=pr.slug):
-            return _skip(pr, reason="uv_audit_red_but_clean_on_main")
+            return self._evaluate_solo_overlay(pr) if self.solo_overlay else _skip(pr, reason="no_clear_for_head")
+        return self._evaluate_with_clear(pr, clear)
+
+    def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
+        ci_skip, fallback = self._ci_gate(pr)
+        if ci_skip is not None:
+            return _skip(pr, reason=ci_skip)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
 
-    def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
-        """Merge a green+clean PR on a solo overlay without a CLEAR (#1309).
+    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool]:
+        """Run the shared CI verdict gate; return ``(skip_reason, is_uv_audit_fallback)``.
 
-        Runs the same CI verdict gate as the CLEAR path so a red or pending
-        check still blocks. A green-only-but-uv-audit-red PR escalates the
-        same way (``main`` must also be red on uv-audit). Once the CI gate
-        passes, calls :meth:`PrApiClient.merge_pr_squash` directly — the
-        keystone path can't be used here because it requires a CLEAR row.
+        ``skip_reason`` is non-``None`` when the PR must not merge (red /
+        pending checks, or a uv-audit-red PR whose ``main`` is clean). When
+        it is ``None`` the second element says whether the merge proceeds on
+        the documented uv-audit fallback path. Shared by the CLEAR path and
+        the solo-overlay bypass so the two gates cannot drift apart.
         """
         check_verdict = _classify_checks(pr.checks)
         if check_verdict in {"failed", "pending"}:
-            return _skip(pr, reason="ci_red" if check_verdict == "failed" else "ci_pending")
+            return ("ci_red" if check_verdict == "failed" else "ci_pending"), False
         fallback = check_verdict == "green_with_uv_audit_red"
         if fallback and not self._main_uv_audit_red(slug=pr.slug):
-            return _skip(pr, reason="uv_audit_red_but_clean_on_main")
+            return "uv_audit_red_but_clean_on_main", False
+        return None, fallback
+
+    def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
+        """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
+
+        Runs the same CI verdict gate as the CLEAR path so a red or pending
+        check still blocks. A green-only-but-uv-audit-red PR escalates the
+        same way (``main`` must also be red on uv-audit). The solo bypass
+        skips only the per-diff CLEAR — it still requires a recorded
+        INDEPENDENT cold-review (a ``merge_safe`` :class:`ReviewVerdict` at
+        the live head whose reviewer is not the maker). Without that record
+        the scanner refuses to merge and emits a flag-level signal so the
+        only-identity-on-the-repo maker can never self-merge. Once both the
+        CI gate and the cold-review gate pass, calls
+        :meth:`PrApiClient.merge_pr_squash` directly — the keystone path
+        can't be used here because it requires a CLEAR row.
+        """
+        ci_skip, fallback = self._ci_gate(pr)
+        if ci_skip is not None:
+            return _skip(pr, reason=ci_skip)
+        if not _has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
+            return self._flag_no_review(pr)
         ok, merged_sha = self.api.merge_pr_squash(slug=pr.slug, pr_id=pr.number)
         if not ok:
             return MergeAttempt(
@@ -282,6 +312,28 @@ class PrSweepScanner:
             merged_sha=merged_sha,
             reason=reason,
         )
+
+    def _flag_conflict(self, pr: PrSummary) -> MergeAttempt:
+        """Surface a conflicted open PR — flag only, never an auto-rebase (#78)."""
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="conflict", url=pr.url)
+        return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="flag_conflict", reason="conflict", url=pr.url)
+
+    def _flag_no_review(self, pr: PrSummary) -> MergeAttempt:
+        """Refuse a solo-overlay auto-merge with no recorded cold-review — flag only (#68)."""
+        self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
+        return MergeAttempt(
+            slug=pr.slug,
+            pr_id=pr.number,
+            decision="flag_no_review",
+            reason="solo_overlay_no_review",
+            url=pr.url,
+        )
+
+    def _flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+        try:
+            self.notifier.flag(slug=slug, pr_id=pr_id, reason=reason, url=url)
+        except Exception:
+            logger.exception("pr_sweep failed to post flag notification for %s#%d", slug, pr_id)
 
     def _main_uv_audit_red(self, *, slug: str) -> bool:
         try:
@@ -383,34 +435,23 @@ def _find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClea
     return None
 
 
-def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
-    number_raw = raw.get("number")
-    number = number_raw if isinstance(number_raw, int) else 0
-    head_sha = _as_str(raw.get("headRefOid"))
-    is_draft = bool(raw.get("isDraft"))
-    url = _as_str(raw.get("url"))
-    title = _as_str(raw.get("title"))
-    reviews_raw = raw.get("reviews")
-    reviews: list[object] = list(reviews_raw) if isinstance(reviews_raw, list) else []
-    rollup_raw = raw.get("statusCheckRollup")
-    rollup: list[object] = list(rollup_raw) if isinstance(rollup_raw, list) else []
-    return PrSummary(
-        slug=slug,
-        number=number,
-        head_sha=head_sha,
-        is_draft=is_draft,
-        has_changes_requested=_has_changes_requested(reviews),
-        checks=tuple(_decode_check(cast("GhCheckJson", item)) for item in rollup if isinstance(item, dict)),
-        url=url,
-        title=title,
-    )
+def _has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
+    """True iff a recorded INDEPENDENT cold-review vouches for this exact head (#68).
 
+    A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
+    durable record of a cold review; ``ReviewVerdict.record`` refuses a
+    self-attested verdict (``is_non_reviewer_role``), so any row that
+    exists was issued by an identity that is not the maker/coding-agent/
+    loop. The bypass requires a ``merge_safe`` verdict bound to the live
+    head SHA — a stale verdict reviewed a tree the PR no longer points at
+    and cannot authorise the merge. A maker who is the only identity on
+    the repo therefore cannot self-merge: no independent reviewer means no
+    matching row and the auto-merge is refused.
+    """
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
 
-def _as_str(value: object) -> str:
-    return value if isinstance(value, str) else ""
-
-
-_classify_gh_stderr = classify_gh_stderr
+    candidates = ReviewVerdict.objects.for_pr(slug, pr_id).filter(verdict=ReviewVerdict.Verdict.MERGE_SAFE)
+    return any(not verdict.is_stale_at(head_sha) for verdict in candidates)
 
 
 def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
@@ -425,166 +466,6 @@ def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
             "merged": attempt.merged,
             "merged_sha": attempt.merged_sha,
             "overlay": overlay,
+            "url": attempt.url,
         },
     )
-
-
-@dataclass(slots=True)
-class GhPrApiClient:
-    """``gh``-backed :class:`PrApiClient`.
-
-    *token* — when non-empty — is exported as ``GH_TOKEN`` for every
-    subprocess call so the scanner can hit a private repo on behalf of a
-    given overlay using that overlay's PAT.
-    """
-
-    token: str = ""
-
-    def list_open_prs(self, *, slug: str) -> list[PrSummary]:
-        argv = [
-            "pr",
-            "list",
-            "--repo",
-            slug,
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefOid,isDraft,url,title,reviews,statusCheckRollup",
-        ]
-        rc, out, err = self._run_gh(argv)
-        if rc == _GH_NOT_INSTALLED_RC:
-            # gh-not-installed is an environmental error, not an upstream
-            # auth/rate-limit issue — preserve the pre-existing "fall back
-            # to empty" behaviour so a machine without ``gh`` does not spam
-            # ScannerError per tick.
-            return []
-        if rc != 0:
-            error_class = _classify_gh_stderr(err)
-            detail = f"gh pr list {slug!r} rc={rc}: {err.strip()[:200]}"
-            raise ScannerError(
-                scanner="pr_sweep",
-                error_class=error_class,
-                detail=detail,
-            )
-        if not out.strip():
-            return []
-        try:
-            data = json.loads(out)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(data, list):
-            return []
-        return [_decode_pr(slug=slug, raw=cast("GhPrJson", item)) for item in data if isinstance(item, dict)]
-
-    def main_check_failed(self, *, slug: str, check_name: str) -> bool:
-        argv = [
-            "api",
-            f"repos/{slug}/commits/main/check-runs",
-            "--jq",
-            f'.check_runs | map(select(.name == "{check_name}")) | .[0].conclusion // ""',
-        ]
-        rc, out, _ = self._run_gh(argv)
-        if rc != 0:
-            return False
-        return out.strip().lower() not in {"success", "neutral", "skipped", ""}
-
-    def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]:
-        argv = ["pr", "merge", str(pr_id), "--repo", slug, "--squash"]
-        rc, _out, _err = self._run_gh(argv)
-        if rc != 0:
-            return False, ""
-        rc, out, _ = self._run_gh(
-            ["pr", "view", str(pr_id), "--repo", slug, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
-        )
-        if rc == 0 and out.strip():
-            return True, out.strip()
-        return True, "sha-unavailable"
-
-    def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
-        gh = shutil.which("gh") or "gh"
-        env = {**os.environ, "GH_TOKEN": self.token} if self.token else None
-        try:
-            result = run_allowed_to_fail([gh, *argv], expected_codes=None, env=env)
-        except FileNotFoundError:
-            return 127, "", "gh not installed"
-        return result.returncode, result.stdout, result.stderr
-
-
-def _has_changes_requested(reviews: list[object]) -> bool:
-    """True iff any review on the PR is in ``CHANGES_REQUESTED`` state."""
-    for review in reviews:
-        if not isinstance(review, dict):
-            continue
-        review_dict = cast("GhReviewJson", review)
-        state = _as_str(review_dict.get("state")).upper()
-        if state == "CHANGES_REQUESTED":
-            return True
-    return False
-
-
-def _decode_check(raw: GhCheckJson) -> CheckResult:
-    name = _as_str(raw.get("name")) or _as_str(raw.get("context"))
-    conclusion = _as_str(raw.get("conclusion"))
-    status = _as_str(raw.get("status"))
-    # Legacy StatusContext entries (no ``status`` field) carry ``state``;
-    # treat ``state == SUCCESS`` as a green completed check so non-Check-Run
-    # contexts (e.g. external CI) still classify correctly.
-    if not status and not conclusion:
-        state = _as_str(raw.get("state")).upper()
-        if state == "SUCCESS":
-            conclusion = "SUCCESS"
-            status = "COMPLETED"
-        elif state == "PENDING":
-            status = "IN_PROGRESS"
-        elif state:
-            conclusion = "FAILURE"
-            status = "COMPLETED"
-    return CheckResult(name=name, conclusion=conclusion, status=status)
-
-
-@dataclass(slots=True)
-class CallCommandMergeKeystone:
-    """Production :class:`MergeKeystone` — invokes ``call_command('ticket', 'merge', …)``."""
-
-    loop_identity: str = "merge-loop"
-
-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
-        from django.core.management import call_command  # noqa: PLC0415
-
-        result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
-        if not isinstance(result, dict):
-            return False, "", "ticket merge returned non-dict"
-        merged = bool(result.get("merged"))
-        merged_sha = str(result.get("merged_sha") or "")
-        error = str(result.get("error") or "")
-        return merged, merged_sha, error
-
-
-@dataclass(slots=True)
-class SlackMergeNotifier:
-    """Post a one-line DM on every actual merge (no DM on skips — acceptance gate)."""
-
-    backend: object
-    user_id: str = ""
-
-    def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
-        if not self.user_id:
-            return
-        post = getattr(self.backend, "post_dm", None) or getattr(self.backend, "post_message", None)
-        if not callable(post):
-            return
-        prefix = "merged (uv-audit fallback)" if fallback else "merged"
-        sha_short = merged_sha[:8] if merged_sha else "?"
-        post(channel=self.user_id, text=f"{prefix} {slug}#{pr_id} @ {sha_short}")
-
-
-@dataclass(slots=True)
-class NullMergeNotifier:
-    """No-op notifier — used when Slack is not configured for the overlay."""
-
-    calls: list[tuple[str, int, str, bool]] = field(default_factory=list)
-
-    def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:
-        self.calls.append((slug, pr_id, merged_sha, fallback))
