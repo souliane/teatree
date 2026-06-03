@@ -161,9 +161,23 @@ class TestFollowupLoopBuildJobs:
 
     def test_backends_path(self, stub_backend: Any) -> None:
         # No hosts on the stub → no AssignedIssuesScanner jobs.
-        # messaging None → no ReviewNagScanner job.
+        # messaging None → no ReviewNagScanner / ReviewRequestMergeReactScanner job.
         jobs = FOLLOWUP_LOOP.build_jobs(backends=[stub_backend])
         assert jobs == []
+
+    def test_messaging_backend_wires_nag_and_merge_react(
+        self,
+        stub_backend: Any,
+        stub_messaging: Any,
+    ) -> None:
+        # messaging present → both the review-nag and the merged-request
+        # :merge: reaction scanner are wired for the overlay (#1797).
+        stub_backend.messaging = stub_messaging
+        stub_backend.host = MagicMock()
+        jobs = FOLLOWUP_LOOP.build_jobs(backends=[stub_backend])
+        names = {j.scanner.name for j in jobs}
+        assert "review_nag" in names
+        assert "review_request_merge_react" in names
 
 
 class TestShipLoopBuildJobs:

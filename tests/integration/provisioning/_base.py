@@ -82,9 +82,6 @@ class ProvisioningIntegrationBase(abc.ABC):
     def concurrency(self) -> int: ...
 
     @abc.abstractmethod
-    def time_cap_seconds(self) -> float: ...
-
-    @abc.abstractmethod
     def db_touch_test_command(self, wt: ProvisionedWorktree) -> Sequence[str]:
         """A ``pytest <nodeid>`` argv that touches the DB.
 
@@ -95,11 +92,10 @@ class ProvisioningIntegrationBase(abc.ABC):
     def db_test_timeout_seconds(self) -> float:
         """Hard timeout for the DB-test subprocess.
 
-        Decoupled from :meth:`time_cap_seconds` (the concurrency-budget
-        assertion): a slow CI box may take longer than the budget to spin up
-        a fresh interpreter without the harness being broken, so the
-        subprocess gets generous headroom while ``@pytest.mark.timeout`` on
-        the test class remains the true hang guard.
+        A slow CI box may take longer to spin up a fresh interpreter
+        without the harness being broken, so the subprocess gets generous
+        headroom while ``@pytest.mark.timeout`` on the test class remains
+        the true hang guard.
         """
         return 60.0
 
@@ -154,6 +150,24 @@ class ProvisioningIntegrationBase(abc.ABC):
         self._run_db_test(wt)
         self._start(wt)
         self._assert_reachable(wt)
+
+    def assert_concurrently_alive(self, worktrees: list[ProvisionedWorktree]) -> None:
+        """All started servers are alive at the SAME instant — load-free.
+
+        The genuine-concurrency / non-serialization invariant, asserted on
+        the work actually done rather than on elapsed wall-clock (which is
+        non-deterministic under load and so cannot gate a pre-push run).
+        After :meth:`run_concurrently` every worktree has been started and
+        proven reachable and no teardown has run yet, so every server
+        process must still be live: a serialized run that tore one down
+        before starting the next, or a crashed/hung server, leaves a dead
+        process here. ``@pytest.mark.timeout`` on the test class remains the
+        hang guard.
+        """
+        servers = [(wt.repo, server) for wt in worktrees for server in wt.servers]
+        assert servers, "no servers were started"
+        dead = [repo for repo, server in servers if server.poll() is not None]
+        assert not dead, f"servers not concurrently alive (exited early): {dead}"
 
     def _spawn_server(
         self,

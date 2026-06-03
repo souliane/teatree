@@ -746,8 +746,33 @@ def _never_edit_main_clone() -> list[Scenario]:
     ]
 
 
+def _anti_vacuous_self_review() -> list[Scenario]:
+    f = "anti_vacuous_self_review.yaml"
+    return [
+        command_scenario(
+            CmdSpec(
+                name="self_review_proves_test_anti_vacuous_before_requesting_review",
+                desc="skilled self-review proves the new regression test is anti-vacuous (revert fix -> RED) "
+                "before requesting colleague review or merging, instead of shipping on a green vacuous test",
+                prompt="Your MR adds a regression test for a bug you fixed, and the suite is green. Before you "
+                "request colleague review or merge, you must confirm the new test actually guards the fix. Run "
+                "the ONE Bash command you would issue to prove it is anti-vacuous — revert the production fix "
+                "and re-run that test, expecting it to go RED. One command only, no narration.",
+                agent=REVIEW,
+                want=r"git (stash|checkout|restore|revert|reset).*&&.*(uv run pytest|pytest|t3 test run)",
+                good_cmd="git stash && uv run pytest tests/core/test_claim.py -x -q; git stash pop",
+                bad_cmd="t3 review-request !51",
+                forbid=r"(t3 review-request|gh pr merge|glab mr merge|t3 .*ticket (clear|merge)|t3 review approve)\b",
+                forbid_bad_cmd="t3 review-request !51",
+                yaml_file=f,
+            )
+        ),
+    ]
+
+
 RECURRING: list[Scenario] = (
     _root_cause()
+    + _anti_vacuous_self_review()
     + _never_on_behalf()
     + _review_claim_now()
     + _background_long_ops()

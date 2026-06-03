@@ -32,21 +32,24 @@ that loses the claim skips silently, so exactly one nag is posted per
 fibonacci window even under concurrency.
 
 Merged/closed safety: before posting, the MR's open-state is checked via
-the code-host backend. A merged or closed MR is marked done (no post,
-``review_nag.mr_closed`` signal) so the nag train never bumps a request
-that no longer needs review. An ``UNKNOWN`` state (no backend, auth/network
+the code-host backend. A MERGED MR is routed through ``react_merge_on_post``
+so the ``:merge:`` reaction still lands (and the row is closed) when the nag
+scanner reaches it before the merge-react scanner — the shared ``done_at``
+claim keeps it to one reaction across both paths. A CLOSED MR is just marked
+done (``review_nag.mr_closed``). An ``UNKNOWN`` state (no backend, auth/network
 failure, unparsable URL) fails open and the nag proceeds as before.
 """
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.utils import timezone
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,7 @@ class ReviewNagScanner:
     messaging: MessagingBackend | None
     user_slack_id: str
     host: CodeHostBackend | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
     now: dt.datetime | None = None
     name: str = "review_nag"
 
@@ -134,7 +138,7 @@ class ReviewNagScanner:
             return None
 
         # Never nag a merged/closed MR — mark done and skip the post.
-        closed = self._close_if_mr_not_open(post, right_now)
+        closed = self._close_if_mr_not_open(post, messaging, right_now)
         if closed is not None:
             return closed
 
@@ -143,14 +147,19 @@ class ReviewNagScanner:
     def _close_if_mr_not_open(
         self,
         post: ReviewRequestPost,
+        messaging: MessagingBackend,
         right_now: dt.datetime,
     ) -> ScanSignal | None:
-        """Mark the row done when the MR is merged/closed (no nag posted).
+        """Resolve the row when the MR is merged/closed (no nag posted).
 
-        Fails open: no code-host backend, or an ``UNKNOWN`` open-state
-        (auth/network failure, unparsable URL), returns ``None`` and the
-        nag proceeds — the merged-MR guard must never wedge the train on
-        an unverifiable state.
+        A MERGED MR is handed to :func:`react_merge_on_post` so the
+        ``:merge:`` reaction still lands when the nag scanner reaches the
+        row before the merge-react scanner does — the shared claim keeps it
+        to exactly one reaction across both paths. A CLOSED (not merged) MR
+        just marks the row done. Fails open: no code-host backend, or an
+        ``UNKNOWN`` open-state (auth/network failure, unparsable URL),
+        returns ``None`` and the nag proceeds — the guard must never wedge
+        the train on an unverifiable state.
         """
         if self.host is None:
             return None
@@ -159,7 +168,9 @@ class ReviewNagScanner:
         except Exception as exc:  # noqa: BLE001 — backend lookup must never crash a tick.
             logger.warning("review_nag: open-state lookup failed for %s: %s", post.mr_url, exc)
             return None
-        if open_state not in {PrOpenState.MERGED, PrOpenState.CLOSED}:
+        if open_state is PrOpenState.MERGED:
+            return react_merge_on_post(post, messaging, host=self.host, identities=self.identities)
+        if open_state is not PrOpenState.CLOSED:
             return None
         post.done_at = right_now
         post.save(update_fields=["done_at"])

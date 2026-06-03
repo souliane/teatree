@@ -1,23 +1,26 @@
-"""``t3 tool comment-density`` — the standalone near-zero-comments diff gate.
+"""``t3 tool comment-density`` — the advisory near-zero-comments diff check.
 
 Registers onto the shared ``tool_app`` (side-effect import from
 ``cli/__init__``, mirroring ``test_shape_tools`` / ``skill_ref_tools``). The
-analysis lives in :mod:`teatree.hooks.privacy_diff_comment_density` (the same
-content-blind density pass the pre-push privacy gate already uses); this module
-is the reusable surface that the dedicated prek hook and the CI job both call,
-so any overlay can adopt the check with one command.
+analysis lives in :mod:`teatree.hooks.privacy_diff_comment_density` (a
+content-blind density pass); this module is the reusable surface that the
+dedicated prek hook and the CI job both call, so any overlay can adopt the
+check with one command.
 
 The check is content-blind: it flags a file whose ADDED diff lines either
 exceed a conservative comment:code ratio (with floors so a tiny diff or a
-single explanatory comment never trips) OR carry a run of 3+ consecutive
-comment-only lines. Tooling pragmas (``# type:``/``# noqa``/``# pragma`` /
-``// eslint-disable`` / ``@ts-ignore`` …), docstrings, license/shebang headers,
-``tests/`` and ``docs`` are exempt — the target is WHAT-narration comments
-that merely restate the code.
+single explanatory comment never trips) OR carry a run of consecutive
+comment-only lines past the warn threshold. Tooling pragmas
+(``# type:``/``# noqa``/``# pragma`` / ``// eslint-disable`` / ``@ts-ignore`` …),
+docstrings, license/shebang headers, ``tests/`` and ``docs`` are exempt — the
+target is WHAT-narration comments that merely restate the code.
 
 Diff sources (first match wins): ``--diff <file>``, ``--staged``
 (``git diff --cached``), ``--base-ref <ref>`` (the PR diff vs a base, used by
-CI), else stdin. Exit ``0`` when clean, ``1`` when a file is flagged.
+CI), else stdin. The check is **advisory**: it prints the findings as a
+warning but **always exits 0**, so it never blocks a commit, push, or
+pipeline. There is no content-blind heuristic for "overly long prose" that
+does not also flag legitimate long comments.
 """
 
 import json
@@ -60,13 +63,14 @@ def _read_diff(diff_file: Path | None, base_ref: str | None, *, staged: bool) ->
 def _render_findings(findings: list[CommentDensityFinding]) -> str:
     bullets = "\n".join(f"  - {f.render()}" for f in findings)
     return (
-        "comment-density gate (near-zero-comments rule — names + types are the docs):\n\n"
+        "comment-density warning (near-zero-comments rule — names + types are the docs):\n\n"
         f"{bullets}\n\n"
-        "These added comments restate what the code already says. Delete the\n"
-        "WHAT-narration, or rename the symbols so the intent is self-evident.\n"
-        "Genuine rationale belongs in the commit message; a deliberate\n"
-        "threat-model note may use a `security:` comment prefix; tooling\n"
-        "directives (# noqa / # type: / // eslint-disable …) are already exempt."
+        "These added comments may restate what the code already says. Consider\n"
+        "deleting the WHAT-narration, or renaming the symbols so the intent is\n"
+        "self-evident. Genuine rationale belongs in the commit message; a\n"
+        "deliberate threat-model note may use a `security:` comment prefix;\n"
+        "tooling directives (# noqa / # type: / // eslint-disable …) are already\n"
+        "exempt. This is advisory only — nothing is blocked."
     )
 
 
@@ -82,12 +86,13 @@ def comment_density(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Flag added comments that merely restate the code (near-zero-comments rule).
+    """Warn on added comments that merely restate the code (near-zero-comments rule).
 
     Content-blind density pass over a unified diff. Reusable by any overlay:
-    the dedicated prek hook and the CI job both call this command. Exits ``1``
-    when a file's added lines are comment-dense, ``0`` when clean. Never a
-    PreToolUse gate, so it can never lock the agent's tools.
+    the dedicated prek hook and the CI job both call this command. The check
+    is **advisory** — it prints the findings as a warning but **always exits
+    0**, so it never blocks a commit, push, or pipeline, and it is never a
+    PreToolUse gate.
     """
     diff = _read_diff(diff_file, base_ref, staged=staged)
     findings = report_diff(diff)
@@ -112,6 +117,3 @@ def comment_density(
         typer.echo(_render_findings(findings), err=True)
     else:
         typer.echo("comment-density: no findings (added comments stay near zero).")
-
-    if findings:
-        raise typer.Exit(code=1)

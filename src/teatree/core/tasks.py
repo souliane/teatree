@@ -23,7 +23,7 @@ class TransitionResult(TypedDict, total=False):
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     import traceback  # noqa: PLC0415
 
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
 
     task_obj = Task.objects.get(pk=task_id)
 
@@ -57,7 +57,7 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     try:
         from teatree.agents.headless import run_headless  # noqa: PLC0415
 
-        overlay = get_overlay()
+        overlay = get_overlay_for_ticket(task_obj.ticket)
         attempt = run_headless(
             task_obj,
             phase=phase,

@@ -70,6 +70,7 @@ Fail-closed on an unparsable body via the shared
 """
 
 import re
+from pathlib import Path
 from typing import Final, TypedDict
 
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
@@ -227,7 +228,7 @@ def _exempt_trailing_title_suffix(payload: str, title_fragments: list[str]) -> s
     return "\n".join(lines)
 
 
-def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the body the bare-reference gate should scan, or ``None`` to skip.
 
     A Bash command bound for an EXTERNAL FORGE (a ``gh``/``glab`` post, a
@@ -235,6 +236,11 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     auto-links bare ids, so the gate must NOT fire (#1530). A user-facing
     Bash publish returns its flattened body for scanning; a non-publish
     command returns ``None``. A Slack MCP tool is always user-facing.
+
+    ``cwd`` is the harness-provided working directory; it is the fallback base
+    for resolving a ``git commit -F <relpath>`` body file when the command
+    names no commit dir of its own, so a relative body file unreadable from
+    the cold hook's reset cwd is still scanned (the same root cause as #1415).
     """
     if tool_name == "Bash":
         command = tool_input.get("command", "")
@@ -242,7 +248,7 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
             return None
         if classify_bash_destination(command) is DestinationKind.EXTERNAL_FORGE:
             return None
-        payload = _extract_bash_payload(command, fail_closed_body_file=True)
+        payload = _extract_bash_payload(command, fail_closed_body_file=True, cwd=cwd)
         return _exempt_trailing_title_suffix(payload, _extract_title_fragments(command))
     return _extract_slack_mcp_payload(tool_name, tool_input)
 
