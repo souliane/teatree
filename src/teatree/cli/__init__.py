@@ -39,6 +39,7 @@ from teatree.cli import (
 from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
 )
+from teatree.cli import verify_gates as _verify_gates  # noqa: F401  (side-effect: registers verify-gates onto tool_app)
 from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app

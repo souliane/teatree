@@ -90,7 +90,7 @@ If the (possibly-bundled) branch has **more than one** commit, offer to squash f
 1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in `~/.teatree`."
 2. **`T3_PUSH` is `true`** — if not, stop: "Pushing is disabled (`T3_PUSH=false`). Push manually with `git push` if you're sure."
 3. **Has a push remote:** `git -C "$T3_REPO" remote -v` → shows a push URL for `origin`.
-4. **Pre-commit passes:** `cd "$T3_REPO" && prek run --all-files` — fix first if it fails.
+4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); fix first if it fails.
 5. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 6. **Privacy scan passes:** see `t3:retro` § Privacy Scan. Scan the diff of unpushed commits.
 
