@@ -289,6 +289,37 @@ notify_on_post_on_behalf = false
 
         assert get_effective_settings().notify_on_post_on_behalf is False
 
+    def test_overlay_can_override_require_review_context(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deep-retrieval gate is per-overlay overridable.
+
+        A spec-heavy overlay can require deep retrieval before any review
+        verdict while the global default stays off — runs through the generic
+        ``OVERLAY_OVERRIDABLE_SETTINGS`` registry.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "specheavy")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+require_review_context = false
+
+[overlays.specheavy]
+class = "x.y:Z"
+require_review_context = true
+""",
+        )
+
+        assert get_effective_settings().require_review_context is True
+
     def test_overlay_can_override_orchestrator_bash_gate_enabled(
         self,
         config_file: Path,
