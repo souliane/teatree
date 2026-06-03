@@ -568,15 +568,8 @@ class UserSettings:
     # Distinct from ``architectural_review_skill`` (the periodic cadence
     # scanner) — this one gates a single ticket's reviewing attestation.
     review_skill: str = ""
-    # Deep-retrieval gate: when true, the ``-> reviewing`` transition is
-    # blocked until the referenced-context retrieval is recorded
-    # (``teatree.core.review_context_gate``) — the work item was fetched
-    # from its source, its links were followed, and the referenced
-    # documents were downloaded + analyzed against the diff. Default false
-    # = opt-in unset, so the gate is a NO-OP and existing reviewing
-    # attestations record unchanged. Per-overlay overridable so a
-    # spec-heavy overlay can require deep retrieval while a docs-only
-    # overlay stays unblocked.
+    # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
+    # default false = NO-OP. Per-overlay overridable.
     require_review_context: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the

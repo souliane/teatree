@@ -207,6 +207,20 @@ class TestRecordReviewContext(TestCase):
         assert ticket.extra["review_context"]["work_item"] == "https://x/issues/51"
         assert ticket.extra["review_context"]["documents"] == ["uploads/abc/schedule.pdf"]
 
+    def test_record_review_context_command_refuses_partial_args(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
+        result = call_command(
+            "lifecycle",
+            "record-review-context",
+            str(ticket.pk),
+            work_item="https://x/issues/51",
+            documents="",
+            analysis="schedule matches the diff",
+        )
+        assert "refused" in result
+        ticket.refresh_from_db()
+        assert "review_context" not in (ticket.extra or {})
+
 
 class TestReviewContextResolvers(TestCase):
     def test_review_context_required_reads_effective_settings(self) -> None:

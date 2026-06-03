@@ -46,7 +46,7 @@ class ReviewContextError(RuntimeError):
 
 
 def review_context_required() -> bool:
-    """Whether the deep-retrieval gate is in force (env -> overlay -> global)."""
+    """Whether the deep-retrieval gate is in force (overlay -> global)."""
     return get_effective_settings().require_review_context
 
 

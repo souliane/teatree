@@ -109,8 +109,10 @@ _ALLOWED_TRANSITIONS = {
 def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
     """Actionable refusal when a `review` verdict lacks recorded context, else ``""``.
 
-    Mirrors the ``review_context_satisfied`` FSM condition so the direct-CLI
-    review driver gets a fix-it message instead of a generic "not allowed".
+    Mirrors the ``review_context_satisfied`` FSM condition the workflow path
+    (``Task.complete()``) and the lifecycle ``reviewing``-phase path also
+    consult, so the direct-CLI review driver gets a fix-it message instead of a
+    generic "not allowed".
     """
     if transition_name != "review" or ticket.review_context_satisfied():
         return ""
@@ -149,12 +151,8 @@ class Command(TyperCommand):
                 method()
                 ticket.save()
         except TransitionNotAllowed:
-            # Path-independent deep-retrieval constraint: a substantive review
-            # verdict driven through this CLI (the `review` transition) is gated
-            # by the same `review_context_satisfied` FSM condition as the
-            # dynamic-workflow path (`Task.complete()` -> `mark_reviewed_externally`)
-            # and the lifecycle `reviewing`-phase path. Surface the actionable
-            # reason instead of a generic "not allowed" when that is the cause.
+            # Surface the deep-retrieval refusal reason when that blocked the
+            # `review` transition, else the generic not-allowed message.
             context_refusal = _review_context_refusal(ticket, transition_name)
             return {
                 "error": context_refusal or f"Transition '{transition_name}' not allowed from state '{ticket.state}'",

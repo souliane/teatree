@@ -86,11 +86,8 @@ class TicketExtra(TypedDict, total=False):
     # reviewing-phase gate reads this to refuse a ``reviewing`` attestation
     # that no review-skill execution backs.
     review_skill_run: "ReviewSkillRun"
-    # Deep-retrieval evidence: the ticket/work-item was fetched from its
-    # source and the referenced documents were downloaded + analyzed against
-    # the diff before the ``reviewing`` attestation. The reviewing-phase gate
-    # (``teatree.core.review_context_gate``) reads this to refuse a verdict
-    # formed from the diff alone.
+    # Deep-retrieval evidence backing a ``reviewing`` attestation; read by
+    # ``review_context_gate`` (see ``ReviewContext`` below).
     review_context: "ReviewContext"
 
 
