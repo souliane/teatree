@@ -4,6 +4,15 @@ The hook loads forbidden tokens at runtime from
 ``$TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated). These tests inject a
 small set of placeholder tokens via that env var and assert the hook
 catches them and ignores false positives.
+
+The gate now uses the SAME whole-token matcher as the ``banned_terms``
+posting gate (``teatree.hooks.term_match``): a term matches only when its
+own tokens appear as a contiguous run of whole tokens, with ``-``, ``_``,
+whitespace, and punctuation as separators. The intentional trade-off is
+that a glued camelCase/PascalCase identifier (``demoSavings`` — one token)
+no longer matches a multi-word term (``demo-savings`` → [demo, savings]);
+the term must appear in a separator-delimited form (kebab/snake/space) to
+trip the gate.
 """
 
 import os
@@ -146,26 +155,26 @@ class TestNoOverlayLeakHook:
         assert result.returncode == 1
         assert snake_variant in result.stdout.lower()
 
-    @pytest.mark.parametrize(
-        "camel_variant",
-        ["demoSavings", "fakeProduct", "t3FakeOverlay"],
-    )
-    def test_blocks_camel_case_variant(self, tmp_path: Path, camel_variant: str) -> None:
-        _seed(tmp_path, "src/teatree/foo.py", f"value = {camel_variant}\n")
+    def test_blocks_space_separated_variant(self, tmp_path: Path) -> None:
+        # Whitespace is a token separator too, so a multi-word term written
+        # with spaces tokenizes identically to its kebab form and is caught.
+        _seed(tmp_path, "docs/notes.md", "# Notes\n\nthe demo savings flow\n")
 
         result = _run(tmp_path)
 
         assert result.returncode == 1
-        assert camel_variant.lower() in result.stdout.lower()
+        assert "demo-savings" in result.stdout.lower()
 
     @pytest.mark.parametrize(
-        "pascal_variant",
-        ["DemoSavings", "FakeProduct", "T3FakeOverlay"],
+        "glued_variant",
+        # DOCUMENTED TRADE-OFF: a glued camelCase/PascalCase identifier is a
+        # single token, so a multi-word term no longer matches it. The term
+        # must appear separator-delimited (kebab/snake/space) to trip the gate.
+        ["demoSavings", "fakeProduct", "t3FakeOverlay", "DemoSavings", "FakeProduct", "T3FakeOverlay"],
     )
-    def test_blocks_pascal_case_variant(self, tmp_path: Path, pascal_variant: str) -> None:
-        _seed(tmp_path, "src/teatree/foo.py", f"class {pascal_variant}: pass\n")
+    def test_glued_camel_or_pascal_variant_is_not_matched(self, tmp_path: Path, glued_variant: str) -> None:
+        _seed(tmp_path, "src/teatree/foo.py", f"value = {glued_variant}\n")
 
         result = _run(tmp_path)
 
-        assert result.returncode == 1
-        assert pascal_variant.lower() in result.stdout.lower()
+        assert result.returncode == 0, result.stdout

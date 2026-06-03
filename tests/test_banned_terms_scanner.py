@@ -106,6 +106,61 @@ class TestScanText:
         assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
 
 
+class TestWholeTokenMatching:
+    """The posting gate matches whole tokens, not substrings (over-block fix).
+
+    A short configured term must not surface inside a longer unbroken word
+    (the real failing case was a short term blocking a longer English word
+    that merely contained it). The synthetic ``acme`` term proves the same
+    class of bug without naming any real customer/overlay value.
+    """
+
+    @pytest.fixture
+    def short_term_config(self, tmp_path: Path) -> Path:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-corp", "foo_bar"]\n', encoding="utf-8")
+        return cfg
+
+    @pytest.mark.parametrize("text", ["acmecorp ships next week", "a cooperative effort", "pacme builds"])
+    def test_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("rolling out acme today", "acme"),
+            ("see x-acme-y in the diff", "acme"),
+            ("Acme, hi there", "acme"),
+            # ``acme`` is the first configured term and is a whole token of
+            # ``acme-corp``, so it is the one reported — the block still fires.
+            ("the acme-corp account", "acme"),
+            ("set foo_bar = 1", "foo_bar"),
+            ("the foo bar value", "foo_bar"),
+        ],
+    )
+    def test_whole_token_run_blocks(self, short_term_config: Path, text: str, expected: str) -> None:
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
+
+    def test_isolated_multi_token_term_blocks_and_is_reported(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acme-corp"]\n', encoding="utf-8")
+        assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
+
+
+class TestMatchedTermAttribution:
+    """``_matched_term`` attributes by whole-token match, never substring.
+
+    A flagged line that contains a longer word must not be attributed to a
+    short term that is merely its substring.
+    """
+
+    def test_attribution_is_not_a_substring_coincidence(self) -> None:
+        # ``wid`` is a substring of ``widget`` but is NOT a whole token in the
+        # flagged line, so the real whole-token term is reported instead.
+        report = "BANNED TERM in /tmp/x.txt:\n  1:the acme widget shipped\n\nBanned terms: wid, acme\n"
+        assert banned_terms_scanner._matched_term(report) == "acme"
+
+
 class TestExtractSecretScanSurfaces:
     def test_title_long_flag_secret_is_surfaced(self) -> None:
         secret = "ghp_" + "A" * 40
