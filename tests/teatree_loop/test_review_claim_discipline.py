@@ -35,8 +35,15 @@ from teatree.loop.review_claim import (
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 CHANNEL = "C0REVIEW"
 TS = "1779990001.000001"

@@ -10,11 +10,19 @@ without dedup-by-MR. No ``:eyes:`` claim reaction is posted at discovery
 
 from dataclasses import dataclass, field
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import ScannedBroadcast
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 MR_OPEN = "https://gitlab.example.com/team/project/-/merge_requests/9001"
 CHANNELS = ["C0AAA", "C0BBB", "C0CCC"]

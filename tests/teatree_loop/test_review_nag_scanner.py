@@ -14,7 +14,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.config import TeaTreeConfig, UserSettings
+from teatree.config import OnBehalfPostMode, TeaTreeConfig, UserSettings
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_nag import ReviewNagScanner, fibonacci_step_for_age
 from teatree.types import RawAPIDict
@@ -29,7 +29,9 @@ class _EnableReviewNagMixin:
 
     def setUp(self) -> None:
         super().setUp()
-        enabled = TeaTreeConfig(user=UserSettings(review_nag_enabled=True))
+        enabled = TeaTreeConfig(
+            user=UserSettings(review_nag_enabled=True, on_behalf_post_mode=OnBehalfPostMode.IMMEDIATE),
+        )
         patcher = patch("teatree.config.load_config", return_value=enabled)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -60,6 +62,9 @@ class FakeSlack:
             raise self.raise_on_post
         self.posts.append({"channel": channel, "text": text, "thread_ts": thread_ts})
         return {"ok": True, "ts": f"reply.{len(self.posts)}"}
+
+    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        return self.post_message(channel=channel, text=text, thread_ts=thread_ts)
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         return self.post_message(channel=channel, text=text, thread_ts=ts)

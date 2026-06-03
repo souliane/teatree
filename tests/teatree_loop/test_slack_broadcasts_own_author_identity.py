@@ -18,6 +18,7 @@ of whether an overlay implements ``get_gitlab_username()``.
 
 from dataclasses import dataclass, field
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.backend_factory import OverlayBackends
@@ -26,6 +27,13 @@ from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState
 from teatree.loop.tick_jobs import _slack_broadcasts_scanner_for
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 CHANNEL = "C0AM3TENTLK"
 TS_A = "1779201478.501469"

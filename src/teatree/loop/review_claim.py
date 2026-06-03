@@ -36,6 +36,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
@@ -170,25 +171,51 @@ def emit_review_done_reactions(
     if resolved is None:
         return []
     channel, ts, target_url = resolved
+    egress = OnBehalfSlackEgress(messaging)
     posted: list[str] = []
     for emoji in emojis:
         if reaction_already_present(message=None, channel=channel, ts=ts, emoji=emoji):
             continue
-        if _react_routed(messaging, channel=channel, ts=ts, emoji=emoji):
+        try:
+            reacted = _egress_react(egress, channel=channel, ts=ts, emoji=emoji, target_url=target_url)
+        except OnBehalfPostBlockedError as blocked:
+            logger.info("emit_review_done_reactions: review-DONE reaction gated: %s", blocked)
+            break
+        if reacted:
             record_reaction_claim(channel=channel, ts=ts, emoji=emoji, target_url=target_url)
             posted.append(emoji)
     return posted
 
 
-def _react_routed(messaging: "MessagingBackend", *, channel: str, ts: str, emoji: str) -> bool:
-    """React via the token-routed path; True on success, False on any failure.
+def _egress_react(
+    egress: OnBehalfSlackEgress,
+    *,
+    channel: str,
+    ts: str,
+    emoji: str,
+    target_url: str,
+) -> bool:
+    """React via the gated egress; True when the emoji is present, False on transport failure.
 
     Treats a Slack ``already_reacted`` response as success — the desired end
     state is the emoji being present. A transport error never crashes the
-    caller (a review verdict is recorded regardless of the Slack signal).
+    caller (a review verdict is recorded regardless of the Slack signal). A
+    BLOCK verdict propagates as :class:`OnBehalfPostBlockedError` for the
+    caller to surface.
     """
     try:
-        response = messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
+        response = egress.react(
+            channel=channel,
+            ts=ts,
+            emoji=emoji,
+            target=target_url,
+            action=f"review_done_reaction:{emoji}",
+            destination=f"review-request for {target_url}",
+            artifact_url=target_url,
+            summary=f":{emoji}: review-DONE reaction",
+        )
+    except OnBehalfPostBlockedError:
+        raise
     except Exception as exc:  # noqa: BLE001 — a Slack failure must not break verdict recording.
         logger.warning("emit_review_done_reactions: react failed for %s/%s :%s:: %s", channel, ts, emoji, exc)
         return False
