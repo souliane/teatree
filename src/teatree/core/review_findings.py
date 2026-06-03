@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse
 
+from teatree.core.models import NEEDS_TRIAGE_LABEL
 from teatree.hooks import banned_terms_scanner
 from teatree.hooks.bare_reference_scanner import _BARE_ISSUE_RE, _BARE_SLACK_TS_RE, _BARE_URL_RE, find_bare_references
 from teatree.paths import get_data_dir
@@ -362,11 +363,24 @@ def _issue_url(raw: RawAPIDict) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FilingContext:
-    """Per-run context for filing enforcement issues from a PR's findings."""
+    """Per-run context for filing enforcement issues from a PR's findings.
+
+    ``auto_filed`` is the souliane-account caveat: the factory files these
+    issues *as* the maintainer's account, so the author-only auto-triage
+    GitHub Action cannot tell them apart from a human-filed issue. Anything
+    the agent files autonomously (the default) self-applies
+    :data:`~teatree.core.models.implemented_issue_marker.NEEDS_TRIAGE_LABEL` so
+    the loop's claim gate withholds it until the maintainer reviews. A caller
+    that files at the user's direction sets ``auto_filed=False``.
+    """
 
     repo: str
     pr_url: str
     label: str = "enforcement-gap"
+    auto_filed: bool = True
+
+    def labels(self) -> list[str]:
+        return [self.label, NEEDS_TRIAGE_LABEL] if self.auto_filed else [self.label]
 
 
 def file_class_c_issue(
@@ -417,7 +431,7 @@ def file_class_c_issue(
             withheld_reason=f"contains bare reference(s): {', '.join(leaked)}",
         )
 
-    raw = host.create_issue(repo=context.repo, title=title, body=body, labels=[context.label])
+    raw = host.create_issue(repo=context.repo, title=title, body=body, labels=context.labels())
     return FiledIssue(fingerprint=finding.fingerprint, url=_issue_url(raw), already_filed=False)
 
 

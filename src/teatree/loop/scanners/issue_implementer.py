@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from teatree.backends.protocols import CodeHostBackend
-from teatree.core.models import ImplementedIssueMarker
+from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -71,7 +71,8 @@ class IssueImplementerScanner:
     """Claim open, labelled issues for the auto-implementer pipeline (#1553).
 
     Lists the configured *identities*' open issues on *host*, keeps the ones
-    carrying *label*, and claims each via the TOCTOU-safe
+    carrying *label* but NOT :data:`NEEDS_TRIAGE_LABEL` (a maintainer-applied
+    hold), and claims each via the TOCTOU-safe
     :meth:`ImplementedIssueMarker.claim`. A claim that returns ``None`` (the
     row already exists — another tick or overlay took it) is skipped
     silently, so the scanner never double-dispatches. Each newly claimed
@@ -101,7 +102,10 @@ class IssueImplementerScanner:
             try:
                 if not _issue_is_open(issue):
                     continue
-                if self.label not in _issue_labels(issue):
+                labels = _issue_labels(issue)
+                if self.label not in labels:
+                    continue
+                if NEEDS_TRIAGE_LABEL in labels:
                     continue
                 url = _issue_url(issue)
                 if not url:
