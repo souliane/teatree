@@ -112,3 +112,55 @@ class IssueImplementerScannerTests(TestCase):
     def test_dict_shaped_labels_are_matched(self) -> None:
         host = _Host(issues=[{"web_url": self.URL_A, "title": "t", "labels": [{"name": self.LABEL}]}])
         assert len(self._scanner(host).scan()) == 1
+
+
+class IssueImplementerNeedsTriageGateTests(TestCase):
+    """``needs-triage`` blocks auto-implementation even when the implementer label is present.
+
+    The maintainer applies ``needs-triage`` to an issue to withhold it from the
+    autonomous factory until they have reviewed it. The scanner is the claim
+    chokepoint, so the gate filters such issues out at selection time — they are
+    never claimed, never dispatched, and no marker row is written.
+    """
+
+    OVERLAY = "acme"
+    LABEL = "auto-implement"
+    URL_A = "https://github.com/souliane/teatree/issues/200"
+    URL_B = "https://github.com/souliane/teatree/issues/201"
+
+    def _scanner(self, host: _Host) -> IssueImplementerScanner:
+        return IssueImplementerScanner(host=host, label=self.LABEL, overlay_name=self.OVERLAY)
+
+    @staticmethod
+    def _issue(url: str, *, labels: list[str]) -> RawAPIDict:
+        return {"web_url": url, "title": "do it", "labels": labels, "state": "open"}
+
+    def test_needs_triage_issue_is_not_claimed(self) -> None:
+        host = _Host(issues=[self._issue(self.URL_A, labels=[self.LABEL, "needs-triage"])])
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_needs_triage_does_not_starve_a_clean_sibling(self) -> None:
+        host = _Host(
+            issues=[
+                self._issue(self.URL_A, labels=[self.LABEL, "needs-triage"]),
+                self._issue(self.URL_B, labels=[self.LABEL]),
+            ]
+        )
+        signals = self._scanner(host).scan()
+        assert {s.payload["url"] for s in signals} == {self.URL_B}
+        assert not ImplementedIssueMarker.objects.filter(issue_url=self.URL_A).exists()
+
+    def test_dict_shaped_needs_triage_label_is_honoured(self) -> None:
+        host = _Host(
+            issues=[
+                {
+                    "web_url": self.URL_A,
+                    "title": "t",
+                    "labels": [{"name": self.LABEL}, {"name": "needs-triage"}],
+                    "state": "open",
+                }
+            ]
+        )
+        assert self._scanner(host).scan() == []
+        assert not ImplementedIssueMarker.objects.exists()
