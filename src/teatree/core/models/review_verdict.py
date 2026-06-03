@@ -121,6 +121,17 @@ class ReviewVerdict(models.Model):
         MERGE_SAFE = "merge_safe", "Merge-safe"
         HOLD = "hold", "Hold"
 
+    #: The Slack review-DONE reaction set per verdict (#113/#88): the loop
+    #: reacts ``:eyes:`` (review finished — never at claim time) plus the
+    #: verdict emoji. A clean / approvable review adds ``:white_check_mark:``;
+    #: a review with blocking comments the author must address adds
+    #: ``:question:``. The GitLab inline comments are the substance — the
+    #: reaction is the ONLY Slack signal, never an author DM.
+    DONE_EMOJIS: ClassVar[dict[str, tuple[str, ...]]] = {
+        Verdict.MERGE_SAFE: ("eyes", "white_check_mark"),
+        Verdict.HOLD: ("eyes", "question"),
+    }
+
     ticket = models.ForeignKey(
         Ticket,
         on_delete=models.CASCADE,
@@ -265,3 +276,7 @@ class ReviewVerdict(models.Model):
             and not self.is_stale_at(current_head_sha)
             and live_checks_status.strip().lower() == MergeClear.VerifyResult.GREEN
         )
+
+    def done_reaction_emojis(self) -> tuple[str, ...]:
+        """The ``:eyes:`` + verdict emoji set to post on the MR's Slack message (#113/#88)."""
+        return self.DONE_EMOJIS.get(self.verdict, ("eyes",))

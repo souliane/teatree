@@ -130,7 +130,15 @@ class LoopsConfig:
         )
 
     def is_enabled(self, loop: MiniLoop) -> bool:
-        """Resolve enable/disable for *loop* across env, per-loop, global, always-on."""
+        """Resolve enable/disable for *loop* across env, per-loop, global, always-on.
+
+        The env kill-switch is resolved against the shared
+        :func:`teatree.loop_enabled.loop_enabled_by_name`-style env parsing here
+        (``_env_disabled_names`` keeps the case-insensitive ``all`` sentinel);
+        the per-loop / global layers read from this already-parsed config so a
+        ``LoopsConfig`` built from an explicit ``path`` (tests) stays
+        authoritative.
+        """
         env_disabled = _env_disabled_names()
         if env_disabled == _ENV_DISABLE_ALL and not loop.always_on:
             return False

@@ -10,10 +10,13 @@ references an MR/PR URL, the scanner:
 * emits a single ``slack.review_intent`` signal that the dispatcher routes
     to the ``t3:reviewer`` agent — the maker/checker boundary is preserved
     because the reviewer agent runs as a separate dispatch from whatever
-    produced the Slack message;
-* posts the ``:eyes:`` reaction on the message when the trigger was a
-    mention (the user hasn't acked yet) — so the user immediately sees that
-    t3 saw the request.
+    produced the Slack message.
+
+No claim reaction is posted at discovery time. A ``:eyes:`` reaction is a
+*claim* on a colleague's review and must appear only when a review is DONE,
+never the moment t3 first sees the request (#113/#86). The review-intent
+signals are also passed through :func:`teatree.loop.review_claim.filter_review_intent_signals`
+so a *stopped* review loop queues none of them (#79).
 
 Mirrors :class:`teatree.loop.scanners.slack_dm_inbound.SlackDmInboundScanner`:
 durable idempotent persistence, single-signal emission, no agent
@@ -23,8 +26,7 @@ reviewed is approved by t3 — it advances ledger rows to ``approved`` so
 the audit trail captures the full reaction → review → approval cycle.
 The ``:white_check_mark:`` Slack reaction itself is posted by
 ``add_approval_reaction`` on the ``PullRequest.approve`` transition (see
-``teatree.core.signals``) — that path was in place before this scanner
-and is reused as-is.
+``teatree.core.signals``) — the review-DONE outcome reaction.
 """
 
 import logging
@@ -34,6 +36,7 @@ from typing import cast
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import ReviewAssignment, ReviewIntent
+from teatree.loop.review_claim import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 
@@ -113,7 +116,9 @@ class SlackReviewIntentScanner:
             if signal is not None:
                 signals.append(signal)
 
-        return signals
+        # #79: a review-intent dispatch is a claim on a colleague's review;
+        # when the review loop is stopped the loop must queue none of them.
+        return filter_review_intent_signals(signals)
 
     def _drain_reactions(self) -> tuple[list[RawAPIDict], bool]:
         """Drain reaction events; flag whether the file-backed queue had any.
@@ -216,14 +221,16 @@ def record_mention_intent(
     backend: MessagingBackend,
     overlay: str = "",
 ) -> ReviewAssignment | None:
-    """Persist a :class:`ReviewAssignment` row and post ``:eyes:`` on an MR-bearing mention.
+    """Persist a :class:`ReviewAssignment` row for an MR-bearing mention.
 
     Called from :class:`SlackMentionsScanner` as a side-effect during the
-    mention drain. Returns the new row on first observation, ``None``
-    when the mention has no MR URL or the row already existed. The
-    ``:eyes:`` post is best-effort and idempotent — Slack's
-    ``already_reacted`` error is acceptable (and not raised by the
-    backend's ``react`` implementation).
+    mention drain. Returns the new row on first observation, ``None`` when
+    the mention has no MR URL or the row already existed.
+
+    No ``:eyes:`` reaction is posted here: a claim reaction must appear only
+    when a review is DONE, never at the moment a mention is first observed
+    (#113/#86). The row records the *intent* to review; the FSM transition
+    path posts the outcome reaction once a review actually lands.
     """
     raw_text = event.get("text")
     raw_channel = event.get("channel")
@@ -246,15 +253,7 @@ def record_mention_intent(
         trigger=ReviewAssignment.Trigger.MENTION,
         overlay=overlay,
     )
-    row = ReviewAssignment.record(intent)
-    if row is None:
-        return None
-    try:
-        backend.react(channel=raw_channel, ts=raw_ts, emoji="eyes")
-        row.mark_eyes_added()
-    except Exception:
-        logger.exception("Failed to post :eyes: on %s/%s", raw_channel, raw_ts)
-    return row
+    return ReviewAssignment.record(intent)
 
 
 def approve_review_assignment(*, mr_url: str, overlay: str = "") -> int:
