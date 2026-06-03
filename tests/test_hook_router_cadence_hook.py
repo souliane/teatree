@@ -12,6 +12,7 @@ tick-meta mtime is staged on disk.
 """
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -195,3 +196,59 @@ def test_loop_cadence_seconds_inserts_src_on_path_when_absent(tmp_path: Path, mo
 
     assert _loop_cadence_seconds() == 120
     assert src_dir not in sys.path
+
+
+class TestLoopRegistrationGateIsOwnerAware:
+    """The loop-registration nudge fires only for the loop driver.
+
+    A *different* live session owns the tick ⇒ this is an attended, non-owner
+    interactive session: nagging it to register a competing ``t3 loop tick`` is
+    pointless (the non-owner tick gate would SKIP it). It must still fire for
+    the owner and for the bootstrap/no-owner case so the loop is never left
+    unregistered. The over-block (must-not-fire) and under-block (must-fire)
+    dimensions are asserted symmetrically.
+    """
+
+    @staticmethod
+    def _owner_record(session_id: str, pid: int) -> dict[str, dict]:
+        return {
+            router._OWNER_LOOP: {
+                "session_id": session_id,
+                "agent_id": "a",
+                "pid": pid,
+                "heartbeat_ts": int(time.time()),
+            }
+        }
+
+    @pytest.fixture(autouse=True)
+    def _registry_and_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg = tmp_path / "data"
+        reg.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg))
+        state = tmp_path / "state"
+        state.mkdir()
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        (state / "s.loop-pending").write_text("1", encoding="utf-8")
+
+    def test_must_fire_for_no_owner_bootstrap_session(self) -> None:
+        # No live owner anywhere (fresh machine): a session eligible to become
+        # owner must STILL be nagged, otherwise nobody ever registers the loop.
+        assert handle_enforce_loop_registration({"session_id": "s", "tool_name": "Bash"}) is True
+
+    def test_must_fire_for_the_owning_session(self) -> None:
+        # This test process pid is alive, so the record survives the prune and
+        # the session is the rightful tick-owner — the loop driver must be nagged.
+        router._write_loop_registry(self._owner_record("s", os.getpid()))
+        assert handle_enforce_loop_registration({"session_id": "s", "tool_name": "Bash"}) is True
+
+    def test_must_not_fire_for_non_owner_attended_session(self) -> None:
+        # A DIFFERENT live session ("owner-1") owns the tick; this fresh
+        # session "s" is the attended, non-owner interactive one — no nag.
+        router._write_loop_registry(self._owner_record("owner-1", os.getpid()))
+        assert handle_enforce_loop_registration({"session_id": "s", "tool_name": "Bash"}) is False
+
+    def test_dead_foreign_owner_is_pruned_so_session_is_driver_and_fires(self) -> None:
+        # The recorded foreign owner's pid is dead → pruned → no live owner →
+        # bootstrap path → this session is the driver and IS nagged (must-fire).
+        router._write_loop_registry(self._owner_record("ghost", 999_999))
+        assert handle_enforce_loop_registration({"session_id": "s", "tool_name": "Bash"}) is True
