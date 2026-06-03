@@ -2,16 +2,20 @@
 
 Shells out to the Claude CLI in ``--output-format stream-json`` mode with
 a per-scenario wall-clock watchdog (120s) and a per-invocation budget
-circuit breaker (``--max-budget-usd 0.10``). When ``claude`` is not on
-PATH the runner returns a skip-shaped :class:`EvalRun` so the harness can
-print a clear ``SKIP`` banner and exit 0 — that path is exercised in CI
-and on contributors who have not installed the CLI locally.
+circuit breaker (``--max-budget-usd 0.10``). The child runs in a virgin
+environment (``--bare`` plus :func:`~teatree.eval.isolation.isolated_claude_env`)
+so the developer's ``~/.claude/CLAUDE.md``, auto-memory, and project
+``CLAUDE.md`` never bias a result. When ``claude`` is not on PATH the runner
+returns a skip-shaped :class:`EvalRun` so the harness can print a clear ``SKIP``
+banner and exit 0 — that path is exercised in CI and on contributors who have
+not installed the CLI locally.
 """
 
 import dataclasses
 import shutil
 from pathlib import Path
 
+from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
@@ -93,6 +97,7 @@ class ClaudePRunner:
         return [
             binary,
             "-p",
+            "--bare",
             "--output-format",
             "stream-json",
             "--verbose",
@@ -123,11 +128,14 @@ class ClaudePRunner:
     @staticmethod
     def _invoke(command: list[str]) -> _RunnerOutcome:
         try:
-            result = run_allowed_to_fail(
-                command,
-                expected_codes=None,
-                timeout=WATCHDOG_SECONDS,
-            )
+            with isolated_claude_env() as (env, cwd):
+                result = run_allowed_to_fail(
+                    command,
+                    expected_codes=None,
+                    timeout=WATCHDOG_SECONDS,
+                    env=env,
+                    cwd=cwd,
+                )
         except TimeoutExpired as exc:
             return _RunnerOutcome(
                 stdout=_coerce_stream(exc.stdout),

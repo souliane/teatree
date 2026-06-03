@@ -17,14 +17,18 @@ Cost controls, by construction:
 *   a process-wide :class:`JudgeBudget` caps the number of judge calls per run,
     so a large suite cannot silently fan out into an unbounded bill.
 
-When ``claude`` is not on PATH the judge skips (mirrors the runner's skip path)
-so CI and judge-less contributors are never blocked.
+Like the runner, the judge call runs in a virgin environment (``--bare`` plus
+:func:`~teatree.eval.isolation.isolated_claude_env`) so the developer's personal
+context never reaches the grader. When ``claude`` is not on PATH the judge skips
+(mirrors the runner's skip path) so CI and judge-less contributors are never
+blocked.
 """
 
 import dataclasses
 import re
 import shutil
 
+from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
@@ -113,7 +117,14 @@ class ClaudeJudge:
         prompt = build_judge_prompt(spec, run)
         command = self._build_command(binary, spec.judge.model, prompt)
         try:
-            result = run_allowed_to_fail(command, expected_codes=None, timeout=WATCHDOG_SECONDS)
+            with isolated_claude_env() as (env, cwd):
+                result = run_allowed_to_fail(
+                    command,
+                    expected_codes=None,
+                    timeout=WATCHDOG_SECONDS,
+                    env=env,
+                    cwd=cwd,
+                )
         except TimeoutExpired:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         passed, rationale = parse_judge_verdict(result.stdout or "")
@@ -124,6 +135,7 @@ class ClaudeJudge:
         return [
             binary,
             "-p",
+            "--bare",
             "--output-format",
             "text",
             "--max-turns",
