@@ -2,7 +2,7 @@ import logging
 
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ class WorktreeVerifyRunner(RunnerBase):
 
     def __init__(self, worktree: Worktree, *, overlay: OverlayBase | None = None) -> None:
         self.worktree = worktree
-        self.overlay = overlay or get_overlay()
+        self.overlay = overlay or get_overlay_for_worktree(worktree)
 
     def run(self) -> RunnerResult:
         checks = self.overlay.get_health_checks(self.worktree)

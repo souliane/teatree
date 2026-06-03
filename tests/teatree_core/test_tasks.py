@@ -435,6 +435,33 @@ class TestExecuteHeadlessTask(TestCase):
         assert attempt.exit_code == 1
         assert "headless runtime crashed" in attempt.error
 
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_resolves_ticket_overlay_with_multiple_installed(self) -> None:
+        """The headless worker resolves the ticket's overlay, not the ambient default.
+
+        Regression for souliane/teatree#1814: with two overlays registered a
+        bare ``get_overlay()`` crashes the worker. ``execute_headless_task``
+        must key off ``task.ticket.overlay`` instead.
+        """
+        ticket = Ticket.objects.create(overlay="beta")
+        session = Session.objects.create(ticket=ticket, overlay="beta", agent_id="agent-2")
+
+        captured: dict[str, object] = {}
+
+        def _capture(task_obj: object, *, phase: str, overlay_skill_metadata: object) -> MagicMock:
+            captured["metadata"] = overlay_skill_metadata
+            return MagicMock(pk=1, exit_code=0, result={})
+
+        self.monkeypatch.setattr("teatree.agents.headless.run_headless", _capture)
+
+        beta_overlay = CommandOverlay()
+        beta_metadata = beta_overlay.metadata.get_skill_metadata()
+        registry = {"alpha": CommandOverlay(), "beta": beta_overlay}
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=registry):
+            Task.objects.create(ticket=ticket, session=session, phase="architectural_review")
+
+        assert captured["metadata"] == beta_metadata
+
 
 class TestAdvanceTicketNormalizesPhase(TestCase):
     """``Task._advance_ticket`` normalizes phase before the FSM compare (#750).
