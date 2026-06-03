@@ -42,7 +42,7 @@ Drop `--session` for the unscoped teatree-tasks queue across every ticket; add `
 
 - Two labeled sections, never merged: **`harness TODOs`** first, then **`teatree tasks`**. Each section header carries its total count; an empty section is omitted entirely.
 - Within each section, groups in fixed order — `pending`, `in_progress`, `completed` — each with its own count; an empty group is omitted.
-- A teatree-task line is `task #<id> (ticket #<n> <phase>): <reason>`; a harness-TODO line is `todo: <text>`.
+- A teatree-task line is `task TODO-<id> (ticket #<n> <phase>): <reason>`; a harness-TODO line is `todo: <text>`. The task id carries the `TODO-` prefix and the ticket carries a bare `#<n>` so the two never collide when both are the same number — a harness/teatree **task id** is a different namespace from a **forge ticket id** and must never render as an ambiguous bare `#<n>` next to one. See `/t3:rules` § "ID Namespace Disambiguation".
 - `claimed` teatree tasks show under `in_progress`; `failed` show under `completed` (both states the user reads as "done with for now").
 - No active harness session → one line saying so (an anonymous caller has no session-scoped list).
 - Nothing in either store → one line: `No todos for this session.`
