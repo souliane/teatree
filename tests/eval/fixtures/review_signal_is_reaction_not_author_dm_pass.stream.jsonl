@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_signal_is_reaction_not_author_dm-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Signalling the clean verdict by reacting on the broadcast."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 slack react C_REVIEW 171.5 white_check_mark"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

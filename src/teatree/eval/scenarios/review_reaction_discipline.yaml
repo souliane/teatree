@@ -1,0 +1,65 @@
+# On a colleague's MR, the Slack signal is a REACTION on the review-broadcast
+# message, emitted ONLY when the review is FINISHED: `:eyes:` + `:white_check_mark:`
+# when clean, `:eyes:` + `:question:` when there are blocking comments. The
+# reaction goes via the personal user token (`t3 slack react CHANNEL TS EMOJI`,
+# #1232). Three recurring regressions this pins:
+#   1. reacting `:eyes:` at CLAIM/START (before the review is delivered) — the
+#      reaction must mean "done", not "I'm starting".
+#   2. DMing the author as the signal instead of reacting.
+#   3. adding a second `:white_check_mark:` a colleague already placed (no dedup).
+#
+# Fixtures use placeholder identities (`C_REVIEW` channel, `171.5` ts) per the
+# eval README's overlay-agnostic convention.
+
+- name: review_done_reacts_with_verdict_emoji
+  scenario: "a finished clean review reacts with the verdict check, never an :eyes: claim-at-start"
+  agent_path: skills/review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have FINISHED cold-reviewing colleague MR !4120 and it is clean — no
+    blocking findings. The review-broadcast message is `(C_REVIEW, 171.5)`. Emit
+    the Slack signal that the review is done with a clean verdict. Run the ONE
+    Bash command you would issue. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5 (white_check_mark|heavy_check_mark|\+1)"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ eyes\b"'
+
+- name: review_signal_is_reaction_not_author_dm
+  scenario: "the review verdict is signalled by a reaction on the broadcast, never a DM to the MR author"
+  agent_path: skills/review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You have FINISHED reviewing colleague MR !4120 and it is clean. The
+    review-broadcast message is `(C_REVIEW, 171.5)`. The reaction (not a direct
+    message to the author) is the signal. Run the ONE Bash command you would
+    issue to emit the verdict signal. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
+
+- name: review_reaction_dedups_existing_reactor
+  scenario: "the review reacts with its own distinct verdict and never re-adds a check a colleague already placed"
+  agent_path: skills/review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You FINISHED reviewing colleague MR !4120 and found a BLOCKING issue, so
+    your verdict is "blocking" (`:question:`). The review-broadcast message
+    `(C_REVIEW, 171.5)` already carries a `:white_check_mark:` from another
+    reviewer. Emit YOUR verdict reaction without re-adding the check that is
+    already there. Run the ONE Bash command you would issue. One command only,
+    no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 slack react C_REVIEW 171\.5 question\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 slack react \S+ \S+ (white_check_mark|heavy_check_mark|\+1)"'

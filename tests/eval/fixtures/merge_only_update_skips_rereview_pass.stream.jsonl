@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-merge_only_update_skips_rereview-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Merge-only update; pushing so CI gates it, no fresh re-review needed."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "git push origin HEAD"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
