@@ -83,7 +83,9 @@ class TestScanText:
         assert banned_terms_scanner.scan_text("we ship next week", config_path=config) is None
 
     def test_match_is_case_insensitive(self, config: Path) -> None:
-        assert banned_terms_scanner.scan_text("AcmeCorp ships", config_path=config) == "acmecorp"
+        # All-caps keeps it a single token (no camelCase boundary) so this
+        # isolates case-insensitivity rather than the camelCase split.
+        assert banned_terms_scanner.scan_text("ACMECORP ships", config_path=config) == "acmecorp"
 
     def test_email_only_match_is_ignored(self, config: Path) -> None:
         # Mirrors check-banned-terms.sh: a term only inside an email is allowed.
@@ -121,9 +123,23 @@ class TestWholeTokenMatching:
         cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-corp", "foo_bar"]\n', encoding="utf-8")
         return cfg
 
-    @pytest.mark.parametrize("text", ["acmecorp ships next week", "a cooperative effort", "pacme builds"])
-    def test_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
+    @pytest.mark.parametrize("text", ["a cooperative effort", "pacme builds", "an acmeology lecture"])
+    def test_single_word_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
+        # The single-word ``acme`` must not surface inside a longer unbroken word.
         assert banned_terms_scanner.scan_text(text, config_path=short_term_config) is None
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        # camelCase/Pascal split + lowercase-glued fallback for multi-word terms.
+        [
+            ("acmecorp ships next week", "acme-corp"),
+            ("the acmeCorp service", "acme"),
+            ("the AcmeCorp service", "acme"),
+            ("a fooBar value", "foo_bar"),
+        ],
+    )
+    def test_camelcase_and_glued_multiword_blocks(self, short_term_config: Path, text: str, expected: str) -> None:
+        assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
 
     @pytest.mark.parametrize(
         ("text", "expected"),

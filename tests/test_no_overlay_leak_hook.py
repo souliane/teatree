@@ -5,14 +5,15 @@ The hook loads forbidden tokens at runtime from
 small set of placeholder tokens via that env var and assert the hook
 catches them and ignores false positives.
 
-The gate now uses the SAME whole-token matcher as the ``banned_terms``
-posting gate (``teatree.hooks.term_match``): a term matches only when its
-own tokens appear as a contiguous run of whole tokens, with ``-``, ``_``,
-whitespace, and punctuation as separators. The intentional trade-off is
-that a glued camelCase/PascalCase identifier (``demoSavings`` — one token)
-no longer matches a multi-word term (``demo-savings`` → [demo, savings]);
-the term must appear in a separator-delimited form (kebab/snake/space) to
-trip the gate.
+The gate uses the SAME whole-token matcher as the ``banned_terms`` posting
+gate (``teatree.hooks.term_match``): a term matches only when its own tokens
+appear as a contiguous run of whole tokens, with ``-``, ``_``, whitespace,
+punctuation AND camelCase/PascalCase boundaries as separators. So a glued
+camelCase/PascalCase identifier (``demoSavings`` / ``DemoSavings``) is split
+to ``[demo, savings]`` and DOES trip a configured ``demo-savings`` term, and
+a fully-lowercase glued spelling (``demosavings``) is caught too via the
+multi-token glued fallback. A clean identifier with no embedded term
+(``getUserName``) is unaffected.
 """
 
 import os
@@ -167,13 +168,67 @@ class TestNoOverlayLeakHook:
 
     @pytest.mark.parametrize(
         "glued_variant",
-        # DOCUMENTED TRADE-OFF: a glued camelCase/PascalCase identifier is a
-        # single token, so a multi-word term no longer matches it. The term
-        # must appear separator-delimited (kebab/snake/space) to trip the gate.
+        # camelCase/PascalCase boundaries are token separators, so a glued
+        # multi-word-term identifier is split back to its tokens and caught.
         ["demoSavings", "fakeProduct", "t3FakeOverlay", "DemoSavings", "FakeProduct", "T3FakeOverlay"],
     )
-    def test_glued_camel_or_pascal_variant_is_not_matched(self, tmp_path: Path, glued_variant: str) -> None:
+    def test_glued_camel_or_pascal_multiword_variant_is_blocked(self, tmp_path: Path, glued_variant: str) -> None:
         _seed(tmp_path, "src/teatree/foo.py", f"value = {glued_variant}\n")
+
+        result = _run(tmp_path)
+
+        assert result.returncode == 1, result.stdout
+
+    @pytest.mark.parametrize("lowercase_glued", ["demosavings", "fakeproduct"])
+    def test_lowercase_glued_multiword_variant_is_blocked(self, tmp_path: Path, lowercase_glued: str) -> None:
+        # A fully-lowercase glued spelling has no camelCase boundary, but the
+        # multi-token glued fallback still catches it for a multi-word term.
+        _seed(tmp_path, "src/teatree/foo.py", f"value = {lowercase_glued}\n")
+
+        result = _run(tmp_path)
+
+        assert result.returncode == 1, result.stdout
+
+    @pytest.mark.parametrize("camel_variant", ["acmeProduct", "AcmeProduct", "useAcmeClient"])
+    def test_single_word_term_embedded_in_camelcase_is_blocked(self, tmp_path: Path, camel_variant: str) -> None:
+        # A single-word term (here the synthetic ``acme``) is matched once a
+        # camelCase identifier splits it out as its own whole token.
+        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "acme"}
+        _seed(tmp_path, "src/teatree/foo.py", f"value = {camel_variant}\n")
+
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == 1, result.stdout
+        assert "acme" in result.stdout.lower()
+
+    @pytest.mark.parametrize("clean_word", ["operator", "operation", "cooperation", "operate"])
+    def test_operator_style_single_word_is_not_blocked(self, tmp_path: Path, clean_word: str) -> None:
+        # A short single-word term (synthetic ``op``) must not surface inside a
+        # longer unbroken word — the operator-class false positive stays clean.
+        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "op"}
+        _seed(tmp_path, "src/teatree/foo.py", f"# notes about {clean_word}\n")
+
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == 0, result.stdout
+
+    def test_clean_camelcase_identifier_with_no_term_is_not_blocked(self, tmp_path: Path) -> None:
+        # ``getUserName`` splits to [get, user, name]; none is a configured term.
+        _seed(tmp_path, "src/teatree/foo.py", "value = getUserName()\n")
 
         result = _run(tmp_path)
 

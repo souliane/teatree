@@ -14,9 +14,10 @@ Whole-token matching (``teatree.hooks.term_match``) is used so a generic
 word that merely *contains* a configured term as a substring does not
 trigger — the SAME matcher the ``[teatree].banned_terms`` posting gate
 uses. A term matches only when its own tokens appear as a contiguous run
-of whole tokens, with ``-``, ``_``, whitespace, and punctuation all acting
-as separators. See that module for the matching rules and the documented
-trade-off.
+of whole tokens, with ``-``, ``_``, whitespace, punctuation AND camelCase
+boundaries all acting as separators (so a glued ``acmeProduct`` or
+``DemoCorp`` still trips a configured ``acme`` / ``demo-corp``; the examples
+are synthetic). See that module for the matching rules.
 
 Exit code: 0 if clean, 1 if any configured term appears in the scanned
 files.

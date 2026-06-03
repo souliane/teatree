@@ -34,6 +34,25 @@ class TestTokens:
     def test_pure_punctuation_yields_no_tokens(self) -> None:
         assert term_match.tokens("--- , .") == []
 
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("acmeProduct", ["acme", "product"]),
+            ("AcmeProduct", ["acme", "product"]),
+            ("demoSavings", ["demo", "savings"]),
+            ("DemoSavings", ["demo", "savings"]),
+            ("getUserName", ["get", "user", "name"]),
+            ("HTTPServer", ["http", "server"]),
+            ("XMLParser", ["xml", "parser"]),
+        ],
+    )
+    def test_splits_on_camelcase_and_acronym_boundaries(self, text: str, expected: list[str]) -> None:
+        assert term_match.tokens(text) == expected
+
+    def test_lowercase_glued_run_stays_one_token(self) -> None:
+        # No case boundary, so nothing to split — stays a single token.
+        assert term_match.tokens("demosavings") == ["demosavings"]
+
 
 class TestSingleTokenTermMustBlock:
     @pytest.mark.parametrize(
@@ -47,12 +66,14 @@ class TestSingleTokenTermMustBlock:
 class TestSingleTokenTermMustNotBlock:
     @pytest.mark.parametrize(
         "text",
-        # The operator-style false positive, stated generically: a term that is
-        # only a substring of one unbroken word never matches.
-        ["acmecorp", "pacme", "acmeology", "foobar", "a normal sentence of words", ""],
+        # The operator-style false positive, stated generically: a SINGLE-word
+        # term that is only a substring of one unbroken word never matches.
+        # (Terms here are single-word only — a multi-word term legitimately
+        # matches its glued spelling, covered in TestCamelCaseAndGluedMatching.)
+        ["acmecorp", "pacme", "acmeology", "a normal sentence of words", ""],
     )
     def test_substring_inside_one_word_does_not_block(self, text: str) -> None:
-        assert term_match.matched_term(text, _ACME_TERMS) is None
+        assert term_match.matched_term(text, ("acme",)) is None
 
     def test_op_does_not_match_option(self) -> None:
         # The exact operator-class false positive: a short term ``op`` must not
@@ -92,6 +113,39 @@ class TestMultiTokenTerm:
         # ``acme-corp`` must not be reported merely because ``acme`` is present;
         # but ``acme`` (single-token term) legitimately does match.
         assert term_match.matched_term("acme alone", ("acme-corp",)) is None
+
+
+class TestCamelCaseAndGluedMatching:
+    """camelCase splitting + the multi-word glued fallback (the rework)."""
+
+    @pytest.mark.parametrize("text", ["acmeProduct", "AcmeProduct", "acme-product", "xx-acme-zz", "acme"])
+    def test_single_word_term_matches_camelcase_and_kebab(self, text: str) -> None:
+        # The synthetic single-word term ``acme`` must match its whole token
+        # however the surrounding identifier is glued.
+        assert term_match.matched_term(text, ("acme",)) == "acme"
+
+    @pytest.mark.parametrize(
+        "clean",
+        # The operator-class false positive, reproduced with the synthetic short
+        # term ``op`` against generic English: it must NEVER surface inside a
+        # longer unbroken word.
+        ["operator", "operation", "operational", "cooperation", "opera", "operate", "option"],
+    )
+    def test_short_single_word_term_does_not_match_longer_unbroken_word(self, clean: str) -> None:
+        assert term_match.matched_term(clean, ("op",)) is None
+
+    @pytest.mark.parametrize("text", ["demoSavings", "DemoSavings", "demosavings", "demo-savings", "demo savings"])
+    def test_multiword_term_matches_camelcase_pascal_and_glued(self, text: str) -> None:
+        # A multi-word term matches kebab/space, the camelCase/Pascal split, and
+        # the fully-lowercase glued spelling.
+        assert term_match.matched_term(text, ("demo-savings",)) == "demo-savings"
+
+    @pytest.mark.parametrize("text", ["acmeProduct", "AcmeProduct", "useAcmeClient"])
+    def test_single_word_term_embedded_in_camelcase_matches(self, text: str) -> None:
+        assert term_match.matched_term(text, ("acme",)) == "acme"
+
+    def test_clean_camelcase_identifier_with_no_term_does_not_match(self) -> None:
+        assert term_match.matched_term("getUserName", ("op", "demo-savings", "acme")) is None
 
 
 class TestUnderscoreTermParity:
@@ -146,4 +200,7 @@ class TestLineMatches:
         assert term_match.line_matches("see x-acme-y here", _ACME_TERMS) is True
 
     def test_returns_false_on_a_substring_only_line(self) -> None:
-        assert term_match.line_matches("acmecorp is a company", _ACME_TERMS) is False
+        # ``acme`` (single-word term) must not surface inside ``pacme``; the
+        # glued multi-word match of ``acme-corp`` is intentional and covered
+        # in TestCamelCaseAndGluedMatching, so it is excluded here.
+        assert term_match.line_matches("pacme is a word", ("acme",)) is False

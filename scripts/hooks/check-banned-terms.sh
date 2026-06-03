@@ -12,16 +12,7 @@
 #   banned_terms = ["term1", "term2"]
 #
 # If no config or no banned_terms key, exits 0 (no-op).
-# Matches that only appear inside email addresses are ignored so author/contact
-# metadata can stay intact while still blocking leaked tenant/project terms.
-#
-# Matching is WHOLE-TOKEN, not substring: both the text and each term are
-# tokenized on any non-alphanumeric character (so '-', '_', whitespace, and
-# punctuation all separate tokens) and a term matches only when its own tokens
-# appear as a contiguous run of whole tokens. So (neutral example) a term
-# 'acme' matches the standalone token in 'acme'/'xx-acme-zz' but never inside
-# 'acmecorp' or 'pacme'. Case-insensitive. This keeps the matcher in lock-step
-# with teatree.hooks.term_match (the posting gate uses the same rule).
+# Matching mirrors teatree.hooks.term_match (whole-token, camelCase-split, email carve-out).
 
 set -euo pipefail
 
@@ -54,9 +45,7 @@ if [ -z "$terms" ]; then
   exit 0
 fi
 
-# Check each staged file passed by pre-commit. The comma-separated term list
-# is passed verbatim; the embedded matcher tokenizes both it and each line and
-# requires a whole-token run (see header), with the email carve-out preserved.
+# Check each staged file with the embedded whole-token matcher (email carve-out kept).
 found=0
 for file in "$@"; do
   [ -f "$file" ] || continue
@@ -66,10 +55,14 @@ import sys
 from pathlib import Path
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
 
 
 def _tokens(text):
-    return _TOKEN_RE.findall(text.lower())
+    split = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
+    split = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", split)
+    return _TOKEN_RE.findall(split.lower())
 
 
 def _contains_run(haystack, needle):
@@ -81,7 +74,7 @@ def _contains_run(haystack, needle):
     for start in range(len(haystack) - span + 1):
         if haystack[start : start + span] == needle:
             return True
-    return False
+    return "".join(needle) in haystack
 
 
 path = Path(sys.argv[1])
@@ -91,8 +84,7 @@ email_pattern = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 if term_tokens:
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        # Tokenize the line with the email addresses stripped out, so a term
-        # that appears ONLY inside an author/contact email is not flagged.
+        # Strip emails first so a term only inside an author/contact email is not flagged.
         stripped = email_pattern.sub(" ", line)
         line_tokens = _tokens(stripped)
         if any(_contains_run(line_tokens, tt) for tt in term_tokens):
