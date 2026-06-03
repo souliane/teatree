@@ -143,7 +143,7 @@ def _coding_phase_directive() -> list[str]:
         "",
         f"VERIFY (CI-parity): before declaring done, run `{_VERIFY_GATES_COMMAND}`. It runs BOTH the",
         "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
-        "(comment-density, doc-update, ensure-pr, pytest-fast, the public-repo leak gate) that CI",
+        "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
         "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
     ]
 
