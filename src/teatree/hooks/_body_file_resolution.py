@@ -69,14 +69,69 @@ def commit_body_file_base(command: str) -> Path | None:
     return _commit_repo_dir.git_root_for_dir(Path(repo_dir))
 
 
-def walk_body_file_flags(words: list[str], payloads: list[str], *, is_git: bool, ctx: BodyFileContext) -> None:
+@dataclass(frozen=True)
+class _ShortFileFlag:
+    """Resolved value of a short ``-F`` body-file reference, with its token span.
+
+    ``path`` is the file the ``-F`` points at; ``consumed`` is how many tokens
+    the flag occupied (``2`` for the space-separated ``-F <path>`` form, ``1``
+    for the attached ``-F<path>`` form). ``fail_closed`` is the policy for an
+    unreadable path — ``git``'s commit-message ``-F`` always fails closed, while
+    ``gh``/``glab``'s body-file ``-F`` follows the destination-aware policy.
+    ``None`` is returned when the ``-F`` at this position is not a body-file
+    reference (so the caller advances by one and lets another walker handle it).
+    """
+
+    path: str
+    consumed: int
+    fail_closed: bool
+
+
+def _short_f_body_file(leader: str, words: list[str], i: int, *, fail_closed: bool) -> _ShortFileFlag | None:
+    """Resolve the file a short ``-F`` at ``words[i]`` references, or ``None``.
+
+    The short ``-F`` is overloaded across leaders:
+
+    - ``git`` -- ALWAYS a file (the ``git commit -F`` message file), regardless
+        of the value, and always fails closed when unreadable (#1207).
+    - ``gh`` / ``glab`` -- the documented short form of ``--body-file`` on
+        ``issue/pr create|comment`` etc., but ``-F name=value`` on ``api`` is a
+        field assignment. The two are disambiguated by VALUE: a ``=``-free token
+        is a body-file path; a ``name=value`` token is left to
+        :func:`_command_parser._walk_api_fields` (returns ``None`` here).
+    - any other leader -- never a body-file ``-F`` (returns ``None``).
+
+    Both the space-separated (``-F <path>``) and attached (``-F<path>``) spellings
+    are recognised.
+    """
+    word = words[i]
+    is_git = leader == "git"
+    is_gh_glab = leader in {"gh", "glab"}
+    if not (is_git or is_gh_glab):
+        return None
+    flag_fail_closed = True if is_git else fail_closed
+    if word == "-F" and i + 1 < len(words):
+        nxt = words[i + 1]
+        if is_git or "=" not in nxt:
+            return _ShortFileFlag(path=nxt, consumed=2, fail_closed=flag_fail_closed)
+        return None
+    attached = attached_value(word, "-F")
+    if attached is not None and (is_git or "=" not in attached):
+        return _ShortFileFlag(path=attached, consumed=1, fail_closed=flag_fail_closed)
+    return None
+
+
+def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, ctx: BodyFileContext) -> None:
     """Extract ``--body-file``/``--file``/``-F`` style file payloads.
 
-    The git-style ``-F <path>`` form is a file reference ONLY for the
-    ``git`` command (codex round-3 #6 — ``gh api -F body=x`` is a field
-    assignment, NOT a file reference). The ``is_git`` flag scopes the
-    short-form ``-F`` reader. The resolution context (heredoc map, repo-dir
-    base, fail-closed policy) is carried by :class:`BodyFileContext`.
+    The long ``--body-file`` / ``--description-file`` / ``--file`` forms apply to
+    every leader. The short ``-F`` form is leader-scoped by
+    :func:`_short_f_body_file`: ``git``'s ``-F`` is always the commit-message
+    file; ``gh``/``glab``'s ``-F`` is the documented ``--body-file`` short form
+    when its value is ``=``-free, otherwise it is an ``api`` field assignment
+    that :func:`_command_parser._walk_api_fields` handles (#1812). The
+    resolution context (heredoc map, repo-dir base, fail-closed policy) is
+    carried by :class:`BodyFileContext`.
     """
     fail_closed = ctx.fail_closed_body_file
     i = 0
@@ -96,16 +151,11 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, is_git: bool,
         if attached is not None:
             i += 1
             continue
-        if is_git and word == "-F" and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=True)
-            i += 2
+        short = _short_f_body_file(leader, words, i, fail_closed=fail_closed)
+        if short is not None:
+            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed)
+            i += short.consumed
             continue
-        if is_git:
-            attached = attached_value(word, "-F")
-            if attached is not None:
-                _append_file_payload(attached, payloads, ctx, fail_closed=True)
-                i += 1
-                continue
         i += 1
 
 
