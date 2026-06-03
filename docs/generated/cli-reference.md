@@ -1470,7 +1470,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
-│ comment-density      Flag added comments that merely restate the code        │
+│ comment-density      Warn on added comments that merely restate the code     │
 │                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
@@ -1696,12 +1696,13 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Flag added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (near-zero-comments rule).
 
  Content-blind density pass over a unified diff. Reusable by any overlay:
- the dedicated prek hook and the CI job both call this command. Exits ``1``
- when a file's added lines are comment-dense, ``0`` when clean. Never a
- PreToolUse gate, so it can never lock the agent's tools.
+ the dedicated prek hook and the CI job both call this command. The check
+ is **advisory** — it prints the findings as a warning but **always exits
+ 0**, so it never blocks a commit, push, or pipeline, and it is never a
+ PreToolUse gate.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --diff            PATH  Read the unified diff from this file instead of      │
