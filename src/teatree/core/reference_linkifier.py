@@ -1,19 +1,17 @@
 r"""Deterministic, code-only reference linkifier for outbound messages.
 
 The "Clickable References" rule — a bare issue/MR ref (``#1500``, ``!6301``,
-``owner/repo#42``) must ship to a user-facing surface as a clickable link —
-was historically enforced only by the PreToolUse/Stop **bare-reference link
-gate** (:mod:`teatree.hooks.bare_reference_scanner`). That gate *detects* a
-bare ref and BLOCKS the message, asking the **model** to rewrite it. That
-rewrite is non-deterministic (the model can fabricate the wrong URL or miss a
-ref), costs a model round-trip, and is fragile.
+``owner/repo#42``) must ship to a user-facing surface as a clickable link.
+A historical PreToolUse/Stop bare-reference *blocking* gate enforced this by
+DETECTING a bare ref and BLOCKING the message, asking the **model** to rewrite
+it. That rewrite was non-deterministic (the model could fabricate the wrong
+URL or miss a ref), cost a model round-trip, was fragile, and over-blocked
+unrelated commands — so the blocking gate was removed.
 
-This module is the deterministic, code-only alternative: it resolves each
-bare ref to its canonical URL from teatree's own Python DB (and a repo-context
-construction fallback) and rewrites the message in code — no model call. The
-gate stays in place but only as a fallback for refs the linkifier could not
-resolve and for the agent's own chat/terminal output (which has no posting
-chokepoint to hook).
+This module is the deterministic, code-only mechanism that replaces it: it
+resolves each bare ref to its canonical URL from teatree's own Python DB (and
+a repo-context construction fallback) and rewrites the message in code — no
+model call, no blocking.
 
 Two layers:
 
