@@ -108,9 +108,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Only the CI-green-gate skips reach here (see _is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
-    # A merged review-request whose :merge: reaction is blocked by a missing
-    # ``reactions:write`` scope is a config gap the operator must close — the
-    # rest of the family is dropped as per-MR bookkeeping (see prefixes below).
+    # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
     "review_request_merge_react.missing_scope": "action_needed",
 }
 
@@ -122,25 +120,7 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 # only the statusline rendering is suppressed.
 _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 
-# Signal-kind *prefixes* whose every outcome is internal scanner state, not
-# user-facing statusline content. Each family is per-scanner bookkeeping
-# that, without this drop, falls through the catch-all at the end of
-# :func:`_dispatch_one` and renders as a garbage row (often
-# ``<reason>: ?``) that drowns the real tickets and MRs the dashboard
-# exists to show. The outcome is logged / persisted on the scanner's own
-# ledger; the statusline is the wrong surface for it.
-#
-# ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
-# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
-# ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
-# ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
-# explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
-# reviewer-ping reconciler's per-MR bookkeeping;
-# ``review_request_merge_react.*`` — the merged-review-request reaction's
-# per-MR outcome (the reaction itself is the Slack-side signal, not a
-# statusline row), save the ``missing_scope`` config gap exempted below;
-# and the ``*.queued`` dispatch markers (``architectural_review``,
-# ``dogfood_smoke``, ``scanning_news``) that only record an agent was queued.
+# Signal-kind *prefixes* of pure scanner bookkeeping, kept off the statusline.
 _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "self_update.",
     "pull_main_clone.",

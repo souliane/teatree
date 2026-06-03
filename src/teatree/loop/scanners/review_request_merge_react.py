@@ -48,6 +48,80 @@ _MISSING_SCOPE_ERRORS = frozenset({"missing_scope", "no_permission"})
 _REACTION_PRESENT_ERRORS = frozenset({"already_reacted"})
 
 
+def _claim_post(post: ReviewRequestPost) -> bool:
+    updated = ReviewRequestPost.objects.filter(pk=post.pk, done_at__isnull=True).update(done_at=timezone.now())
+    return updated == 1
+
+
+def _release_post(post: ReviewRequestPost) -> None:
+    ReviewRequestPost.objects.filter(pk=post.pk).update(done_at=None)
+
+
+def _signal_for_react_response(post: ReviewRequestPost, response: RawAPIDict) -> ScanSignal:
+    error = str(response.get("error") or "")
+    if response.get("ok") or error in _REACTION_PRESENT_ERRORS:
+        return ScanSignal(
+            kind="review_request_merge_react.reacted",
+            summary=f"Reacted :merge: on review-request for {post.mr_url}",
+            payload={"mr_url": post.mr_url, "post_id": post.pk},
+        )
+    if error in _MISSING_SCOPE_ERRORS:
+        needed = str(response.get("needed") or "reactions:write")
+        return ScanSignal(
+            kind="review_request_merge_react.missing_scope",
+            summary=(
+                f":merge: reaction for {post.mr_url} skipped — the personal xoxp token "
+                f"is missing the {needed!r} scope. Re-run `t3 setup slack-user-token`."
+            ),
+            payload={"mr_url": post.mr_url, "needed": needed, "post_id": post.pk},
+        )
+    _release_post(post)
+    return ScanSignal(
+        kind="review_request_merge_react.react_failed",
+        summary=f"Slack :merge: reaction refused for {post.mr_url}: {error or 'unknown_error'}",
+        payload={"mr_url": post.mr_url, "error": error or "unknown_error", "post_id": post.pk},
+    )
+
+
+def react_merge_on_post(post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal | None:
+    """Atomically claim *post* and react ``:merge:`` on its tracked Slack message.
+
+    The single entry point shared by the merge-react scanner and the nag
+    scanner's merged branch so a merge discovered by either path reacts
+    exactly once. The conditional ``done_at`` claim is the idempotency lock:
+    a row already claimed by another tick (or the sibling scanner) matches
+    zero rows and returns ``None`` without reacting. A transient Slack
+    failure releases the claim for a later retry; ``missing_scope`` keeps
+    the row closed. Returns ``None`` when there is no thread to react on or
+    the claim is lost.
+    """
+    if not post.slack_thread_ts:
+        return None
+    if not _claim_post(post):
+        return None
+    try:
+        response = messaging.react_routed(
+            channel=post.slack_channel_id,
+            ts=post.slack_thread_ts,
+            emoji=MERGE_REACTION_EMOJI,
+        )
+    except Exception as exc:  # noqa: BLE001 — a Slack transport error must not crash the tick.
+        _release_post(post)
+        logger.warning(
+            "review_request_merge_react: react failed for %s on %s/%s: %s",
+            post.mr_url,
+            post.slack_channel_id,
+            post.slack_thread_ts,
+            exc,
+        )
+        return ScanSignal(
+            kind="review_request_merge_react.react_failed",
+            summary=f"Slack :merge: reaction failed for {post.mr_url}: {exc}",
+            payload={"mr_url": post.mr_url, "error": str(exc), "post_id": post.pk},
+        )
+    return _signal_for_react_response(post, response)
+
+
 @dataclass(slots=True)
 class ReviewRequestMergeReactScanner:
     """React ``:merge:`` on the review-request message once its MR merges (#1797).
@@ -84,9 +158,7 @@ class ReviewRequestMergeReactScanner:
             return None
         if self._open_state(host, post.mr_url) is not PrOpenState.MERGED:
             return None
-        if not self._claim(post):
-            return None
-        return self._react(post, messaging)
+        return react_merge_on_post(post, messaging)
 
     @staticmethod
     def _open_state(host: CodeHostBackend, mr_url: str) -> PrOpenState:
@@ -96,68 +168,3 @@ class ReviewRequestMergeReactScanner:
         except Exception as exc:  # noqa: BLE001 — backend lookup must never crash a tick.
             logger.warning("review_request_merge_react: open-state lookup failed for %s: %s", mr_url, exc)
             return PrOpenState.UNKNOWN
-
-    @staticmethod
-    def _claim(post: ReviewRequestPost) -> bool:
-        """Atomically claim the row by setting ``done_at`` only if still open.
-
-        The conditional ``UPDATE`` is the lock: the winning tick gets
-        ``updated == 1`` and reacts; a concurrent tick that already claimed
-        gets ``0`` and skips, so exactly one ``:merge:`` reaction is posted.
-        Released by :meth:`_release` on a transient Slack failure.
-        """
-        updated = ReviewRequestPost.objects.filter(pk=post.pk, done_at__isnull=True).update(done_at=timezone.now())
-        return updated == 1
-
-    @staticmethod
-    def _release(post: ReviewRequestPost) -> None:
-        """Release the claim so a future tick retries the reaction."""
-        ReviewRequestPost.objects.filter(pk=post.pk).update(done_at=None)
-
-    def _react(self, post: ReviewRequestPost, messaging: MessagingBackend) -> ScanSignal:
-        try:
-            response = messaging.react_routed(
-                channel=post.slack_channel_id,
-                ts=post.slack_thread_ts,
-                emoji=MERGE_REACTION_EMOJI,
-            )
-        except Exception as exc:  # noqa: BLE001 — a Slack transport error must not crash the tick.
-            self._release(post)
-            logger.warning(
-                "review_request_merge_react: react failed for %s on %s/%s: %s",
-                post.mr_url,
-                post.slack_channel_id,
-                post.slack_thread_ts,
-                exc,
-            )
-            return ScanSignal(
-                kind="review_request_merge_react.react_failed",
-                summary=f"Slack :merge: reaction failed for {post.mr_url}: {exc}",
-                payload={"mr_url": post.mr_url, "error": str(exc), "post_id": post.pk},
-            )
-        return self._signal_for_response(post, response)
-
-    def _signal_for_response(self, post: ReviewRequestPost, response: RawAPIDict) -> ScanSignal:
-        error = str(response.get("error") or "")
-        if response.get("ok") or error in _REACTION_PRESENT_ERRORS:
-            return ScanSignal(
-                kind="review_request_merge_react.reacted",
-                summary=f"Reacted :merge: on review-request for {post.mr_url}",
-                payload={"mr_url": post.mr_url, "post_id": post.pk},
-            )
-        if error in _MISSING_SCOPE_ERRORS:
-            needed = str(response.get("needed") or "reactions:write")
-            return ScanSignal(
-                kind="review_request_merge_react.missing_scope",
-                summary=(
-                    f":merge: reaction for {post.mr_url} skipped — the personal xoxp token "
-                    f"is missing the {needed!r} scope. Re-run `t3 setup slack-user-token`."
-                ),
-                payload={"mr_url": post.mr_url, "needed": needed, "post_id": post.pk},
-            )
-        self._release(post)
-        return ScanSignal(
-            kind="review_request_merge_react.react_failed",
-            summary=f"Slack :merge: reaction refused for {post.mr_url}: {error or 'unknown_error'}",
-            payload={"mr_url": post.mr_url, "error": error or "unknown_error", "post_id": post.pk},
-        )
