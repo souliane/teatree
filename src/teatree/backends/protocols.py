@@ -235,3 +235,11 @@ class MessagingBackend(Protocol):
     def resolve_user_id(self, handle: str) -> str: ...  # pragma: no branch
 
     def auth_test(self) -> RawAPIDict: ...  # pragma: no branch
+
+    def upload_audio_to_dm(
+        self,
+        *,
+        channel: str,
+        filepath: str,
+        title: str = "",
+    ) -> RawAPIDict: ...  # pragma: no branch
