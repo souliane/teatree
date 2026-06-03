@@ -16,6 +16,7 @@ Two structural invariants land here:
     broadcasts on 2026-05-20.
 """
 
+from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -25,9 +26,13 @@ from typer.testing import CliRunner
 from teatree.backends import slack_reactions
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, SlackReactionError, is_single_emoji_body
-from teatree.cli.slack_listen import post_reaction, slack_app
+from teatree.cli.slack_listen import slack_app
+from teatree.types import RawAPIDict
 
 runner = CliRunner()
+
+_DM_CHANNEL = "D_SELF"
+_USER_ID = "U_OPERATOR"
 
 
 def _response(*, status: int = 200, payload: dict[str, object] | None = None) -> MagicMock:
@@ -38,62 +43,23 @@ def _response(*, status: int = 200, payload: dict[str, object] | None = None) ->
     return response
 
 
-class TestPostReactionRaisesOnSlackError:
-    """``cli/slack_listen.post_reaction`` raises on every Slack ``ok:false``.
+@dataclass
+class _MissingScopeFake:
+    """Route-aware fake whose ``react_routed`` returns a Slack ``missing_scope``."""
 
-    The pre-#1281 helper returned ``False`` on ``missing_scope`` and any
-    other API-level error. A caller could then "fall back" to posting
-    ``chat.postMessage(text=":emoji:")`` on the same broadcast's thread.
-    The BINDING memory ``feedback_react_not_emoji_thread_comment`` forbids
-    that fallback. The structural fix is to make the failure loud at the
-    helper boundary so no caller can swallow it.
-    """
+    dm_channel_id: str = _DM_CHANNEL
+    user_id: str = _USER_ID
+    react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
 
-    def test_missing_scope_raises(self) -> None:
-        payload = {"ok": False, "error": "missing_scope"}
-        with (
-            patch("teatree.cli.slack_listen.httpx.post", return_value=_response(payload=payload)),
-            pytest.raises(SlackReactionError) as exc_info,
-        ):
-            post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes")
+    def _is_self_dm(self, channel: str) -> bool:
+        return bool(channel) and channel in {self.dm_channel_id, self.user_id}
 
-        assert exc_info.value.error_code == "missing_scope"
-        message = str(exc_info.value)
-        assert "missing_scope" in message
-        # The message MUST steer the operator to the documented remediation —
-        # the scope provisioner CLI and #1232 (the scope-gap issue).
-        assert "t3 setup slack-user-token" in message
-        assert "1232" in message
-        # And it MUST reference the BINDING that forbids the thread-emoji
-        # fallback, so any reader of the traceback knows why we raise.
-        assert "feedback_react_not_emoji_thread_comment" in message
+    def route_token(self, channel: str) -> str:
+        return "xoxb-bot" if self._is_self_dm(channel) else "xoxp-user"
 
-    def test_not_in_channel_raises(self) -> None:
-        payload = {"ok": False, "error": "not_in_channel"}
-        with (
-            patch("teatree.cli.slack_listen.httpx.post", return_value=_response(payload=payload)),
-            pytest.raises(SlackReactionError) as exc_info,
-        ):
-            post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes")
-        assert exc_info.value.error_code == "not_in_channel"
-
-    def test_connect_restricted_raises(self) -> None:
-        payload = {"ok": False, "error": "mcp_externally_shared_channel_restricted"}
-        with (
-            patch("teatree.cli.slack_listen.httpx.post", return_value=_response(payload=payload)),
-            pytest.raises(SlackReactionError) as exc_info,
-        ):
-            post_reaction(token="xoxp-1", channel="C-shared", ts="1.0", emoji="white_check_mark")
-        assert exc_info.value.error_code == "mcp_externally_shared_channel_restricted"
-
-    def test_already_reacted_does_not_raise(self) -> None:
-        payload = {"ok": False, "error": "already_reacted"}
-        with patch("teatree.cli.slack_listen.httpx.post", return_value=_response(payload=payload)):
-            assert post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes") is True
-
-    def test_ok_response_does_not_raise(self) -> None:
-        with patch("teatree.cli.slack_listen.httpx.post", return_value=_response()):
-            assert post_reaction(token="xoxp-1", channel="D1", ts="1.0", emoji="eyes") is True
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.react_routed_calls.append((channel, ts, emoji))
+        return {"ok": False, "error": "missing_scope", "needed": "reactions:write"}
 
 
 class TestAddReactionRaisesOnSlackError:
@@ -159,29 +125,28 @@ class TestAddReactionRaisesOnSlackError:
         assert slack_reactions.add_reactions_for_transition(ticket, "mark_merged") == 0
 
 
+@pytest.mark.django_db
 class TestReactCommandSurfaceMissingScope:
-    """``t3 slack react`` exits 1 on ``missing_scope`` with a structured hint.
+    """``t3 slack react`` exits non-zero on a Slack ``ok:false`` (e.g. ``missing_scope``).
 
-    Pre-#1281 the CLI exited 2 with the generic ``reactions.add failed``
-    message regardless of the underlying error. The structured hint at
-    exit 1 is required so any operator who hits the scope gap is
-    immediately pointed at the documented remediation — never at a
-    chat.postMessage fallback.
+    The reaction now routes through the on-behalf egress on the route-aware
+    backend; a self-DM ack is ungated, but a Slack-side rejection still
+    surfaces the error code and exits 1 rather than silently succeeding —
+    never a ``chat.postMessage`` thread-emoji fallback.
     """
 
-    def test_missing_scope_exits_1_with_pointer(self) -> None:
-        payload = {"ok": False, "error": "missing_scope"}
-        with (
-            patch("teatree.cli.slack_listen._resolve_reaction_token", return_value="xoxp-1"),
-            patch("teatree.cli.slack_listen.httpx.post", return_value=_response(payload=payload)),
-        ):
-            result = runner.invoke(slack_app, ["react", "D1", "1.0", "eyes"])
+    def test_missing_scope_exits_1_with_error_code(self, tmp_path, monkeypatch) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text(
+            f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "immediate"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        with patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _MissingScopeFake()):
+            result = runner.invoke(slack_app, ["react", _DM_CHANNEL, "1.0", "eyes"])
 
         assert result.exit_code == 1, result.stdout
-        # Surface the error code, the remediation CLI, and #1232.
         assert "missing_scope" in result.stdout
-        assert "t3 setup slack-user-token" in result.stdout
-        assert "1232" in result.stdout
 
 
 class TestSlackBotBackendRejectsSingleEmojiBody:

@@ -2651,8 +2651,8 @@ Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
 │ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
 │         overlays.                                                            │
 │ check   Drain the event queue, ack with 👀, and print new user messages.     │
-│ react   Add *emoji* to ``(channel, ts)`` using the personal user-OAuth       │
-│         token.                                                               │
+│ react   Add *emoji* to ``(channel, ts)`` through the on-behalf egress        │
+│         (#960/#1750).                                                        │
 │ status  Check if the Socket Mode listener is running.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2697,27 +2697,20 @@ Usage: t3 slack check [OPTIONS]
 ```
 Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
 
- Add *emoji* to ``(channel, ts)`` using the personal user-OAuth token.
+ Add *emoji* to ``(channel, ts)`` through the on-behalf egress (#960/#1750).
 
- The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
- (provisioned by ``t3 setup slack-user-token``) is the only credential
- that reliably reaches user DMs and Slack-Connect externally-shared
- channels for ``reactions.add`` (#1232).
+ Routes through :class:`OnBehalfSlackEgress` on the route-aware backend:
+ a reaction on the user's own DM stays ungated, a reaction on a colleague
+ or channel message is gated+audited under the on-behalf discipline. The
+ backend resolves from ``--overlay`` or ``T3_OVERLAY_NAME``.
 
  Exit codes:
 
  - ``0`` — success (including the idempotent ``already_reacted`` case).
- - ``1`` — token is missing **OR** Slack rejected the call with an
-     ``ok:false`` error (``missing_scope``, ``not_in_channel``,
-     ``mcp_externally_shared_channel_restricted``, …). The structured
-     message prints the error code, the remediation CLI
-     (``t3 setup slack-user-token``), #1232, and the BINDING that
-     forbids a thread-emoji fallback
-     (``feedback_react_not_emoji_thread_comment``).
- - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
-
- A non-zero exit means **stop and surface the gap** — never fall back
- to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
+ - ``1`` — no slack backend resolvable, OR the colleague-surface reaction
+     is blocked by ``on_behalf_post_mode`` (the message names the
+     ``t3 review approve-on-behalf`` satisfier), OR Slack rejected the
+     call (``missing_scope``, ``not_in_channel``, …).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
@@ -2730,7 +2723,8 @@ Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
 │                         [required]                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --overlay        TEXT  Overlay whose Slack credentials route the reaction.   │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

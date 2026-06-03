@@ -60,6 +60,7 @@ from django.db import OperationalError, ProgrammingError
 
 from teatree.backends.protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review_candidate import eyes_reacted_by_other
 from teatree.loop.review_claim import filter_review_intent_signals, reaction_already_present, record_reaction_claim
 from teatree.loop.scanners.base import ScanSignal
@@ -185,6 +186,10 @@ def _classify(states: Sequence[MrState]) -> ScannedBroadcast.Classification:
 
 def _open_subset(states: Sequence[MrState]) -> list[MrState]:
     return [state for state in states if not state.merged]
+
+
+def _first_url(states: Sequence[MrState]) -> str:
+    return states[0].url if states else ""
 
 
 def _seed_review_request_posts(
@@ -358,7 +363,13 @@ class SlackBroadcastsScanner:
         user_named: bool,
     ) -> list[ScanSignal]:
         if row.classification == ScannedBroadcast.Classification.ALL_MERGED:
-            self._react_done(row.channel, row.slack_ts, "white_check_mark", message=message)
+            self._react_done(
+                row.channel,
+                row.slack_ts,
+                "white_check_mark",
+                message=message,
+                target=_first_url(states) or row.slack_ts,
+            )
             # #1295 cap C: cross-channel sweep — once a broadcast resolves
             # to all-merged on its own channel, replicate the
             # ``:white_check_mark:`` to every other broadcast channel that
@@ -416,10 +427,22 @@ class SlackBroadcastsScanner:
             sibling_urls = sibling_row.mr_urls if isinstance(sibling_row.mr_urls, list) else []
             if not mr_urls.intersection(sibling_urls):
                 continue
-            self._react_done(sibling_row.channel, sibling_row.slack_ts, "white_check_mark", message=None)
+            self._react_done(
+                sibling_row.channel,
+                sibling_row.slack_ts,
+                "white_check_mark",
+                message=None,
+                target=_first_url(states) or sibling_row.slack_ts,
+            )
 
-    def _react_done(self, channel: str, ts: str, emoji: str, *, message: RawAPIDict | None) -> None:
-        """Post an outcome reaction once, deduped against existing reactors + the ledger.
+    def _react_done(self, channel: str, ts: str, emoji: str, *, message: RawAPIDict | None, target: str) -> None:
+        """Post an outcome reaction once, gated+routed, deduped against existing reactors + the ledger.
+
+        Routes through :class:`OnBehalfSlackEgress` so the colleague/Connect
+        broadcast channel reaction goes out under the #1750-routed personal
+        ``xoxp`` token (previously a bot-token ``react`` that could not tell a
+        colleague channel from the self DM) and is gated+audited like every
+        other colleague-surface egress. A BLOCK verdict skips the reaction.
 
         #113/#123: skip when the emoji is already present (colleague or bot)
         or recorded in the :class:`OutboundClaim` ledger, so a reaction is
@@ -429,7 +452,18 @@ class SlackBroadcastsScanner:
         if reaction_already_present(message=message, channel=channel, ts=ts, emoji=emoji):
             return
         try:
-            self.backend.react(channel=channel, ts=ts, emoji=emoji)
+            OnBehalfSlackEgress(self.backend).react(
+                channel=channel,
+                ts=ts,
+                emoji=emoji,
+                target=target,
+                action=f"broadcast_outcome_reaction:{emoji}",
+                destination=f"broadcast channel {channel}",
+                summary=":white_check_mark: all-merged outcome",
+            )
+        except OnBehalfPostBlockedError as blocked:
+            logger.info("SlackBroadcastsScanner: outcome reaction gated on %s/%s: %s", channel, ts, blocked)
+            return
         except ConnectChannelBotRestrictedError:
             raise
         except Exception as exc:

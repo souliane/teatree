@@ -17,6 +17,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -24,6 +25,12 @@ from teatree.backends.protocols import PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_request_merge_react import MERGE_REACTION_EMOJI, ReviewRequestMergeReactScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
 @dataclass

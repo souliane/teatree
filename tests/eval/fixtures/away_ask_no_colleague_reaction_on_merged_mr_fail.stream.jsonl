@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-away_ask_no_colleague_reaction_on_merged_mr-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree notify react --channel C_REVIEW --ts 1.1 --emoji merge", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

@@ -28,6 +28,10 @@ For non-dedup lookups, a private-inclusive search with `response_format: "detail
 slack_search_public_and_private(query: "<MR_URL>", response_format: "detailed")
 ```
 
+## Colleague-Slack On-Behalf Egress (single chokepoint)
+
+Every Slack post or reaction made under the user's identity on a **colleague** surface (a colleague's DM, a review/broadcast channel) goes through one class — `teatree.core.on_behalf_egress.OnBehalfSlackEgress.post/.react` — which runs gate→route→emit→audit in one place: the #1750 `route_token` classifier decides self-vs-colleague (fail-closed to colleague on an unknown surface), a self-DM short-circuits ungated (a bot→user / self-ack is never on-behalf), and a colleague surface calls the on-behalf gate before the wire call (BLOCK with no recorded approval raises and nothing posts), then the routed post/react, then the after-receipt DM on success. the `notify post`/`notify react` CLI and `t3 slack react` route through it; the FSM transition/approval reactions (`signals.py`) and GitLab approve/comment are out of scope (already gated on their own transports). Never reintroduce a raw `react_routed`/`post_routed`/personal-`xoxp` `reactions.add` colleague egress outside that class — an import-guard test fails the build if you do.
+
 ## Send Messages
 
 ### Post to a Channel

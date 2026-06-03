@@ -30,6 +30,13 @@ from teatree.loop.scanners.slack_broadcasts import (
     _parse_gitlab_mr_url,
 )
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 CHANNEL = "C0DEMOCHAN1"
 TS_A = "1779201478.501469"
@@ -53,6 +60,9 @@ class FakeMessaging:
             raise self.react_raises
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        return self.react(channel=channel, ts=ts, emoji=emoji)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
