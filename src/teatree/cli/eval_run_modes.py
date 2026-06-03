@@ -19,9 +19,19 @@ from teatree.eval.matrix import MatrixRow
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.pass_at_k import PassAtKResult
 from teatree.eval.report import JudgeGrader, JudgeOutcome, ScenarioResult
+from teatree.eval.skip_guard import AllSkippedError, assert_executed_when_required
 
 if TYPE_CHECKING:
     from teatree.core.models import EvalRunRecord
+
+
+def guard_executed(*, executed: int, collected: int, required: bool) -> None:
+    """Exit non-zero when a required run collected scenarios but executed none."""
+    try:
+        assert_executed_when_required(collected=collected, executed=executed, required=required)
+    except AllSkippedError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
 
 
 def run_model_label(specs: list[EvalSpec]) -> str:
