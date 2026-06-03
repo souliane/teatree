@@ -558,3 +558,91 @@ class TestBuildReviewerDispatchPrompt(TestCase):
         with patch("teatree.agents.skill_bundle.active_overlay_review_skills", return_value=["code-review"]):
             out = build_reviewer_dispatch_prompt(review_instruction="REVIEW-BODY-MARKER")
         assert out.index("/code-review") < out.index("REVIEW-BODY-MARKER")
+
+
+# --- coding-phase builder dispatch contract (symmetric to reviewer prompt) ---
+
+
+class TestCodingPhaseDispatchContract(TestCase):
+    """Coding-phase builder prompt carries the dispatch-contract directive.
+
+    The forced-load + behavior-preservation + no-AI-signature clauses are
+    symmetric to ``build_reviewer_dispatch_prompt``.
+
+    Pins the dispatch-contract symmetry: the reviewer path force-loads its
+    skills, but the builder path historically only said "run tests before
+    declaring done" — so the enumerate-and-preserve discipline never reached
+    a dispatched builder. These assertions keep the contract from silently
+    regressing.
+    """
+
+    def _coding_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_has_forced_load_directive(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "/t3:architecture-design" in prompt
+        assert "/t3:code" in prompt
+        assert "REQUIRED: before writing code" in prompt
+
+    def test_task_prompt_has_behavior_preservation_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "BEHAVIOR PRESERVATION" in prompt
+        assert "enumerate every behavior" in prompt
+        assert "NEVER invert a must-block test to must-not-block" in prompt
+        assert "weakening a" in prompt
+        assert "privacy gate is a BLOCKER" in prompt
+
+    def test_task_prompt_has_no_ai_signature_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "NO AI SIGNATURE" in prompt
+        assert "Co-Authored-By" in prompt
+        assert "Generated with Claude Code" in prompt
+
+    def test_task_prompt_verify_step_replaces_bare_run_tests(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        # Step 5 now points at the CI-parity verify command, not the vague
+        # "Run tests before declaring done".
+        assert "t3 tool verify-gates" in prompt
+        assert "Run tests before declaring done" not in prompt
+
+    def test_non_coding_task_prompt_has_no_coding_directive(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        prompt = build_task_prompt(task)
+        assert "BEHAVIOR PRESERVATION" not in prompt
+        assert "REQUIRED: before writing code" not in prompt
+
+    def test_system_context_coding_phase_embeds_directive(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        ctx = build_system_context(task, skills=["code", "rules"], lifecycle_skill="code")
+        assert "PHASE: coding" in ctx
+        assert "/t3:architecture-design" in ctx
+        assert "BEHAVIOR PRESERVATION" in ctx
+        assert "NO AI SIGNATURE" in ctx
+        assert "t3 tool verify-gates" in ctx
+
+    def test_system_context_coding_phase_embeds_architecture_design_in_full(self) -> None:
+        """architecture-design is a primary (full-embed) skill on the coding phase."""
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} SENTINEL BODY", encoding="utf-8")
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                task,
+                skills=["code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+        # Full body, not the demoted "available — load if needed" summary.
+        assert "# architecture-design SENTINEL BODY" in ctx
+        assert "- architecture-design: available — load if needed" not in ctx

@@ -5,7 +5,7 @@ When `T3_CONTRIBUTE=true` and retro modified files under `$T3_REPO`, **proceed t
 ## Pre-Flight Checks (all must pass)
 
 1. **Repo is a full clone:** `git -C "$T3_REPO" rev-parse --is-shallow-repository` → `false`
-2. **Pre-commit passes:** `cd "$T3_REPO" && prek run --all-files` — if it fails, fix first.
+2. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); if it fails, fix first.
 3. **All tests pass:** `cd "$T3_REPO" && uv run pytest` — must be green.
 4. **Privacy scan passes:** see § Privacy Scan.
 
