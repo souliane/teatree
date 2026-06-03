@@ -37,8 +37,10 @@ class BodyFileContext:
     """Resolution context for ``-F``/``--file``/``--body-file`` body files.
 
     Groups the three settings that flow together through the body-file
-    walkers: the in-command ``heredoc_files`` map, the ``base`` dir a relative
-    body file is retried against (the commit's repo dir), and
+    walkers: the in-command ``heredoc_files`` map (a body written earlier in
+    the SAME command — a ``> path <<EOF`` heredoc or a ``printf``/``echo >
+    path`` redirect — keyed by the redirect-target token), the ``base`` dir a
+    relative body file is retried against (the commit's repo dir), and
     ``fail_closed_body_file`` (what an UNREADABLE ``gh``/``glab`` body file
     does — the git ``-F`` commit-message path always fails closed regardless).
     """
@@ -111,15 +113,18 @@ def _append_file_payload(path: str, payloads: list[str], ctx: BodyFileContext, *
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
 
     Resolution order: the on-disk file (as-is, then relative to ``ctx.base`` --
-    the commit's repo dir), then an in-command heredoc that writes to that
-    path (``cat > path <<EOF … EOF``), then the ``fail_closed`` branch. The
-    heredoc fallback closes the #126 false positive where a body written to a
-    temp file and committed via ``-F`` in the same command was unreadable at
-    PreToolUse scan time (the hook runs BEFORE the file is created). The
-    ``ctx.base`` fallback closes the cold-hook false positive where the harness
-    cwd has reset away from the worktree, so a ``git -C <worktree> commit -F
-    <relpath>`` body file is unreadable from the cwd yet readable from the
-    commit's own repo dir.
+    the commit's repo dir), then an in-command body written to that path — a
+    ``cat > path <<EOF … EOF`` heredoc or a ``printf``/``echo > path`` redirect
+    — then the ``fail_closed`` branch. The in-command fallback closes the #126
+    false positive where a body written to a temp file and posted via
+    ``--body-file``/``-F`` in the same command was unreadable at PreToolUse
+    scan time (the hook runs BEFORE the file is created); the lookup key is the
+    raw ``--body-file`` argument token, so a ``$f`` / ``$(mktemp)`` path matches
+    the textually-identical redirect target even though neither is expanded.
+    The ``ctx.base`` fallback closes the cold-hook false positive where the
+    harness cwd has reset away from the worktree, so a ``git -C <worktree>
+    commit -F <relpath>`` body file is unreadable from the cwd yet readable from
+    the commit's own repo dir.
 
     ``fail_closed`` selects what an unresolvable path does. ``True`` appends
     the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
