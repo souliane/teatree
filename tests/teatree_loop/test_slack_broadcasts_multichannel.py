@@ -2,9 +2,10 @@
 
 Asserts that when the overlay configures multiple review broadcast channels
 via :meth:`OverlayConfig.get_review_broadcast_channels`, posting the same
-MR URL to all of them produces one :class:`ScannedBroadcast` row per
-``(channel, slack_ts)`` and one ``:eyes:`` reaction per channel — the
-scanner fans out without dedup-by-MR.
+MR URL to all of them produces one :class:`ScannedBroadcast` row and one
+review-intent dispatch per ``(channel, slack_ts)`` — the scanner fans out
+without dedup-by-MR. No ``:eyes:`` claim reaction is posted at discovery
+(#113/#86); the claim reaction belongs to review-DONE.
 """
 
 from dataclasses import dataclass, field
@@ -70,7 +71,7 @@ class FakeMessaging:
 
 
 class MultiChannelBroadcastFanOutTests(TestCase):
-    def test_same_mr_posted_to_three_channels_creates_three_rows_and_three_reactions(self) -> None:
+    def test_same_mr_posted_to_three_channels_creates_three_rows_and_dispatches(self) -> None:
         # The same broadcast message appears in three independent channels
         # — capability A says the scanner fans out across all of them.
         messaging = FakeMessaging()
@@ -97,5 +98,6 @@ class MultiChannelBroadcastFanOutTests(TestCase):
         # collapse the MR across channels.
         rows = list(ScannedBroadcast.objects.order_by("channel"))
         assert [row.channel for row in rows] == CHANNELS
-        # One :eyes: react per channel.
-        assert sorted(messaging.react_calls) == sorted((channel, TS, "eyes") for channel in CHANNELS)
+        # No discovery-time :eyes: claim react on any channel (#113/#86) —
+        # an open MR queues a dispatch but does not claim the review.
+        assert messaging.react_calls == []

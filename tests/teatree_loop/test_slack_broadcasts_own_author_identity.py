@@ -141,7 +141,9 @@ class OwnAuthorBroadcastIdentityTests(TestCase):
             signals = scanner.scan()
 
         assert [s.kind for s in signals] == ["slack.review_intent"]
-        assert (CHANNEL, TS_A, "eyes") in messaging.react_calls
+        # #113/#86: a colleague MR is dispatched but NOT :eyes:-claimed at
+        # discovery — the claim reaction belongs to review-DONE.
+        assert (CHANNEL, TS_A, "eyes") not in messaging.react_calls
 
 
 @dataclass

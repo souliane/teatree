@@ -6,9 +6,10 @@ messages that reference an MR/PR URL. Each fresh trigger creates one
 and emits one ``slack.review_intent`` signal that the dispatcher routes to
 the ``t3:reviewer`` agent.
 
-The mention path additionally posts the ``:eyes:`` reaction on the message —
-the agent's visible acknowledgement that the loop saw the mention before the
-reviewer pipeline runs.
+No ``:eyes:`` claim reaction is posted at discovery on either the reaction or
+mention path: a claim reaction belongs to review-DONE, never to start
+(#113/#86). The review-intent signals are suppressed entirely while the
+review loop is stopped (#79).
 """
 
 from dataclasses import dataclass, field
@@ -174,7 +175,10 @@ class TestReactionDriven:
 
 
 class TestMentionDriven:
-    def test_user_mention_on_mr_message_posts_eyes_and_creates_assignment(self) -> None:
+    def test_user_mention_on_mr_message_creates_assignment_without_eyes_claim(self) -> None:
+        # #113/#86: a mention records the review intent and emits the dispatch
+        # signal, but posts NO :eyes: claim reaction at discovery — the claim
+        # reaction belongs to review-DONE. The row stays PENDING.
         backend = FakeMessaging(mentions=[_mention_event()])
         scanner = SlackReviewIntentScanner(backend=backend, overlay="teatree")
 
@@ -183,9 +187,9 @@ class TestMentionDriven:
         assert [s.kind for s in signals] == ["slack.review_intent"]
         assert signals[0].payload["mr_url"] == MR
         assert signals[0].payload["trigger"] == "mention"
-        assert backend.react_calls == [(CHANNEL, TS, "eyes")]
+        assert backend.react_calls == []
         row = ReviewAssignment.objects.get()
-        assert row.state == ReviewAssignment.State.EYES_ADDED
+        assert row.state == ReviewAssignment.State.PENDING
 
     def test_mention_without_mr_url_is_skipped(self) -> None:
         backend = FakeMessaging(mentions=[_mention_event(text="hello agent")])
