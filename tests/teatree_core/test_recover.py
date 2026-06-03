@@ -117,9 +117,11 @@ class TestToTerse(TestCase):
         assert "https://x/i/1" in out
         assert "https://x/pull/2" in out  # the PR url wins over the ticket url
         assert "/tmp/t3-recover-x" in out
-        assert "task#7" in out
+        assert "TODO-7" in out
+        assert "task#7" not in out
         assert "[outage]" in out
-        assert "Reconcile drift on tickets: #11" in out
+        assert "Reconcile drift on tickets: teatree#11" in out
+        assert "tickets: #11" not in out
 
     def test_orphan_with_no_url_renders_placeholder(self) -> None:
         from teatree.core.recover import OrphanItem  # noqa: PLC0415
