@@ -44,6 +44,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Communication & references**
 
 14. [Clickable References](#clickable-references)
+14b. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 15a. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
@@ -213,6 +214,16 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 - `[PROJ-1234](https://example.com/org/repo/-/issues/1234)` — not `PROJ-1234`
 
 This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
+
+## ID Namespace Disambiguation (Non-Negotiable)
+
+Id references must be namespace-qualified — they are never bare. A harness/teatree **task id** and a forge **issue/ticket/PR id** are different namespaces that both number from ~1, so a bare `#<n>` standing next to another bare `#<n>` is undecidable: an agent cannot tell whether `task #5` next to `ticket #5` are the same thing or two unrelated objects, and may resolve a task id against the issue tracker and act on the wrong object.
+
+- **Harness/teatree task ids** render as `TODO-<n>` (e.g. `TODO-7`) — never `task #<n>` or bare `#<n>`. This is `Task` PKs and harness TODO ids alike.
+- **Forge issue/ticket/PR ids** render as `<repo>#<n>` when ambiguity with a task id (or a cross-repo ref) is possible (e.g. `teatree#11`, `<overlay-repo>#42`/`!42`). A bare `#<n>` for a forge ref is acceptable only inside a context already scoped to one forge namespace (e.g. a statusline line prefixed `[overlay]`, or a single-namespace section), never side-by-side with a task id.
+- Never emit a bare `#<n>` for a task id sitting next to a bare `#<n>` for a ticket.
+
+This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `src/teatree/eval/scenarios/id_namespace_disambiguation.yaml`.
 
 ## Token Extraction
 

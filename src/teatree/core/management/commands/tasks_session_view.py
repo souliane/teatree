@@ -181,7 +181,7 @@ def _render_teatree_tasks_section(rows: list[TaskRow], *, console: Console) -> N
         for row in group_rows:
             phase = f" {row['phase']}" if row["phase"] else ""
             reason = row["execution_reason"] or "-"
-            console.print(f"    task #{row['task_id']} (ticket #{row['ticket_id']}{phase}): {reason}")
+            console.print(f"    task TODO-{row['task_id']} (ticket #{row['ticket_id']}{phase}): {reason}")
 
 
 def _todo_group(status: str) -> str:
