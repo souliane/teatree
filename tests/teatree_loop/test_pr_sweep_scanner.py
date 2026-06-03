@@ -19,13 +19,15 @@ pre-conditions. These tests pin every branch of the decision ladder:
     --squash`` iff the keystone refuses on that same path
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.pr_sweep import CheckResult, NullMergeNotifier, PrSummary, PrSweepScanner
+from teatree.loop.scanners.pr_sweep import CheckResult, PrSummary, PrSweepScanner
+from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier, SlackMergeNotifier, _decode_pr
 
 pytestmark = pytest.mark.django_db
 
@@ -78,6 +80,21 @@ def _open_pr(
         checks=checks or (_green_required(),),
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
+    )
+
+
+def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[CheckResult, ...] = ()) -> PrSummary:
+    base = _open_pr(pr_id=pr_id, checks=checks)
+    return replace(base, is_conflicted=True)
+
+
+def _record_cold_review(*, pr_id: int = 6230, sha: str = HEAD, reviewer: str = "cold-reviewer") -> ReviewVerdict:
+    return ReviewVerdict.record(
+        pr_id=pr_id,
+        slug=SLUG,
+        reviewed_sha=sha,
+        verdict="merge_safe",
+        reviewer_identity=reviewer,
     )
 
 
@@ -340,8 +357,10 @@ class TestSoloOverlayBypassesClearGate:
     overlay.
     """
 
-    def test_solo_overlay_with_no_clear_merges_via_gh_fallback(self) -> None:
-        # No CLEAR issued for this PR — the dogfood case.
+    def test_solo_overlay_with_cold_review_but_no_clear_merges_via_gh_fallback(self) -> None:
+        # No CLEAR (the dogfood case) but a recorded independent cold-review — the
+        # solo bypass skips the per-diff CLEAR, never the cold-review requirement.
+        _record_cold_review()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
@@ -351,6 +370,7 @@ class TestSoloOverlayBypassesClearGate:
         assert keystone.calls == []  # CLEAR-keystone never invoked
         assert api.merge_pr_calls == [(SLUG, 6230)]  # direct gh fallback fired
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
+        assert notifier.flag_calls == []
         assert [s.kind for s in signals] == ["pr_sweep.merged"]
         assert signals[0].payload["reason"] == "solo_overlay_no_clear"
 
@@ -405,6 +425,7 @@ class TestSoloOverlayBypassesClearGate:
         assert signals[0].payload["reason"] == "all_green"
 
     def test_solo_overlay_gh_fallback_failure_emits_blocked_signal(self) -> None:
+        _record_cold_review()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]}, fallback_succeeds=False)
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
@@ -431,6 +452,194 @@ class TestSoloOverlayBypassesClearGate:
         assert api.merge_pr_calls == []
         assert notifier.calls == []
         assert signals[0].payload["reason"] == "no_clear_for_head"
+
+
+class TestSoloOverlayRequiresIndependentColdReview:
+    """Gap A (#68): the solo-overlay bypass must require a recorded cold-review.
+
+    The bypass skips only the per-diff CLEAR — never the maker≠checker
+    boundary. A green+clean solo-overlay PR with NO recorded independent
+    ``ReviewVerdict`` is NOT auto-merged; the scanner emits a flag-level
+    signal so the only-identity-on-the-repo maker can never self-merge.
+    """
+
+    def test_green_solo_overlay_pr_with_no_cold_review_is_not_merged_and_flags(self) -> None:
+        # CI-green, no CLEAR, no recorded cold-review — the maker-self-merge hole.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []  # the auto-merge was refused
+        assert notifier.calls == []  # no merge DM
+        assert notifier.flag_calls == [(SLUG, 6230, "no_independent_review", f"https://github.com/{SLUG}/pull/6230")]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_no_review"]
+        assert signals[0].payload["reason"] == "solo_overlay_no_review"
+        assert signals[0].payload["merged"] is False
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_cold_review_for_stale_sha_does_not_authorize_merge(self) -> None:
+        # A recorded verdict against a tree the PR has moved off cannot vouch for
+        # the live head — the stale row is treated as absent and the PR is flagged.
+        _record_cold_review(sha=STALE)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(head=HEAD)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+
+    def test_hold_verdict_does_not_authorize_merge(self) -> None:
+        # A recorded HOLD is not a merge-safe verdict — it must not unlock the bypass.
+        ReviewVerdict.record(
+            pr_id=6230,
+            slug=SLUG,
+            reviewed_sha=HEAD,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="green",
+        )
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+
+    def test_collaborative_overlay_unaffected_by_cold_review_gate(self) -> None:
+        # Anti-vacuous: the cold-review gate is solo-overlay-only. A non-solo
+        # overlay with a recorded cold-review still skips on no_clear_for_head —
+        # the gate did not silently turn the collaborative default into a bypass.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=False)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert notifier.flag_calls == []
+        assert signals[0].payload["reason"] == "no_clear_for_head"
+
+
+class TestConflictFlag:
+    """Gap B (#78): a conflicted open PR emits a flag — flag only, never an auto-rebase."""
+
+    def test_conflicted_pr_emits_conflict_flag_without_merging(self) -> None:
+        # Even fully green + cleared, a conflicted PR is flagged, not merged.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_conflicted_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == []  # never merged
+        assert api.merge_pr_calls == []  # never rebased / squash-merged
+        assert notifier.calls == []
+        assert notifier.flag_calls == [(SLUG, 6230, "conflict", f"https://github.com/{SLUG}/pull/6230")]
+        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
+        assert signals[0].payload["reason"] == "conflict"
+        assert signals[0].payload["merged"] is False
+        assert signals[0].payload["url"] == f"https://github.com/{SLUG}/pull/6230"
+
+    def test_conflicted_solo_overlay_pr_is_flagged_not_merged(self) -> None:
+        # The conflict flag precedes the solo bypass — a conflicted PR never
+        # reaches the gh fallback even on a full-autonomy overlay.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_conflicted_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert signals[0].kind == "pr_sweep.flag_conflict"
+
+    def test_non_conflicted_pr_is_not_flagged(self) -> None:
+        # Anti-vacuous: a clean (non-conflicted) green+cleared PR still merges,
+        # so the flag fires on the conflict, not on every PR.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert notifier.flag_calls == []
+        assert [s.kind for s in signals] == ["pr_sweep.merged"]
+
+
+class TestGhConflictDecode:
+    """The ``gh`` adapter maps GitHub's mergeable / mergeStateStatus to is_conflicted."""
+
+    def test_decode_marks_conflicting_mergeable_as_conflicted(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeable": "CONFLICTING"})
+
+        assert pr.is_conflicted is True
+
+    def test_decode_marks_dirty_merge_state_as_conflicted(self) -> None:
+        pr = _decode_pr(slug=SLUG, raw={"number": 1, "headRefOid": HEAD, "mergeStateStatus": "DIRTY"})
+
+        assert pr.is_conflicted is True
+
+    def test_decode_does_not_flag_behind_or_unknown_states(self) -> None:
+        behind = _decode_pr(slug=SLUG, raw={"number": 1, "mergeable": "MERGEABLE", "mergeStateStatus": "BEHIND"})
+        unknown = _decode_pr(slug=SLUG, raw={"number": 2, "mergeable": "UNKNOWN", "mergeStateStatus": ""})
+
+        assert behind.is_conflicted is False
+        assert unknown.is_conflicted is False
+
+
+class TestSlackMergeNotifier:
+    """The Slack DM notifier posts on a merge and on a flag-level signal."""
+
+    @dataclass(slots=True)
+    class _Backend:
+        posts: list[tuple[str, str]] = field(default_factory=list)
+
+        def post_dm(self, *, channel: str, text: str) -> None:
+            self.posts.append((channel, text))
+
+    def test_announce_posts_merge_dm(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="U1").announce(
+            slug=SLUG, pr_id=42, merged_sha=MAIN_SHA, fallback=False
+        )
+        assert backend.posts == [("U1", f"merged {SLUG}#42 @ {MAIN_SHA[:8]}")]
+
+    def test_announce_marks_uv_audit_fallback(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="U1").announce(slug=SLUG, pr_id=42, merged_sha="", fallback=True)
+        assert backend.posts == [("U1", f"merged (uv-audit fallback) {SLUG}#42 @ ?")]
+
+    def test_flag_posts_clickable_url(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+            slug=SLUG, pr_id=42, reason="conflict", url="https://github.com/x/pull/42"
+        )
+        assert backend.posts == [("U1", "flag (conflict) https://github.com/x/pull/42")]
+
+    def test_flag_falls_back_to_slug_when_url_missing(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="U1").flag(
+            slug=SLUG, pr_id=42, reason="no_independent_review", url=""
+        )
+        assert backend.posts == [("U1", f"flag (no_independent_review) {SLUG}#42")]
+
+    def test_no_user_id_posts_nothing(self) -> None:
+        backend = self._Backend()
+        SlackMergeNotifier(backend=backend, user_id="").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
+        assert backend.posts == []
+
+    def test_backend_without_post_method_is_silent(self) -> None:
+        SlackMergeNotifier(backend=object(), user_id="U1").flag(slug=SLUG, pr_id=42, reason="conflict", url="")
 
 
 class TestErrorIsolation:
@@ -513,3 +722,28 @@ class TestErrorIsolation:
 
         with pytest.raises(ScannerError):
             scanner.scan()
+
+    def test_flag_notifier_failure_does_not_crash_sweep(self) -> None:
+        """A notifier whose ``flag`` raises must not abort the conflict flag (#78)."""
+
+        @dataclass(slots=True)
+        class _BoomFlagNotifier:
+            def announce(self, *, slug: str, pr_id: int, merged_sha: str, fallback: bool) -> None:  # pragma: no cover
+                return
+
+            def flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
+                msg = "slack down"
+                raise RuntimeError(msg)
+
+        api = FakePrApiClient(prs_by_slug={SLUG: [_conflicted_pr()]})
+        scanner = PrSweepScanner(
+            repos=(SLUG,),
+            api=api,
+            keystone=FakeKeystone(),
+            notifier=_BoomFlagNotifier(),
+            overlay="teatree",
+        )
+
+        signals = scanner.scan()
+
+        assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
