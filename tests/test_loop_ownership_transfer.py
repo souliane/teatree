@@ -203,8 +203,16 @@ def _race_round(
     read->decide->write is one flock transaction: the second child blocks
     until the first commits, re-reads, sees the live owner, and emits the
     NON-owner ("stay idle") directive.
+
+    Each child runs registry-only (``T3_LOOP_SKIP_DB_LEASE_CONSULT``): the
+    invariant under test is the file-registry flock TOCTOU, which never
+    touches the DB. Skipping the cross-checking ``LoopLease`` consultation
+    drops a full ``django.setup()`` per child, so the round is governed by
+    flock contention (what it tests) rather than interpreter/Django spin-up
+    wall-clock (incidental — the source of the load-sensitive timeout).
     """
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
+    os.environ["T3_LOOP_SKIP_DB_LEASE_CONSULT"] = "1"
     import importlib  # noqa: PLC0415
     import io  # noqa: PLC0415
     from contextlib import redirect_stdout  # noqa: PLC0415
@@ -231,6 +239,7 @@ def _is_non_owner_directive(ctx: str) -> bool:
     return "stay idle" in low or "do not arm" in low
 
 
+@pytest.mark.timeout(300)
 class TestConcurrentFreshClaimIsAtomic:
     """#718 atomic-claim invariant, preserved under #786 WS3.
 
@@ -243,6 +252,15 @@ class TestConcurrentFreshClaimIsAtomic:
     claim — the assertions below then trip, demonstrating this test
     guards the fix. Repeated over many rounds because the bad interleave
     is timing-dependent.
+
+    The class-level ``timeout(300)`` overrides the project-wide 60s cap.
+    That cap is a wall-clock budget, but this test asserts a *correctness*
+    invariant (never both claim), not speed: under ``-n auto`` CPU
+    contention on a loaded box the multiprocess rounds legitimately run
+    long without the invariant being at risk, so a load-sensitive 60s cap
+    produced a false failure that blocked every queued push (#1824). The
+    cap is set generous and load-independent — large enough that only a
+    genuine hang (the thing a timeout should catch) trips it.
     """
 
     def test_simultaneous_fresh_starts_never_both_claim(self, tmp_path: Path) -> None:

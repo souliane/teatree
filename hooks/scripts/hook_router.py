@@ -4559,6 +4559,14 @@ _OWNER_LOOP = "t3-loop-tick-owner"
 # Overridable for tests; the controlling terminal otherwise.
 _TTY_PATH = "/dev/tty"
 
+# Skips the ``LoopLease`` DB cross-check (and its ``django.setup()``);
+# collapses to the same fail-open value an absent DB already yields.
+_SKIP_DB_LEASE_CONSULT_ENV = "T3_LOOP_SKIP_DB_LEASE_CONSULT"
+
+
+def _db_lease_consult_disabled() -> bool:
+    return os.environ.get(_SKIP_DB_LEASE_CONSULT_ENV) == "1"
+
 
 def _loop_registry_path() -> Path:
     """Return the machine-wide loop-registry JSON path.
@@ -4934,6 +4942,8 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     the new session must stay idle (INV1). Fails open (returns ``""``) on
     any DB/import error so a hiccup never blocks the SessionStart directive.
     """
+    if _db_lease_consult_disabled():
+        return ""
     if not _bootstrap_teatree_django():
         return ""
     try:
@@ -4985,6 +4995,8 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     Best-effort: any Django bootstrap / DB error fails open. The hook
     must never block the SessionStart directive over a DB hiccup.
     """
+    if _db_lease_consult_disabled():
+        return
     if not _bootstrap_teatree_django():
         return
     try:
