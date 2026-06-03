@@ -1470,7 +1470,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
-│ comment-density      Flag added comments that merely restate the code        │
+│ comment-density      Warn on added comments that merely restate the code     │
 │                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
@@ -1484,6 +1484,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
 │ triage-issues        Scan for resolved-but-open and stale issues.            │
+│ verify-gates         Run the FULL CI-equivalent local gate set (commit AND   │
+│                      push stages).                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1694,12 +1696,13 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Flag added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (near-zero-comments rule).
 
  Content-blind density pass over a unified diff. Reusable by any overlay:
- the dedicated prek hook and the CI job both call this command. Exits ``1``
- when a file's added lines are comment-dense, ``0`` when clean. Never a
- PreToolUse gate, so it can never lock the agent's tools.
+ the dedicated prek hook and the CI job both call this command. The check
+ is **advisory** — it prints the findings as a warning but **always exits
+ 0**, so it never blocks a commit, push, or pipeline, and it is never a
+ PreToolUse gate.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --diff            PATH  Read the unified diff from this file instead of      │
@@ -1864,6 +1867,25 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool verify-gates`
+
+```
+Usage: t3 tool verify-gates [OPTIONS]
+
+ Run the FULL CI-equivalent local gate set (commit AND push stages).
+
+ Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
+ pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
+ what catches the gates CI fails on but a bare ``prek run --all-files``
+ cannot see (comment-density, doc-update, ensure-pr, pytest-fast, the
+ public-repo leak gate). Report this command's exit code as the green-proof
+ before declaring a branch review-ready -- not a commit-stage-only run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -2473,8 +2473,6 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
 # ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
 
-_PR_BODY_FLAG_RE = re.compile(r"--(?:body|description|message)(?:[ =])\s*(['\"])(.*?)\1", re.DOTALL)
-_GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DOTALL)
 # File-based message args — the standard multi-line path (#831's shape).
 # ``git commit -F/-C/--file FILE``, ``gh pr create --body-file FILE``,
 # ``glab mr create --description FILE``. The captured token is a path
@@ -2517,19 +2515,6 @@ def _read_message_file(command: str) -> str | None:
         return None
 
 
-_AI_SIG_PR_RE = re.compile(
-    r"\b(?:"
-    r"gh\s+pr\s+(?:create|edit|comment)"
-    r"|glab\s+mr\s+(?:create|update|edit)"
-    # F2: REST-API create endpoints — effective POST creates a PR/MR and
-    # must carry an AI-sig scan just like `gh pr create` / `glab mr create`.
-    # GET reads (no body flag, bare endpoint) are excluded by the
-    # _is_api_create_endpoint_write helper.
-    r"|gh\s+api\b"
-    r"|glab\s+api\b"
-    r")\b",
-)
-_AI_SIG_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
 # REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.
 # Distinguishes a PR/MR create from a list read (GET) or the merge endpoint
 # already covered by _MERGE_ENDPOINT_RE.  The \d+-free form matches both the
@@ -2564,55 +2549,60 @@ def _is_api_create_endpoint_write(command: str) -> bool:
     return not is_read
 
 
-def _extract_bash_ai_sig_payload(command: str) -> str | None:
-    """Return the scannable payload for a Bash command, or ``None``.
+def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str | None:
+    """Return the scannable forge-post body for a Bash command, or ``None``.
 
-    Split out of :func:`_extract_ai_sig_payload` to keep that function under
-    the PLR0911 return-count ceiling (same pattern as
-    :func:`_resolve_high_match`).
+    Delegates the "is this a forge post?" decision and the body extraction to
+    the SAME canonical command parser the #1213 quote-scanner, #1415
+    banned-terms, and #1530 bare-reference gates use
+    (:mod:`teatree.hooks._command_parser`). This was previously a second,
+    hand-rolled parser (``_AI_SIG_PR_RE`` / ``_AI_SIG_COMMIT_RE`` /
+    ``_PR_BODY_FLAG_RE`` / ``_GIT_COMMIT_M_RE``, all now removed) that covered
+    only ``gh pr`` / ``glab mr`` and a QUOTED ``--body`` — it missed
+    ``gh issue create/comment``,
+    ``glab issue note``, ``glab mr note``, and the ``-b``/heredoc/``-d`` body
+    forms, so an AI-signature footer leaked on those surfaces (#11, the
+    souliane/skills#38 / #1840 / #1845 recurrence). Reusing the shared parser
+    closes the whole class at once: :func:`is_publish_command` recognises every
+    forge-post command shape (the contiguous-substring catalogue + the
+    token-aware ``api`` WRITE / ``git commit`` classifiers), and
+    :func:`extract_bash_payload` pulls the body out of every flag form
+    (``--body``/``--description``/``--message``/``-b``/``-m``, ``--body-file``/
+    ``--file``/``-F``, ``-d``/``--field`` JSON, heredocs).
+
+    ``fail_closed_body_file=False`` keeps this gate's fail-OPEN contract on an
+    unreadable / missing / binary body file (an absent body contributes
+    nothing rather than a hard-block sentinel) — a broken environment must
+    never block a forge post, matching the other t3-shelling hooks.
+
+    The body extraction itself lives in the public
+    :func:`teatree.hooks.ai_signature_gate.extract_forge_post_body` so the
+    private ``_command_parser`` import stays INSIDE the ``teatree`` package (the
+    hook router cannot import a private name from an external module), mirroring
+    how ``banned_terms_scanner.extract_publish_payload`` wraps the same parser.
     """
-    is_commit = bool(_AI_SIG_COMMIT_RE.search(command))
-    if not is_commit and not _AI_SIG_PR_RE.search(command):
-        return None
-    # F2: gh api / glab api only trigger when it's actually a create-endpoint
-    # POST — a bare GET read must not be treated as PR create.
-    if not is_commit:
-        api_match = re.search(r"\b(?:gh|glab)\s+api\b", command)
-        if api_match and not _is_api_create_endpoint_write(command):
-            return None
-    # Inline message wins; file-based arg is the multi-line fallback (#831).
-    flag_re = _GIT_COMMIT_M_RE if is_commit else _PR_BODY_FLAG_RE
-    inline = flag_re.search(command)
-    if inline is not None:
-        return inline.group(2)
-    from_file = _read_message_file(command)
-    if from_file is not None:
-        return from_file
-    # A PR command with no body is still a scannable surface (empty string);
-    # a commit with no -m opens an editor — no inline payload (None).
-    return None if is_commit else ""
+    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415
+
+    return extract_forge_post_body(command, cwd)
 
 
 def _extract_ai_sig_payload(data: dict) -> str | None:
     """Return the PR-body / commit-message text to scan, else ``None``.
 
-    Covers ``gh pr create/edit/comment --body``, ``glab mr
-    create/update/edit --description``, ``git commit -m`` (inline), the
-    file-based message path (``git commit -F/-C``, ``gh pr create
-    --body-file``, ``glab mr create --description <file>`` — the standard
-    multi-line / #831 shape), ``gh api``/``glab api`` POST to a
-    PR/MR-create endpoint (F2), and the MR/PR MCP create/update tools.
-    ``None`` ⇒ not a PR/commit mutation, or a file-based arg whose file is
-    missing/binary (fail open).
-
-    Uses word-boundary + ``\\s+`` regexes (not plain ``in``) so double-space
-    variants (``git  commit``, ``glab  mr  create``) are caught (F1).
-    """  # noqa: D301
+    Covers the full forge-post command class via the shared canonical parser
+    (:func:`_extract_bash_ai_sig_payload`): ``gh pr create/edit/comment``,
+    ``gh issue create/comment``, ``glab mr create/update/note``,
+    ``glab issue create/note``, ``git commit`` (inline ``-m`` and file-based
+    ``-F``/``-C``/``--file`` / ``--body-file`` / ``--description``-file —
+    the #831 multi-line shape), the ``gh api``/``glab api`` WRITE to a forge
+    endpoint, and the MR/PR MCP create/update tools. ``None`` ⇒ not a forge
+    post / commit, or (for a file-based arg) a missing/binary file (fail open).
+    """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
 
     if tool_name == "Bash":
-        return _extract_bash_ai_sig_payload(tool_input.get("command", ""))
+        return _extract_bash_ai_sig_payload(tool_input.get("command", ""), _resolve_cwd_repo(data))
 
     if tool_name in _PR_CREATE_TOOLS:
         return tool_input.get("body", "") or tool_input.get("description", "")
@@ -2628,16 +2618,44 @@ def _ai_sig_scan_argv() -> list[str] | None:
 
 
 def handle_block_ai_signature(data: dict) -> bool:
-    """Refuse a PR body / commit message carrying an AI-signature trailer.
+    """Refuse a forge-post body / commit message carrying an AI-signature trailer.
 
     Deterministic enforcement of the "No AI Signature on Posts Made on the
     User's Behalf" rule (BLUEPRINT §17.6 gate 15, #836). The rule was prose
     only in /t3:rules and unenforced at the PR-body layer — PR #831 leaked
     the banned trailer, caught only by cold review. This makes it a code
     gate at the same pre-merge layer as the draft-lock and structured-
-    question gates. Fails open on a broken environment (no ``t3``), matching
-    the other t3-shelling hooks.
+    question gates.
+
+    Body extraction now reuses the shared canonical command parser
+    (``teatree.hooks._command_parser``) so the gate fires for the WHOLE
+    forge-post command class — ``gh pr/issue create/edit/comment``,
+    ``glab mr/issue create/update/note``, ``git commit``, and every
+    ``--body``/``--body-file``/``-F``/``-b``/``-m`` flag form — closing the
+    ``gh issue`` / ``glab note`` / unquoted-body gap a hand-rolled regex
+    parser left open (#11). The handler bootstraps ``sys.path`` to import
+    ``teatree`` from the sibling ``src/`` dir (the hook runs in the user's
+    session shell with no guarantee ``teatree`` is importable, #1314) and
+    fails open on a broken environment (no ``t3`` / import error), matching
+    the other t3-shelling hooks — a crashing gate is worse than no scan.
     """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_block_ai_signature(data)
+    except Exception:  # noqa: BLE001 — a crashing gate is worse than no scan; fail open.
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_block_ai_signature(data: dict) -> bool:
+    """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
     payload = _extract_ai_sig_payload(data)
     if payload is None:
         return False
@@ -3130,7 +3148,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
         return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
 
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
     if payload is None:
         return False
 
@@ -3215,7 +3233,7 @@ def _run_bare_reference_pretool(data: dict) -> bool:
         return False
     tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
 
-    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
     if payload is None:
         return False
 
