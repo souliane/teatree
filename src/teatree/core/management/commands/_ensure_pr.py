@@ -16,7 +16,6 @@ UNPUSHED_ORPHAN case; the post-push ``ensure-pr`` opens the PR against the
 now-current ref. Any other create failure is a real error and surfaces.
 """
 
-import re
 from typing import TypedDict
 
 from teatree.backends.protocols import PullRequestSpec
@@ -26,8 +25,6 @@ from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
-_REMOTE_HOST_RE = re.compile(r"^(?:git@[^:]+:|https?://[^/]+/|ssh://[^/]+/|git://[^/]+/)")
-
 
 class EnsurePrResult(TypedDict, total=False):
     skipped: str
@@ -35,13 +32,6 @@ class EnsurePrResult(TypedDict, total=False):
     url: str
     hint: str
     error: str
-
-
-def slug_from_remote(remote_url: str) -> str:
-    """Extract the ``org/repo`` (or ``ns/group/repo``) slug from a git remote URL."""
-    if not remote_url:
-        return ""
-    return _REMOTE_HOST_RE.sub("", remote_url.strip()).removesuffix(".git")
 
 
 def _ticket_extra_for_branch(branch_name: str) -> dict | None:
@@ -111,7 +101,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
 
     remote = git.remote_url(repo=repo_path)
-    repo_slug = slug_from_remote(remote)
+    repo_slug = git.slug_from_remote(remote)
     assignee = host.current_user() or git.config_value(key="user.name")
 
     try:
