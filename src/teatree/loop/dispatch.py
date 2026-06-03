@@ -108,6 +108,8 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # Only the CI-green-gate skips reach here (see _is_self_update_ci_skip); a
     # clone wedged behind a red default branch must surface, not stay silent.
     "self_update.skipped": "action_needed",
+    # Operator config gap, not per-MR bookkeeping — exempted from the drop below.
+    "review_request_merge_react.missing_scope": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -118,28 +120,14 @@ _STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
 # only the statusline rendering is suppressed.
 _STATUSLINE_DROP_KINDS: frozenset[str] = frozenset({"outbound.audit_skipped"})
 
-# Signal-kind *prefixes* whose every outcome is internal scanner state, not
-# user-facing statusline content. Each family is per-scanner bookkeeping
-# that, without this drop, falls through the catch-all at the end of
-# :func:`_dispatch_one` and renders as a garbage row (often
-# ``<reason>: ?``) that drowns the real tickets and MRs the dashboard
-# exists to show. The outcome is logged / persisted on the scanner's own
-# ledger; the statusline is the wrong surface for it.
-#
-# ``self_update.*`` — the auto-update scanner's per-repo cadence/outcome
-# (``recent_marker``); ``pull_main_clone.*`` — the main-clone pull marker;
-# ``pr_sweep.*`` — the merge-and-prune sweep's per-PR outcome;
-# ``outbound.*`` — outbound-audit drift/skip diagnostics (subsumes the
-# explicit ``outbound.audit_skipped`` drop above); ``review_nag.*`` — the
-# reviewer-ping reconciler's per-MR bookkeeping; and the ``*.queued``
-# dispatch markers (``architectural_review``, ``dogfood_smoke``,
-# ``scanning_news``) that only record an agent was queued.
+# Signal-kind *prefixes* of pure scanner bookkeeping, kept off the statusline.
 _STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     "self_update.",
     "pull_main_clone.",
     "pr_sweep.",
     "outbound.",
     "review_nag.",
+    "review_request_merge_react.",
     "architectural_review.",
     "dogfood_smoke.",
     "scanning_news.",
@@ -166,6 +154,8 @@ def _is_self_update_ci_skip(signal: ScanSignal) -> bool:
 def _is_statusline_dropped(signal: ScanSignal) -> bool:
     """True when *signal* is diagnostic-only and must not reach the statusline."""
     if _is_self_update_ci_skip(signal):
+        return False
+    if signal.kind == "review_request_merge_react.missing_scope":
         return False
     return signal.kind in _STATUSLINE_DROP_KINDS or signal.kind.startswith(_STATUSLINE_DROP_PREFIXES)
 

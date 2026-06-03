@@ -40,6 +40,7 @@ class FakeSlack:
     """In-memory MessagingBackend for testing."""
 
     posts: list[dict[str, Any]] = field(default_factory=list)
+    reactions: list[dict[str, Any]] = field(default_factory=list)
     raise_on_post: Exception | None = None
     raise_on_resolve: Exception | None = None
     raise_on_open_dm: Exception | None = None
@@ -75,6 +76,10 @@ class FakeSlack:
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         _ = (channel, ts, emoji)
         return {}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        self.reactions.append({"channel": channel, "ts": ts, "emoji": emoji})
+        return {"ok": True}
 
     def resolve_user_id(self, handle: str) -> str:
         if self.raise_on_resolve is not None:
@@ -514,7 +519,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
             last_nag_step=0,
         )
 
-    def test_merged_mr_is_not_nagged_and_row_closed(self) -> None:
+    def test_merged_mr_is_not_nagged_but_reacted_and_row_closed(self) -> None:
         from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_post()
@@ -523,12 +528,13 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
 
         assert slack.posts == []
+        assert slack.reactions == [{"channel": "C0DEMOCHAN1", "ts": "ts.5", "emoji": "merge"}]
         post.refresh_from_db()
         assert post.done_at is not None
         assert post.last_nag_step == 0
-        assert [s.kind for s in signals] == ["review_nag.mr_closed"]
+        assert [s.kind for s in signals] == ["review_request_merge_react.reacted"]
 
-    def test_closed_mr_is_not_nagged_and_row_closed(self) -> None:
+    def test_closed_mr_is_not_nagged_not_reacted_and_row_closed(self) -> None:
         from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_post()
@@ -537,6 +543,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
 
         assert slack.posts == []
+        assert slack.reactions == []
         post.refresh_from_db()
         assert post.done_at is not None
         assert [s.kind for s in signals] == ["review_nag.mr_closed"]
@@ -573,6 +580,57 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         slack = FakeSlack()
         ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=None).scan()
         assert len(slack.posts) == 1
+
+
+class TestNagDiscoveredMergeStillReactsExactlyOnce(_EnableReviewNagMixin, TestCase):
+    """A merge discovered by the nag scanner first still reacts :merge: — once.
+
+    Race: the MR merges in the window after a fibonacci step becomes due but
+    before the merge-react scanner runs that tick. The nag scanner (wired
+    first) reaches the now-due, now-merged row and would historically close
+    it WITHOUT reacting, dropping the :merge: reaction silently. The fix
+    routes the nag's merged branch through the shared ``react_merge_on_post``
+    so the reaction still lands; the shared ``done_at`` claim keeps the
+    later merge-react scanner from double-reacting. Revert the nag fix →
+    zero reactions → RED.
+    """
+
+    def _due_merged_post(self) -> ReviewRequestPost:
+        return ReviewRequestPost.objects.create(
+            mr_url="https://gitlab.example/x/-/merge_requests/42",
+            slack_channel_id="C0DEMOCHAN1",
+            slack_thread_ts="ts.42",
+            created_at=timezone.now() - dt.timedelta(days=1, hours=5),  # +1d → step 1 due
+            last_nag_step=0,
+        )
+
+    def test_nag_due_and_merged_reacts_exactly_one_merge(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        post = self._due_merged_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.MERGED)
+
+        ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+
+        assert slack.reactions == [{"channel": "C0DEMOCHAN1", "ts": "ts.42", "emoji": "merge"}]
+        assert slack.posts == []
+        post.refresh_from_db()
+        assert post.done_at is not None
+
+    def test_react_scanner_after_nag_does_not_double_react(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner  # noqa: PLC0415
+
+        self._due_merged_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.MERGED)
+
+        ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+        react_signals = ReviewRequestMergeReactScanner(messaging=slack, host=host).scan()
+
+        assert len(slack.reactions) == 1
+        assert react_signals == []
 
 
 class TestReviewNagDisabledByDefault(TestCase):
