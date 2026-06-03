@@ -4,9 +4,10 @@ Two concurrent real git worktrees, each running one real DB-touching test
 (as its own ``pytest`` subprocess that does NOT boot Django) and then
 booting a real Django ``runserver`` on a distinct OS-assigned port, asserted
 reachable via :func:`teatree.core.readiness.run_probes`. No docker — runs in
-normal CI. The two servers get distinct ports (never hardcode 8000), proving
-the concurrency is genuine; an elapsed-time cap guards against serialization
-or a hang (generous enough to survive a loaded CI box).
+normal CI. The two servers get distinct ports (never hardcode 8000) and are
+asserted alive at the same instant, proving the concurrency is genuine and
+not serialized — a load-free correctness check rather than a wall-clock
+budget. ``@pytest.mark.timeout`` on the class is the hang guard.
 
 The DB-touching probe is :func:`test_db_roundtrip` in this module: each
 worktree's subprocess runs it by node id, exercising a real Django ORM
@@ -14,7 +15,6 @@ round-trip against the test database.
 """
 
 import sys
-import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -47,7 +47,7 @@ class DbRoundtripTests(TestCase):
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(300)
 class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
     CONCURRENT_WORKTREES = 2
 
@@ -59,9 +59,6 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
 
     def concurrency(self) -> int:
         return self.CONCURRENT_WORKTREES
-
-    def time_cap_seconds(self) -> float:
-        return 40.0
 
     def db_touch_test_command(self, wt: ProvisionedWorktree) -> Sequence[str]:
         return [
@@ -123,11 +120,9 @@ class TestTeatreeSelfProvisioning(ProvisioningIntegrationBase):
         worktrees = self.provision_all(root, register_finalizer)
         assert len(worktrees) == self.CONCURRENT_WORKTREES
 
-        start = time.monotonic()
         self.run_concurrently(worktrees)
-        elapsed = time.monotonic() - start
 
         ports = {wt.ports["backend"] for wt in worktrees}
         assert len(ports) == self.CONCURRENT_WORKTREES, "worktrees must bind distinct ports"
         assert 8000 not in ports, "port must be OS-assigned, never the hardcoded default"
-        assert elapsed <= self.time_cap_seconds(), f"took {elapsed:.1f}s, cap {self.time_cap_seconds()}s"
+        self.assert_concurrently_alive(worktrees)
