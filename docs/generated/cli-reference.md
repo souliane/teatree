@@ -1197,6 +1197,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
  (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
  always use the metered ``sdk`` runner regardless of ``--backend``.
 
+ ``--require-executed`` fails the run when the suite collected scenarios but
+ executed none (every scenario skipped — typically ``claude`` not on PATH /
+ no ``ANTHROPIC_API_KEY``), so a decorative all-skipped run cannot pass green.
+ CI arms it only when a key is configured; local runs leave it off so the
+ subscription backend's legitimate pre-transcript all-skip stays green.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1251,6 +1257,12 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                transcripts for the           │
 │                                                'subscription' backend        │
 │                                                (default: cwd).               │
+│ --require-executed                             Fail when the suite collected │
+│                                                scenarios but executed none   │
+│                                                (all skipped) — the CI gate   │
+│                                                so a decorative run with no   │
+│                                                claude/ANTHROPIC_API_KEY      │
+│                                                can't pass green.             │
 │ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3153,6 +3165,11 @@ Usage: t3 teatree worktree provision [OPTIONS]
  the runner also runs synchronously here so the operator sees
  immediate output. Idempotent — re-running is safe.
 
+ ``--ticket`` pins attribution: a manually-added worktree
+ (``git worktree add``) has no DB row, so resolution would auto-register
+ and could cross-attach to an unrelated workspace sibling. The flag
+ binds it to the named ticket instead.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path                               TEXT  Worktree path (auto-detects from  │
 │                                            PWD if empty).                    │
@@ -3160,6 +3177,9 @@ Usage: t3 teatree worktree provision [OPTIONS]
 │                                            provided.                         │
 │ --overlay                            TEXT  Overlay name (auto-detects if     │
 │                                            empty).                           │
+│ --ticket                             TEXT  Pin attribution to this ticket    │
+│                                            number (overrides auto-register   │
+│                                            for a manual worktree).           │
 │ --slow-import    --no-slow-import          Allow slow DB fallbacks           │
 │                                            (pg_restore, remote dump).        │
 │                                            DSLR-only by default.             │
