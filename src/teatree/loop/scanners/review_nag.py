@@ -42,7 +42,7 @@ failure, unparsable URL) fails open and the nag proceeds as before.
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.utils import timezone
 
@@ -88,6 +88,7 @@ class ReviewNagScanner:
     messaging: MessagingBackend | None
     user_slack_id: str
     host: CodeHostBackend | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
     now: dt.datetime | None = None
     name: str = "review_nag"
 
@@ -168,7 +169,7 @@ class ReviewNagScanner:
             logger.warning("review_nag: open-state lookup failed for %s: %s", post.mr_url, exc)
             return None
         if open_state is PrOpenState.MERGED:
-            return react_merge_on_post(post, messaging)
+            return react_merge_on_post(post, messaging, host=self.host, identities=self.identities)
         if open_state is not PrOpenState.CLOSED:
             return None
         post.done_at = right_now

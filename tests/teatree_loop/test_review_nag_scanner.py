@@ -456,12 +456,21 @@ class FakeHost:
 
     open_state: "Any"
     raise_on_lookup: Exception | None = None
+    user: str = ""
+    author: str = ""
 
     def get_pr_open_state(self, *, pr_url: str) -> "Any":
         _ = pr_url
         if self.raise_on_lookup is not None:
             raise self.raise_on_lookup
         return self.open_state
+
+    def current_user(self) -> str:
+        return self.user
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        _ = pr_url
+        return self.author
 
 
 class TestConcurrentTickPostsExactlyOnce(_EnableReviewNagMixin, TestCase):
@@ -524,8 +533,13 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
 
         post = self._due_post()
         slack = FakeSlack()
-        host = FakeHost(open_state=PrOpenState.MERGED)
-        signals = ReviewNagScanner(messaging=slack, user_slack_id="U_ME", host=host).scan()
+        host = FakeHost(open_state=PrOpenState.MERGED, author="a-colleague")
+        signals = ReviewNagScanner(
+            messaging=slack,
+            user_slack_id="U_ME",
+            host=host,
+            identities=("souliane",),
+        ).scan()
 
         assert slack.posts == []
         assert slack.reactions == [{"channel": "C0DEMOCHAN1", "ts": "ts.5", "emoji": "merge"}]
@@ -533,6 +547,25 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         assert post.done_at is not None
         assert post.last_nag_step == 0
         assert [s.kind for s in signals] == ["review_request_merge_react.reacted"]
+
+    def test_self_authored_merged_mr_via_nag_path_never_reacts(self) -> None:
+        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+
+        post = self._due_post()
+        slack = FakeSlack()
+        host = FakeHost(open_state=PrOpenState.MERGED, author="souliane", user="souliane")
+        signals = ReviewNagScanner(
+            messaging=slack,
+            user_slack_id="U_ME",
+            host=host,
+            identities=("souliane",),
+        ).scan()
+
+        assert slack.posts == []
+        assert slack.reactions == []
+        post.refresh_from_db()
+        assert post.done_at is not None
+        assert [s.kind for s in signals] == ["review_request_merge_react.self_authored"]
 
     def test_closed_mr_is_not_nagged_not_reacted_and_row_closed(self) -> None:
         from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
