@@ -33,6 +33,17 @@ Both self-review and external review cycles.
 
 ## Workflows
 
+### North-Star Rubric — Six Quality Attributes
+
+Everything you write and everything you review aims at six attributes. Treat them as the lens for both self-review and giving review:
+
+- **Clean** — readable, no dead code or duplication, names that say what they hold.
+- **Robust** — survives the real failure case, not only the favorable one; edge cases handled, inputs validated.
+- **Maintainable** — the next reader can change it safely; structure documents itself.
+- **Coherent** — fits the surrounding patterns and stays consistent across the whole changeset. Coherence includes **cross-repo coherence** (a referenced artifact — a skill name, a CLI command, a sibling-repo path — must actually exist where it's referenced) and **wired-and-exercised** (a mechanism must actually fire — a hook that's defined but never invoked, or a gate that's declared but never reached, is incoherent even if it reads correctly).
+- **Reliable** — does what it claims under repeated and concurrent use; no flaky or order-dependent behavior.
+- **Proactive** — sweeps the class, not just the instance; when a fix reveals a broader pattern, address the pattern rather than the single symptom.
+
 ### Spawn the t3:reviewer Sub-Agent Before Pushing (Non-Negotiable)
 
 **Self-review by the implementing conversation never satisfies the shipping gate's `reviewing` phase.** The implementer's context carries every "looks done" blind spot that allowed the gap in the first place — that is exactly what produced souliane/teatree#545's six rounds of follow-up review fixes (missed renames, broken tests, undocumented contract changes, bypassed FSM). The corrective is an independent sub-agent that hasn't seen the implementation conversation.
@@ -185,6 +196,8 @@ What the agent does *after* an independent cold-review verdict exists on a **col
 **Babysit tier (`autonomy = "babysit"`, the conservative default):** keep the draft-and-ask flow — drafts publish autonomously, every live post / approval waits for the user (Step 3 below; `t3 review authorize`). This is the right setting for client / shared-team overlays.
 
 **The quality floor is identical under every tier and is never relaxed by this knob:** the verdict must come from an *independent* cold reviewer (maker ≠ checker — never self-approve your own MR), findings are verified against ground truth before posting (a Blocker you cannot falsify is posted as a question, not a Blocker), `t3 review approve` keeps its review-first precondition (no approval without a prior reviewing footprint), and CI must be green. The knob decides *whether to ask the user*, never *whether the work is correct*.
+
+**Verifying a colleague's finding before posting (and retracting if it was wrong):** before a finding goes out under the user's name on a colleague's MR, confirm it against ground truth — the real code, live data or the DB, and the domain conventions — not against your own mental model of how the code probably behaves. A *recheck* is an independent re-derivation that tries to **falsify** the finding (re-grep, re-query, re-read the producer's schema), never a re-read of your own earlier note — re-reading your note only re-confirms the mistake that produced it. If the verification cannot pull the finding to certainty, post it as a question, not a Blocker. And if a finding you already posted turns out to be wrong, retract **all** affected findings at once and quickly: a stale false Blocker sitting on a colleague's correct MR reads as the user not understanding the code, and the longer it stays the more it costs the working relationship.
 
 **Step -1 — Own PR vs External PR:**
 
@@ -434,6 +447,7 @@ t3 review publish-draft-notes <REPO> <MR_IID>
 
 - **User feedback** = trusted direction. Verify scope, then implement.
 - **External reviewer** = verify technically before implementing.
+- **Default stance toward a colleague's concern:** assume it is correct until you have exhaustively disproven it. Verify it deeply against ground truth before concluding it's a non-issue; a shallow check that confirms your first instinct is not a disproof. The cost of taking a wrong concern seriously is small; the cost of dismissing a right one is a missed bug and a colleague who stops raising them.
 - **Push back when:** suggestion breaks functionality (show evidence), violates YAGNI, is based on stale context, or conflicts with user's stated architecture.
 - **Anti-performative:** No "You're absolutely right!" — just state the fix or the technical disagreement.
 - **Technical rigor:** verify reviewer suggestions against the actual codebase before implementing.
