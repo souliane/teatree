@@ -12,8 +12,7 @@
 #   banned_terms = ["term1", "term2"]
 #
 # If no config or no banned_terms key, exits 0 (no-op).
-# Matches that only appear inside email addresses are ignored so author/contact
-# metadata can stay intact while still blocking leaked tenant/project terms.
+# Matching mirrors teatree.hooks.term_match (whole-token, camelCase-split, email carve-out).
 
 set -euo pipefail
 
@@ -46,46 +45,50 @@ if [ -z "$terms" ]; then
   exit 0
 fi
 
-# Build a grep pattern from comma-separated terms
-pattern=""
-IFS=',' read -ra term_array <<< "$terms"
-for term in "${term_array[@]}"; do
-  term="$(echo "$term" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-  [ -z "$term" ] && continue
-  if [ -n "$pattern" ]; then
-    pattern="$pattern|$term"
-  else
-    pattern="$term"
-  fi
-done
-
-if [ -z "$pattern" ]; then
-  exit 0
-fi
-
-# Check each staged file passed by pre-commit
+# Check each staged file with the embedded whole-token matcher (email carve-out kept).
 found=0
 for file in "$@"; do
   [ -f "$file" ] || continue
-  matches=$(python3 - "$file" "$pattern" <<'PY'
+  matches=$(python3 - "$file" "$terms" <<'PY'
 import re
 import sys
 from pathlib import Path
 
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
+_ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
+
+
+def _tokens(text):
+    split = _ACRONYM_BOUNDARY_RE.sub(r"\1 \2", text)
+    split = _CAMEL_BOUNDARY_RE.sub(r"\1 \2", split)
+    return _TOKEN_RE.findall(split.lower())
+
+
+def _contains_run(haystack, needle):
+    if not needle:
+        return False
+    if len(needle) == 1:
+        return needle[0] in haystack
+    span = len(needle)
+    for start in range(len(haystack) - span + 1):
+        if haystack[start : start + span] == needle:
+            return True
+    return "".join(needle) in haystack
+
+
 path = Path(sys.argv[1])
-pattern = re.compile(rf"\b({sys.argv[2]})\b", re.IGNORECASE)
+terms = [t.strip() for t in sys.argv[2].split(",") if t.strip()]
+term_tokens = [tt for tt in (_tokens(t) for t in terms) if tt]
 email_pattern = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
-for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-    email_spans = [match.span() for match in email_pattern.finditer(line)]
-    has_non_email_match = False
-    for match in pattern.finditer(line):
-        if any(start <= match.start() and match.end() <= end for start, end in email_spans):
-            continue
-        has_non_email_match = True
-        break
-    if has_non_email_match:
-        print(f"{line_number}:{line}")
+if term_tokens:
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        # Strip emails first so a term only inside an author/contact email is not flagged.
+        stripped = email_pattern.sub(" ", line)
+        line_tokens = _tokens(stripped)
+        if any(_contains_run(line_tokens, tt) for tt in term_tokens):
+            print(f"{line_number}:{line}")
 PY
 )
   if [ -n "$matches" ]; then
