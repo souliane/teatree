@@ -50,8 +50,8 @@ _OVERRIDE_ENV = "ALLOW_BANNED_TERM"
 # What a fail-closed sentinel surfaces as in the block message: an unresolvable
 # body source (a relative-path / chmod-000 / absent ``--body-file`` to a PUBLIC
 # repo) cannot be scanned, so it BLOCKS rather than slips through unread --
-# mirroring ``quote_scanner`` / ``bare_reference_scanner``, which both treat the
-# same sentinel as a fail-closed finding.
+# mirroring ``quote_scanner``, which treats the same sentinel as a fail-closed
+# finding.
 _UNRESOLVED_BODY_TERM = "<unresolved publish body>"
 
 # How long to wait for the shell scanner before failing open. A hook that
@@ -191,9 +191,9 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     (``FAIL_CLOSED_SENTINEL``). It is recognised EXPLICITLY as a match and
     BLOCKS -- the sentinel is not a configured banned term, so delegating it
     to ``check-banned-terms.sh`` would return clean and a PUBLIC file-body post
-    whose body the gate cannot read would slip through unread. The two sibling
-    scanners (``quote_scanner``, ``bare_reference_scanner``) already block on
-    this same sentinel; this closes the banned-terms parity gap.
+    whose body the gate cannot read would slip through unread. The sibling
+    ``quote_scanner`` already blocks on this same sentinel; this closes the
+    banned-terms parity gap.
 
     Fails open (returns ``None``) on a missing config, a missing script,
     or any subprocess error — a crashing gate is worse than no scan.

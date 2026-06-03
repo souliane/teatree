@@ -3,7 +3,7 @@
 A behavioral scenario (``scenarios/*.yaml``) grades what an agent *says* it
 would do. This corpus grades what the gate/checker code *does*: each check
 calls the REAL function (the merge-precondition assertion, the branch-currency
-conflict predictor, the bare-reference detector, the loop-lease pid-anchored
+conflict predictor, the loop-lease pid-anchored
 claim, the migration-graph leaf checker) on a constructed must-block input and
 on a must-allow input, and reports a violation when either direction is wrong.
 
@@ -149,36 +149,6 @@ def _check_branch_currency_conflict_only() -> bool:
         clean_repo, clean_sha = _seed_repo_behind_but_clean(work)
         clean = sha_conflicts_with_target(str(clean_repo), clean_sha, "origin/main")
     return conflict is not None and bool(conflict.conflicting_paths) and clean is None
-
-
-def _check_bare_reference_gate_read_vs_write() -> bool:
-    """#1530: the bare-ref gate is DESTINATION-AWARE and never over-blocks.
-
-    Three over-block directions stay closed and the one enforce direction
-    stays open:
-
-    * a read-only ``gh api repos/.../issues/<n> -X GET`` carries no publish
-        body, so its payload yields zero flagged references;
-    * an EXTERNAL-FORGE post (``gh issue comment``) is exempt — the forge
-        auto-links the ref, so the payload is ``None`` (the gate does not
-        fire), the over-block this fix removes;
-    * a markdown-linked ref on a user-facing surface is NOT flagged (the gate
-        is not a blunt number-matcher); while
-    * a bare ``#<n>`` on a USER-FACING surface (a ``git commit`` message) IS
-        surfaced — the rule still has teeth where a human reads the ref raw.
-    """
-    from teatree.hooks.bare_reference_scanner import extract_publish_payload, scan_text  # noqa: PLC0415
-
-    bare = "#" + "1500"
-    read_only = extract_publish_payload("Bash", {"command": "gh api repos/souliane/teatree/issues/1530 -X GET"})
-    forge_post = extract_publish_payload("Bash", {"command": f'gh issue comment 7 --body "see {bare} ctx"'})
-    user_facing = extract_publish_payload("Bash", {"command": f"git commit -m 'reverts {bare} change'"})
-    if user_facing is None:
-        return False
-    read_flags = scan_text(read_only) if read_only is not None else []
-    flagged = scan_text(user_facing)
-    linked = scan_text(f"see [{bare}](https://github.com/souliane/teatree/issues/1500) ctx")
-    return read_flags == [] and forge_post is None and bare in flagged and linked == []
 
 
 _SHA_A = "a" * 40
@@ -365,12 +335,6 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         origin="https://github.com/souliane/teatree/pull/1719",
         invariant="sha_conflicts_with_target blocks a real conflict, allows a behind-but-clean SHA",
         predicate=_check_branch_currency_conflict_only,
-    ),
-    RegressionCheck(
-        failure_class="bare-reference gate over-block on read-only gh api (#1530)",
-        origin="https://github.com/souliane/teatree/pull/1535",
-        invariant="extract_publish_payload ignores a read-only api GET; flags a bare ref in a publish body",
-        predicate=_check_bare_reference_gate_read_vs_write,
     ),
     RegressionCheck(
         failure_class="substrate-merge human-authorize floor",
