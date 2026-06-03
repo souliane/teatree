@@ -21,6 +21,8 @@ against a realistic publish surface or transcript.
 """
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -177,6 +179,22 @@ class TestExtractPublishPayload:
 
     def test_non_publish_command_returns_none(self) -> None:
         assert extract_publish_payload("Bash", {"command": "ls -la"}) is None
+
+    def test_commit_bodyfile_relative_path_resolves_from_repo_dir(self, tmp_path: Path) -> None:
+        # Same cold-hook root cause as #1415: a ``git -C <repo> commit -F
+        # <relpath>`` body file is unreadable from the reset cwd but readable
+        # from the commit's own repo dir. The shared body extractor must
+        # resolve it against the repo dir so the bare-reference gate scans the
+        # real body instead of fail-closing to the sentinel.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True, env=env)  # noqa: S607
+        (repo / "commit_body.txt").write_text("addresses #1500 in the parser\n", encoding="utf-8")
+        payload = extract_publish_payload("Bash", {"command": f"git -C {repo} commit -F commit_body.txt"}, tmp_path)
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "#1500" in payload
 
     def test_slack_mcp_send_message_body(self) -> None:
         payload = extract_publish_payload("mcp__claude_ai_Slack__slack_send_message", {"text": "merged !6301 just now"})
