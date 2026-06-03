@@ -541,7 +541,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
     # All segments get the generic body-flag walker since gh, glab, git,
     # and t3 all accept ``--body``/``--message``/``-m``/``-b``.
     _walk_body_flags(words, payloads)
-    walk_body_file_flags(words, payloads, is_git=(first == "git"), ctx=ctx)
+    walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
     # ``gh api`` / ``glab api`` field assignments.
     if first in {"gh", "glab"}:
         _walk_api_fields(words, payloads)
