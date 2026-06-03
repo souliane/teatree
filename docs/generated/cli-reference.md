@@ -1880,8 +1880,9 @@ Usage: t3 tool verify-gates [OPTIONS]
  Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
  pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
  what catches the gates CI fails on but a bare ``prek run --all-files``
- cannot see (comment-density, doc-update, ensure-pr, pytest-fast, the
- public-repo leak gate). Report this command's exit code as the green-proof
+ cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
+ gate). The full test suite is NOT a push gate -- push -> CI runs it. Report
+ this command's exit code as the green-proof
  before declaring a branch review-ready -- not a commit-stage-only run.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
