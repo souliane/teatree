@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Default pre-push gate: full suite on Python 3.13 (CI's version), host + parallel.
-# The opt-in Docker superset is dev/test-matrix.sh.
+# Opt-in local suite on Python 3.13 (CI's version), host + parallel.
+# Not a push gate: push -> CI runs the suite (#112/#21/#38). The opt-in Docker
+# superset is dev/test-matrix.sh.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

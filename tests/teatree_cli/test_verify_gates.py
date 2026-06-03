@@ -3,7 +3,7 @@
 Meta-test pinning the CI-parity contract: a bare ``prek run --all-files`` only
 fires the commit/manual-stage hooks (``default_stages: [commit, manual]``), so
 the push-stage gates CI re-runs (comment-density, doc-update, ensure-pr,
-pytest-fast, the public-repo leak gate) are structurally skipped. The
+the public-repo leak gate) are structurally skipped. The
 verify-gates command must invoke the push stage too, or "local green" can
 disagree with CI. These tests assert the push-stage invocation exists and that
 a push-stage failure fails the command.

@@ -4,21 +4,18 @@ Used when teatree is the Django project (the standard case).
 Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
 """
 
-import warnings
-
 from teatree.config import default_logging
-from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, find_stale_dbs, seed_isolated_db
+from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, seed_isolated_db
 
 _DATA_DIR = DATA_DIR
 if DATA_DIR_AUTO_ISOLATED:
     seed_isolated_db(_DATA_DIR)
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-for _stale in find_stale_dbs(_DATA_DIR, canonical=CANONICAL_DB):
-    warnings.warn(
-        f"Stale DB found at {_stale} — canonical DB is {CANONICAL_DB}. Remove {_stale} to silence this warning.",
-        stacklevel=1,
-    )
+# The stale-DB notice is an operational nudge surfaced by ``t3 doctor check``
+# (_check_single_db), not a Python warning at settings import: every pytest
+# collection imports settings under ``filterwarnings=error``, so emitting it
+# here turned a benign legacy db.sqlite3 into a hard collection error.
 
 
 def _discover_overlay_apps() -> list[str]:

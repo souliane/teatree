@@ -5,7 +5,7 @@ mirroring comment_density_tools / test_shape_tools).
 
 A plain ``prek run --all-files`` only fires the commit/manual-stage hooks:
 ``.pre-commit-config.yaml`` sets ``default_stages: [commit, manual]``. The
-push-stage gates (refuse-public-push-with-leak, pytest-fast, doc-update-gate,
+push-stage gates (refuse-public-push-with-leak, doc-update-gate,
 comment-density, ensure-pr) carry ``stages: [push]`` and are STRUCTURALLY
 skipped -- yet CI re-runs them on the PR-vs-base diff. So a builder reporting
 "local prek is green" can be honest about the commit-stage hooks while blind
@@ -45,8 +45,9 @@ def verify_gates() -> None:
     Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
     pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
     what catches the gates CI fails on but a bare ``prek run --all-files``
-    cannot see (comment-density, doc-update, ensure-pr, pytest-fast, the
-    public-repo leak gate). Report this command's exit code as the green-proof
+    cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
+    gate). The full test suite is NOT a push gate -- push -> CI runs it. Report
+    this command's exit code as the green-proof
     before declaring a branch review-ready -- not a commit-stage-only run.
     """
     if not _prek_available():
