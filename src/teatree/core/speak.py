@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 SAY_BINARY = "say"
 _AFCONVERT_BINARY = "afconvert"
+_SPEAK_SUBPROCESS_TIMEOUT = 120
 
 # Speech is throwaway and a long read is worse than no read — a capped
 # excerpt keeps ``say`` from droning through a 4 KB status report.
@@ -161,7 +162,7 @@ def _speak_local(text: str) -> None:
     if say_bin is None:
         return
     try:
-        run_allowed_to_fail([say_bin, text], expected_codes=None, timeout=120)
+        run_allowed_to_fail([say_bin, text], expected_codes=None, timeout=_SPEAK_SUBPROCESS_TIMEOUT)
     except (OSError, TimeoutExpired, CommandFailedError) as exc:
         logger.debug("local say failed: %s", exc)
 
@@ -181,10 +182,10 @@ def _synthesise_m4a(text: str) -> Path | None:
     aiff_path = tmp_dir / "speech.aiff"
     m4a_path = tmp_dir / "speech.m4a"
     try:
-        run_checked([say_bin, "-o", str(aiff_path), text], timeout=120)
+        run_checked([say_bin, "-o", str(aiff_path), text], timeout=_SPEAK_SUBPROCESS_TIMEOUT)
         run_checked(
             [afconvert_bin, "-f", "m4af", "-d", "aac", str(aiff_path), str(m4a_path)],
-            timeout=120,
+            timeout=_SPEAK_SUBPROCESS_TIMEOUT,
         )
     except (OSError, TimeoutExpired, CommandFailedError) as exc:
         logger.debug("m4a synthesis failed: %s", exc)

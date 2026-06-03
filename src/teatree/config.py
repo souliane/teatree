@@ -678,25 +678,9 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
-    # #1791 Local text-to-speech. ``speak_mode`` decides WHAT is read aloud:
-    # ``off`` (default — nothing), ``im-only`` (only text egressed to the
-    # user via the IM/DM channel chokepoint ``notify_user``), ``all``
-    # (additionally every free-text agent reply, spoken from the Stop
-    # hook). The whole feature is gated on the macOS ``say`` binary being
-    # on PATH — when it is absent the EFFECTIVE mode is forced to ``off``
-    # by ``teatree.core.speak.resolve_mode`` no matter what is configured,
-    # so the feature is inert off macOS (no error, no nag). Settable via
-    # ``[teatree] speak_mode`` / per-overlay ``[overlays.<name>]
-    # speak_mode``.
+    # #1791 What is read aloud — see :class:`SpeakMode` + blueprint §10.1.1.
     speak_mode: SpeakMode = SpeakMode.OFF
-    # #1791 Delivery surface for spoken audio, orthogonal to ``speak_mode``
-    # (which decides what is spoken; this decides where it lands).
-    # ``local`` (default — macOS ``say`` → speakers), ``slack-audio``
-    # (synthesise an audio file + upload it to the user's Slack DM so he
-    # hears it on his phone; requires the Slack token's ``files:write``
-    # scope), ``both``. The local leg is independently no-op off macOS;
-    # the Slack leg is independently no-op when no messaging backend /
-    # ``slack_user_id`` is configured.
+    # #1791 Where spoken audio lands — see :class:`SpeakTarget` + §10.1.1.
     speak_target: SpeakTarget = SpeakTarget.LOCAL
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these
