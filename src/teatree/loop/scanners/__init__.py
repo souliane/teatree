@@ -33,6 +33,7 @@ from teatree.loop.scanners.pull_main_clone import PullMainCloneScanner
 from teatree.loop.scanners.red_card import RedCardScanner
 from teatree.loop.scanners.resource_pressure import ResourcePressureScanner
 from teatree.loop.scanners.review_nag import ReviewNagScanner
+from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.scanners.scanning_news import ScanningNewsScanner
 from teatree.loop.scanners.self_update import SelfUpdateScanner
@@ -73,6 +74,7 @@ __all__ = [
     "RedCardScanner",
     "ResourcePressureScanner",
     "ReviewNagScanner",
+    "ReviewRequestMergeReactScanner",
     "ReviewerPrsScanner",
     "ScanSignal",
     "Scanner",
