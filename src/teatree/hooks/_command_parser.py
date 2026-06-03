@@ -207,6 +207,84 @@ def _heredoc_file_bodies(command: str) -> dict[str, str]:
     return bodies
 
 
+# Commands whose operands ARE the body content when redirected to a file
+# (an agent's two idioms for materialising a body temp file before a post).
+_REDIRECT_WRITER_COMMANDS: Final[frozenset[str]] = frozenset({"printf", "echo"})
+# Output-redirect operator prefixes, longest-first so ``>>`` precedes ``>``;
+# matched as a prefix to also catch the unspaced glued ``>$f`` lexer token.
+_REDIRECT_OPERATOR_PREFIXES: Final[tuple[str, ...]] = (">>", ">|", ">")
+
+
+def _split_redirect_token(word: str) -> str | None:
+    """Return the redirect target if ``word`` is/begins a write redirect, else None.
+
+    A bare operator (``>``/``>>``/``>|``) returns ``""`` — the target is the
+    NEXT word. An unspaced glued form (``>$f``, ``>/tmp/x``) returns the target
+    suffix. A word that does not start with a redirect operator returns ``None``.
+    """
+    for prefix in _REDIRECT_OPERATOR_PREFIXES:
+        if word.startswith(prefix):
+            return word[len(prefix) :]
+    return None
+
+
+def _redirect_written_bodies(tokens: list[Token]) -> dict[str, str]:
+    r"""Map each ``printf``/``echo`` ``> path`` redirect target token to its body.
+
+    Resolves the body-via-indirection idiom the heredoc map misses: an agent
+    materialises a body into a temp file with ``printf``/``echo`` and then
+    posts it with ``--body-file <path>``/``-F <path>`` in the SAME command
+    (``f=$(mktemp); printf '%s' 'text' > "$f"; gh ... --body-file "$f"``). At
+    PreToolUse scan time the file does NOT exist yet (the hook runs BEFORE the
+    write), so the only place the body lives is the writer's own operands.
+
+    The map is keyed by the **lexer token value** of the redirect target so a
+    shell-variable / command-substitution path (``$f``, ``$(mktemp)``) pairs
+    with the textually-identical ``--body-file`` argument token even though
+    neither is expanded at scan time — the resolver compares the two
+    unexpanded tokens, not a resolved filesystem path. A literal path
+    (``/tmp/x.txt``) likewise keys by its own value, matching how the body-file
+    walker looks the path up. Both the spaced (``> "$f"``) and unspaced
+    (``>"$f"``) redirect spellings are handled.
+
+    Conservative by construction: the writer's operands (every WORD between the
+    command name and the ``>``/``>>`` redirect) are joined verbatim. Over-
+    including a ``%s`` format token only ADDS text to what the gate scans; it
+    never hides the real body. A redirect with no preceding writer operands
+    contributes no entry, so a genuinely-unresolvable target still fails closed.
+    """
+    bodies: dict[str, str] = {}
+    for segment in split_commands(tokens):
+        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+        if not words or words[0] not in _REDIRECT_WRITER_COMMANDS:
+            continue
+        target, operands = _redirect_target_and_operands(words)
+        if target and operands:
+            bodies[target] = " ".join(operands)
+    return bodies
+
+
+def _redirect_target_and_operands(words: list[str]) -> tuple[str, list[str]]:
+    """Return the write-redirect target token and the writer operands preceding it.
+
+    Returns ``("", [])`` when the segment carries no output redirect. The target
+    is the glued suffix of an unspaced ``>$f`` token, or the next word after a
+    bare ``>`` operator. Operands are every WORD between the command name and
+    the redirect (the body content the writer emits).
+    """
+    for i in range(1, len(words)):
+        suffix = _split_redirect_token(words[i])
+        if suffix is None:
+            continue
+        operands = words[1:i]
+        if suffix:  # glued form ``>path`` — target is the suffix of this token
+            return suffix, operands
+        if i + 1 < len(words):  # bare ``>`` operator — target is the next word
+            return words[i + 1], operands
+        return "", operands
+    return "", []
+
+
 # Per-command argument-walker dispatch tables --------------------------
 
 # Body-bearing long options (value follows the flag as next token or
@@ -485,9 +563,12 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     right per-command argument walker.
 
     Indirect body sources (``gh api --input -``, missing files, opaque
-    ``-d @file`` references) fail closed via the sentinel. A ``-F <path>``
-    reference whose file is written by a ``> path <<EOF … EOF`` redirect
-    in the same command resolves to that heredoc body instead (#126).
+    ``-d @file`` references) fail closed via the sentinel. A
+    ``--body-file``/``-F <path>`` reference whose body is written earlier in
+    the same command — by a ``> path <<EOF … EOF`` heredoc (#126) or by a
+    ``printf``/``echo > path`` redirect, including when the path is the same
+    unexpanded ``$f`` / ``$(mktemp)`` token in both the write and the
+    reference — resolves to that in-command body instead of failing closed.
 
     ``fail_closed_body_file`` controls an UNREADABLE ``gh``/``glab`` body
     file: ``False`` (default, the quote scanner) keeps the #126 behaviour
@@ -506,12 +587,12 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     from teatree.hooks._body_file_resolution import BodyFileContext, commit_body_file_base  # noqa: PLC0415
 
     parts: list[str] = []
+    tokens = tokenize(command)
     ctx = BodyFileContext(
-        heredoc_files=_heredoc_file_bodies(command),
+        heredoc_files={**_heredoc_file_bodies(command), **_redirect_written_bodies(tokens)},
         fail_closed_body_file=fail_closed_body_file,
         base=commit_body_file_base(command) or cwd,
     )
-    tokens = tokenize(command)
     for segment in split_commands(tokens):
         _walk_command_segment(segment, parts, ctx)
     # Heredocs still need to be parsed against the raw command — the
