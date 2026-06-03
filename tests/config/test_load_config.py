@@ -304,6 +304,20 @@ class TestIssueImplementerSettings:
         assert get_effective_settings().issue_implementer_enabled is True
 
 
+class TestRequireReviewContextSetting:
+    """The deep-retrieval gate knob loads from toml; default is opt-in OFF."""
+
+    def test_default_is_off(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\n")
+        assert load_config(config_path).user.require_review_context is False
+
+    def test_reads_toml_bool(self, tmp_path: Path) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        _write_toml(config_path, "[teatree]\nrequire_review_context = true\n")
+        assert load_config(config_path).user.require_review_context is True
+
+
 class TestAutoUpdateSettings:
     """#1760: CI-green gate + deferred-reinstall flags load from toml + env."""
 
