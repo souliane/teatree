@@ -52,6 +52,15 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _CAMEL_BOUNDARY_RE = re.compile(r"([a-z0-9])([A-Z])")
 _ACRONYM_BOUNDARY_RE = re.compile(r"([A-Z]+)([A-Z][a-z])")
 
+# Email carve-out: a term that appears ONLY inside an author/contact email
+# address (``adrien.cossa@internalterm.example``) is not a leak — the address
+# is the author's identity, not a customer reference. Emails are blanked
+# BEFORE tokenizing so the term inside one never reaches the matcher. This is
+# the SINGLE definition of the carve-out; both the in-process gates and the
+# ``check-banned-terms.sh`` shell hook (which shells out to :func:`file_matches`)
+# share it, so the two paths cannot drift apart.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
 
 def tokens(text: str) -> list[str]:
     """Split *text* into lowercase alphanumeric tokens.
@@ -103,3 +112,37 @@ def matched_term(text: str, terms: tuple[str, ...]) -> str | None:
 def line_matches(line: str, terms: tuple[str, ...]) -> bool:
     """Whether any configured term's tokens appear as a whole-token run in *line*."""
     return matched_term(line, terms) is not None
+
+
+def strip_emails(text: str) -> str:
+    """Blank every email address in *text* (the author/contact email carve-out).
+
+    A term that appears only inside an author or contact email address is the
+    author's own identity, not a customer reference, so emails are replaced by
+    a single space before matching.
+    """
+    return _EMAIL_RE.sub(" ", text)
+
+
+def file_matches(path: str, terms: tuple[str, ...], *, carve_out_emails: bool = True) -> list[tuple[int, str, str]]:
+    """Scan a file line-by-line and return every banned-term hit.
+
+    Each hit is ``(line_number, matched_term, line)``. The email carve-out
+    (:func:`strip_emails`) is applied per line before matching when
+    *carve_out_emails* is true. This is the SINGLE file-scanning path that
+    ``scripts/hooks/check-banned-terms.sh`` shells out to, so the shell hook
+    and the in-process gates share one matcher implementation and cannot
+    drift apart.
+    """
+    from pathlib import Path  # noqa: PLC0415 -- keep the module import-light for hot-path callers
+
+    hits: list[tuple[int, str, str]] = []
+    if not terms:
+        return hits
+    text = Path(path).read_text(encoding="utf-8")
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        candidate = strip_emails(line) if carve_out_emails else line
+        term = matched_term(candidate, terms)
+        if term is not None:
+            hits.append((line_number, term, line))
+    return hits
