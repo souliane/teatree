@@ -1484,6 +1484,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
 │ triage-issues        Scan for resolved-but-open and stale issues.            │
+│ verify-gates         Run the FULL CI-equivalent local gate set (commit AND   │
+│                      push stages).                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1864,6 +1866,25 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool verify-gates`
+
+```
+Usage: t3 tool verify-gates [OPTIONS]
+
+ Run the FULL CI-equivalent local gate set (commit AND push stages).
+
+ Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
+ pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
+ what catches the gates CI fails on but a bare ``prek run --all-files``
+ cannot see (comment-density, doc-update, ensure-pr, pytest-fast, the
+ public-repo leak gate). Report this command's exit code as the green-proof
+ before declaring a branch review-ready -- not a commit-stage-only run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

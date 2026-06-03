@@ -269,7 +269,8 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 
 ```bash
 uv run pytest                       # Test suite with coverage (>93% required)
-prek run --all-files                # Pre-commit hooks (ruff, codespell, tach, ty)
+prek run --all-files                # Commit-stage hooks ONLY (ruff, codespell, tach, ty)
+t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages
 bash dev/test-fast.sh               # Fast pre-push gate: Python 3.13, host, parallel
 bash dev/test-matrix.sh             # Opt-in Docker matrix: Python 3.13 + 3.14
 ```
@@ -322,7 +323,7 @@ New tests — added in this repo or in any overlay repo — must lean **integrat
 
 **Skills are in this repo.** When `/t3:retro` identifies a skill gap, improvements go directly into `skills/*/`.
 
-After modifying skills: `prek run --all-files` then `uv run pytest` then commit.
+After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — a bare `prek run --all-files` skips the push-stage gates CI re-runs) then `uv run pytest` then commit.
 
 ## Abstraction Boundaries
 

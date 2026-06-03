@@ -15,11 +15,11 @@ metadata:
 
 This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new features, `t3:retro` when a retro touches skills) declare `requires: [architecture-design]` so it loads BEFORE coding starts. The flywheel (BLUEPRINT § 17.1 invariant 2) is enforcement encoded as structure, not prose vigilance — this companion is the structure for the "design first, then code" step.
 
-Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the eight-check architecture pass below, plus the `ARCHITECTURE.md` template the implementer fills in before touching `src/`.
+Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the nine-check architecture pass below, plus the `ARCHITECTURE.md` template the implementer fills in before touching `src/`.
 
 ## When the gate fires
 
-The eight checks apply when the work meets any of:
+The nine checks apply when the work meets any of:
 
 - touches `src/teatree/cli/`, `src/teatree/core/`, `src/teatree/loop/scanners/`, `src/teatree/agents/`, `OverlayBase`, scanner registration, or any `*Backend` Protocol
 - crosses an FSM phase boundary (introduces or moves a `Ticket.State` transition)
@@ -29,7 +29,7 @@ The eight checks apply when the work meets any of:
 
 Tactical fixes (typo, narrow string change, single-call-site bug) skip the gate — the implementer notes that in the PR body.
 
-## The eight checks
+## The nine checks
 
 ### 1. BLUEPRINT § alignment
 
@@ -102,9 +102,19 @@ When a logical identity has both a bare and a qualified form (namespace:name, sc
 
 _Example: skill name lookups in the registry. The registered key is `namespace:skill-name`. A lookup arriving as bare `skill-name` should be qualified to `namespace:skill-name` at the boundary, not matched by stripping the namespace off the registered key._
 
+### 9. Behavior preservation / capability deletion
+
+The other eight checks cover behavior the change INTRODUCES. This one covers behavior it REMOVES — the high-deletion "replace an existing implementation" class where regressions hide.
+
+For any change that replaces or rewrites an existing implementation, **enumerate every behavior/case the old code handled and justify each one you drop**. Use `git show <base>:<path>` to read the pre-change behavior; do not rely on memory.
+
+- A narrowing of a **privacy / leak / security matcher** — or of the gate's coverage in general — requires explicit user sign-off. A unilateral "documented trade-off" that weakens a public-repo privacy gate is a BLOCKER, not a self-approve.
+- **Never invert an existing must-block regression test to must-not-block** (e.g. `returncode == 1` → `== 0`) to make a weaker matcher pass. Deleting or inverting the test that pinned the old behavior is the tell that coverage was dropped without preservation.
+- If a behavior genuinely must be dropped, the removal is its own reviewed decision: list it here, justify it, and (for safety gates) get sign-off — preserve-or-STOP, never silently narrow.
+
 ## Anti-pattern catalog
 
-The eight checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the eight prose checks summarize.
+The nine checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
 
 ## ARCHITECTURE.md template
 
@@ -136,12 +146,15 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 
 ## 8. Identity and key normalization
 <identities with bare vs qualified forms; canonical form chosen; one normalization function at every boundary; any strip/split whose purpose is to make a comparison succeed — justify or remove>
+
+## 9. Behavior preservation / capability deletion
+<for a change that replaces/rewrites existing code: enumerate every behavior the old code handled, mark each preserved or dropped; flag any narrowing of a privacy/leak/security matcher as requiring user sign-off; confirm no must-block test was inverted to must-not-block; "n/a — purely additive" if nothing is removed>
 ```
 
 ## Workflow
 
 1. Read `BLUEPRINT.md` and the appendix for the touched section.
-2. Run the eight checks against the proposed change.
+2. Run the nine checks against the proposed change.
 3. Write `ARCHITECTURE.md` in the worktree root.
 4. Hand off to the implementation skill (`t3:code`) — it picks up from here with TDD.
 
@@ -154,6 +167,6 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 
 ## Scope discipline
 
-This skill ships v1 with the eight checks above. If a check is missing from the in-worktree `ARCHITECTURE.md`, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
+This skill ships v1 with the nine checks above. If a check is missing from the in-worktree `ARCHITECTURE.md`, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
 
 The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the artifact (`ARCHITECTURE.md`) was produced.
