@@ -348,11 +348,26 @@ repos:
 
   # Phase 9 - Manual
   - repo: https://github.com/semgrep/semgrep
-    rev: 984f76026160ea94163eee091bc3caa876476b35  # v1.139.0
+    rev: 4cc850aff696dce0f6beddd4bb72db7f4c9abbc0  # v1.165.0 (parses PEP 695 `type` statements)
     hooks:
       - id: semgrep
         additional_dependencies: [semgrep]
         args: [--config=p/ci, --config=p/owasp-top-ten, --error, --timeout=120]
+        stages: [manual]
+      - id: semgrep
+        alias: semgrep-regressions
+        name: Named regression-detector rules (blocking; zero-findings on main)
+        additional_dependencies: [semgrep]
+        args: [scan, --config=.semgrep/blocking, --error, --quiet]
+        pass_filenames: false
+        always_run: true
+      - id: semgrep
+        alias: semgrep-regressions-warn
+        name: Named regression-detector rules (advisory; never blocks)
+        additional_dependencies: [semgrep]
+        entry: bash -c 'semgrep scan --config .semgrep/warn --quiet || true'
+        pass_filenames: false
+        always_run: true
         stages: [manual]
 
   # Phase 10 - Commit-msg

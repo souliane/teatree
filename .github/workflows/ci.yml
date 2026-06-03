@@ -122,6 +122,27 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_comment_density.py
 
+  semgrep-regressions:
+    # Advisory warn-set scan for the named regression-detector rules
+    # (souliane/teatree#126). The blocking set rides the prek step above
+    # (full-tree, --error, fails CI on a finding). This job runs the WARN
+    # config and ALWAYS exits 0, so a still-open regression's findings are
+    # visible on every PR without gating — mirrors comment-density-warning.
+    # Each warn rule flips warn/ -> blocking/ in its bug's fix PR.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Warn-set regression scan (advisory; never fails)
+        run: uvx semgrep@1.165.0 scan --config .semgrep/warn || true
+
   docs-drift:
     runs-on: ubuntu-latest
     steps:
