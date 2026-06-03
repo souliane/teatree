@@ -14,11 +14,14 @@ spawns agents with the standard tool. This keeps unit tests deterministic.
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from teatree.config import get_effective_settings
 from teatree.core.phases import normalize_phase, subagent_for_phase
 from teatree.loop.scanners.base import ScanSignal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -349,23 +352,37 @@ def _dispatch_pending_task(signal: ScanSignal) -> list[DispatchAction] | None:
 def _conditional_dispatch(signal: ScanSignal) -> list[DispatchAction] | None:
     """Payload-conditional special cases that precede the generic lookups.
 
-    Returns ``None`` when no special case matches so ``_dispatch_one`` falls
-    through to the ``_AGENT_BY_KIND`` / ``_MECHANICAL_BY_KIND`` / statusline
-    chain. Keeping these here keeps ``_dispatch_one`` flat.
+    Each handler returns its action list, or ``None`` to fall through to the
+    generic ``_AGENT_BY_KIND`` / ``_MECHANICAL_BY_KIND`` / statusline chain
+    in ``_dispatch_one``. A per-kind dispatch table keeps this flat.
     """
-    if signal.kind == "pending_task":
-        return _dispatch_pending_task(signal)
-    if signal.kind in {"slack.mention", "slack.dm"}:
-        pr_url = _slack_pr_url(signal)
-        if pr_url:
-            return _review_request_dispatch(signal, pr_url)
-    if signal.kind == "incoming_event.task_needed":
-        return _dispatch_incoming_task(signal)
-    if signal.kind == "assigned_issue.ready" and signal.payload.get("auto_start") is True:
-        return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
-    if signal.kind == "codex_review.dispatch":
-        return _codex_review_dispatch(signal)
-    return None
+    handler = _CONDITIONAL_HANDLERS.get(signal.kind)
+    return handler(signal) if handler is not None else None
+
+
+def _gate_review_intent(_signal: ScanSignal) -> list[DispatchAction] | None:
+    """Gate a ``slack.review_intent`` dispatch on the review-loop-enabled state (#79).
+
+    A review-intent dispatch is a claim on a colleague's review. Returning
+    ``[]`` when the review loop is stopped suppresses the reviewer dispatch
+    for a signal reaching dispatch from any source (not only the scanner
+    that already filters); ``None`` lets the enabled case fall through to the
+    generic ``_AGENT_BY_KIND`` route.
+    """
+    from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
+
+    return [] if not review_loop_enabled() else None
+
+
+def _dispatch_slack_message(signal: ScanSignal) -> list[DispatchAction] | None:
+    pr_url = _slack_pr_url(signal)
+    return _review_request_dispatch(signal, pr_url) if pr_url else None
+
+
+def _dispatch_assigned_issue(signal: ScanSignal) -> list[DispatchAction] | None:
+    if signal.payload.get("auto_start") is not True:
+        return None
+    return [DispatchAction(kind="agent", zone="t3:orchestrator", detail=signal.summary, payload=signal.payload)]
 
 
 def _dispatch_incoming_task(signal: ScanSignal) -> list[DispatchAction] | None:
@@ -414,7 +431,16 @@ def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAc
     request is a review request regardless of the classifier's phase —
     this branch precedes the ``answering`` fallback so "can you review
     MR X" routes to a review, not the answerer.
+
+    #79: a reviewer dispatch is a claim on a colleague's review; when the
+    review loop is stopped the loop must queue none of them. The single
+    chokepoint every mention/DM/task review-request flows through, so the
+    stopped-loop gate lives here rather than scattered across callers.
     """
+    from teatree.loop.review_claim import review_loop_enabled  # noqa: PLC0415
+
+    if not review_loop_enabled():
+        return []
     return [
         DispatchAction(
             kind="agent",
@@ -429,6 +455,20 @@ def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAc
             payload=signal.payload,
         ),
     ]
+
+
+#: Per-kind payload-conditional handlers consulted before the generic lookups.
+#: Each returns its action list or ``None`` to fall through (see
+#: :func:`_conditional_dispatch`).
+_CONDITIONAL_HANDLERS: dict[str, "Callable[[ScanSignal], list[DispatchAction] | None]"] = {
+    "pending_task": _dispatch_pending_task,
+    "slack.review_intent": _gate_review_intent,
+    "slack.mention": _dispatch_slack_message,
+    "slack.dm": _dispatch_slack_message,
+    "incoming_event.task_needed": _dispatch_incoming_task,
+    "assigned_issue.ready": _dispatch_assigned_issue,
+    "codex_review.dispatch": _codex_review_dispatch,
+}
 
 
 def _claim_red_mr_fix(signal: ScanSignal) -> bool:

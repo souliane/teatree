@@ -345,9 +345,12 @@ class TestSlackBroadcastsConnectChannelEscalation(TestCase):
     """ConnectChannelBotRestrictedError still propagates through the per-message guard."""
 
     def test_connect_channel_error_propagates_out_of_scan(self) -> None:
+        # The scanner posts only the all-merged :white_check_mark: outcome
+        # reaction now (no discovery-time :eyes:, #113/#86); a Connect-
+        # restricted channel rejecting it must still propagate the escalation.
         backend = _FakeMessaging(react_raises=RuntimeError("Slack API not_in_channel"))
         history = {CHANNEL: [_message(f"{MR_OPEN_A}", TS_A)]}
-        states = {MR_OPEN_A: MrState(url=MR_OPEN_A, merged=False, approved=False)}
+        states = {MR_OPEN_A: MrState(url=MR_OPEN_A, merged=True, approved=True)}
         scanner = SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
