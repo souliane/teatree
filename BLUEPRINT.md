@@ -214,6 +214,8 @@ Request parameters are grouped into frozen `slots=True` dataclasses (`PullReques
 
 **Destination-routed post/react ([#1750](https://github.com/souliane/teatree/issues/1750)).** `t3 notify post`/`react` pick the token by *destination* via `SlackBotBackend._route_token`: user's own DM → bot; colleague/channel → personal `xoxp`.
 
+**Deterministic reference linkifier.** The clickable-references rule (a bare `#N` / `!N` on a user-facing surface must become a clickable link) is enforced *in code* by `core/reference_linkifier.py`, not by asking the model. `ReferenceResolver` resolves DB-first (`PullRequest`, `Ticket.issue_url`) then constructs from the active repo context (overlay `code_host` + git-remote slug); the overlay hooks `resolve_mr_token` / `resolve_issue_token` default to it. `linkify` (idempotent; skips linked refs, inline code, fenced blocks; leaves unresolvable refs alone) runs at the Slack chokepoint (`SlackReplier._deliver`). Forge posts are NOT linkified (forge auto-links bare ids — the gate's `EXTERNAL_FORGE` carve-out). The bare-reference gate (`hooks/bare_reference_scanner.py`) is the fallback for unresolved refs and the agent's own chat output.
+
 **Sync ABC (`core/sync.py`).** `SyncBackend` is an ABC with `is_configured(overlay)` and `sync(overlay) → SyncResult`. Implementations: `GitHubSyncBackend`, `GitLabSyncBackend`. Both consume `CodeHostBackend` — platform-specific code lives only in the Protocol implementation, not in sync logic.
 
 ---

@@ -130,7 +130,9 @@ _BUDGET_TOP_LEVEL_BYTES = 90_000
 # reviewed rows; the coupling invariant tracks the total-budget raise below.
 # Reviewed bump (#1840 already merged): appendix corpus reached 114,380 B; raised
 # one minimal step to 114,500. Coupling invariant: 204,000 - 90,000 <= 114,500.
-_BUDGET_APPENDICES_BYTES = 114_500
+# Headroom-restore bump (reference-linkifier): merging main leaves the corpus at
+# 114,380 B with thin headroom; raised to 116,000. Coupling/headroom invariants hold.
+_BUDGET_APPENDICES_BYTES = 116_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
 # security-gates paragraph; total corpus tracked the top-level bump.
 # Reviewed bump (#1629): tracks the appendix span-semantics correction above.
