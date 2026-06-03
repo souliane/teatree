@@ -179,6 +179,17 @@ class TestFiler:
         host = _FakeHost(existing=[{"html_url": "https://x/9", "body": "unrelated"}])
         assert find_existing_issue(host, repo="o/r", fingerprint="deadbeef") == ""
 
+    def test_auto_filed_issue_carries_needs_triage(self) -> None:
+        host = _FakeHost()
+        file_class_c_issue(host, finding=_finding(), enforcement="Add a gate.", context=_CONTEXT)
+        assert host.created[0]["labels"] == ["enforcement-gap", "needs-triage"]
+
+    def test_user_directed_issue_omits_needs_triage(self) -> None:
+        host = _FakeHost()
+        context = FilingContext(repo="o/r", pr_url="https://github.com/o/r/pull/1", auto_filed=False)
+        file_class_c_issue(host, finding=_finding(), enforcement="Add a gate.", context=context)
+        assert host.created[0]["labels"] == ["enforcement-gap"]
+
 
 class TestProcessReviewFindings:
     def test_files_only_class_c_and_counts(self, tmp_path: Path) -> None:
@@ -197,7 +208,7 @@ class TestProcessReviewFindings:
         assert summary.counts == {"A": 1, "B": 1, "C": 1}
         assert len(summary.filed) == 1
         assert len(host.created) == 1
-        assert host.created[0]["labels"] == ["enforcement-gap"]
+        assert host.created[0]["labels"] == ["enforcement-gap", "needs-triage"]
 
     def test_rerun_does_not_refile(self, tmp_path: Path) -> None:
         finding = _finding(body="recurring gap")
