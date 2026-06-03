@@ -255,7 +255,7 @@ class TestOverlayConfig(TestCase):
         assert overlays["dummy-ep"].config.exclude_labels == ["Process::DEV review"]
 
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
-        # Subclasses that pass only ``settings_module`` (like OperConfig) miss
+        # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
         # TOML overrides unless apply_toml_overrides is called explicitly.
         # Entry-point discovery uses that call site to keep overlay names
         # honest, so the method must be callable after __init__ and must
