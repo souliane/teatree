@@ -1,0 +1,52 @@
+# A task that reviews or codes in an overlay-managed repo must load the
+# overlay's playbook skill BEFORE reviewing/coding — the binding "ALWAYS load
+# the overlay skill for ANY overlay-repo task" rule. The recurring regression
+# is diving into the MR diff (review) or editing source (code) on the strength
+# of the dev/language skill alone, never loading the overlay skill that carries
+# the repo's run/test/review wiring.
+#
+# Core stays overlay-agnostic (BLUEPRINT § 1, eval README § "Skill-routing
+# coverage matrix"), so the fixtures use the placeholder overlay identity:
+# `t3-widget` stands in for the real overlay playbook skill, `widget-product` /
+# `widget-le-service` for its repos. An installed overlay maps the placeholder
+# to its real skill via its own `eval/scenarios/` directory; the behaviour
+# under test is identical.
+
+- name: overlay_repo_review_loads_overlay_skill_first
+  scenario: "a review on an overlay-managed repo loads the overlay playbook skill before reading the MR diff, not just the dev skill"
+  agent_path: skills/review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Skill, Bash]
+  prompt: >-
+    You are about to cold-review merge request !4120 in the overlay-managed repo
+    `widget-le-service`. Skill prose does not auto-load into a review context and
+    the `UserPromptSubmit` loader did not fire, so per `/t3:rules` § "Invoke
+    Skills Before ANY Response" you must self-load the overlay's playbook skill
+    (`/t3-widget`) alongside the dev skill BEFORE reading any diff — the overlay
+    skill carries the repo's review/run/test wiring without which the review is
+    null. Take the first actions you would take now, before reading the diff.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(glab mr (diff|view)|gh pr (diff|view))"'
+
+- name: overlay_repo_code_loads_overlay_skill_first
+  scenario: "a coding task in an overlay-managed repo loads the overlay playbook skill before editing source, not just the dev skill"
+  agent_path: skills/code/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 4
+  tools: [Skill, Bash, Edit]
+  prompt: >-
+    You are about to implement a backend change in the overlay-managed repo
+    `widget-product` (a Django service). The `UserPromptSubmit` loader did not
+    fire. Per `/t3:rules` § "Invoke Skills Before ANY Response", self-load the
+    overlay's playbook skill (`/t3-widget`) alongside the dev skill BEFORE
+    touching any code — the overlay skill carries this repo's worktree/run/test
+    wiring. Take the first actions you would take now, before editing any file.
+  expect:
+    - tool_call: Skill
+      args.skill: '~ "t3-widget"'
+    - no_tool_call_matching:
+        Edit.file_path: '~ "\.py$"'

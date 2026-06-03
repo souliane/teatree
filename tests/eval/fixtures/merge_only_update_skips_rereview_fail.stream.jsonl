@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-merge_only_update_skips_rereview-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Re-reading the diff to re-review the whole PR before merge."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "glab mr diff 4120"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
