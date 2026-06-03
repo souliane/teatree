@@ -1,17 +1,19 @@
-"""Pre-push hook: refuse a diff that adds comments restating the code.
+"""Pre-push hook: warn on a diff that adds comments restating the code.
 
-The commit-side enforcement of the near-zero-comments rule (names + types
-are the documentation). Thin wrapper over
+The commit-side surface of the near-zero-comments rule (names + types are
+the documentation). Thin wrapper over
 :mod:`teatree.hooks.privacy_diff_comment_density` — the parsing, thresholds,
 and pragma/docstring/license exemptions live there, shared with the standalone
 ``t3 tool comment-density`` command and the CI job so there is one source of
 truth.
 
-Scans ``git diff --cached`` (the staged contents about to be pushed). On a
-clean diff the hook is silent and exits 0. On a comment-dense file it prints
-the per-file finding and exits 1. Tests and docs are exempt; tooling pragmas
-(``# noqa`` / ``# type:`` / ``// eslint-disable`` …), docstrings, and
-license/shebang headers do not count toward the comment tally.
+The check is **advisory**: scans ``git diff --cached`` (the staged contents
+about to be pushed) and prints the per-file finding as a warning, but
+**always exits 0** so it never blocks the push. There is no content-blind
+heuristic for "overly long prose" that does not also flag legitimate long
+comments, so the signal is surfaced without failing. Tests and docs are
+exempt; tooling pragmas (``# noqa`` / ``# type:`` / ``// eslint-disable`` …),
+docstrings, and license/shebang headers do not count toward the comment tally.
 """
 
 import subprocess
@@ -43,16 +45,17 @@ def main() -> int:
     if not findings:
         return 0
 
-    print("comment-density gate (near-zero-comments rule — names + types are the docs):\n")
+    print("comment-density warning (near-zero-comments rule — names + types are the docs):\n")
     for finding in findings:
         print(f"  - {finding.render()}")
     print(
-        "\nThese added comments restate what the code already says. Delete the\n"
-        "WHAT-narration, or rename the symbols so the intent is self-evident.\n"
-        "Genuine rationale belongs in the commit message; tooling directives\n"
-        "(# noqa / # type: / // eslint-disable …) are already exempt."
+        "\nThese added comments may restate what the code already says. Consider\n"
+        "deleting the WHAT-narration, or renaming the symbols so the intent is\n"
+        "self-evident. Genuine rationale belongs in the commit message; tooling\n"
+        "directives (# noqa / # type: / // eslint-disable …) are already exempt.\n"
+        "This is advisory only — the push is not blocked."
     )
-    return 1
+    return 0
 
 
 if __name__ == "__main__":

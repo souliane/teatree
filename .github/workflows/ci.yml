@@ -93,13 +93,14 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
-  comment-density-gate:
-    # Near-zero-comments gate (souliane/teatree#1369). The pre-push hook
-    # runs against staged changes; CI re-runs the SAME check on the PR diff
-    # so an agent that bypasses prek still trips the gate. Stages the
-    # PR-vs-base diff into the index so the hook's ``git diff --cached``
-    # query sees the PR contents — identical code path to prek and to
-    # ``t3 tool comment-density --staged``.
+  comment-density-warning:
+    # Near-zero-comments check (souliane/teatree#1369). Advisory: the script
+    # prints any comment-dense file as a warning and exits 0, so the job
+    # never fails the pipeline. The pre-push hook surfaces the same warning
+    # against staged changes; CI re-runs the SAME check on the PR diff so the
+    # signal is visible on every PR. Stages the PR-vs-base diff into the index
+    # so the hook's ``git diff --cached`` query sees the PR contents —
+    # identical code path to prek and to ``t3 tool comment-density --staged``.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:

@@ -24,10 +24,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from teatree.hooks.privacy_diff_comment_density import scan_diff as _scan_diff_density
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 
-_DIFF_DETECTORS = (_scan_diff_comments, _scan_diff_density)
+_DIFF_DETECTORS = (_scan_diff_comments,)
 
 # Dedicated "findings present" exit code. NOT 1 (generic exception) and NOT
 # 2 (typer usage error) so the leak gate can distinguish a real finding from
