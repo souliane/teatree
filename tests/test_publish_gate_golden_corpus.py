@@ -160,6 +160,15 @@ class TestMustAllow:
         cmd = 'gh pr create -R internalcorp/private-svc --title "feat: acmecorp" --body "acmecorp internal"'
         assert _verdict(cmd, None, config) == "allow"
 
+    def test_internal_gh_pr_short_body_file(self, config: Path, tmp_path: Path) -> None:
+        # Over-block guard for the ``gh`` short ``-F`` (``--body-file``) form: a
+        # private ``-R`` target is skipped before the file body is scanned, so a
+        # private repo's domain words in the ``-F`` file are allowed.
+        body = tmp_path / "body.md"
+        body.write_text("## What\nacmecorp acmewidget purpose\n", encoding="utf-8")
+        cmd = f"gh pr create -R internalcorp/private-svc --title 'feat: acmecorp' -F {body}"
+        assert _verdict(cmd, None, config) == "allow"
+
     def test_commit_resolves_via_cd_to_private_repo(self, config: Path, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:acme-internal/microservice-x.git")
         cmd = f'cd {repo} && git commit -m "feat: acmecorp purpose"'
@@ -260,6 +269,16 @@ class TestMustDeny:
         cmd = f"gh pr create -R souliane/teatree --title x --body-file {missing}"
         assert _verdict(cmd, None, config) == "block"
 
+    def test_short_body_file_to_public_repo_is_scanned_and_blocks(self, config: Path, tmp_path: Path) -> None:
+        # The ``gh`` short ``-F`` form is ``--body-file``: a banned term in the
+        # ``-F`` file posted to a PUBLIC target must be read and blocked, like
+        # the long ``--body-file``. RED before the fix (``gh -F`` reached the
+        # api-field walker, the file went unread, the term slipped through).
+        body = tmp_path / "body.md"
+        body.write_text("ship to acmecorp next week\n", encoding="utf-8")
+        cmd = f"gh pr create -R souliane/teatree --title x -F {body}"
+        assert _verdict(cmd, None, config) == "block"
+
     def test_secret_in_short_title_flag_blocks(self, config: Path) -> None:
         # Vector 4: a secret in the ``-t`` short title flag (not the body) blocks.
         cmd = f'gh pr create -R souliane/teatree -t "release {_FAKE_SECRET}"'
@@ -327,6 +346,11 @@ _LEAK_SPELLINGS: list[tuple[str, str]] = [
     ("gh api -X interspersed", "gh -X POST api repos/souliane/teatree/issues -f body=acmecorp"),
     ("gh api title field secret", f"gh api repos/souliane/teatree/issues -f title={_FAKE_SECRET}"),
     ("glab api interspersed", "glab --hostname gitlab.com api projects/souliane%2Fteatree/issues -f body=acmecorp"),
+    # ``gh ... -F <missing-path>`` to a public target: the short ``--body-file``
+    # path is unresolvable, so it fails closed on the sentinel rather than going
+    # unread (pre-fix, ``gh -F`` reached the api-field walker, the path matched
+    # no ``field=value`` assignment, and the post was ALLOWED unscanned).
+    ("gh short body-file unreadable", "gh pr create -R souliane/teatree --title x -F /nonexistent/body.md"),
     ("interpreter sh -c forge", f'{_INTERNAL_LEAD}sh -c "{_PUBLIC_POST}"'),
     ("interpreter bash -c forge", f'{_INTERNAL_LEAD}bash -c "{_PUBLIC_POST}"'),
     ("interpreter eval forge", f'{_INTERNAL_LEAD}eval "{_PUBLIC_POST}"'),
