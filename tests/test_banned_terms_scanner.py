@@ -318,6 +318,56 @@ class TestHookHandlerEndToEnd:
         assert decision["permissionDecision"] == "deny"
         assert "acmecorp" in decision["permissionDecisionReason"]
 
+    def test_gh_short_body_file_flag_is_read_and_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``gh issue/pr create|comment``'s ``-F`` is the short form of
+        # ``--body-file``. A banned term in the ``-F`` file posted to a PUBLIC
+        # target must be read and blocked, exactly like the long ``--body-file``
+        # form. (RED before the fix: ``gh`` ``-F`` routed to the api-field
+        # walker, the file went unread, and the term slipped through.)
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F {body_file}"))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert "acmecorp" in decision["permissionDecisionReason"]
+
+    def test_gh_short_body_file_flag_to_private_target_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Over-block guard: the SAME ``-F`` file posted to a provably-private
+        # ``-R`` target (in the internal_publish_namespaces allowlist) is
+        # skipped by the destination gate before the payload is scanned, so a
+        # private repo's own domain words are allowed.
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create -R internalcorp/svc --title t -F {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_gh_attached_short_body_file_flag_is_read_and_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The attached short-option spelling ``-F<path>`` (no space) is also the
+        # ``--body-file`` form: its file body is read and a banned term blocks.
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F{body_file}"))
+        assert blocked is True
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["permissionDecision"] == "deny"
+        assert "acmecorp" in decision["permissionDecisionReason"]
+
+    def test_gh_short_field_assignment_stays_an_api_field(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # Disambiguation guard: a ``gh api -F body=...`` field assignment is NOT
+        # a file reference; the banned term in the inline field value is still
+        # scanned and blocks, unchanged by the ``-F`` body-file handling.
+        blocked = handle_banned_terms_pretool(_bash("gh api repos/souliane/teatree/issues -F title=t -F body=acmecorp"))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     def test_gh_pr_comment_with_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(_bash('gh pr comment 5 --body "acmecorp asked for this"'))
         assert blocked is True
