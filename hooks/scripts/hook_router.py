@@ -1368,18 +1368,73 @@ def _skill_load_ok_token(data: dict) -> str | None:
     return None
 
 
+# File suffixes whose Edit/Write is genuine Python/Django source work. A skill
+# demand for ``/ac-python`` / ``/ac-django`` is relevant only to these; a
+# ``.md`` / ``.yml`` / ``.toml`` / ``.sh`` / prose edit is not, so the gate must
+# not fire on it (the over-block this scope closes).
+_PYTHON_SOURCE_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
+
+# A Bash command runs Python tooling when its FIRST word (after benign env /
+# `cd` prefixes are not in scope here — the heuristic is conservative on the
+# leading verb) is a Python interpreter / packaging / lint / type / test
+# runner, or it invokes ``manage.py`` / ``setup.py``. Tightly anchored so a
+# pure-git / ls / grep / markdownlint command never counts as code work.
+_PYTHON_TOOL_RE: re.Pattern[str] = re.compile(
+    r"(?:^|[;&|]\s*|\b)(?:"
+    r"python[0-9.]*\b|uv\s+run\b|uvx\b|poetry\s+run\b|pipenv\s+run\b|"
+    r"pytest\b|ruff\b|ty\s+check\b|ty-check\b|mypy\b|tox\b|"
+    r"[\w./-]*manage\.py\b|[\w./-]*setup\.py\b"
+    r")"
+)
+
+
+def _skill_gate_targets_code_work(data: dict) -> bool:
+    """True iff this tool call is genuine Python/Django code work.
+
+    The skill-loading gate demands ``/ac-python`` / ``/ac-django`` only for
+    Python/Django work, so it must fire ONLY when:
+
+    - ``Edit`` / ``Write`` touches a Python source file (``.py`` / ``.pyi``); or
+    - ``Bash`` runs Python tooling (python, uv run, pytest, ruff, ty, manage.py).
+
+    It NEVER fires on ``AskUserQuestion`` (or any other tool), nor on a
+    markdown / yaml / toml / shell / prose edit, nor on a pure-git or other
+    non-Python Bash command. This is the tight-scope alternative to a fuzzy
+    hard-block: the gate cannot cleanly separate Python edits from docs/config/
+    git work by intent text, so it keys on the concrete target instead.
+    """
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name in {"Edit", "Write"}:
+        file_path = tool_input.get("file_path", "")
+        if not isinstance(file_path, str):
+            return False
+        return file_path.endswith(_PYTHON_SOURCE_SUFFIXES)
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        return isinstance(command, str) and bool(_PYTHON_TOOL_RE.search(command))
+    return False
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+    """Block Python/Django code work when *loadable* suggested skills aren't loaded.
+
+    Scoped to genuine code work (:func:`_skill_gate_targets_code_work`): an
+    ``Edit``/``Write`` of a ``.py``/``.pyi`` file or a ``Bash`` Python-tooling
+    command. It NEVER fires on ``AskUserQuestion``, a docs/config/shell edit, or
+    a pure-git Bash command — the over-block this scope closes.
 
     Fails open on a stale/unresolvable required skill (see the module
     comment above): such a name is warned about, never blocked on. A
     per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
     args is an explicit escape (#1567) so a false trigger can never wedge
-    the loop; a genuine intent match still hard-blocks every call lacking
-    that token.
+    the loop; a genuine intent match still hard-blocks every code-work call
+    lacking that token.
     """
     session_id = data.get("session_id", "")
-    if not session_id:
+    if not session_id or not _skill_gate_targets_code_work(data):
         return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
@@ -3175,77 +3230,6 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         )
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
-
-
-# ── PreToolUse: bare-reference link gate (#1530) ────────────────────
-
-
-def handle_bare_reference_pretool(data: dict) -> bool:
-    """Refuse a publish whose body cites a bare reference instead of a link.
-
-    Sibling of the #1213 quote-scanner and #1415 banned-terms gates.
-    Promotes the prose-only "always a clickable link, never a bare id"
-    rule (``feedback_always_clickable_links_never_bare_ids.md``) to a
-    deterministic pre-publish gate. Reuses the shared #1213
-    ``_command_parser`` publish-surface detection + body extraction, then
-    matches the extracted body against the bare-reference catalogue.
-
-    A bare ``#NNNN`` / ``!NNNN`` / Slack ``ts`` / forge-or-Notion URL not
-    wrapped in a clickable link ⇒ refuse via ``permissionDecision: deny``
-    + a reason naming each offending ref. Outgoing surfaces only
-    (gh/glab/git-commit/t3-notify/slack-send) — never internal reads.
-
-    Fail-open on any internal error: a crashing hook is worse than no
-    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
-    the sibling ``src/`` directory (#1314) and swallows any exception,
-    returning ``False`` so the tool use proceeds unchanged.
-
-    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
-    matcher, #171) is governed by the ``[teatree]
-    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
-    """
-    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
-        return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_pretool(data)
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_pretool(data: dict) -> bool:
-    """Bare-reference inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
-
-    from teatree.hooks import bare_reference_scanner, publish_destination  # noqa: PLC0415
-
-    tool_name = data.get("tool_name", "")
-    raw_input = data.get("tool_input", {}) or {}
-    if not isinstance(raw_input, dict):
-        return False
-    tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
-
-    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
-    if payload is None:
-        return False
-
-    command = tool_input.get("command", "")
-    if tool_name == "Bash" and publish_destination.gate_skips_destination(command, _resolve_cwd_repo(data)):
-        return False
-
-    refs = bare_reference_scanner.scan_text(payload)
-    if not refs:
-        return False
-
-    return emit_pretooluse_deny(bare_reference_scanner.format_block_message(refs))
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
@@ -7283,47 +7267,6 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
-def handle_bare_reference_stop(data: dict) -> bool | None:
-    """Warn when the assistant's final chat text cites a bare reference (#1530).
-
-    The Stop-time soft sibling of the #1530 PreToolUse hard gate. The
-    shown chat message cannot be retracted, so this never denies — it
-    emits a top-level ``systemMessage`` WARNING that surfaces the
-    violation next turn and gives a recurrence signal. Low-noise:
-    matches only clear bare ``#NNNN`` / ``!NNNN`` tokens not already
-    wrapped in a clickable link, reusing the shared detector.
-
-    Fail-safe-to-silent: any malformed input or missing transcript
-    returns ``None`` so the Stop chain is never crashed.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_stop(data)
-    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_stop(data: dict) -> bool | None:
-    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
-
-    turn = _last_assistant_turn(data.get("transcript_path", ""))
-    if turn is None:
-        return None
-    refs = bare_reference_scanner.find_bare_references(turn[0])
-    if not refs:
-        return None
-    json.dump({"systemMessage": bare_reference_scanner.format_warn_message(refs)}, sys.stdout)
-    return True
-
-
 # ── Stop: speak-on-stop arm (speak_mode == all, #1791) ──────────────────────
 
 
@@ -7867,7 +7810,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_plan_gate,
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
-        handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,
@@ -7911,7 +7853,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,
-        handle_bare_reference_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
         handle_loop_self_pump,

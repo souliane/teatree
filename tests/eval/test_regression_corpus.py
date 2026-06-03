@@ -20,7 +20,6 @@ from teatree.core import branch_currency, merge_execution
 from teatree.core.models import LoopLease
 from teatree.eval import regression_corpus
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
-from teatree.hooks import bare_reference_scanner
 
 
 def _linear_core_graph() -> MigrationGraph:
@@ -52,7 +51,6 @@ class TestRegressionCorpusGreen(TestCase):
         classes = {c.failure_class for c in regression_corpus._CHECKS}
         for needle in (
             "branch-currency",
-            "bare-reference gate",
             "substrate-merge",
             "maker≠checker",
             "loop-owner hijack",
@@ -71,12 +69,6 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("branch-currency" in r.check.failure_class for r in report.failures)
-
-    def test_bare_reference_check_fails_when_gate_over_blocks_a_read(self) -> None:
-        with patch.object(bare_reference_scanner, "extract_publish_payload", return_value="see #1500"):
-            report = run_regression_corpus()
-        assert not report.ok
-        assert any("bare-reference gate" in r.check.failure_class for r in report.failures)
 
     def test_merge_floor_check_fails_when_authorization_guard_is_a_noop(self) -> None:
         with patch.object(merge_execution, "_assert_clear_authorized", return_value=None):

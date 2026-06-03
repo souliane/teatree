@@ -89,8 +89,13 @@ def _seed_pending(env: dict[str, str], session_id: str, skills: list[str]) -> No
 
 
 def _skill_deny(session_id: str) -> dict:
-    """A Bash call that trips ONLY the skill-loading (UX) gate when pending is seeded."""
-    return {"session_id": session_id, "tool_name": "Bash", "tool_input": {"command": "git status"}}
+    """An Edit of a Python file that trips ONLY the skill-loading (UX) gate when pending is seeded.
+
+    The skill-loading gate is scoped to genuine code work, so the call must
+    touch a ``.py`` file; an ``Edit`` keeps it clear of the Bash-only
+    orchestrator-boundary safety gate the other helpers exercise.
+    """
+    return {"session_id": session_id, "tool_name": "Edit", "tool_input": {"file_path": "src/teatree/core/probe.py"}}
 
 
 def _safety_deny(session_id: str) -> dict:

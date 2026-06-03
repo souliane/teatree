@@ -193,10 +193,8 @@ def _denied(handler: Callable[[dict], bool | None], event_input: dict) -> bool:
 # tenant/overlay/colleague.
 
 _HIGH_QUOTE = "Here is what the user said: ship it now."  # the-user-said-colon HIGH
-_BARE_REF_BODY = "Fixed in the PR, see #4242 for context."  # mid-sentence bare #NNNN
 _BANNED_TERM_TOML = '[teatree]\nbanned_terms = ["acme"]\n'
 _BANNED_BODY = "Rolling out the acme integration."
-_CLEAN_BODY = "Rolling out the integration; see [#4242](https://github.com/o/r/issues/4242)."
 _AI_SIG_TRAILER = "fix: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
 
 
@@ -513,31 +511,6 @@ def _banned_bash_allow(ctx: GateContext) -> dict:
     return _bash('gh issue create --title t --body "Rolling out the integration."')
 
 
-# bare-reference (PreToolUse Bash arm): a USER-FACING publish body citing a
-# bare #NNNN denies; a body whose ref is a clickable link allows. An
-# external-forge post (gh/glab) is exempt (#1530 destination-awareness), so
-# the deny case uses a user-facing ``git commit`` message.
-
-
-def _bare_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f"git commit -m 'wip: {_BARE_REF_BODY}'")
-
-
-def _bare_bash_allow(ctx: GateContext) -> dict:
-    return _bash(f"git commit -m 'wip: {_CLEAN_BODY}'")
-
-
-# bare-reference Slack-MCP arm (mcp__*slack* send) — phantom (not in matcher).
-
-
-def _bare_slack_deny(ctx: GateContext) -> dict:
-    return _slack_send("mcp__claude_ai_Slack__slack_send_message", _BARE_REF_BODY)
-
-
-def _bare_slack_allow(ctx: GateContext) -> dict:
-    return _slack_send("mcp__claude_ai_Slack__slack_send_message", _CLEAN_BODY)
-
-
 # block-uncovered-diff (PreToolUse Bash): a non-draft gh pr create whose diff
 # fails Gate 12 denies; a passing report allows.
 
@@ -683,11 +656,11 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         handler=router.handle_enforce_skill_loading,
         event="PreToolUse",
         matched="Bash",
-        deny_input=lambda _c: _bash("ls -la"),
+        deny_input=lambda _c: _bash("uv run pytest -q"),
         allow_input=lambda _c: {
             "session_id": "sess-liveness",
             "tool_name": "Bash",
-            "tool_input": {"command": "ls -la [skill-load-ok: verified-loaded]"},
+            "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
         },
         arrange=_arrange_skill_loading,
     ),
@@ -803,23 +776,6 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_banned_bash_deny,
         allow_input=_banned_bash_allow,
         arrange=_arrange_banned_terms,
-    ),
-    GateRow(
-        gate_id="bare-reference-bash",
-        handler=router.handle_bare_reference_pretool,
-        event="PreToolUse",
-        matched="Bash",
-        deny_input=_bare_bash_deny,
-        allow_input=_bare_bash_allow,
-    ),
-    GateRow(
-        gate_id="bare-reference-slack-mcp",
-        handler=router.handle_bare_reference_pretool,
-        event="PreToolUse",
-        matched="mcp__claude_ai_Slack__slack_send_message",
-        deny_input=_bare_slack_deny,
-        allow_input=_bare_slack_allow,
-        arrange=_arrange_mcp_privacy_gate,
     ),
     GateRow(
         gate_id="block-uncovered-diff",
