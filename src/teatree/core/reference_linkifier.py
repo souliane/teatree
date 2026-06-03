@@ -73,9 +73,8 @@ _SLUG_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
 _BARE_MR_RE: Final[re.Pattern[str]] = re.compile(r"(?<![A-Za-z0-9_/])!(\d+)(?![A-Za-z0-9_])")
 _BARE_ISSUE_RE: Final[re.Pattern[str]] = re.compile(r"(?<![A-Za-z0-9_/])#(\d+)(?![A-Za-z0-9_])")
 
-# Code-host slugs whose merge-request path differs from GitHub's. GitLab nests
-# everything under ``/-/``; GitHub uses ``/issues/`` (and relies on its
-# issues<->pull redirect for PRs, so ``#N`` and ``!N`` share one path).
+# Code-host slugs selecting the URL-construction branch in ``_construct`` (which
+# documents why GitLab nests under ``/-/`` and GitHub shares one ``/issues/`` path).
 _GITHUB_HOST: Final[str] = "github"
 _GITLAB_HOST: Final[str] = "gitlab"
 
