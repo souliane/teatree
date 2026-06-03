@@ -271,13 +271,13 @@ t3 agent                            # Launch Claude Code (teatree-self developme
 uv run pytest                       # Test suite with coverage (>93% required)
 prek run --all-files                # Commit-stage hooks ONLY (ruff, codespell, tach, ty)
 t3 tool verify-gates                # FULL CI-parity gate set: commit AND push stages
-bash dev/test-fast.sh               # Fast pre-push gate: Python 3.13, host, parallel
+bash dev/test-fast.sh               # Opt-in local suite: Python 3.13, host, parallel
 bash dev/test-matrix.sh             # Opt-in Docker matrix: Python 3.13 + 3.14
 ```
 
-**The pre-push gate runs `dev/test-fast.sh`** — the full suite on Python 3.13 (the single version CI checks), host-native and parallel with `pytest-xdist`. It runs the real tests and fails the push on red; there is no bypass.
+**The push path does NOT run the test suite — push -> CI is the gate.** The full suite is CI's job, never the local push path: a host under load times out unrelated wall-clock and concurrency tests and blocks an otherwise-good push (#112/#21/#38). The pre-push hooks are fast, scoped gates only (public-repo leak refusal, doc-update, comment-density, ensure-pr). Guarded by `tests/test_no_full_suite_on_pre_push.py` so a full-suite hook can't silently regress back onto pre-push.
 
-**`dev/test-matrix.sh` is the opt-in superset, not the default push path.** Run it before merges that touch `dev/Dockerfile.test`, `uv.lock`, or system dependencies: it runs the suite in Docker across Python 3.13 + 3.14 and catches missing system dependencies and Python-version-specific differences the host gate can't. If the Dockerfile changed, remove the cached image first: `docker rmi teatree-test`.
+**`dev/test-fast.sh` and `dev/test-matrix.sh` are explicit opt-in local runners, not the push path.** Run `dev/test-fast.sh` when you want the host suite locally on Python 3.13. Run `dev/test-matrix.sh` before merges that touch `dev/Dockerfile.test`, `uv.lock`, or system dependencies: it runs the suite in Docker across Python 3.13 + 3.14 and catches missing system dependencies and Python-version-specific differences the host gate can't. If the Dockerfile changed, remove the cached image first: `docker rmi teatree-test`.
 
 ### Test-Writing Doctrine (Non-Negotiable)
 
