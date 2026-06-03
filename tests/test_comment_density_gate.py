@@ -1,21 +1,24 @@
-"""Golden corpus + surface tests for the near-zero-comments comment-density gate.
+"""Golden corpus + surface tests for the advisory comment-density check.
 
-The gate flags a diff that adds comments which merely restate the code (names +
-types are the documentation). The load-bearing part is the **golden corpus** —
-two symmetric, non-negotiable sets.
+The check flags a diff that adds comments which merely restate the code (names +
+types are the documentation). It is **advisory** — every surface prints the
+finding as a warning and exits 0, so it never blocks a commit, push, or
+pipeline. The load-bearing part is the **golden corpus** — two symmetric,
+non-negotiable sets that pin the detection regardless of the (always-zero)
+exit code.
 
-The **must-DENY** set is comment-heavy diffs the gate MUST flag: WHAT-narration
+The **must-DENY** set is comment-heavy diffs the check MUST flag: WHAT-narration
 by ratio, a 3+ consecutive-comment run, a TS block-comment run.
 
-The **must-ALLOW** set is clean diffs the gate MUST pass: sparse code, one
+The **must-ALLOW** set is clean diffs the check MUST pass: sparse code, one
 explanatory comment, docstrings, tooling pragmas, license/shebang headers,
-tests, docs, CI YAML rationale blocks. It proves the gate cannot over-block
-legitimate code — a gate without it is incomplete (the gate-overblock doctrine).
+tests, docs, CI YAML rationale blocks. It proves the check cannot over-flag
+legitimate code — a detector without it is incomplete (the over-flag doctrine).
 
 The check is content-blind and diff-aware; the analysis lives in
 :mod:`teatree.hooks.privacy_diff_comment_density`, exercised here through the
 reusable :func:`report_diff`, the ``t3 tool comment-density`` CLI, and the
-``scripts/hooks/check_comment_density.py`` pre-push hook.
+``scripts/hooks/check_comment_density.py`` pre-push hook (each warn-only).
 """
 
 import json
@@ -254,27 +257,28 @@ class TestStructuredFinding:
 
 
 class TestCli:
-    """``t3 tool comment-density`` reads the diff and exits correctly."""
+    """``t3 tool comment-density`` reads the diff and always exits 0 (advisory)."""
 
-    def test_stdin_heavy_diff_exits_one(self) -> None:
+    def test_stdin_heavy_diff_warns_and_exits_zero(self) -> None:
         result = runner.invoke(app, ["tool", "comment-density"], input=_MUST_DENY["ratio_what_narration"])
-        assert result.exit_code == 1
-        assert "comment-density gate" in result.output
+        assert result.exit_code == 0
+        assert "comment-density warning" in result.output
 
     def test_stdin_clean_diff_exits_zero(self) -> None:
         result = runner.invoke(app, ["tool", "comment-density"], input=_MUST_ALLOW["sparse_code"])
         assert result.exit_code == 0
         assert "no findings" in result.output
 
-    def test_diff_file_source(self, tmp_path: Path) -> None:
+    def test_diff_file_source_warns_and_exits_zero(self, tmp_path: Path) -> None:
         diff_path = tmp_path / "change.diff"
         diff_path.write_text(_MUST_DENY["consecutive_run"], encoding="utf-8")
         result = runner.invoke(app, ["tool", "comment-density", "--diff", str(diff_path)])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
+        assert "comment-density warning" in result.output
 
     def test_json_output(self) -> None:
         result = runner.invoke(app, ["tool", "comment-density", "--json"], input=_MUST_DENY["ratio_what_narration"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed[0]["path"] == "src/teatree/x.py"
         assert parsed[0]["comment_lines"] >= 3
@@ -292,7 +296,8 @@ class TestCli:
 
         monkeypatch.setattr(comment_density_tools, "run_allowed_to_fail", lambda *a, **k: _Result())
         result = runner.invoke(app, ["tool", "comment-density", "--staged"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
+        assert "comment-density warning" in result.output
 
     def test_base_ref_source_reads_three_dot_diff(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from teatree.cli import comment_density_tools  # noqa: PLC0415
@@ -313,7 +318,7 @@ class TestCli:
 
 
 class TestPrePushHook:
-    """The standalone hook flags a staged comment-dense diff."""
+    """The standalone hook warns on a staged comment-dense diff but never blocks."""
 
     def _run_hook(self, repo: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -341,7 +346,7 @@ class TestPrePushHook:
         result = self._run_hook(repo)
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_comment_dense_staged_diff_exits_one(self, tmp_path: Path) -> None:
+    def test_comment_dense_staged_diff_warns_and_exits_zero(self, tmp_path: Path) -> None:
         repo = self._init_repo(tmp_path)
         src = repo / "src" / "teatree"
         src.mkdir(parents=True)
@@ -356,8 +361,9 @@ class TestPrePushHook:
         )
         subprocess.run([GIT, "add", "-A"], cwd=repo, check=True)
         result = self._run_hook(repo)
-        assert result.returncode == 1, result.stdout + result.stderr
-        assert "comment-density gate" in result.stdout
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "comment-density warning" in result.stdout
+        assert "advisory only" in result.stdout
 
     def test_empty_staged_diff_exits_zero(self, tmp_path: Path) -> None:
         repo = self._init_repo(tmp_path)
