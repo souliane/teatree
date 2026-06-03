@@ -64,6 +64,7 @@ class _GitHubPullRequestSummary(TypedDict, total=False):
     requested_reviewers: list[_GitHubUser]
     state: str
     merged: bool
+    user: _GitHubUser
 
 
 def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
@@ -547,3 +548,32 @@ class GitHubCodeHost:
         except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
             return PrOpenState.UNKNOWN
         return _pr_open_state_from_payload(pr)
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        """Return the PR author's GitHub login, or ``""`` when it can't be resolved.
+
+        Fetches the PR payload and reads ``user.login``. Any exception
+        (``gh api`` failure, auth error), unparsable URL, or non-dict /
+        author-less payload returns ``""`` — the reaction scanners treat an
+        unresolved author as "not provably self" and skip the reaction, so a
+        transient lookup failure can never cause a reaction on the user's
+        own MR.
+        """
+        match = _PR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return ""
+        try:
+            pr = _gh_api_get(
+                f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}",
+                token=self._token,
+            )
+        except Exception:  # noqa: BLE001 — fail safe: an unresolved author must skip the reaction.
+            return ""
+        if not isinstance(pr, dict):
+            return ""
+        user = cast("_GitHubPullRequestSummary", pr).get("user")
+        if isinstance(user, dict):
+            login = cast("_GitHubUser", user).get("login")
+            if isinstance(login, str):
+                return login
+        return ""

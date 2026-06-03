@@ -102,6 +102,7 @@ class _GitLabMergeRequestSummary(TypedDict, total=False):
 
     reviewers: list[_GitLabUser]
     state: str
+    author: _GitLabUser
 
 
 def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
@@ -386,6 +387,34 @@ class GitLabCodeHost:
         if not isinstance(state, str):
             return PrOpenState.UNKNOWN
         return _GITLAB_MR_STATE_MAP.get(state, PrOpenState.UNKNOWN)
+
+    def get_pr_author(self, *, pr_url: str) -> str:
+        """Return the MR author's GitLab username, or ``""`` when it can't be resolved.
+
+        Fetches the MR payload and reads ``author.username``. Any exception,
+        unresolvable project, unparsable URL, or non-dict / author-less
+        payload returns ``""`` — the reaction scanners treat an unresolved
+        author as "not provably self" and skip the reaction, so a transient
+        lookup failure can never cause a reaction on the user's own MR.
+        """
+        match = _MR_URL_RE.match(urlparse(pr_url).path)
+        if match is None:
+            return ""
+        try:
+            project = self._client.resolve_project(match["path"])
+            if project is None:
+                return ""
+            mr = self._client.get_json(f"projects/{project.project_id}/merge_requests/{match['iid']}")
+        except Exception:  # noqa: BLE001 — fail safe: an unresolved author must skip the reaction.
+            return ""
+        if not isinstance(mr, dict):
+            return ""
+        author = cast("_GitLabMergeRequestSummary", mr).get("author")
+        if isinstance(author, dict):
+            username = cast("_GitLabUser", author).get("username")
+            if isinstance(username, str):
+                return username
+        return ""
 
     def assign_reviewer(self, *, pr_url: str, username: str) -> bool:
         """Append *username* as a reviewer on the MR at *pr_url* (#1295 cap B).

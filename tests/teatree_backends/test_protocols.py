@@ -64,6 +64,10 @@ class _FakeCodeHost:
         _ = pr_url
         return PrOpenState.UNKNOWN
 
+    def get_pr_author(self, *, pr_url: str) -> str:
+        _ = pr_url
+        return ""
+
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> dict[str, object]:
         _ = (repo, pr_iid, body)
         return {}

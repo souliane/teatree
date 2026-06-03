@@ -50,6 +50,24 @@ def _author_username(mr: RawAPIDict) -> str:
     return ""
 
 
+def author_is_self(author: str, *, current_user: str, self_identities: Iterable[str] = ()) -> bool:
+    """Return True iff *author* is one of the user's own forge identities (#1321).
+
+    The single notion of "the user authored this" reused by every path that
+    must treat the user's own MR differently from a colleague's — the
+    review-candidate skip-conditions (``author_is_self`` reason) and the
+    Slack reaction scanners, which must never react on the user's own
+    review-request post. ``author`` is the MR/PR author username already
+    extracted from the forge payload (GitLab ``author.username`` / GitHub
+    ``user.login``). An empty *author* never matches: an unknown author is
+    not provably self, so a fail-closed reaction caller treats the non-match
+    as "skip the reaction" rather than "react".
+    """
+    if not author:
+        return False
+    return author in _self_identity_set(current_user, self_identities)
+
+
 def _approver_usernames(mr: RawAPIDict) -> list[str]:
     raw = mr.get("approvers")
     if not isinstance(raw, list):
@@ -138,7 +156,7 @@ def should_review_candidate_reasons(
     """
     identities = _self_identity_set(current_user, self_identities)
     reasons: list[str] = []
-    if identities and _author_username(mr) in identities:
+    if identities and author_is_self(_author_username(mr), current_user=current_user, self_identities=self_identities):
         reasons.append("author_is_self")
     approvers = _approver_usernames(mr)
     if identities and identities.intersection(approvers):

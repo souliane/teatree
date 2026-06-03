@@ -1032,6 +1032,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         user_slack_id=_user_slack_id_for_overlay(tag),
                         host=backend.host,
+                        identities=backend.identities,
                     ),
                     overlay=tag,
                 ),
@@ -1039,6 +1040,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                     scanner=ReviewRequestMergeReactScanner(
                         messaging=backend.messaging,
                         host=backend.host,
+                        identities=backend.identities,
                     ),
                     overlay=tag,
                 ),
@@ -1218,6 +1220,7 @@ def _messaging_jobs_for_backend(
                     messaging=messaging,
                     user_slack_id=_user_slack_id_for_overlay(tag),
                     host=backend.host,
+                    identities=backend.identities,
                 ),
                 overlay=tag,
             ),
