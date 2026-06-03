@@ -8,29 +8,43 @@ collection error and forced ``SKIP=pytest`` / ``--no-verify``. This pins that
 the import path stays warning-free regardless of on-disk stale DBs.
 """
 
-import importlib
 import importlib.resources
-import warnings
+import os
+import subprocess
+import sys
 
-import teatree.settings as settings_module
-from teatree import paths
 
+def test_settings_import_emits_no_warning_with_stale_db(tmp_path) -> None:
+    """A stale on-disk DB must not make ``import teatree.settings`` warn.
 
-def test_settings_import_emits_no_warning_with_stale_db(tmp_path, monkeypatch) -> None:
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    (data_dir / "db.sqlite3").touch()
-    stale = data_dir / "teatree" / "db.sqlite3"
-    stale.parent.mkdir()
-    stale.touch()
+    Runs the import in a fresh subprocess under ``-W error`` so the
+    in-process ``sys.modules`` (and the shared
+    ``SQLITE_WRITE_SERIALIZATION_OPTIONS`` / ``DATABASES`` objects other
+    tests assert identity against) is never reloaded or swapped. The
+    subprocess points DATA_DIR at a sandbox via ``XDG_DATA_HOME`` and seeds
+    a non-canonical ``db.sqlite3`` so a re-added import-time
+    ``warnings.warn`` would surface as a stale-DB warning and fail the
+    import -- the test stays non-vacuous.
+    """
+    xdg = tmp_path / "xdg"
+    data_dir = xdg / "teatree"
+    (data_dir / "legacy").mkdir(parents=True)
+    (data_dir / "db.sqlite3").touch()  # canonical
+    (data_dir / "legacy" / "db.sqlite3").touch()  # stale, non-canonical
 
-    monkeypatch.setattr(paths, "DATA_DIR", data_dir)
-    monkeypatch.setattr(paths, "DATA_DIR_AUTO_ISOLATED", False)
-    monkeypatch.setattr(paths, "CANONICAL_DB", data_dir / "db.sqlite3")
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        importlib.reload(settings_module)
+    env = dict(os.environ)
+    env["XDG_DATA_HOME"] = str(xdg)
+    proc = subprocess.run(
+        [sys.executable, "-W", "error", "-c", "import teatree.settings"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        "importing teatree.settings with a stale DB present emitted a warning "
+        f"(or failed) under -W error:\n{proc.stderr}"
+    )
 
 
 def test_settings_module_does_not_call_warnings_warn() -> None:
