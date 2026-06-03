@@ -656,11 +656,11 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         handler=router.handle_enforce_skill_loading,
         event="PreToolUse",
         matched="Bash",
-        deny_input=lambda _c: _bash("ls -la"),
+        deny_input=lambda _c: _bash("uv run pytest -q"),
         allow_input=lambda _c: {
             "session_id": "sess-liveness",
             "tool_name": "Bash",
-            "tool_input": {"command": "ls -la [skill-load-ok: verified-loaded]"},
+            "tool_input": {"command": "uv run pytest -q  # [skill-load-ok: verified-loaded]"},
         },
         arrange=_arrange_skill_loading,
     ),

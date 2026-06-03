@@ -1368,18 +1368,73 @@ def _skill_load_ok_token(data: dict) -> str | None:
     return None
 
 
+# File suffixes whose Edit/Write is genuine Python/Django source work. A skill
+# demand for ``/ac-python`` / ``/ac-django`` is relevant only to these; a
+# ``.md`` / ``.yml`` / ``.toml`` / ``.sh`` / prose edit is not, so the gate must
+# not fire on it (the over-block this scope closes).
+_PYTHON_SOURCE_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
+
+# A Bash command runs Python tooling when its FIRST word (after benign env /
+# `cd` prefixes are not in scope here — the heuristic is conservative on the
+# leading verb) is a Python interpreter / packaging / lint / type / test
+# runner, or it invokes ``manage.py`` / ``setup.py``. Tightly anchored so a
+# pure-git / ls / grep / markdownlint command never counts as code work.
+_PYTHON_TOOL_RE: re.Pattern[str] = re.compile(
+    r"(?:^|[;&|]\s*|\b)(?:"
+    r"python[0-9.]*\b|uv\s+run\b|uvx\b|poetry\s+run\b|pipenv\s+run\b|"
+    r"pytest\b|ruff\b|ty\s+check\b|ty-check\b|mypy\b|tox\b|"
+    r"[\w./-]*manage\.py\b|[\w./-]*setup\.py\b"
+    r")"
+)
+
+
+def _skill_gate_targets_code_work(data: dict) -> bool:
+    """True iff this tool call is genuine Python/Django code work.
+
+    The skill-loading gate demands ``/ac-python`` / ``/ac-django`` only for
+    Python/Django work, so it must fire ONLY when:
+
+    - ``Edit`` / ``Write`` touches a Python source file (``.py`` / ``.pyi``); or
+    - ``Bash`` runs Python tooling (python, uv run, pytest, ruff, ty, manage.py).
+
+    It NEVER fires on ``AskUserQuestion`` (or any other tool), nor on a
+    markdown / yaml / toml / shell / prose edit, nor on a pure-git or other
+    non-Python Bash command. This is the tight-scope alternative to a fuzzy
+    hard-block: the gate cannot cleanly separate Python edits from docs/config/
+    git work by intent text, so it keys on the concrete target instead.
+    """
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name in {"Edit", "Write"}:
+        file_path = tool_input.get("file_path", "")
+        if not isinstance(file_path, str):
+            return False
+        return file_path.endswith(_PYTHON_SOURCE_SUFFIXES)
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        return isinstance(command, str) and bool(_PYTHON_TOOL_RE.search(command))
+    return False
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+    """Block Python/Django code work when *loadable* suggested skills aren't loaded.
+
+    Scoped to genuine code work (:func:`_skill_gate_targets_code_work`): an
+    ``Edit``/``Write`` of a ``.py``/``.pyi`` file or a ``Bash`` Python-tooling
+    command. It NEVER fires on ``AskUserQuestion``, a docs/config/shell edit, or
+    a pure-git Bash command — the over-block this scope closes.
 
     Fails open on a stale/unresolvable required skill (see the module
     comment above): such a name is warned about, never blocked on. A
     per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
     args is an explicit escape (#1567) so a false trigger can never wedge
-    the loop; a genuine intent match still hard-blocks every call lacking
-    that token.
+    the loop; a genuine intent match still hard-blocks every code-work call
+    lacking that token.
     """
     session_id = data.get("session_id", "")
-    if not session_id:
+    if not session_id or not _skill_gate_targets_code_work(data):
         return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
