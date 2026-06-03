@@ -18,6 +18,7 @@ from teatree.core.review_findings import (
     build_issue_body,
     build_issue_title,
     file_class_c_issue,
+    find_bare_references,
     find_existing_issue,
     neutralize_bare_references,
     parse_findings,
@@ -25,7 +26,6 @@ from teatree.core.review_findings import (
     process_review_findings,
 )
 from teatree.hooks import banned_terms_scanner
-from teatree.hooks.bare_reference_scanner import find_bare_references
 
 _CONTEXT = FilingContext(repo="o/r", pr_url="https://github.com/o/r/pull/1")
 

@@ -27,11 +27,10 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlparse
 
 from teatree.hooks import banned_terms_scanner
-from teatree.hooks.bare_reference_scanner import _BARE_ISSUE_RE, _BARE_SLACK_TS_RE, _BARE_URL_RE, find_bare_references
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict
 
@@ -266,13 +265,77 @@ class FindingsStore:
         return {fp for fp, count in counts.items() if count >= min_occurrences}
 
 
+# Bare-reference detection primitives. A bare ``#1234`` / ``!99`` / Slack ts /
+# forge URL interpolated verbatim into a filed enforcement issue would leak as
+# an unclickable reference, so the untrusted finding text is neutralized before
+# it is published. These regexes + ``find_bare_references`` detect every form a
+# bare reference can take; a reference already wrapped in a markdown / angle
+# link, inside a fenced/blockquote verbatim span, or in a leading close trailer
+# is excised first so it is never flagged.
+_MARKDOWN_LINK_RE: Final[re.Pattern[str]] = re.compile(r"\[[^\]]*\]\([^)]*\)")
+_ANGLE_LINK_RE: Final[re.Pattern[str]] = re.compile(r"<[^>\s]+(?:\|[^>]*)?>")
+_FENCED_BLOCK_RE: Final[re.Pattern[str]] = re.compile(r"```.*?```", re.DOTALL)
+_BLOCKQUOTE_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*>.*$", re.MULTILINE)
+_BARE_ISSUE_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w/])([#!]\d+)\b")
+_BARE_SLACK_TS_RE: Final[re.Pattern[str]] = re.compile(r"(?<![\w.])(\d{10}\.\d{6})(?![\w.])")
+_BARE_URL_RE: Final[re.Pattern[str]] = re.compile(
+    r"https?://(?:[\w.-]+\.)?(?:github\.com|gitlab\.com|notion\.so|notion\.site|slack\.com)/\S+",
+)
+_BODY_CLOSE_TRAILER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|relates?(?:\s*-\s*to|\s+to)?)(?:\s+part\s+of)?"
+    r"(?::\s*|\s+)"
+    r"(?:(?:[\w./-]+)?[#!]\d+|https?://\S+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_linked_spans(text: str) -> str:
+    return _ANGLE_LINK_RE.sub(" ", _MARKDOWN_LINK_RE.sub(" ", text))
+
+
+def _strip_verbatim_blocks(text: str) -> str:
+    """Excise fenced code blocks and ``>`` blockquotes before bare-ref matching.
+
+    Replaces each verbatim span with a space so a bare ref reproduced from
+    external content (a quoted PR/MR description, a pasted comment) keeps the
+    source's id form. Spacing keeps character offsets from merging adjacent
+    tokens into a spurious new pattern.
+    """
+    return _BLOCKQUOTE_LINE_RE.sub(" ", _FENCED_BLOCK_RE.sub(" ", text))
+
+
+def _strip_body_close_trailers(text: str) -> str:
+    """Excise leading auto-close / relates trailer lines before bare-ref matching.
+
+    Replaces each matching line with a space so character offsets stay stable
+    and adjacent tokens cannot accidentally merge into a new pattern.
+    """
+    return _BODY_CLOSE_TRAILER_RE.sub(" ", text)
+
+
+def find_bare_references(text: str) -> list[str]:
+    if not text:
+        return []
+    unlinked = _strip_linked_spans(text)
+    unlinked = _strip_verbatim_blocks(unlinked)
+    unlinked = _strip_body_close_trailers(unlinked)
+    refs: list[str] = []
+    seen: set[str] = set()
+    for pattern in (_BARE_ISSUE_RE, _BARE_SLACK_TS_RE):
+        for match in pattern.finditer(unlinked):
+            ref = match.group(0).rstrip(".,;:")
+            if ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+    return refs
+
+
 def neutralize_bare_references(text: str) -> str:
     """Defang bare forge/Slack references so a published body has none.
 
     The review-comment body is untrusted: a bare ``#1234`` / ``!99`` / Slack
     ``ts`` / forge URL interpolated verbatim into the filed issue would leak
-    as an unclickable bare reference (and the PreToolUse bare-reference gate
-    cannot see a body sent over ``gh api`` stdin). Each bare token is rewritten
+    as an unclickable bare reference. Each bare token is rewritten
     to a literal, non-auto-linking form — ``#N`` and ``!N`` become inline-code
     spans naming the kind (``issue N`` / ``MR N``) with the sigil dropped, a
     Slack ts becomes a code span with its dot replaced so the matcher no longer
@@ -384,8 +447,8 @@ def file_class_c_issue(
     untrusted finding text's bare references neutralized) and the rendered text
     is banned-term scanned: if it would leak a banned term (a customer/tenant
     name) the issue is **withheld** — never filed — so nothing leaks over the
-    ``gh api`` stdin path the PreToolUse gate cannot inspect. Otherwise a scoped
-    issue is filed via the same backend the agent files issues through.
+    ``gh api`` stdin path. Otherwise a scoped issue is filed via the same
+    backend the agent files issues through.
     """
     existing = find_existing_issue(host, repo=context.repo, fingerprint=finding.fingerprint)
     if existing:
@@ -406,7 +469,7 @@ def file_class_c_issue(
         )
 
     # Defense in depth: neutralization should leave no bare ref, but never file
-    # a body that would still trip the bare-reference gate.
+    # a body that would still leak an unclickable bare reference.
     leaked = find_bare_references(rendered)
     if leaked:
         return FiledIssue(

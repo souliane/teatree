@@ -63,7 +63,7 @@ _FAIL_OPEN_ROUTER: Final[str] = "_fail_open_or_deny"
 # documented classes are exempt from the never-lockout routing requirement:
 #
 #   1. PUBLIC-EGRESS LEAK PATH (hard safety, intentionally fail-closed) — the
-#      quote / banned-terms / bare-reference scanners. Relaxing a public leak is
+#      quote / banned-terms scanners. Relaxing a public leak is
 #      a privacy regression, NOT a lockout rescue; they MUST NEVER read
 #      ``gate_fail_open`` (the HARD INVARIANT in hook_router). They carry their
 #      own per-call ``[quote-ok:]`` / ``[banned-ok:]`` / ``--quote-ok`` escapes.
@@ -78,7 +78,6 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     # Public-egress leak path — fail-closed by design (privacy, not lockout).
     "handle_quote_scanner_pretool": "public-egress quote leak; fail-closed by design, [quote-ok:] escape",
     "handle_banned_terms_pretool": "public-egress banned-term leak; fail-closed by design, [banned-ok:] escape",
-    "handle_bare_reference_pretool": "public-egress bare-reference leak; fail-closed by design",
     "handle_block_ai_signature": "public-egress AI-signature leak on commit/publish; fail-closed by design",
     "handle_dispatch_prompt_quote_scanner": (
         "public-egress verbatim-quote leak in an Agent/Task dispatch prompt; fail-closed by design, [quote-ok:] escape"

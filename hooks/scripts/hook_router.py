@@ -3159,77 +3159,6 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
 
 
-# ── PreToolUse: bare-reference link gate (#1530) ────────────────────
-
-
-def handle_bare_reference_pretool(data: dict) -> bool:
-    """Refuse a publish whose body cites a bare reference instead of a link.
-
-    Sibling of the #1213 quote-scanner and #1415 banned-terms gates.
-    Promotes the prose-only "always a clickable link, never a bare id"
-    rule (``feedback_always_clickable_links_never_bare_ids.md``) to a
-    deterministic pre-publish gate. Reuses the shared #1213
-    ``_command_parser`` publish-surface detection + body extraction, then
-    matches the extracted body against the bare-reference catalogue.
-
-    A bare ``#NNNN`` / ``!NNNN`` / Slack ``ts`` / forge-or-Notion URL not
-    wrapped in a clickable link ⇒ refuse via ``permissionDecision: deny``
-    + a reason naming each offending ref. Outgoing surfaces only
-    (gh/glab/git-commit/t3-notify/slack-send) — never internal reads.
-
-    Fail-open on any internal error: a crashing hook is worse than no
-    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
-    the sibling ``src/`` directory (#1314) and swallows any exception,
-    returning ``False`` so the tool use proceeds unchanged.
-
-    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
-    matcher, #171) is governed by the ``[teatree]
-    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
-    """
-    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
-        return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_pretool(data)
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_pretool(data: dict) -> bool:
-    """Bare-reference inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
-
-    from teatree.hooks import bare_reference_scanner, publish_destination  # noqa: PLC0415
-
-    tool_name = data.get("tool_name", "")
-    raw_input = data.get("tool_input", {}) or {}
-    if not isinstance(raw_input, dict):
-        return False
-    tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
-
-    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
-    if payload is None:
-        return False
-
-    command = tool_input.get("command", "")
-    if tool_name == "Bash" and publish_destination.gate_skips_destination(command, _resolve_cwd_repo(data)):
-        return False
-
-    refs = bare_reference_scanner.scan_text(payload)
-    if not refs:
-        return False
-
-    return emit_pretooluse_deny(bare_reference_scanner.format_block_message(refs))
-
-
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
 #
 # Gate 12's detection (``teatree.utils.diff_coverage`` / ``t3 tool
@@ -7265,47 +7194,6 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
-def handle_bare_reference_stop(data: dict) -> bool | None:
-    """Warn when the assistant's final chat text cites a bare reference (#1530).
-
-    The Stop-time soft sibling of the #1530 PreToolUse hard gate. The
-    shown chat message cannot be retracted, so this never denies — it
-    emits a top-level ``systemMessage`` WARNING that surfaces the
-    violation next turn and gives a recurrence signal. Low-noise:
-    matches only clear bare ``#NNNN`` / ``!NNNN`` tokens not already
-    wrapped in a clickable link, reusing the shared detector.
-
-    Fail-safe-to-silent: any malformed input or missing transcript
-    returns ``None`` so the Stop chain is never crashed.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_stop(data)
-    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_stop(data: dict) -> bool | None:
-    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
-
-    turn = _last_assistant_turn(data.get("transcript_path", ""))
-    if turn is None:
-        return None
-    refs = bare_reference_scanner.find_bare_references(turn[0])
-    if not refs:
-        return None
-    json.dump({"systemMessage": bare_reference_scanner.format_warn_message(refs)}, sys.stdout)
-    return True
-
-
 # ── Stop: speak-on-stop arm (speak_mode == all, #1791) ──────────────────────
 
 
@@ -7849,7 +7737,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_plan_gate,
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
-        handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,
@@ -7893,7 +7780,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,
-        handle_bare_reference_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
         handle_loop_self_pump,

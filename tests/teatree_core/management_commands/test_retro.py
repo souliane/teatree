@@ -21,7 +21,6 @@ from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
 from teatree.core import review_findings as rf_mod
 from teatree.core.review_findings import ReviewFinding
-from teatree.hooks import bare_reference_scanner
 from tests.teatree_core.conftest import CommandOverlay
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1573"
@@ -98,7 +97,7 @@ class RetroReviewFindingsTest(TestCase):
         body = kwargs["body"]
         # Clickable PR link, no bare ref the command authored.
         assert "[review thread](https://github.com/souliane/teatree/pull/1573)" in body
-        assert bare_reference_scanner.find_bare_references(body) == []
+        assert rf_mod.find_bare_references(body) == []
         # Summary reports correct per-class counts + filed link.
         assert result["counts"] == {"A": 1, "B": 1, "C": 1}
         filed = cast("list[dict[str, object]]", result["filed"])
@@ -204,8 +203,8 @@ class RetroReviewFindingsTest(TestCase):
 
         host.create_issue.assert_called_once()
         sent = host.create_issue.call_args.kwargs
-        assert bare_reference_scanner.find_bare_references(sent["body"]) == []
-        assert bare_reference_scanner.find_bare_references(sent["title"]) == []
+        assert rf_mod.find_bare_references(sent["body"]) == []
+        assert rf_mod.find_bare_references(sent["title"]) == []
 
     def test_untrusted_finding_with_banned_term_is_withheld(self) -> None:
         """A finding whose body carries a banned term is withheld — never filed."""
