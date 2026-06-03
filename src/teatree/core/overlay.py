@@ -613,23 +613,30 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def resolve_mr_token(self, iid: int) -> str | None:
         """Return the canonical URL for ``!<iid>`` on this overlay's code host.
 
-        Overridden by overlays that own merge/pull requests across multiple
-        repositories and can resolve a bare ``!N`` to its repo's web URL.
-        The default returns ``None`` —
-        :func:`teatree.slack_mrkdwn.slack_linkify` leaves the bare token
-        unrewritten when no resolver can claim it, so the Slack reader sees
-        inert text rather than a guessed-wrong URL.
+        The default delegates to the deterministic
+        :class:`~teatree.core.reference_linkifier.ReferenceResolver`: it looks
+        ``!N`` up in the ``PullRequest`` ref->URL store first, then constructs
+        the URL from this overlay's ``code_host`` + the active repo's git
+        remote slug. Returns ``None`` when neither resolves —
+        :func:`teatree.slack_mrkdwn.slack_linkify` and
+        :func:`teatree.core.reference_linkifier.linkify` then leave the bare
+        token untouched (the gate's fallback) rather than guess a wrong URL.
+        Overlays may still override for bespoke multi-repo resolution.
         """
-        _ = iid
-        return None
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+
+        return ReferenceResolver.from_overlay(self).resolve_mr(iid)
 
     def resolve_issue_token(self, iid: int) -> str | None:
         """Return the canonical URL for ``#<iid>`` on this overlay's code host.
 
-        Default ``None``, for the same reason as :meth:`resolve_mr_token`.
+        Same DB-first, construction-fallback contract as
+        :meth:`resolve_mr_token`, resolving the ``#N`` issue (or, via the
+        ``PullRequest`` store, a PR number) instead.
         """
-        _ = iid
-        return None
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+
+        return ReferenceResolver.from_overlay(self).resolve_issue(iid)
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.
