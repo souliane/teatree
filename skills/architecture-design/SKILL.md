@@ -150,6 +150,7 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 - `obra/superpowers/writing-plans` — generic planning methodology (problem framing, alternatives considered, rollback path)
 - `t3:code` — implementation phase, picks up after `ARCHITECTURE.md` is written
 - `t3:ticket` § "Plan First" — the ticket-intake pre-check that triggers this companion
+- `t3:review` § "North-Star Rubric — Six Quality Attributes" — the clean / robust / maintainable / coherent / reliable / proactive lens the resulting design is reviewed against (coherence covers the cross-repo and dependency-direction checks above)
 
 ## Scope discipline
 
