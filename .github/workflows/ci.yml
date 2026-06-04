@@ -316,7 +316,7 @@ jobs:
           python-version: "3.13"
       # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
       - name: Sync dependencies (retry on transient network failure)
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v4
         with:
           timeout_minutes: 10
           max_attempts: 3
@@ -375,7 +375,7 @@ jobs:
       # if the suite collected scenarios but executed none — no silent decorative pass.
       - name: Behavioral eval suite (pass@k; --require-executed armed when a key is set)
         if: steps.gate.outputs.run_eval == 'true'
-        uses: nick-fields/retry@v3
+        uses: nick-fields/retry@v4
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
