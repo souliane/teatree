@@ -1,0 +1,58 @@
+- id: subprocess-egress
+  name: Raw subprocess shell-out
+  concern: >
+    Every shell-out in src/teatree must go through the typed teatree.utils.run
+    wrapper (run_checked / run_allowed_to_fail / spawn) so silent failure is
+    impossible.
+  match_kind: module_attr
+  protected_symbol: subprocess
+  protected_attrs: [run, Popen, check_output, check_call, call]
+  allowed_modules:
+    - teatree.utils.run
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#390
+
+- id: on-behalf-routed-egress
+  name: Token-routed Slack egress (post_routed / react_routed)
+  concern: >
+    The #1750 token-routed Slack primitives funnel through the single
+    OnBehalfSlackEgress chokepoint so every colleague/self post is classified,
+    gated and audited in one place.
+  match_kind: method
+  protected_attrs: [post_routed, react_routed]
+  allowed_modules:
+    - teatree.core.on_behalf_egress
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#1750
+    - souliane/teatree#1877
+
+- id: on-behalf-colleague-primitives
+  name: Connect-routed Slack colleague primitives (react / post_message)
+  concern: >
+    A raw backend react / post_message reaches a colleague surface only at the
+    documented bot->user / self-ack / provisioning sinks; any new colleague
+    egress must route through OnBehalfSlackEgress (exempt_receivers), never a
+    raw backend call.
+  match_kind: method
+  protected_attrs: [react, post_message]
+  exempt_receivers: [egress, OnBehalfSlackEgress]
+  allowed_modules:
+    - teatree.backends.slack_bot
+    - teatree.core.notify
+    - teatree.core.reply_transport
+    - teatree.core.daily_digest
+    - teatree.core.speak
+    - teatree.messaging.notify_with_fallback
+    - teatree.loop.slack_answer.cycle
+    - teatree.loop.scanners.red_card
+    - teatree.loop.scanners.review_nag
+    - teatree.loop.scanners.incoming_events
+    - teatree.loop.self_improve.actions
+    - teatree.cli.slack_setup
+    - teatree.core.management.commands.review_request_post
+  refs:
+    - souliane/teatree#128
+    - souliane/teatree#1750
+    - souliane/teatree#1877
