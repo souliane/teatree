@@ -2672,6 +2672,28 @@ def _ai_sig_scan_argv() -> list[str] | None:
     return None
 
 
+# A genuine finding is recognisable by the scanner's well-formed summary
+# header ``AI-signature scan: N banned trailer(s)`` (``scripts/
+# ai_signature_scan.py`` ``_summary``). The scanner exits 1 on a finding AND
+# nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
+# exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
+# two apart — keying on the summary line does, mirroring the sibling
+# ``_diff_coverage_finding`` structured-stdout discriminator.
+_AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
+
+
+def _ai_sig_finding(stdout: str) -> str | None:
+    """Return the finding summary iff *stdout* is a real banned-trailer finding.
+
+    ``None`` ⇒ not a genuine finding: either the clean summary (``AI-signature
+    scan: clean``) or a crash/error with no well-formed summary at all. The
+    caller maps the three outcomes to DENY-finding / ALLOW / fail-closed-error.
+    """
+    if _AI_SIG_FINDING_RE.search(stdout):
+        return stdout.strip()
+    return None
+
+
 def handle_block_ai_signature(data: dict) -> bool:
     """Refuse a forge-post body / commit message carrying an AI-signature trailer.
 
@@ -2691,8 +2713,22 @@ def handle_block_ai_signature(data: dict) -> bool:
     parser left open (#11). The handler bootstraps ``sys.path`` to import
     ``teatree`` from the sibling ``src/`` dir (the hook runs in the user's
     session shell with no guarantee ``teatree`` is importable, #1314) and
-    fails open on a broken environment (no ``t3`` / import error), matching
-    the other t3-shelling hooks — a crashing gate is worse than no scan.
+    fails open on a broken environment (no ``t3`` / import error / timeout),
+    matching the other t3-shelling hooks — a gate that cannot run AT ALL must
+    not lock out every commit.
+
+    Three outcomes are kept DISTINCT (#1884), because this is a SECURITY gate
+    that prevents publishing AI signatures under the user's identity:
+    (a) scanner ran, found a trailer (well-formed ``AI-signature scan: N
+    banned trailer(s)`` summary) → DENY with the finding message;
+    (b) scanner ran, clean → ALLOW;
+    (c) scanner WAS invoked but exited nonzero with no well-formed finding
+    summary (a crash/error) → FAIL CLOSED with a clear "scanner error, not a
+    finding" message. The old gate mapped ANY nonzero exit to (a), so a crash
+    (exit 1, traceback, no summary) became a false DENY carrying the LYING
+    "banned trailer found" message. Unlike the sibling coverage gate (which
+    fails OPEN on a crash, correct for a coverage gate), a leak-prevention
+    gate must NOT fail open — an unscanned publish may carry a signature.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -2731,11 +2767,26 @@ def _run_block_ai_signature(data: dict) -> bool:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
-    if result.returncode != 0:
+    finding = _ai_sig_finding(result.stdout or "")
+    if finding is not None:
         return emit_pretooluse_deny(
             "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
-            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
-            + (result.stdout or result.stderr or "").strip()
+            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n" + finding
+        )
+    if result.returncode != 0:
+        # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
+        # a crash/error (traceback, usage error), not a finding. This is a
+        # SECURITY gate (it prevents publishing AI signatures under the user's
+        # identity), so the safe posture is FAIL CLOSED with a clear
+        # "scanner error" message — block, but never report a finding that did
+        # not happen, and never silently let an unscanned publish through.
+        # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
+        # purpose; a leak-prevention gate must not.)
+        return emit_pretooluse_deny(
+            "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
+            "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
+            "not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n"
+            + (result.stderr or result.stdout or "").strip()
         )
     return False
 
