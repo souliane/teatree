@@ -197,7 +197,7 @@ repos:
   - repo: local
     hooks:
       - id: dependency-graph
-        name: Update tach dependency graph in BLUEPRINT.md
+        name: Update tach dependency graph in docs/dependency-graph.md
         language: system
         entry: uv run python scripts/hooks/update_dependency_graph.py
         pass_filenames: false
