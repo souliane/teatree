@@ -47,12 +47,12 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 _OVERRIDE_FLAG = "--allow-banned-term"
 _OVERRIDE_ENV = "ALLOW_BANNED_TERM"
 
-# What a fail-closed sentinel surfaces as in the block message: an unresolvable
-# body source (a relative-path / chmod-000 / absent ``--body-file`` to a PUBLIC
-# repo) cannot be scanned, so it BLOCKS rather than slips through unread --
-# mirroring ``quote_scanner``, which treats the same sentinel as a fail-closed
-# finding.
-_UNRESOLVED_BODY_TERM = "<unresolved publish body>"
+# Marker returned by ``scan_text`` when the body source cannot be resolved
+# (a missing ``--body-file``, an unreadable path). The gate blocks on this
+# sentinel rather than slipping an unscanned body through. Callers that need
+# to emit a message MUST check for this marker explicitly and use
+# ``format_unresolvable_body_message`` — it is NOT a configured banned term.
+UNRESOLVABLE_BODY_MARKER: str = "<unresolvable-publish-body>"
 
 # How long to wait for the shell scanner before failing open. A hook that
 # hangs blocks the user, so the budget is deliberately tight.
@@ -201,7 +201,7 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
     if not text:
         return None
     if _is_fail_closed_sentinel(text):
-        return _UNRESOLVED_BODY_TERM
+        return UNRESOLVABLE_BODY_MARKER
     return _run_shell_scanner(text, config_path)
 
 
@@ -275,4 +275,18 @@ def format_block_message(term: str) -> str:
         f"'{term}'. Remove the overlay/customer term before posting to the public surface. "
         f"If the match is a false positive, re-issue the command with {_OVERRIDE_FLAG} "
         f"(or set {_OVERRIDE_ENV}=1 in the tool env)."
+    )
+
+
+def format_unresolvable_body_message() -> str:
+    """Render the PreToolUse deny reason when the publish body cannot be read.
+
+    A missing ``--body-file`` or an unreadable path is blocked rather than
+    passed unscanned. Use ``-m``/``--body`` with an inline value, or write
+    the body to a file the command can resolve before posting.
+    """
+    return (
+        "BLOCKED: banned-terms posting gate (#1415). The publish body could not be read "
+        "(the body file is missing or unresolvable at scan time). Use an inline body "
+        "(-m/--body/--message) or write the file content in the same command before posting."
     )
