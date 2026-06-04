@@ -1,0 +1,247 @@
+"""Drive mutmut over the diff-scoped subset of the high-value safety registry.
+
+The cheap gate (diff ∩ registry) lives in :mod:`teatree.quality.mutation`. This
+module is the runner that, when the intersection is non-empty, writes a scoped
+mutmut config and executes mutmut over ONLY the touched safety modules, then
+classifies the result and applies the warn/block ratchet.
+
+Two design choices keep it robust and narrow. Serial (debug) execution:
+mutmut's default forks a child per mutant; on macOS a forked child that has
+already imported pytest segfaults on exit, reporting every mutant as segfault.
+``debug = true`` runs serially and is deterministic across macOS and Linux —
+fine for the handful of small modules in scope. Per-module ``tests_dir``:
+mutmut's baseline "clean tests" pass runs the whole ``tests_dir`` once; scoping
+it per module (from ``[tool.teatree.mutation.module_tests]``) keeps each run
+inside the CI cap.
+
+A mutant is a *survivor* only when its status is ``survived`` or ``no tests`` —
+the cases where the test suite did not catch the change. ``timeout`` /
+``segfault`` / ``suspicious`` are *inconclusive* (an environment artifact, not a
+test gap) and never fail the gate.
+"""
+
+import dataclasses
+import re
+import tomllib
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+from teatree.quality.mutation import (
+    MutationConfigError,
+    load_high_value_modules,
+    registry_pyproject_path,
+    scope_modules,
+)
+from teatree.utils import git
+from teatree.utils.run import run_allowed_to_fail
+
+_MODES = frozenset({"warn", "block"})
+# mutmut result statuses that mean the suite did NOT catch the mutant.
+_SURVIVOR_STATUSES = frozenset({"survived", "no tests"})
+_KILLED_STATUSES = frozenset({"killed", "caught by type check", "skipped"})
+_INCONCLUSIVE_STATUSES = frozenset(
+    {"timeout", "segfault", "suspicious", "not checked", "check was interrupted by user"},
+)
+_ALL_STATUSES = _SURVIVOR_STATUSES | _KILLED_STATUSES | _INCONCLUSIVE_STATUSES
+# A mutmut ``results`` line is ``    <mutant-name>: <status>``. Anchor on the
+# known statuses so header/spinner lines never parse as a result.
+_RESULT_LINE_RE = re.compile(
+    rf"^\s*(?P<name>\S.*?): (?P<status>{'|'.join(re.escape(s) for s in sorted(_ALL_STATUSES))})\s*$",
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class MutationSettings:
+    mode: str
+    timeout_seconds: int
+    module_tests: dict[str, tuple[str, ...]]
+    baseline_total: int
+
+
+@dataclasses.dataclass(frozen=True)
+class MutationResult:
+    killed: tuple[str, ...]
+    survived: tuple[str, ...]
+    inconclusive: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class MutationOutcome:
+    scoped_modules: tuple[str, ...]
+    survived: tuple[str, ...]
+    killed: tuple[str, ...]
+    inconclusive: tuple[str, ...]
+
+    @property
+    def is_no_op(self) -> bool:
+        return not self.scoped_modules
+
+
+def load_settings(pyproject_path: Path | None = None) -> MutationSettings:
+    path = pyproject_path or registry_pyproject_path()
+    section = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("teatree", {}).get("mutation", {})
+    mode = section.get("mode", "warn")
+    if mode not in _MODES:
+        detail = f"mode must be one of {sorted(_MODES)}, got {mode!r}"
+        raise MutationConfigError(detail)
+    raw_tests = section.get("module_tests", {})
+    module_tests = {module: tuple(dirs) for module, dirs in raw_tests.items()}
+    baseline = sum(int(entry.get("count", 0)) for entry in section.get("baseline_surviving", []))
+    return MutationSettings(
+        mode=mode,
+        timeout_seconds=int(section.get("timeout_seconds", 540)),
+        module_tests=module_tests,
+        baseline_total=baseline,
+    )
+
+
+def tests_for(module: str, settings: MutationSettings) -> tuple[str, ...]:
+    return settings.module_tests.get(module, settings.module_tests.get("default", ("tests/",)))
+
+
+def build_mutmut_config(modules: Sequence[str], *, tests_dir: Sequence[str]) -> str:
+    """Render the ``[mutmut]`` ``setup.cfg`` section scoping the run.
+
+    mutmut reads ``[tool.mutmut]`` from ``pyproject.toml`` first; with no such
+    key it falls back to ``setup.cfg`` ``[mutmut]``. teatree's pyproject carries
+    ``[tool.teatree.mutation]`` (a different key), so a generated ``setup.cfg``
+    drives the scoped run without touching the real config. Multi-value options
+    are newline-separated, the ini-list shape mutmut parses.
+    """
+
+    def _ini_list(values: Sequence[str]) -> str:
+        return "\n    " + "\n    ".join(values)
+
+    # ``also_copy`` mirrors the whole package into the ``mutants/`` tree so a
+    # scoped module's test can still import its siblings (``teatree.core`` etc.).
+    # mutmut only copies ``paths_to_mutate`` by default, which breaks any test
+    # that imports beyond the one module. ``tests/`` + ``conftest.py`` +
+    # ``pyproject.toml`` are appended by mutmut itself. Only directories — a
+    # bare-file ``also_copy`` entry skips creating its parent dir and crashes.
+    also_copy = ["src/"]
+    # Plugins disabled in the mutant child: ``cacheprovider`` (stale .pytest_cache),
+    # ``cov``/``doctest`` (project addopts), and the signal/thread/process plugins
+    # (``timeout``, ``xdist``, ``tach``) whose handlers segfault a fork()ed child
+    # after Django setup.
+    pytest_args = [
+        "-p",
+        "no:cacheprovider",
+        "--no-cov",
+        "-p",
+        "no:doctest",
+        "-p",
+        "no:pytest_timeout",
+        "-p",
+        "no:xdist",
+        "-p",
+        "no:tach",
+    ]
+    return (
+        "[mutmut]\n"
+        f"paths_to_mutate ={_ini_list(modules)}\n"
+        f"tests_dir ={_ini_list(tests_dir)}\n"
+        f"also_copy ={_ini_list(also_copy)}\n"
+        "debug = true\n"
+        f"pytest_add_cli_args ={_ini_list(pytest_args)}\n"
+    )
+
+
+def parse_results(raw: str) -> MutationResult:
+    killed: list[str] = []
+    survived: list[str] = []
+    inconclusive: list[str] = []
+    for line in raw.splitlines():
+        match = _RESULT_LINE_RE.match(line)
+        if not match:
+            continue
+        name, status = match.group("name"), match.group("status")
+        if status in _SURVIVOR_STATUSES:
+            survived.append(name)
+        elif status in _KILLED_STATUSES:
+            killed.append(name)
+        else:
+            inconclusive.append(name)
+    return MutationResult(killed=tuple(killed), survived=tuple(survived), inconclusive=tuple(inconclusive))
+
+
+def decide_verdict(outcome: MutationOutcome, *, mode: str, baseline: int) -> int:
+    if mode == "warn" or outcome.is_no_op:
+        return 0
+    return 1 if len(outcome.survived) > baseline else 0
+
+
+def changed_files_vs_main(repo: str = ".", target: str = "origin/main") -> tuple[str, ...]:
+    base = git.merge_base(repo=repo, target=target)
+    out = git.run(repo=repo, args=["diff", "--name-only", f"{base}...HEAD"])
+    return tuple(line for line in out.splitlines() if line.strip())
+
+
+def run_scoped(
+    *,
+    repo: str = ".",
+    target: str = "origin/main",
+    changed_files: Iterable[str] | None = None,
+    settings: MutationSettings | None = None,
+    registry: Sequence[str] | None = None,
+) -> MutationOutcome:
+    settings = settings or load_settings()
+    registry = registry if registry is not None else load_high_value_modules()
+    changed = tuple(changed_files) if changed_files is not None else changed_files_vs_main(repo, target)
+    scoped = scope_modules(changed, registry=registry)
+    if not scoped:
+        return MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
+
+    tests_dir: list[str] = []
+    for module in scoped:
+        for path in tests_for(module, settings):
+            if path not in tests_dir:
+                tests_dir.append(path)
+
+    result = _run_mutmut(scoped, tests_dir=tuple(tests_dir), repo=repo, timeout=settings.timeout_seconds)
+    return MutationOutcome(
+        scoped_modules=scoped,
+        survived=result.survived,
+        killed=result.killed,
+        inconclusive=result.inconclusive,
+    )
+
+
+_MUTMUT_CMD = ("uv", "run", "--group", "mutation", "mutmut")
+
+
+def _mutmut_env() -> dict[str, str]:
+    import os  # noqa: PLC0415
+
+    env = dict(os.environ)
+    # macOS aborts a fork()ed child that touches the Objective-C runtime once a
+    # parent thread has initialized it (mutmut starts a timeout thread before
+    # forking). Disabling the fork-safety check lets the child run the test;
+    # the var is a no-op on Linux CI.
+    env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+    return env
+
+
+# Neutralizes the project's heavy pytest addopts (``--doctest-modules``,
+# ``--cov``, ``--failed-first``) inside the ``mutants/`` copy. ``pytest.ini``
+# outranks ``pyproject.toml`` in pytest's config discovery, and mutmut copies
+# both into the mutants tree, so this wins.
+_MUTANTS_PYTEST_INI = "[pytest]\naddopts =\nDJANGO_SETTINGS_MODULE = tests.django_settings\n"
+
+
+def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, timeout: int) -> MutationResult:
+    config_path = Path(repo) / "setup.cfg"
+    pytest_ini = Path(repo) / "pytest.ini"
+    for path in (config_path, pytest_ini):
+        if path.exists():
+            msg = f"{path} already exists; refusing to overwrite the scoped mutation config"
+            raise FileExistsError(msg)
+    config_path.write_text(build_mutmut_config(modules, tests_dir=tests_dir), encoding="utf-8")
+    pytest_ini.write_text(_MUTANTS_PYTEST_INI, encoding="utf-8")
+    env = _mutmut_env()
+    try:
+        run_allowed_to_fail([*_MUTMUT_CMD, "run"], expected_codes=None, cwd=repo, env=env, timeout=timeout)
+        results = run_allowed_to_fail([*_MUTMUT_CMD, "results"], expected_codes=None, cwd=repo, env=env, timeout=60)
+    finally:
+        config_path.unlink(missing_ok=True)
+        pytest_ini.unlink(missing_ok=True)
+    return parse_results(results.stdout)

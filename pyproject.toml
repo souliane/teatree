@@ -76,6 +76,13 @@ docs = [
   "mkdocs>=1.6",
   "mkdocs-material>=9",
 ]
+# Scoped mutation testing — `t3 mutation run` shells out to `uv run --group
+# mutation mutmut` so the mutant child shares the project's test env (Django,
+# pytest plugins) rather than an isolated uvx env. Out of the default `dev`
+# group: it is a narrow, opt-in safety gate, not part of routine `uv sync`.
+mutation = [
+  "mutmut>=3.5,<4",
+]
 
 [tool.ruff]
 target-version = "py313"
@@ -356,6 +363,53 @@ min_cluster = 3
 test_lines = 117490
 source_lines = 64500
 tolerance = 0.05
+
+# Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
+# ``src/teatree/quality/mutation.py``). Mutation testing is expensive and
+# OpenClaw (a 1.4M-LOC AI-native codebase) uses none, so teatree applies it
+# ONLY to verified high-value SAFETY modules where a silent regression is
+# worst: a fail-closed gate that stops failing closed, a lost-update in a
+# claim/CAS path, a merge-clear/keystone that stops gating. ``t3 mutation
+# run`` mutates ONLY the registry entries a PR's diff touches and no-ops when
+# none are touched, so most PRs pay nothing. ``mode`` defaults to "warn"
+# (the CI ``mutation-diff`` job never fails the pipeline); flip to "block" to
+# promote it to a gate without a workflow change. ``baseline_surviving`` is the
+# ratchet floor (only shrinks): a per-module count of mutants knowingly left
+# alive, so "block" mode fails only on a NEW survivor, never on the documented
+# backlog. NARROW BY DESIGN — do NOT add the whole codebase; the conformance
+# test ``tests/quality/test_mutation.py`` caps the registry size.
+
+[tool.teatree.mutation]
+mode = "warn"
+timeout_seconds = 540
+high_value_modules = [
+  "src/teatree/on_behalf_gate.py",
+  "src/teatree/core/on_behalf_gate_recorded.py",
+  "src/teatree/core/merge_execution.py",
+  "src/teatree/core/models/merge_clear.py",
+  "src/teatree/core/availability.py",
+  "src/teatree/core/loop_lease_manager.py",
+  "src/teatree/loop/review_claim.py",
+]
+baseline_surviving = [  ]
+
+# Per-module test scope. mutmut maps a mutant to the tests that exercise its
+# function by name, but its baseline "clean tests" pass runs the whole
+# ``tests_dir`` once — so a narrow dir keeps each scoped run inside the 10-min
+# CI cap. ``default`` is the fallback for an entry with no explicit mapping.
+
+[tool.teatree.mutation.module_tests]
+default = [ "tests/" ]
+"src/teatree/on_behalf_gate.py" = [
+  "tests/test_on_behalf_gate.py",
+  "tests/test_on_behalf_post_mode.py",
+]
+"src/teatree/core/on_behalf_gate_recorded.py" = [ "tests/teatree_core/test_on_behalf_gate_recorded.py" ]
+"src/teatree/core/merge_execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
+"src/teatree/core/availability.py" = [ "tests/teatree_core/test_availability.py" ]
+"src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
+"src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
 
 [tool.uv.build-backend]
 module-name = [ "teatree", "t3_bootstrap" ]
