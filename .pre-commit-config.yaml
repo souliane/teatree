@@ -95,6 +95,13 @@ repos:
         types: [python]
         pass_filenames: false
         always_run: true
+      - id: import-linter
+        name: import-linter (transitive/laundered import boundaries)
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
       - id: tach-modules-declared
         name: Every teatree package declared in tach.toml (no blind spots)
         entry: uv run python scripts/hooks/check_tach_modules_declared.py
