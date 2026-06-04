@@ -132,6 +132,50 @@ class TestNotifyUser(TestCase):
         assert backend.post_message.call_count == 1
         assert BotPing.objects.filter(idempotency_key="dup").count() == 1
 
+    def test_reentrant_concurrent_tick_during_delivery_does_not_double_dm(self) -> None:
+        """A second tick firing *during* the first tick's delivery must NOT also deliver.
+
+        The pre-fix shape delivered BEFORE recording the SENT row, so a second
+        tick re-reading in that window saw no SENT row, deleted any recoverable
+        row, and delivered again — a double-DM. The fix claims a SENDING row
+        atomically *before* delivering, so the re-entrant second tick's
+        ``claim_delivery`` observes the in-flight claim and stands down.
+
+        This drives the race deterministically: the first tick's ``open_dm``
+        re-enters ``notify_user`` with the same key (the concurrent second
+        tick) before the first tick has finalized. Exactly one
+        ``post_message`` lands and exactly one SENT row survives.
+        """
+        backend = _backend()
+        second_outcome: dict[str, bool] = {}
+
+        def _reentrant_open_dm(user_id: str) -> str:
+            if "second" not in second_outcome:
+                second_outcome["second"] = notify_user(
+                    "concurrent second tick",
+                    kind=NotifyKind.INFO,
+                    idempotency_key="toctou",
+                    backend=backend,
+                    user_id="U_ME",
+                )
+            return "D-USER"
+
+        backend.open_dm.side_effect = _reentrant_open_dm
+
+        first = notify_user(
+            "first tick",
+            kind=NotifyKind.INFO,
+            idempotency_key="toctou",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert first is True
+        assert second_outcome["second"] is False  # the re-entrant tick stood down
+        assert backend.post_message.call_count == 1, "double-DM: delivery fired twice"
+        assert BotPing.objects.filter(idempotency_key="toctou", status=BotPing.Status.SENT).count() == 1
+        assert BotPing.objects.filter(idempotency_key="toctou").count() == 1
+
     def test_prior_failed_attempt_does_not_block_retry(self) -> None:
         """Regression for #1306: a FAILED BotPing must not block a sub-agent retry.
 
@@ -338,22 +382,22 @@ class TestNotifyUserNeverRaises(TestCase):
     ``notify_user`` runs inside FSM transitions and the public docstring
     promises it never raises into the CLI turn. Pre-fix the SENT-audit
     write caught only ``IntegrityError``, so an ``OperationalError`` (e.g.
-    SQLite "database is locked") raised by the ``BotPing`` create — after
+    SQLite "database is locked") raised by the ``BotPing`` write — after
     the DM had already landed — escaped and broke the caller's transition.
     The same too-narrow catch applied to the NOOP/FAILED audit writes and
-    to the early idempotency-ledger read+delete. The most-defensive
-    sibling (``_record_outbound_claim``) already swallows the full
-    ``DatabaseError`` breadth; every DB access in ``notify_user`` must
-    match it so no ``DatabaseError`` reaches the caller.
+    to the early delivery-claim. The most-defensive sibling
+    (``_record_outbound_claim``) already swallows the full ``DatabaseError``
+    breadth; every DB access in ``notify_user`` must match it so no
+    ``DatabaseError`` reaches the caller.
     """
 
-    def test_operational_error_on_idempotency_ledger_read_is_swallowed(self) -> None:
+    def test_operational_error_on_delivery_claim_is_swallowed(self) -> None:
         backend = _backend()
-        with patch.object(BotPing.objects, "filter", side_effect=_DB_LOCKED):
+        with patch.object(BotPing, "claim_delivery", side_effect=_DB_LOCKED):
             sent = notify_user(
-                "ledger read under lock contention",
+                "delivery claim under lock contention",
                 kind=NotifyKind.INFO,
-                idempotency_key="db-locked-ledger",
+                idempotency_key="db-locked-claim",
                 backend=backend,
                 user_id="U_ME",
             )
@@ -362,27 +406,18 @@ class TestNotifyUserNeverRaises(TestCase):
         assert sent is False
         backend.post_message.assert_not_called()
 
-    def test_operational_error_on_sent_audit_is_swallowed(self) -> None:
+    def test_operational_error_on_sent_finalize_is_swallowed(self) -> None:
         backend = _backend()
-        create = BotPing.objects.create
-        with patch.object(BotPing.objects, "create", autospec=True) as mock_create:
-
-            def _raise_on_sent(*args: object, **kwargs: object) -> BotPing:
-                if kwargs.get("status") == BotPing.Status.SENT:
-                    raise _DB_LOCKED
-                return create(*args, **kwargs)
-
-            mock_create.side_effect = _raise_on_sent
-
+        with patch.object(BotPing, "finalize_sent", side_effect=_DB_LOCKED):
             sent = notify_user(
-                "lock contention on the audit write",
+                "lock contention on the sent finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-sent",
                 backend=backend,
                 user_id="U_ME",
             )
 
-        # DM landed; the failed audit write must not propagate or flip the result.
+        # DM landed; the failed finalize write must not propagate or flip the result.
         assert sent is True
         backend.post_message.assert_called_once()
 
@@ -401,12 +436,12 @@ class TestNotifyUserNeverRaises(TestCase):
 
         assert sent is False
 
-    def test_operational_error_on_failed_audit_is_swallowed(self) -> None:
+    def test_operational_error_on_failed_finalize_is_swallowed(self) -> None:
         backend = _backend()
         backend.post_message.side_effect = RuntimeError("slack timeout")
-        with patch.object(BotPing.objects, "create", side_effect=_DB_LOCKED):
+        with patch.object(BotPing, "finalize_failed", side_effect=_DB_LOCKED):
             sent = notify_user(
-                "delivery failed, locked audit",
+                "delivery failed, locked finalize",
                 kind=NotifyKind.INFO,
                 idempotency_key="db-locked-failed",
                 backend=backend,

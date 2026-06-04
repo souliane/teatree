@@ -115,7 +115,7 @@ def notify_with_fallback(
 
 
 def _primary_failure_is_recoverable(idempotency_key: str) -> bool:
-    """Whether the primary's recorded miss is a transport FAILED (vs. a NOOP).
+    """Whether the primary's recorded miss warrants a fallback attempt.
 
     The primary :func:`notify_user` writes a ``BotPing`` row before it
     returns ``False``: ``FAILED`` for a configured backend whose send broke
@@ -123,9 +123,17 @@ def _primary_failure_is_recoverable(idempotency_key: str) -> bool:
     is configured to send through (a fallback cannot help). Absent a row,
     fall back conservatively — a delivery the agent expected should still
     get the second verified attempt rather than be silently dropped.
+
+    A STALE ``SENDING`` row also warrants a fallback: its owner claimed
+    delivery then crashed before finalizing, so nothing landed. Sharing
+    :meth:`BotPing.is_stale_sending` keeps the staleness rule identical to
+    the one ``claim_delivery`` uses — a fresh SENDING (a genuine concurrent
+    in-flight delivery) is NOT recoverable here and still blocks the fallback.
     """
     row = BotPing.objects.filter(idempotency_key=idempotency_key).first()
-    return row is None or row.status == BotPing.Status.FAILED
+    if row is None:
+        return True
+    return row.status == BotPing.Status.FAILED or BotPing.is_stale_sending(row.status, row.posted_at)
 
 
 def _deliver_via_fallback(

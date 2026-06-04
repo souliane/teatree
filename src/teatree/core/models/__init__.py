@@ -1,5 +1,5 @@
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
-from teatree.core.models.bot_ping import BotPing
+from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
@@ -70,6 +70,7 @@ __all__ = [
     "DeferredQuestion",
     "DeferredQuestionAudit",
     "DeferredQuestionError",
+    "DeliveryClaim",
     "DirtyWorktreeError",
     "EvalRunRecord",
     "EvalScenarioResult",

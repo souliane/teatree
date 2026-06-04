@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -84,20 +84,40 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
         )
 
     def allocate_redis_slot(self, ticket: "Ticket") -> int:
-        """Pick the lowest free Redis DB index for the ticket.
+        """Claim the lowest free Redis DB index for the ticket, atomically.
 
         Idempotent: returns the existing index if the ticket already has one.
         Raises RedisSlotsExhaustedError when every slot is in use.
+
+        The claim is the contention boundary: ``redis_db_index`` carries a
+        unique constraint, so the bare read-taken-set → pick-lowest-free →
+        ``save()`` shape let two concurrent worktree provisions both read the
+        same taken-set, both pick the same free index, and the loser's
+        ``save()`` raise an uncaught ``IntegrityError`` (the #804/#786 RMW
+        class on the production SQLite backend, where ``select_for_update`` is
+        a no-op). This mirrors the ``claim_next_pending`` / ``LoopLease.acquire``
+        compare-and-swap doctrine in its caught-collision form: each candidate
+        slot is claimed inside its own ``transaction.atomic`` and the unique
+        constraint is the CAS token, so a colliding loser catches the
+        ``IntegrityError`` and reselects the next free slot instead of
+        crashing. Exactly one writer wins each slot.
         """
         if ticket.redis_db_index is not None:
             return int(ticket.redis_db_index)
         count = load_config().user.redis_db_count
-        taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
-        for index in range(count):
-            if index not in taken:
-                ticket.redis_db_index = index
-                ticket.save(update_fields=["redis_db_index"])
-                return index
+        for _ in range(count):
+            taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
+            index = next((i for i in range(count) if i not in taken), None)
+            if index is None:
+                break
+            try:
+                with transaction.atomic(using=self.db):
+                    ticket.redis_db_index = index
+                    ticket.save(update_fields=["redis_db_index"], using=self.db)
+            except IntegrityError:
+                ticket.redis_db_index = None
+                continue
+            return index
         msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
         raise RedisSlotsExhaustedError(msg)
 
