@@ -391,7 +391,14 @@ high_value_modules = [
   "src/teatree/core/loop_lease_manager.py",
   "src/teatree/loop/review_claim.py",
 ]
-baseline_surviving = [  ]
+# Ratchet floor (only shrinks). The 7 on_behalf_gate.py survivors are all in the
+# DEPRECATED ask_before_post_on_behalf_enabled boolean shim (slated for removal),
+# not the live resolve_on_behalf_verdict gate — whose BLOCK->PROCEED mutants the
+# existing suite KILLS (the kill-proof). Recorded so a future "block" mode does
+# not fail on this documented backlog; shrink it as the shim is retired.
+baseline_surviving = [
+  { path = "src/teatree/on_behalf_gate.py", count = 7 },
+]
 
 # Per-module test scope. mutmut maps a mutant to the tests that exercise its
 # function by name, but its baseline "clean tests" pass runs the whole
