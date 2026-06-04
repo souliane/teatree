@@ -249,3 +249,43 @@ class TestLoaderValidation:
         )
         with pytest.raises(ChokepointError, match="not a dotted module path"):
             self._load(tmp_path, body)
+
+    def test_malformed_yaml_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError):
+            self._load(tmp_path, "- id: x\n  name: [unterminated\n")
+
+    def test_top_level_not_a_list_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="top-level YAML list"):
+            self._load(tmp_path, "id: x\nname: X\n")
+
+    def test_empty_list_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="top-level YAML list"):
+            self._load(tmp_path, "[]\n")
+
+    def test_non_mapping_entry_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="each entry must be a mapping"):
+            self._load(tmp_path, "- just-a-string\n")
+
+    def test_scalar_str_list_field_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: react\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="must be a list of strings"):
+            self._load(tmp_path, body)
+
+    def test_non_string_list_element_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [3]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="must be a list of non-empty strings"):
+            self._load(tmp_path, body)
+
+    def test_missing_required_field_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="required string field missing or empty: 'name'"):
+            self._load(tmp_path, body)
