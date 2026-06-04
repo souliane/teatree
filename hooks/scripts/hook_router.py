@@ -716,6 +716,17 @@ def _state_file(session_id: str, suffix: str) -> Path:
     return STATE_DIR / f"{session_id}.{suffix}"
 
 
+def _teatree_active(session_id: str) -> bool:
+    if not session_id:
+        return False
+    return _state_file(session_id, "teatree-active").is_file()
+
+
+def _is_teatree_skill(name: str) -> bool:
+    normalized = normalize_skill_name(name)
+    return normalized in {"t3:teatree", "teatree"}
+
+
 def _read_lines(path: Path) -> list[str]:
     if not path.is_file():
         return []
@@ -881,6 +892,30 @@ def handle_record_presence(data: dict) -> None:
 # ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
 
 _LOOP_CADENCE_DEFAULT = 720
+
+
+def _loops_toml_enabled() -> bool:
+    """Whether ``[loops] enabled`` is true in ``~/.teatree.toml`` (default True).
+
+    Fails open (True) on a missing or broken config — only an explicit
+    ``false`` suppresses loop behavior.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    loops = config.get("loops") if isinstance(config, dict) else None
+    if not isinstance(loops, dict):
+        return True
+    return loops.get("enabled") is not False
+
+
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -948,6 +983,33 @@ def _cleanup_stale_pending(session_id: str) -> None:
                 f.unlink(missing_ok=True)
 
 
+def _claim_loop_ownership(session_id: str) -> None:
+    """Atomically claim the tick-owner record for *session_id* if unclaimed.
+
+    Risk-6 fix: when teatree is loaded mid-session (after SessionStart was
+    gated out), the ownership-claim logic in
+    :func:`handle_session_start_bootstrap` never ran.  The first
+    UserPromptSubmit after the marker is set calls this to fill the gap.
+    No-ops if a live foreign owner already holds the record or if loops are
+    disabled in ``~/.teatree.toml``.
+    """
+    if not _loops_toml_enabled():
+        return
+    current_pid = os.getppid()
+    with _loop_registry_txn() as box:
+        registry = _prune_dead_owner(box[0])
+        owner = registry.get(_OWNER_LOOP)
+        if owner is not None and owner.get("session_id") != session_id:
+            box[0] = registry
+            return
+        if owner is None:
+            db_live = _db_live_foreign_owner(session_id, current_pid=current_pid)
+            if db_live:
+                box[0] = registry
+                return
+        box[0] = _tick_owner_record(session_id, "")
+
+
 def handle_enforce_loop_on_prompt(data: dict) -> None:
     """On first prompt, check if the fat loop needs registration.
 
@@ -959,6 +1021,9 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
+    if not _teatree_active(session_id):
+        return
+    _claim_loop_ownership(session_id)
     _ensure_state_dir()
     _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
@@ -1043,6 +1108,8 @@ def _loop_registration_exempt(data: dict) -> bool:
         live owner, the next eligible session — see ``_session_drives_loop``)
         still gets nagged, so the loop is never left unregistered.
     """
+    if not _teatree_active(data.get("session_id", "")):
+        return True
     if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
         return True
     if _call_is_from_subagent(data):
@@ -4046,7 +4113,10 @@ def handle_track_skill_usage(data: dict) -> None:
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
     if skill_name:
-        _record_skills(skills_file, existing, [skill_name])
+        skills_to_record = [skill_name]
+        _record_skills(skills_file, existing, skills_to_record)
+        if any(_is_teatree_skill(s) for s in _resolve_skill_closure(skills_to_record)):
+            _state_file(session_id, "teatree-active").touch()
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
@@ -4061,6 +4131,8 @@ def handle_track_skill_usage(data: dict) -> None:
         if name:
             loaded.append(name)
     _record_skills(skills_file, existing, loaded)
+    if any(_is_teatree_skill(s) for s in _resolve_skill_closure(loaded)):
+        _state_file(session_id, "teatree-active").touch()
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -5235,6 +5307,8 @@ def handle_session_start_bootstrap(data: dict) -> None:
     """
     session_id = data.get("session_id", "")
     if not session_id:
+        return
+    if not _teatree_active(session_id):
         return
     agent_id = data.get("agent_id", "")
 

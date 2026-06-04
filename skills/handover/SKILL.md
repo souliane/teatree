@@ -8,6 +8,7 @@ triggers:
     - '\b(hand ?over|hand off this session|hand off the session|hand this off|pick up the handover|take over this session)\b'
 requires:
   - rules
+  - teatree
 metadata:
   version: 0.0.2
   subagent_safe: false

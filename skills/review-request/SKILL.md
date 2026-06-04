@@ -6,6 +6,7 @@ requires:
   - workspace
   - platforms
   - followup
+  - teatree
 companions:
   - verification-before-completion
 metadata:

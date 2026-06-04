@@ -6,6 +6,7 @@ requires:
   - workspace
   - rules
   - platforms
+  - teatree
 metadata:
   version: 0.0.1
   subagent_safe: false
