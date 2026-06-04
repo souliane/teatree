@@ -1,29 +1,34 @@
 """Pre-commit hook: BLUEPRINT corpus size budget (#1128).
 
 The BLUEPRINT is functional + architectural, not a prose mirror of the
-code. When the corpus (top-level ``BLUEPRINT.md`` plus the three
-architectural appendices in ``docs/blueprint/``) creeps back past the
-budget, that almost always means implementation prose has accreted.
+code. The budget is a backstop against implementation prose creeping
+back into the corpus (the ``skill-prose-ban`` #140 precedent: a rule the
+user keeps restating becomes a deterministic gate).
 
-This gate enforces the budget structurally so the rule does not have to
-live in vigilance. It mirrors the ``skill-prose-ban`` (#140) precedent:
-the rule the user keeps having to restate becomes a deterministic
-pre-commit gate that fails the commit until the regression is removed.
+**Budget philosophy — human readability wins over byte-minimization.**
+The cap is a backstop, not a tight ceiling to defend row-by-row.
+Defending a tight cap forced sections into undigestible walls of text —
+run-on paragraphs with no blank lines, table cells stuffed with
+multi-sentence prose. That is the wrong trade: the BLUEPRINT must read
+well for humans. So the budget sits **generously above the live corpus**
+with ample headroom, and raising it for a legitimate reviewed addition
+(or a readability restoration that adds whitespace) is the expected
+maintenance action, not a last-resort escape hatch.
 
 Budget (bytes):
 
-- Top-level ``BLUEPRINT.md``:    88 000  (~86 KB)
-- ``docs/blueprint/`` corpus:   110 500  (~108 KB)
-- Combined corpus total:        198 500  (~194 KB)
+- Top-level ``BLUEPRINT.md``:     87 000  (~85 KB)
+- ``docs/blueprint/`` corpus:    116 000  (~113 KB)
+- Combined corpus total:         203 000  (~198 KB)
 
 BLUEPRINT.md is a SINGLE file by user decision — never split, never
-consolidate-by-splitting. The top-level budget is sized to sit
-comfortably above the live file so the doc can keep growing as one
-document without the override being load-bearing for ordinary edits.
+consolidate-by-splitting. The top-level budget sits comfortably above
+the live file so the doc can keep growing as one document without the
+override being load-bearing for ordinary edits.
 
-Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the check. Use only
-when a planned, reviewed addition deliberately grows the corpus and the
-budget itself needs to be raised in the same commit.
+Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the check. Prefer
+raising the budget in this file over the override — the override is for
+the rare in-flight commit, the raise is the durable fix.
 """
 
 import os
@@ -46,7 +51,11 @@ _APPENDIX_DIR = "docs/blueprint"
 # Headroom-restore bump (#131): the scoped-mutation-testing section took the
 # live file to ~86,131 B, leaving ~3.9 KB — under the 4 KB headroom guard.
 # Raised to 91,000 B to restore the invariant.
-_BUDGET_TOP_LEVEL_BYTES = 91_000
+# Mermaid-out bump (#1837): the auto-generated tach dependency graph (~4 KB)
+# moved from BLUEPRINT.md to docs/dependency-graph.md. The live top-level
+# corpus drops to ~82 KB; lowered to 87,000 B to keep the budget meaningful
+# while preserving >=4 KB headroom.
+_BUDGET_TOP_LEVEL_BYTES = 87_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -182,7 +191,11 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # 204,000 budget, just below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
 # Raised one minimal step to 206,000 to restore the >=4 KB headroom (~5,986 B).
 # Coupling invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
-_BUDGET_TOTAL_BYTES = 206_000
+# Mermaid-out bump (#1837): moving the auto-generated tach dependency graph
+# (~4 KB) from BLUEPRINT.md to docs/dependency-graph.md shrinks the top-level
+# corpus to ~82 KB; total drops correspondingly. Lowered to 203,000. Coupling
+# invariant holds: 203,000 - 87,000 = 116,000 <= 116,000.
+_BUDGET_TOTAL_BYTES = 203_000
 
 
 def _repo_root() -> pathlib.Path:
