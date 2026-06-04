@@ -3237,6 +3237,33 @@ _BANNED_TERMS_CREDENTIAL_DENY = (
 )
 
 
+def _emit_banned_term_deny(
+    tool_name: str,
+    command: str,
+    payload: str,
+    term: str,
+    cwd_repo: "Path | None",
+) -> bool:
+    from teatree.hooks import publish_surface  # noqa: PLC0415
+
+    if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
+            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
+        )
+        return False
+    unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
+    if unknown_slug:
+        sys.stderr.write(
+            f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
+            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
+            "for a reliable offline carve-out.\n"
+        )
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+
+    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
+
+
 def _run_banned_terms_pretool(data: dict) -> bool:
     """Banned-terms inner body — assumes ``teatree`` is already importable."""
     from typing import cast  # noqa: PLC0415
@@ -3271,23 +3298,9 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:
         return False
-
-    if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
-        sys.stderr.write(
-            f"WARNING: banned-terms gate (#1415) — term '{term}' on a private-repo commit; "
-            "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
-        )
-        return False
-
-    unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
-    if unknown_slug:
-        sys.stderr.write(
-            f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
-            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
-            "for a reliable offline carve-out.\n"
-        )
-
-    return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
+    if term == banned_terms_scanner.UNRESOLVABLE_BODY_MARKER:
+        return emit_pretooluse_deny(banned_terms_scanner.format_unresolvable_body_message())
+    return _emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
