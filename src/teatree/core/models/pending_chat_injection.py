@@ -262,17 +262,55 @@ class PendingChatInjection(models.Model):
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
 
+    def unmark_loop_replied(self) -> bool:
+        """Release the loop-reply claim; ``True`` if a stamp was cleared, else ``False``.
+
+        The rollback half of :meth:`mark_loop_replied`: when the side-effect
+        of a claimed loop reply (the ACK :white_check_mark: reaction) fails,
+        the caller clears ``loop_replied_at`` + ``answer_kind`` so the unit
+        re-enters ``loop_unreplied()`` and is retried next cycle instead of
+        carrying a receipt for a reply that never landed. The conditional
+        ``UPDATE … WHERE loop_replied_at IS NOT NULL`` only ever clears a
+        present claim.
+        """
+        updated = (
+            type(self)
+            .objects.filter(pk=self.pk, loop_replied_at__isnull=False)
+            .update(loop_replied_at=None, answer_kind="")
+        )
+        if updated:
+            self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
+        return bool(updated)
+
     def mark_eyes_reacted(self) -> bool:
         """Stamp ``eyes_reacted_at``; ``True`` on the transition, else ``False``.
 
         Single-use CAS so the no-LLM :eyes: receipt-acknowledgement
         reaction fires at most once even when the answer cycle re-runs the
         same row across ticks (post/readback failures leave the row
-        loop-unreplied for retry, but the :eyes: must not re-post).
+        loop-unreplied for retry, but the :eyes: must not re-post). The CAS
+        is the *claim*: the cycle stamps it BEFORE reacting so a concurrent
+        cycle cannot also react, then releases it with
+        :meth:`unmark_eyes_reacted` if the reaction fails, so the next cycle
+        retries (claim -> side-effect -> release-on-failure).
         """
         updated = (
             type(self).objects.filter(pk=self.pk, eyes_reacted_at__isnull=True).update(eyes_reacted_at=timezone.now())
         )
+        if updated:
+            self.refresh_from_db(fields=["eyes_reacted_at"])
+        return bool(updated)
+
+    def unmark_eyes_reacted(self) -> bool:
+        """Release the :eyes: claim; ``True`` if a stamp was cleared, else ``False``.
+
+        The rollback half of :meth:`mark_eyes_reacted`: when the :eyes:
+        reaction fails after the claim, the cycle clears ``eyes_reacted_at``
+        so the row is reacted again next cycle instead of carrying a receipt
+        for a reaction that never landed. The conditional ``UPDATE … WHERE
+        eyes_reacted_at IS NOT NULL`` only ever clears a present stamp.
+        """
+        updated = type(self).objects.filter(pk=self.pk, eyes_reacted_at__isnull=False).update(eyes_reacted_at=None)
         if updated:
             self.refresh_from_db(fields=["eyes_reacted_at"])
         return bool(updated)
