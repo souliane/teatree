@@ -74,6 +74,14 @@ def _private_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _public_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "public-repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@github.com:souliane/teatree.git")
+    return repo
+
+
 class TestScanText:
     def test_banned_term_is_matched(self, config: Path) -> None:
         term = banned_terms_scanner.scan_text("we ship to acmecorp next week", config_path=config)
@@ -493,6 +501,17 @@ class TestHookHandlerEndToEnd:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
+    def test_unresolvable_body_deny_message_is_not_a_banned_term(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # The false-positive: an unresolvable body used to surface the internal
+        # sentinel as the "banned term", making the deny read "the body carries
+        # the banned term '<unresolved publish body>'". The message must instead
+        # explain the body could not be read.
+        handle_banned_terms_pretool(_bash('gh pr comment 5 --repo o/r --body-file "$BODY"'))
+        reason = json.loads(capsys.readouterr().out)["permissionDecisionReason"]
+        assert "<unresolved publish body>" not in reason
+        assert "banned term" not in reason
+        assert "--allow-banned-term" not in reason
+
     def test_gh_short_body_file_flag_is_read_and_blocks(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -575,6 +594,188 @@ class TestHookHandlerEndToEnd:
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is False
         assert capsys.readouterr().out == ""
+
+
+@pytest.mark.integration
+class TestCleanPublishFormsMustNotBlock:
+    """Every common publish form with a clean body MUST pass the gate.
+
+    These guard the non-sentinel pass-through path: a clean inline body or a
+    readable body file must never be routed through a blocking path. They are
+    forward-looking coverage, not the #182 regression guard — each would also
+    pass on pre-fix code (the bug only fired on an *unresolvable* body). The
+    anti-vacuous RED-before-fix guard for issue #182 is
+    ``TestHookHandlerEndToEnd.test_unresolvable_body_deny_message_is_not_a_banned_term``.
+    Each form below is paired with a must-FLAG counterpart in
+    ``TestBannedTermPublishFormsMustBlock`` so the guards are two-sided.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_git_commit_inline_m_clean_body_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('git commit -m "feat: ship faster builds"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_inline_message_clean_body_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('git commit --message "fix: resolve timeout in retry loop"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_file_absolute_path_clean_body_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "commit_msg.txt"
+        body_file.write_text("feat: improve throughput\n\nDetails here.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"git commit -F {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_long_file_flag_absolute_path_clean_body_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "commit_msg.txt"
+        body_file.write_text("chore: bump dependencies\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"git commit --file {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_git_commit_c_flag_with_inline_m_clean_body_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('git -C /some/worktree commit -m "refactor: extract helper"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_gh_pr_create_inline_body_clean_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('gh pr create --title "feat" --body "Clean PR body"'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_gh_pr_create_body_file_absolute_path_clean_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "pr_body.md"
+        body_file.write_text("## Summary\n\nClean description.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_gh_issue_create_inline_body_clean_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create --title "Bug report" --body "Steps to reproduce..."')
+        )
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_gh_issue_create_body_file_absolute_path_clean_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("## Description\n\nReproduction steps.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh issue create --title t --body-file {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_glab_mr_create_inline_description_clean_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('glab mr create --title "feat" --description "Clean MR body."'))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_glab_mr_create_description_file_absolute_path_clean_passes(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "mr_body.md"
+        body_file.write_text("## Summary\n\nThis MR adds a feature.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"glab mr create --title t --description-file {body_file}"))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+
+@pytest.mark.integration
+class TestBannedTermPublishFormsMustBlock:
+    """The must-FLAG counterpart of ``TestCleanPublishFormsMustNotBlock``.
+
+    A real banned term in the same publish form must still be caught after
+    the fix — the fix must not weaken detection, only eliminate the sentinel
+    false-positive.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+
+    def test_git_commit_inline_m_banned_term_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        repo = _public_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "fix the acmecorp issue"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_git_commit_file_absolute_path_banned_term_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        body_file = tmp_path / "commit_msg.txt"
+        body_file.write_text("feat: ship acmecorp feature\n", encoding="utf-8")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f"git commit -F {body_file}"},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_gh_pr_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(_bash('gh pr create --title "feat" --body "Deploy to acmecorp cluster"'))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_gh_pr_create_body_file_absolute_path_banned_term_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "pr_body.md"
+        body_file.write_text("This PR fixes the acmecorp integration.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_gh_issue_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create --title "Bug" --body "acmecorp reports this error"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_gh_issue_create_body_file_absolute_path_banned_term_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "issue_body.md"
+        body_file.write_text("acmecorp's deployment is broken.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"gh issue create --title t --body-file {body_file}"))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_glab_mr_create_inline_description_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
+        blocked = handle_banned_terms_pretool(
+            _bash('glab mr create --title "feat" --description "Update acmecorp config"')
+        )
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_glab_mr_create_description_file_absolute_path_banned_term_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body_file = tmp_path / "mr_body.md"
+        body_file.write_text("This MR updates the acmecorp adapter.\n", encoding="utf-8")
+        blocked = handle_banned_terms_pretool(_bash(f"glab mr create --title t --description-file {body_file}"))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
 class TestHookChainRegistration:
@@ -667,6 +868,17 @@ class TestFormatBlockMessage:
         message = banned_terms_scanner.format_block_message("acmecorp")
         assert "acmecorp" in message
         assert "--allow-banned-term" in message
+
+    def test_unresolvable_body_message_is_distinct_from_banned_term_message(self) -> None:
+        message = banned_terms_scanner.format_unresolvable_body_message()
+        assert "acmecorp" not in message
+        assert "<unresolved publish body>" not in message
+        assert "banned term" not in message
+
+    def test_unresolvable_body_message_is_actionable(self) -> None:
+        message = banned_terms_scanner.format_unresolvable_body_message()
+        assert "body" in message.lower()
+        assert "--allow-banned-term" not in message
 
 
 @pytest.mark.integration
