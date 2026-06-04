@@ -130,7 +130,7 @@ def build_mutmut_config(modules: Sequence[str], *, tests_dir: Sequence[str]) -> 
         "-p",
         "no:doctest",
         "-p",
-        "no:pytest_timeout",
+        "no:timeout",
         "-p",
         "no:xdist",
         "-p",
@@ -243,10 +243,11 @@ def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, 
     env = _mutmut_env()
     try:
         run_allowed_to_fail([*_MUTMUT_CMD, "run"], expected_codes=None, cwd=repo, env=env, timeout=timeout)
-        # ``results --all`` lists killed mutants too — without ``--all`` mutmut
-        # hides them, so the kill-proof could not observe a kill.
+        # ``results --all=1`` lists killed mutants too — without it mutmut hides
+        # them, so the kill-proof could not observe a kill. ``--all`` is a
+        # value option in mutmut, not a flag, so it needs ``=1``.
         results = run_allowed_to_fail(
-            [*_MUTMUT_CMD, "results", "--all"],
+            [*_MUTMUT_CMD, "results", "--all=1"],
             expected_codes=None,
             cwd=repo,
             env=env,
