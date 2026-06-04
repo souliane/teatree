@@ -39,11 +39,14 @@ class TestLiveTurnWindow:
         presence.record(session_id="sess-a", now=now)
         assert is_live_user_turn(session_id="sess-a", now=now + timedelta(seconds=2)) is True
 
-    def test_prompt_minutes_ago_is_not_this_turn(self, presence: PresenceHeartbeat) -> None:
+    def test_prompt_just_past_the_window_is_not_this_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
         presence.record(session_id="sess-a", now=now)
-        # Within the 15-min schedule freshness, but well past the this-turn window.
-        assert is_live_user_turn(session_id="sess-a", now=now + timedelta(minutes=5)) is False
+        # One second past the live window pins the LIVE_TURN_FRESHNESS boundary;
+        # still well within the 15-min schedule freshness.
+        just_stale = now + LIVE_TURN_FRESHNESS + timedelta(seconds=1)
+        assert is_live_user_turn(session_id="sess-a", now=just_stale) is False
+        assert just_stale - now < PRESENCE_FRESHNESS
 
     def test_fresh_prompt_from_a_different_session_is_not_this_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)

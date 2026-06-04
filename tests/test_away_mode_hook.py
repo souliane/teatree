@@ -18,6 +18,8 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_structured_question, handle_route_away_mode_question
+from teatree.core import availability
+from teatree.core.availability import PresenceHeartbeat
 from teatree.core.models.deferred_question import DeferredQuestion
 
 pytestmark = pytest.mark.django_db
@@ -149,6 +151,29 @@ class TestUserDrivenTurnRendersLiveEvenWhenAway:
         monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
         result = handle_route_away_mode_question(_ask_payload("Ship?", session_id="s-unknown"))
         assert result is True
+        assert DeferredQuestion.objects.count() == 1
+
+
+class TestLoopTurnDefersThroughRealPredicateInvariant9:
+    """Invariant 9, exercised through the REAL ``_is_live_user_turn``.
+
+    The sibling class monkeypatches the predicate, so it cannot prove the
+    production escape leaves invariant 9 intact. This drives the real
+    predicate end-to-end: an autonomous / loop-driven turn has no prior
+    same-session ``UserPromptSubmit`` heartbeat, so the real predicate
+    returns ``False`` and the question is captured durably.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _empty_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "availability_presence"
+        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+
+    def test_loop_turn_with_no_heartbeat_defers(self, capsys: pytest.CaptureFixture[str]) -> None:
+        result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id="s-loop"))
+        assert result is True
+        out = _stdout(capsys)
+        assert out["permissionDecision"] == "deny"
         assert DeferredQuestion.objects.count() == 1
 
 
