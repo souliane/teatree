@@ -600,9 +600,13 @@ class TestHookHandlerEndToEnd:
 class TestCleanPublishFormsMustNotBlock:
     """Every common publish form with a clean body MUST pass the gate.
 
-    These are the anti-vacuous regression guards for issue #182: a clean
-    inline body or a readable body file must never be blocked by the sentinel
-    false-positive. Each form below is paired with a must-FLAG counterpart in
+    These guard the non-sentinel pass-through path: a clean inline body or a
+    readable body file must never be routed through a blocking path. They are
+    forward-looking coverage, not the #182 regression guard — each would also
+    pass on pre-fix code (the bug only fired on an *unresolvable* body). The
+    anti-vacuous RED-before-fix guard for issue #182 is
+    ``TestHookHandlerEndToEnd.test_unresolvable_body_deny_message_is_not_a_banned_term``.
+    Each form below is paired with a must-FLAG counterpart in
     ``TestBannedTermPublishFormsMustBlock`` so the guards are two-sided.
     """
 
