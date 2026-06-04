@@ -40,9 +40,9 @@
   file: .semgrep/warn/response-json-on-2xx-uncaught.yaml
 
 - id: signal-receiver-without-fault-isolation
-  issue: souliane/teatree#1882
-  status: warn
-  file: .semgrep/warn/signal-receiver-without-fault-isolation.yaml
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .semgrep/blocking/signal-receiver-without-fault-isolation.yaml
 
 - id: except-swallow-to-empty
   issue: souliane/teatree#1883
