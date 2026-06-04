@@ -54,3 +54,7 @@ e2e/.videos/
 # can always ff-advance the running editable t3 (it never blocked the
 # fast-forward, but staying untracked-clean avoids any confusion).
 .loop-review-state.json
+
+# Worktree-local architecture pre-check scratch (the reviewer-facing summary
+# lives in the PR body, not a tracked file — see skills/architecture-design).
+ARCHITECTURE.md

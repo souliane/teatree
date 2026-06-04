@@ -15,7 +15,7 @@ metadata:
 
 This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new features, `t3:retro` when a retro touches skills) declare `requires: [architecture-design]` so it loads BEFORE coding starts. The flywheel (BLUEPRINT § 17.1 invariant 2) is enforcement encoded as structure, not prose vigilance — this companion is the structure for the "design first, then code" step.
 
-Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the nine-check architecture pass below, plus the `ARCHITECTURE.md` template the implementer fills in before touching `src/`.
+Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the nine-check architecture pass below, plus the template the implementer fills in before touching `src/` — worktree-local as `ARCHITECTURE.md` (gitignored scratch) and surfaced to the reviewer as a `## Architecture pre-check` section in the PR body.
 
 ## When the gate fires
 
@@ -116,12 +116,12 @@ For any change that replaces or rewrites an existing implementation, **enumerate
 
 The nine checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
 
-## ARCHITECTURE.md template
+## Architecture pre-check template
 
-The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE touching `src/`. The PR template references it; an empty or missing file is a review gap.
+The implementer fills the template BEFORE touching `src/`, drafting it in a worktree-local `ARCHITECTURE.md` (gitignored scratch — it is never committed, so it can never thrash a PR with per-ticket conflicts). The reviewer-facing deliverable is a `## Architecture pre-check` section carrying the same nine-check summary **in the PR body**, where it is visible in the PR with no tracked file to conflict. A missing or empty pre-check section in the PR body is a review gap.
 
 ```markdown
-# Architecture pre-check — <ticket-ref>
+## Architecture pre-check — <ticket-ref>
 
 ## 1. BLUEPRINT § alignment
 <cite section, paste the one-line claim the work makes>
@@ -155,18 +155,18 @@ The implementer drops a file at `ARCHITECTURE.md` in the worktree root BEFORE to
 
 1. Read `BLUEPRINT.md` and the appendix for the touched section.
 2. Run the nine checks against the proposed change.
-3. Write `ARCHITECTURE.md` in the worktree root.
+3. Draft the pre-check in the worktree-local `ARCHITECTURE.md` (gitignored), then carry the summary into the PR body's `## Architecture pre-check` section when you open the PR.
 4. Hand off to the implementation skill (`t3:code`) — it picks up from here with TDD.
 
 ## Delegation
 
 - `obra/superpowers/writing-plans` — generic planning methodology (problem framing, alternatives considered, rollback path)
-- `t3:code` — implementation phase, picks up after `ARCHITECTURE.md` is written
+- `t3:code` — implementation phase, picks up after the pre-check is written
 - `t3:ticket` § "Plan First" — the ticket-intake pre-check that triggers this companion
 - `t3:review` § "North-Star Rubric — Six Quality Attributes" — the clean / robust / maintainable / coherent / reliable / proactive lens the resulting design is reviewed against (coherence covers the cross-repo and dependency-direction checks above)
 
 ## Scope discipline
 
-This skill ships v1 with the nine checks above. If a check is missing from the in-worktree `ARCHITECTURE.md`, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
+This skill ships v1 with the nine checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
 
-The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the artifact (`ARCHITECTURE.md`) was produced.
+The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the pre-check (the `## Architecture pre-check` section in the PR body) was produced.
