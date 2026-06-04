@@ -28,13 +28,14 @@ def _generate_mermaid() -> str:
     return result.stdout.strip()
 
 
-def _write_graph_file(mermaid: str) -> None:
-    graph_path = Path(_GRAPH_FILE)
+def _write_graph_file(mermaid: str) -> Path:
+    graph_path = _repo_root() / _GRAPH_FILE
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     graph_path.write_text(
         f"# Module Dependency Graph\n\n```mermaid\n{mermaid}\n```\n",
         encoding="utf-8",
     )
+    return graph_path
 
 
 def main() -> int:
@@ -43,8 +44,8 @@ def main() -> int:
         print("tach show --mermaid produced no output; skipping dependency graph update.")
         return 0
 
-    _write_graph_file(mermaid)
-    subprocess.run(["git", "add", _GRAPH_FILE], check=False)
+    graph_path = _write_graph_file(mermaid)
+    subprocess.run(["git", "add", str(graph_path)], check=False)
     print(f"Updated dependency graph in {_GRAPH_FILE}")
     return 0
 

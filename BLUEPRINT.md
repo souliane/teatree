@@ -457,7 +457,12 @@ Implementation details that previously lived in nine prose-of-code appendices (`
 
 ## Maintenance
 
-A pre-commit gate (`scripts/hooks/check_blueprint_size.py`, [#1180](https://github.com/souliane/teatree/issues/1180)) hard-fails any commit touching this file when it exceeds 100 KB, forcing a per-commit acknowledgement that further growth is architectural, not implementation prose. To raise the cap for a planned, reviewed bump in the same commit, set `T3_BLUEPRINT_SIZE_OVERRIDE=1`.
+Two pre-commit gates keep this file architectural, not implementation prose:
+
+- `scripts/hooks/check_blueprint_size.py` ([#1180](https://github.com/souliane/teatree/issues/1180)) hard-fails any commit touching this file when it exceeds 100 KB. To raise the cap for a planned, reviewed bump in the same commit, set `T3_BLUEPRINT_SIZE_OVERRIDE=1`.
+- `scripts/hooks/check_blueprint_size_budget.py` ([#1128](https://github.com/souliane/teatree/issues/1128)) enforces soft byte budgets on the corpus when this file or any `docs/blueprint/*.md` appendix is staged: top-level `BLUEPRINT.md` 87,000 B, `docs/blueprint/` appendices 116,000 B, combined total 203,000 B. To raise a budget for a reviewed addition in the same commit, set `BLUEPRINT_SIZE_OVERRIDE=1`.
+
+The auto-generated tach dependency graph lives in [docs/dependency-graph.md](docs/dependency-graph.md), outside both budgeted corpora, so structural growth never trips either gate.
 
 ---
 

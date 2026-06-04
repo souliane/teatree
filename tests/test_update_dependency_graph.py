@@ -16,6 +16,7 @@ from scripts.hooks import update_dependency_graph as hook
 @pytest.fixture
 def fake_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(hook, "_repo_root", lambda: tmp_path)
     blueprint = tmp_path / "BLUEPRINT.md"
     blueprint.write_text(
         "# BLUEPRINT\n\nSome prose.\n\n## Module Dependency Graph\n\n"
@@ -107,6 +108,30 @@ class TestDependencyGraphWritesToDedicatedFile:
         graph_file = fake_repo / hook._GRAPH_FILE
         assert not graph_file.exists()
 
+    def test_graph_anchored_to_repo_root_not_cwd(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The graph is written under the repo root even when CWD differs."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setattr(hook, "_repo_root", lambda: repo_root)
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setattr(hook, "_generate_mermaid", lambda: "graph TD\n    A --> B")
+        git_add = mock.Mock(return_value=mock.Mock())
+        monkeypatch.setattr(hook.subprocess, "run", git_add)
+
+        hook.main()
+
+        assert (repo_root / hook._GRAPH_FILE).exists(), "graph must be written under the repo root"
+        assert not (elsewhere / hook._GRAPH_FILE).exists(), "graph must NOT be written relative to CWD"
+        git_add_arg = git_add.call_args.args[0]
+        assert git_add_arg[:2] == ["git", "add"]
+        assert Path(git_add_arg[2]).is_absolute(), "git add path must be repo-root-anchored, not a CWD-relative path"
+
 
 class TestRealBlueprintHasNoMermaid:
     """The committed BLUEPRINT.md must not contain the mermaid diagram."""
@@ -127,6 +152,6 @@ class TestRealBlueprintHasNoMermaid:
     def test_dedicated_graph_file_contains_mermaid(self) -> None:
         repo_root = hook._repo_root()
         graph_file = repo_root / hook._GRAPH_FILE
-        if graph_file.exists():
-            content = graph_file.read_text(encoding="utf-8")
-            assert "```mermaid" in content, f"{hook._GRAPH_FILE} exists but contains no mermaid block"
+        assert graph_file.exists(), f"The dedicated dependency graph file {hook._GRAPH_FILE!r} does not exist"
+        content = graph_file.read_text(encoding="utf-8")
+        assert "```mermaid" in content, f"{hook._GRAPH_FILE} exists but contains no mermaid block"
