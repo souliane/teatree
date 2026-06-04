@@ -35,9 +35,9 @@
   file: .semgrep/blocking/cas-stamp-before-side-effect.yaml
 
 - id: response-json-on-2xx-uncaught
-  issue: souliane/teatree#1881
-  status: warn
-  file: .semgrep/warn/response-json-on-2xx-uncaught.yaml
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .semgrep/blocking/response-json-on-2xx-uncaught.yaml
 
 - id: signal-receiver-without-fault-isolation
   issue: BLOCKING-NOW

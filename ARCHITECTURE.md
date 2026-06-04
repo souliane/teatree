@@ -1,63 +1,51 @@
-# Architecture pre-check — souliane/teatree#1880
+# Architecture pre-check — souliane/teatree#1881
 
 ## 1. BLUEPRINT § alignment
 
-§17.1 invariant 2 (resilience: verify-by-re-read / idempotency / retry-safety on external writes)
-and §5.6 (loop topology — the reactive Slack-answer cycle). Claim: a loop side-effect (Slack
-react/reply) must land before its receipt is finalized, so a failed side-effect rolls the claim
-back and retries, never leaves a lying receipt.
+Robustness fix in `teatree.backends.slack_reactions`. No BLUEPRINT section change — the
+never-block-FSM contract (the reason `add_reaction` already degrades transport failures to
+`return False`) is unchanged; this extends that same degradation to an unparsable 2xx body.
 
 ## 2. FSM phase boundaries
 
-n/a — no `Ticket.State` / `Worktree.State` transition. The change is on the per-row CAS receipt
-columns of `PendingChatInjection` (`eyes_reacted_at`, `loop_replied_at`), not the session FSM.
+n/a — no `Ticket.State` / `Worktree.State` transition added or moved. The FSM-side wrappers
+(`add_reactions_for_transition`, `add_approval_reaction`) keep their existing contract.
 
 ## 3. Extension-point contracts
 
-No `OverlayBase` / scanner-registration / `*Backend` Protocol surface changes. `MessagingBackend.react`
-is consumed unchanged. The fix is internal to `cycle.py` + two new rollback CAS methods on the
-`PendingChatInjection` model.
+n/a — no `OverlayBase` / scanner / hook / `*Backend` Protocol surface changed. `add_reaction`
+keeps its signature `(token, channel_id, timestamp, emoji) -> bool` and its existing raise/return
+contract.
 
 ## 4. Component boundaries
 
-- `src/teatree/core/models/pending_chat_injection.py` — the rollback CAS methods (`unmark_eyes_reacted`,
-  `unmark_loop_replied`) live on the model (Fat Model: the single-use CAS lives with the data, beside
-  `mark_eyes_reacted` / `mark_loop_replied`).
-- `src/teatree/loop/slack_answer/cycle.py` — the claim→side-effect→release-on-failure sequencing
-  (loop body orchestration).
+`src/teatree/backends/` — the Slack reaction transport. The guard stays inside the existing
+`add_reaction` function; no new module.
 
 ## 5. Dependency direction
 
-No new imports. `cycle.py` already imports the model; the model gains no imports. No backwards edge.
+Imports added: `json` (stdlib). No backwards edge. `uv run tach check` confirmed.
 
 ## 6. Test surface
 
-`tests/teatree_loop/slack_answer/test_cycle_internals.py`:
-
-- eyes: `backend.react` raises → `eyes_reacted_at` is rolled back to NULL (row retries) — RED on pre-fix.
-- eyes: success path stamps `eyes_reacted_at` exactly once.
-- eyes: two concurrent attempts react exactly once (CAS exclusivity preserved).
-- ack: `backend.react` raises → `loop_replied_at`/`answer_kind` rolled back for the whole unit.
-- ack: success path stamps once.
-`tests/teatree_core/test_pending_chat_injection_model.py`: the rollback CAS methods round-trip.
+`tests/teatree_backends/test_slack_reactions.py::TestAddReaction` — a 2xx response whose `.json()`
+raises `json.JSONDecodeError` asserts `add_reaction(...) is False` and does NOT propagate the
+exception. Regression observed RED on pre-fix code (uncaught `.json()`).
 
 ## 7. Resilience invariants
 
-- verify-by-re-read: success path keeps the existing `verify_reply_visible` readback (SIMPLE) and now
-  the eyes/ack receipt is only durable after the side-effect returns without raising.
-- fallback-transport: n/a (the durable retry IS the fallback — the row stays in `loop_unreplied()`).
-- idempotency: the CAS claim is the idempotency lock — a re-run / concurrent tick matches 0 rows.
-  Rollback only fires on the claimant's own failure, so it cannot release another tick's claim.
-- heartbeat: n/a (bounded per-cycle batch).
-- sub-agent return contract: n/a.
+Single external read (`response.json()` parse). fail-closed-on-ambiguity: an unparsable 2xx body
+degrades to the existing failure contract (`return False`, logged) instead of crashing the caller —
+the same shape transport failures (HTTP 5xx, `httpx.HTTPError`) already use. Idempotent: a failed
+reaction returns `False`; the next FSM tick re-attempts. No write, no consume/audit, no sub-agent.
 
 ## 8. Identity and key normalization
 
-n/a — no bare-vs-qualified identity. Rows are keyed by pk in the conditional UPDATEs.
+n/a — no bare-vs-qualified identity in scope.
 
 ## 9. Behavior preservation / capability deletion
 
-Purely additive sequencing change. Exactly-once (the CAS claim) is preserved unchanged; the only new
-behavior is rollback-on-failure. No matcher narrowed, no must-block test inverted. `_handle_simple`
-already had the correct post→verify→stamp order and is untouched. The WHEN semantics
-(react-eyes-once, ack-only-when-classified-ACK) and dedup are unchanged.
+Purely additive guard. All existing branches preserved: `ok:true` → True, `already_reacted` → True,
+other `ok:false` → raise `SlackReactionError`, HTTP non-2xx / `httpx.HTTPError` → False. The new
+branch only covers the previously-uncaught case (2xx + unparsable body) and routes it to the
+existing `return False` failure contract. No must-block test inverted.

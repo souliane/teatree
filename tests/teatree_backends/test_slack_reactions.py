@@ -112,6 +112,21 @@ class TestAddReaction:
         monkeypatch.setattr(slack_reactions.httpx, "post", post)
         assert add_reaction("xoxb", "C1", "1.0", "tada") is False
 
+    def test_non_json_2xx_body_degrades_to_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 2xx body that is not JSON degrades to ``False`` rather than crashing (#1881).
+
+        Slack (or an intercepting proxy) can return a 2xx whose body is HTML or
+        empty. ``response.json()`` then raises ``json.JSONDecodeError``; an
+        uncaught raise crashes the reaction path instead of degrading it. The
+        unparsable 2xx must take the same failure contract as a transport
+        error: logged + ``return False``, never propagated.
+        """
+        post = _FakePost(
+            responses=[httpx.Response(200, content=b"<html>not json</html>", request=httpx.Request("POST", "x"))],
+        )
+        monkeypatch.setattr(slack_reactions.httpx, "post", post)
+        assert add_reaction("xoxb", "C1", "1.0", "tada") is False
+
 
 class TestIterPrPermalinks:
     def test_collects_only_non_empty_string_permalinks(self) -> None:
