@@ -1,9 +1,13 @@
+import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import httpx
 
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
@@ -20,11 +24,14 @@ from teatree.types import (
     ToolCommand,
     ValidationResult,
 )
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
     from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
@@ -402,15 +409,16 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_issue_title(self, url: str) -> str:
         from teatree.backends.loader import get_code_host  # noqa: PLC0415
 
-        try:
-            host = get_code_host(self)
-            if host is None:
-                return ""
-            data = host.get_issue(url)
-            title = data.get("title", "") if isinstance(data, dict) else ""
-            return str(title)
-        except Exception:  # noqa: BLE001
+        host = get_code_host(self)
+        if host is None:
             return ""
+        try:
+            data = host.get_issue(url)
+        except (httpx.HTTPError, CommandFailedError, TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+            logger.warning("get_issue_title fetch failed for %s: %s", url, exc)
+            return ""
+        title = data.get("title", "") if isinstance(data, dict) else ""
+        return str(title)
 
     # ── Provisioning hooks ───────────────────────────────────────────
 

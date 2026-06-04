@@ -45,9 +45,9 @@
   file: .semgrep/blocking/signal-receiver-without-fault-isolation.yaml
 
 - id: except-swallow-to-empty
-  issue: souliane/teatree#1883
-  status: warn
-  file: .semgrep/warn/except-swallow-to-empty.yaml
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .semgrep/blocking/except-swallow-to-empty.yaml
 
 - id: gate-fails-open-on-nonzero
   issue: souliane/teatree#1884
