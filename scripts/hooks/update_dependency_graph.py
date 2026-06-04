@@ -1,18 +1,21 @@
 """Pre-commit hook: auto-generate the tach dependency graph.
 
-Regenerates the Mermaid dependency diagram in BLUEPRINT.md whenever
-``tach.toml`` or source module structure changes.
+Regenerates the Mermaid dependency diagram in docs/dependency-graph.md
+whenever ``tach.toml`` or source module structure changes. The diagram
+lives outside BLUEPRINT.md so structural growth never inflates the
+BLUEPRINT byte-budget corpus.
 
-See: souliane/teatree#197
+See: souliane/teatree#1837
 """
 
-import re
 import subprocess
 from pathlib import Path
 
-_BLUEPRINT = Path("BLUEPRINT.md")
-_MARKER_START = "<!-- tach-dependency-graph:start -->"
-_MARKER_END = "<!-- tach-dependency-graph:end -->"
+_GRAPH_FILE = "docs/dependency-graph.md"
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def _generate_mermaid() -> str:
@@ -25,29 +28,14 @@ def _generate_mermaid() -> str:
     return result.stdout.strip()
 
 
-def _update_blueprint(mermaid: str) -> bool:
-    if not _BLUEPRINT.is_file():
-        return False
-
-    content = _BLUEPRINT.read_text(encoding="utf-8")
-
-    block = f"{_MARKER_START}\n\n```mermaid\n{mermaid}\n```\n\n{_MARKER_END}"
-
-    pattern = re.compile(
-        re.escape(_MARKER_START) + r".*?" + re.escape(_MARKER_END),
-        re.DOTALL,
+def _write_graph_file(mermaid: str) -> Path:
+    graph_path = _repo_root() / _GRAPH_FILE
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_path.write_text(
+        f"# Module Dependency Graph\n\n```mermaid\n{mermaid}\n```\n",
+        encoding="utf-8",
     )
-
-    if pattern.search(content):
-        new_content = pattern.sub(block, content)
-    else:
-        new_content = content.rstrip() + f"\n\n## Module Dependency Graph\n\n{block}\n"
-
-    if new_content == content:
-        return False
-
-    _BLUEPRINT.write_text(new_content, encoding="utf-8")
-    return True
+    return graph_path
 
 
 def main() -> int:
@@ -56,10 +44,9 @@ def main() -> int:
         print("tach show --mermaid produced no output; skipping dependency graph update.")
         return 0
 
-    if _update_blueprint(mermaid):
-        subprocess.run(["git", "add", str(_BLUEPRINT)], check=False)
-        print(f"Updated dependency graph in {_BLUEPRINT}")
-
+    graph_path = _write_graph_file(mermaid)
+    subprocess.run(["git", "add", str(graph_path)], check=False)
+    print(f"Updated dependency graph in {_GRAPH_FILE}")
     return 0
 
 
