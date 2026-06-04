@@ -43,7 +43,10 @@ _APPENDIX_DIR = "docs/blueprint"
 # (85,328 B) only ~2.7 KB below budget, under the 4 KB headroom the
 # `TestRealCorpusFitsWithHeadroom` guard requires — reddening main CI for
 # every PR. Raised to 90,000 B to restore the >=4 KB headroom invariant.
-_BUDGET_TOP_LEVEL_BYTES = 90_000
+# Headroom-restore bump (#131): the scoped-mutation-testing section took the
+# live file to ~86,131 B, leaving ~3.9 KB — under the 4 KB headroom guard.
+# Raised to 91,000 B to restore the invariant.
+_BUDGET_TOP_LEVEL_BYTES = 91_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing

@@ -257,6 +257,7 @@ t3 teatree followup sync        # sync tickets and PRs from code host
 t3 cost                         # cycle-to-date SDK-equivalent spend vs the monthly credit
 t3 speak                        # read text aloud per resolved speak_mode/speak_target (no-op when off)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
+t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
