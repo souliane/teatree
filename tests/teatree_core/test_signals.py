@@ -1,10 +1,12 @@
 from unittest.mock import patch
 
+from django.db import DatabaseError
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.signals as signals_mod
 from teatree.core.models import PullRequest, Session, Task, Ticket
+from teatree.core.models.transition import TicketTransition
 from tests.teatree_core._on_behalf_gate_helpers import on_behalf_gate_off
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -452,3 +454,38 @@ class TestTransitionReactionGated(TestCase):
 
         assert len(calls) == 1
         assert calls[0][1] == "mark_merged"
+
+
+class TestLogTicketTransitionFaultIsolation(TestCase):
+    """The transition-audit receiver must never break the FSM transition (#1882).
+
+    ``_log_ticket_transition`` writes a ``TicketTransition`` audit row. A
+    ``DatabaseError`` raised there must be swallowed and logged like every
+    sibling receiver — the Ticket FSM transition itself completes and
+    persists regardless.
+    """
+
+    def test_transition_survives_audit_db_error(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+
+        with (
+            patch.object(TicketTransition.objects, "create", side_effect=DatabaseError("audit table gone")),
+            self.assertLogs(signals_mod.logger, level="ERROR"),
+        ):
+            ticket.scope()
+            ticket.save()
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.SCOPED
+
+    def test_audit_db_error_is_logged(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+
+        with (
+            patch.object(TicketTransition.objects, "create", side_effect=DatabaseError("audit table gone")),
+            self.assertLogs(signals_mod.logger, level="ERROR") as captured,
+        ):
+            ticket.scope()
+            ticket.save()
+
+        assert any("audit table gone" in line for line in captured.output)

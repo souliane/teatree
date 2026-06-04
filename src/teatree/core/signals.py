@@ -23,14 +23,17 @@ def _log_ticket_transition(
 ) -> None:
     from teatree.core.models.transition import TicketTransition  # noqa: PLC0415
 
-    session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
-    TicketTransition.objects.create(
-        ticket=instance,
-        session=session,
-        from_state=source,
-        to_state=target,
-        triggered_by=name,
-    )
+    try:
+        session = instance.sessions.order_by("-started_at").first()  # ty: ignore[unresolved-attribute]
+        TicketTransition.objects.create(
+            ticket=instance,
+            session=session,
+            from_state=source,
+            to_state=target,
+            triggered_by=name,
+        )
+    except Exception:
+        logger.exception("Failed to record TicketTransition audit for ticket %s transition %s", instance.pk, name)
 
 
 def _add_slack_reactions_on_transition(
