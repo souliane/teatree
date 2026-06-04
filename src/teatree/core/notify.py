@@ -28,7 +28,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.models import BotPing, DeferredQuestion, OutboundClaim
+from teatree.core.models import BotPing, DeferredQuestion, DeliveryClaim, OutboundClaim
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
@@ -81,28 +81,9 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         logger.debug("notify_user disabled by settings — %s skipped", idempotency_key)
         return False
 
-    # Idempotent on SENT (the canonical "already delivered" no-op). A
-    # prior FAILED / NOOP row is a recoverable state — a sub-agent that
-    # hit a transient Slack 500 or a missing-backend window must be
-    # able to retry under the same key (#1306). We delete the recoverable
-    # row so the verify-by-re-read invariant still holds: the terminal
-    # ledger entry reflects the eventual outcome, not a transient miss.
-    #
-    # The ledger lookup/cleanup is a DB read+delete before any delivery;
-    # a DatabaseError here (e.g. SQLite "database is locked") must not
-    # escape the never-raise contract. We fail closed — return False
-    # without delivering — so the caller's FSM transition keeps moving.
-    try:
-        existing = BotPing.objects.filter(idempotency_key=idempotency_key).first()
-        if existing is not None:
-            if existing.status == BotPing.Status.SENT:
-                logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
-                return True
-            logger.info("notify_user retrying key=%s (prior status=%s)", idempotency_key, existing.status)
-            existing.delete()
-    except DatabaseError as exc:
-        logger.warning("notify_user idempotency-ledger access failed for key=%s: %s", idempotency_key, exc)
-        return False
+    already = _already_sent_noop(idempotency_key)
+    if already is not None:
+        return already
 
     resolved_backend = backend if backend is not None else messaging_from_overlay()
     resolved_user_id = user_id if user_id is not None else _resolve_user_id()
@@ -116,6 +97,10 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         )
         return False
 
+    gate = _claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text)
+    if gate is not None:
+        return gate
+
     payload_text = _maybe_linkify(text) if linkify else text
 
     channel, posted_ts, failure = _deliver_dm(
@@ -127,11 +112,10 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         # Any non-delivery — empty channel from ``open_dm`` (Slack
         # ``conversations.open ok:false``), a transport exception, a
         # ``post_message`` ``ok:false``, or an ``ok:true`` with no
-        # ``ts`` — is a HARD FAILURE. The pre-fix code keyed solely off
-        # ``ts`` and recorded SENT + returned ``True`` for every one of
-        # these, the exact phantom-success this guards against.
+        # ``ts`` — is a HARD FAILURE. The claimed SENDING row is stamped
+        # FAILED so a later retry under the same key recovers it (#1306).
         logger.warning("notify_user delivery failed for key=%s: %s", idempotency_key, failure)
-        _record_failed(idempotency_key=idempotency_key, kind=kind_value, text=text, error=failure)
+        _finalize_failed(idempotency_key=idempotency_key, error=failure)
         return False
     # ``channel`` and ``posted_ts`` are both non-empty here — ``_deliver_dm``
     # only returns no failure when both are set, so no defensive re-check.
@@ -140,24 +124,12 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     except Exception as exc:  # noqa: BLE001 — permalink lookup is best-effort
         logger.debug("notify_user permalink lookup failed for key=%s: %s", idempotency_key, exc)
         permalink = ""
-    try:
-        with transaction.atomic():
-            BotPing.objects.create(
-                idempotency_key=idempotency_key,
-                kind=kind_value.value,
-                status=BotPing.Status.SENT,
-                text=text,
-                channel_ref=str(channel),
-                posted_ts=posted_ts,
-                permalink=permalink,
-            )
-    except IntegrityError:
-        logger.debug("notify_user race on key=%s — already audited", idempotency_key)
-    except DatabaseError as exc:
-        # The DM has already landed; a locked/failed audit write must
-        # never escape and break the caller's FSM transition (the
-        # never-raise contract). Mirror ``_record_outbound_claim``.
-        logger.warning("notify_user audit write failed for key=%s: %s", idempotency_key, exc)
+    _finalize_sent(
+        idempotency_key=idempotency_key,
+        channel=str(channel),
+        posted_ts=posted_ts,
+        permalink=permalink,
+    )
 
     _maybe_stamp_answered(
         idempotency_key=idempotency_key,
@@ -171,6 +143,57 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     )
     _maybe_speak(text)
     return True
+
+
+def _already_sent_noop(idempotency_key: str) -> bool | None:
+    """Fast SENT-idempotency no-op: ``True`` if already delivered, else ``None``.
+
+    An already-delivered key is a no-op even when the backend is now
+    unconfigured (the prior shape checked SENT before resolving the
+    backend). A read-only lookup; the atomic ``claim_delivery`` is still the
+    authoritative double-DM gate. ``None`` means "not yet SENT — proceed".
+    A ``DatabaseError`` fails closed (``False``) — never escapes the
+    never-raise contract.
+    """
+    try:
+        if BotPing.objects.filter(idempotency_key=idempotency_key, status=BotPing.Status.SENT).exists():
+            logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
+            return True
+    except DatabaseError as exc:
+        logger.warning("notify_user idempotency-ledger read failed for key=%s: %s", idempotency_key, exc)
+        return False
+    return None
+
+
+def _claim_delivery_slot(idempotency_key: str, *, kind: str, text: str) -> bool | None:
+    """Atomically claim the right to deliver — the double-DM TOCTOU gate.
+
+    Returns ``None`` when this caller won the claim and must proceed to
+    deliver; otherwise the early-exit result for ``notify_user``: ``True``
+    for an already-SENT idempotent no-op, ``False`` when a concurrent tick
+    already claimed delivery or a ``DatabaseError`` forces a fail-closed.
+
+    ``BotPing.claim_delivery`` mirrors the ``OnBehalfApproval.consume`` /
+    ``LoopLease.acquire`` CAS doctrine: a ``select_for_update`` re-read
+    inside one ``transaction.atomic`` so on the production SQLite backend
+    the second concurrent tick blocks on the IMMEDIATE write lock, then
+    observes the SENDING row and stands down — exactly one tick delivers. A
+    prior FAILED/NOOP row is a recoverable retry (#1306) the winner replaces
+    with a fresh SENDING claim. A ``DatabaseError`` must not escape the
+    never-raise contract.
+    """
+    try:
+        claim = BotPing.claim_delivery(idempotency_key, kind=kind, text=text)
+    except DatabaseError as exc:
+        logger.warning("notify_user delivery-claim access failed for key=%s: %s", idempotency_key, exc)
+        return False
+    if claim == DeliveryClaim.CLAIMED:
+        return None
+    if claim == DeliveryClaim.ALREADY_SENT:
+        logger.debug("notify_user idempotent no-op for key=%s", idempotency_key)
+        return True
+    logger.info("notify_user delivery already claimed by a concurrent tick for key=%s", idempotency_key)
+    return False
 
 
 def _maybe_speak(text: str) -> None:
@@ -421,20 +444,28 @@ def _record_noop(*, idempotency_key: str, kind: NotifyKind, text: str, reason: s
         logger.warning("notify_user noop audit write failed for key=%s: %s", idempotency_key, exc)
 
 
-def _record_failed(*, idempotency_key: str, kind: NotifyKind, text: str, error: str) -> None:
+def _finalize_sent(*, idempotency_key: str, channel: str, posted_ts: str, permalink: str) -> None:
+    """Stamp the claimed SENDING row terminal-SENT — never raises (the DM has landed)."""
     try:
-        with transaction.atomic():
-            BotPing.objects.create(
-                idempotency_key=idempotency_key,
-                kind=kind.value,
-                status=BotPing.Status.FAILED,
-                text=text,
-                error_message=error,
-            )
-    except IntegrityError:
-        logger.debug("notify_user failed-row race on key=%s", idempotency_key)
+        BotPing.finalize_sent(
+            idempotency_key,
+            channel_ref=channel,
+            posted_ts=posted_ts,
+            permalink=permalink,
+        )
     except DatabaseError as exc:
-        logger.warning("notify_user failed-row audit write failed for key=%s: %s", idempotency_key, exc)
+        # The DM has already landed; a locked/failed audit write must never
+        # escape and break the caller's FSM transition (the never-raise
+        # contract). Mirror ``_record_outbound_claim``.
+        logger.warning("notify_user sent-finalize write failed for key=%s: %s", idempotency_key, exc)
+
+
+def _finalize_failed(*, idempotency_key: str, error: str) -> None:
+    """Stamp the claimed SENDING row terminal-FAILED so a later retry recovers it."""
+    try:
+        BotPing.finalize_failed(idempotency_key, error=error)
+    except DatabaseError as exc:
+        logger.warning("notify_user failed-finalize write failed for key=%s: %s", idempotency_key, exc)
 
 
 def _resurface_text(row: DeferredQuestion) -> str:

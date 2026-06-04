@@ -14,10 +14,19 @@ gates #960/#949). This model only audits notifications the bot sends
 *to* the user.
 """
 
+import enum
 from typing import ClassVar
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
+
+
+class DeliveryClaim(enum.StrEnum):
+    """Outcome of an atomic ``BotPing.claim_delivery`` (the dedup CAS)."""
+
+    CLAIMED = "claimed"
+    ALREADY_SENT = "already_sent"
+    IN_FLIGHT = "in_flight"
 
 
 class BotPing(models.Model):
@@ -29,6 +38,7 @@ class BotPing(models.Model):
         INFO = "info", "Info"
 
     class Status(models.TextChoices):
+        SENDING = "sending", "Sending (delivery claimed, in flight)"
         SENT = "sent", "Sent"
         NOOP = "noop", "Noop (no backend)"
         FAILED = "failed", "Failed"
@@ -46,6 +56,8 @@ class BotPing(models.Model):
         UNSET = "", "Unset (direct notify_user)"
         PRIMARY = "primary", "Primary (notify_user)"
         FALLBACK = "fallback", "Fallback (direct verified send)"
+
+    _RECOVERABLE: ClassVar = {Status.FAILED, Status.NOOP}
 
     idempotency_key = models.CharField(max_length=255, unique=True)
     kind = models.CharField(max_length=16, choices=Kind.choices)
@@ -68,3 +80,77 @@ class BotPing(models.Model):
 
     def __str__(self) -> str:
         return f"BotPing[{self.kind}/{self.status}] {self.idempotency_key}"
+
+    @classmethod
+    def claim_delivery(
+        cls,
+        idempotency_key: str,
+        *,
+        kind: str,
+        text: str,
+        using: str | None = None,
+    ) -> DeliveryClaim:
+        """Atomically claim the right to deliver one DM for ``idempotency_key``.
+
+        The dedup CAS that closes the ``notify_user`` double-DM TOCTOU: the
+        pre-claim guard was a bare ``filter → first → delete`` that two
+        concurrent ticks both passed, then both delivered. This mirrors the
+        ``OnBehalfApproval.consume`` / ``LoopLease.acquire`` doctrine — a
+        ``select_for_update`` re-read inside one ``transaction.atomic``, so on
+        the production SQLite backend (where ``select_for_update`` is a no-op
+        and serialization comes from ``transaction_mode=IMMEDIATE``) the
+        second tick blocks until the first commits its claim, then observes
+        the now-``SENDING`` row and stands down.
+
+        Outcomes: ``ALREADY_SENT`` — a terminal SENT row exists (the caller
+        no-ops, the idempotent success); ``IN_FLIGHT`` — another tick already
+        claimed delivery (the caller stands down, no DM); ``CLAIMED`` — this
+        caller won and must deliver, then finalize the SENDING row via
+        :meth:`finalize_sent` / :meth:`finalize_failed`. A prior recoverable
+        row (FAILED/NOOP — #1306) is replaced by the fresh SENDING claim so a
+        transient-failure retry still re-delivers.
+        """
+        manager = cls.objects.using(using) if using else cls.objects
+        with transaction.atomic(using=using):
+            row = manager.select_for_update().filter(idempotency_key=idempotency_key).first()
+            if row is not None:
+                if row.status == cls.Status.SENT:
+                    return DeliveryClaim.ALREADY_SENT
+                if row.status not in cls._RECOVERABLE:
+                    return DeliveryClaim.IN_FLIGHT
+                row.delete()
+            manager.create(
+                idempotency_key=idempotency_key,
+                kind=kind,
+                status=cls.Status.SENDING,
+                text=text,
+            )
+        return DeliveryClaim.CLAIMED
+
+    @classmethod
+    def finalize_sent(
+        cls,
+        idempotency_key: str,
+        *,
+        channel_ref: str,
+        posted_ts: str,
+        permalink: str,
+        using: str | None = None,
+    ) -> None:
+        """Stamp the claimed SENDING row terminal-SENT after a confirmed delivery."""
+        manager = cls.objects.using(using) if using else cls.objects
+        manager.filter(idempotency_key=idempotency_key, status=cls.Status.SENDING).update(
+            status=cls.Status.SENT,
+            channel_ref=channel_ref,
+            posted_ts=posted_ts,
+            permalink=permalink,
+        )
+
+    @classmethod
+    def finalize_failed(cls, idempotency_key: str, *, error: str, using: str | None = None) -> None:
+        """Stamp the claimed SENDING row terminal-FAILED so a later retry recovers it."""
+        manager = cls.objects.using(using) if using else cls.objects
+        manager.filter(idempotency_key=idempotency_key, status=cls.Status.SENDING).update(
+            status=cls.Status.FAILED,
+            error_message=error,
+        )

@@ -1,79 +1,59 @@
-# Architecture pre-check — OnBehalfSlackEgress (away-mode colleague-react incident)
+# Architecture pre-check — fix(core): redis-slot + notify_user TOCTOU
 
 ## 1. BLUEPRINT § alignment
 
-§ "Slack token routing" (#1750 route_token self-vs-colleague) + the on-behalf gate
-section (`on_behalf_post_mode`, `require_on_behalf_approval`, `notify_user_on_behalf_post`).
-Claim: every colleague-surface Slack post/react under the user's identity flows through
-one cohesive `OnBehalfSlackEgress` that runs gate→route→emit→audit in one place; self-DM
-short-circuits ungated via the same #1750 classifier (fail-closed on unknown surface).
+§6.6 "The DB is the arbiter for shared state" (ac-django transactions ref): read-modify-write on shared
+state must hold an atomic guard for the whole RMW, or use an atomic conditional UPDATE / caught
+IntegrityError. Both fixes mirror the existing CAS doctrine documented on `claim_next_pending` /
+`LoopLease.acquire` (managers.py / loop_lease_manager.py).
 
 ## 2. FSM phase boundaries
 
-n/a — no `Ticket.State` / `Worktree.State` transition added. The FSM-driven signals.py
-reaction path is deliberately out of scope (separate slack_reactions transport, already
-gate+audit-correct).
+n/a — no `Ticket.State` / `Worktree.State` transition is added or moved.
 
 ## 3. Extension-point contracts
 
-No `OverlayBase` / scanner-registration / `*Backend` Protocol change. `MessagingBackend`
-Protocol is unchanged — the self-DM classifier duck-types `route_token` (not on the
-Protocol) so no Protocol surface grows and no fake needs updating. Consumers rewired:
-review_claim.emit_review_done_reactions, review_request_merge_react.react_merge_on_post,
-slack_broadcasts._react_done, review_nag._post_thread_nag, notify.Command.post/react,
-slack_listen.react_command +_ack_messages.
+n/a — no `OverlayBase` hook, scanner registration, or `*Backend` Protocol surface changes.
+`allocate_redis_slot` consumers: the `worktree` provision command; `notify_user` is the single
+notification egress.
 
 ## 4. Component boundaries
 
-`src/teatree/core/on_behalf_egress.py`. Both reused seams (the gate
-`on_behalf_gate_recorded`, the audit `on_behalf_post_receipt`) already live in
-teatree.core; `MessagingBackend`/`RawAPIDict` are in teatree.backends/teatree.types which
-core depends on. teatree.messaging is the wrong home (the gate+audit are not there).
+- `allocate_redis_slot` stays on `TicketQuerySet` (`src/teatree/core/managers.py`) — collection-level
+  claim logic belongs on the manager, beside the sibling CAS claims.
+- `notify_user` idempotency claim stays in `src/teatree/core/notify.py` — same chokepoint.
 
 ## 5. Dependency direction
 
-Imports: require_on_behalf_approval + OnBehalfPostBlockedError (teatree.core),
-notify_user_on_behalf_post (teatree.core), MessagingBackend (teatree.backends), RawAPIDict
-(teatree.types). All existing edges in tach.toml `teatree.core` depends_on. No new edge.
-`uv run tach check` confirms.
+No new imports beyond `IntegrityError` (already imported in notify.py) and `transaction` (already
+imported in managers.py). No backwards edge. `uv run tach check` confirms.
 
 ## 6. Test surface
 
-- bypass-closed (RED-now) for the 4 loop sites: under ask + no approval, the routed
-  primitive is NOT called and the claim is released / a `.gated` signal emitted.
-- satisfiable must-FIRE: with a recorded OnBehalfApproval, reacts/posts once + one
-  `on_behalf_post:<target>:<action>` BotPing.
-- self-DM carve-out: route_token classifies self → emit, no raise, no BotPing, no approval
-  consumed; colleague D… blocks.
-- fail-closed: backend with no route_token → BLOCKS under ask.
-- audit-only-on-success: ok:false / already_reacted → no notify_user_on_behalf_post.
-- CLI bypass closed (notify react colleague → SystemExit 2; self ungated); ad-hoc
-  `t3 slack react` colleague blocks; `_ack_messages` self stays ungated.
-- import-guard fitness function: no module except on_behalf_egress.py calls
-  `.react_routed(`/`.post_routed(`; no colleague `.react(`/`.post_message(` outside the
-  documented self-ack/bot→user sinks.
+- `tests/teatree_core/test_redis_slots_concurrent.py` — two real threads on a file-backed SQLite
+  registered with prod `SQLITE_WRITE_SERIALIZATION_OPTIONS` race to claim the lowest free slot; assert
+  distinct slots, no `IntegrityError` escapes, the loser reselects. RED on current code (uncaught
+  IntegrityError / duplicate slot).
+- `tests/teatree_core/test_notify.py` — `TestNotifyUserConcurrentDedup`: two threads fire the same
+  idempotency_key with a recoverable prior FAILED row; assert exactly one delivery + exactly one SENT
+  BotPing row. RED on current filter→delete→deliver→create.
 
 ## 7. Resilience invariants
 
-External write = Slack post/react. verify-by-re-read: callers keep inspecting the raw
-Slack body (ok/error). idempotency: each call site keeps its pre-existing claim
-(OutboundClaim ledger / done_at / last_nag_step); the audit DM is deduped per
-(target, action) by notify_user_on_behalf_post's idempotency key. fallback-transport:
-unchanged per site (claim release on block/transport error). heartbeat: n/a (single call).
-sub-agent return contract: n/a.
+- verify-by-re-read: the slot claim re-reads via `refresh_from_db`; the notify dedup re-reads the row
+  under the same atomic block before delivering.
+- idempotency: notify_user stays idempotent on SENT; allocate_redis_slot stays idempotent on an
+  already-allocated ticket.
+- fallback-transport / heartbeat / sub-agent return contract: unchanged.
 
 ## 8. Identity and key normalization
 
-target is canonicalized UP to the on-behalf canonical form by OnBehalfApproval.consume /
-require_on_behalf_approval — the egress passes target through verbatim; no strip/split to
-make a comparison succeed.
+n/a — no bare-vs-qualified identity. `redis_db_index` is an int slot; `idempotency_key` is already the
+canonical key (unique constraint).
 
 ## 9. Behavior preservation / capability deletion
 
-Replaces scattered raw egress with the class. Preserved per site: #1838 self-author skip
-(before the gate), done_at / last_nag_step atomic claim (before the gate),
-ConnectChannelBotRestrictedError re-raise + dedup (slack_broadcasts), the ok/error/
-already_reacted/missing_scope mapping (returned raw body). Dropped: review_claim._react_routed
-helper, slack_listen.post_reaction +_resolve_reaction_token (raw personal-xoxp
-reactions.add path) — clean cutover, no shim. No privacy/security matcher narrowed. No
-must-block test inverted.
+Both functions are tightened, not narrowed. `allocate_redis_slot` keeps: idempotent already-allocated
+return, lowest-free selection, `RedisSlotsExhaustedError` on exhaustion, configurable count.
+`notify_user` keeps: SENT no-op, FAILED/NOOP recoverable retry (#1306), never-raise on DatabaseError,
+all hard-failure paths. No must-block test inverted; no privacy/security matcher touched.
