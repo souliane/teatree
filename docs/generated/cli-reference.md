@@ -58,6 +58,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
+│ mutation        Scoped mutation testing over high-value safety modules.      │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2812,6 +2813,35 @@ Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
 Usage: t3 dogfood overlay-provision-smoke [OPTIONS]
 
  Forward ``t3 dogfood overlay-provision-smoke `` to the management command.
+```
+
+### `t3 mutation`
+
+```
+Usage: t3 mutation [OPTIONS] COMMAND [ARGS]...
+
+ Scoped mutation testing over high-value safety modules.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run  Mutate the safety modules a PR touches; warn/block per the ratchet.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mutation run`
+
+```
+Usage: t3 mutation run [OPTIONS]
+
+ Mutate the safety modules a PR touches; warn/block per the ratchet.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --target        TEXT  Base ref to diff against [default: origin/main]        │
+│ --all                 Mutate the whole registry, not just the diff (weekly)  │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 teatree`
