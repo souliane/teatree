@@ -40,11 +40,18 @@ imported in managers.py). No backwards edge. `uv run tach check` confirms.
 
 ## 7. Resilience invariants
 
-- verify-by-re-read: the slot claim re-reads via `refresh_from_db`; the notify dedup re-reads the row
-  under the same atomic block before delivering.
+- verify-by-re-read: the slot claim does NOT re-read a single row — it re-queries the taken-set each
+  iteration and uses the unique constraint as the CAS token, catching `IntegrityError` and reselecting
+  on a collision. The notify claim (`BotPing.claim_delivery`) re-reads the dedup row under
+  `select_for_update` inside one `transaction.atomic` and commits the SENDING claim there; delivery
+  (the Slack post) happens AFTER that atomic block, outside the lock, then the row is finalized to
+  SENT/FAILED.
 - idempotency: notify_user stays idempotent on SENT; allocate_redis_slot stays idempotent on an
   already-allocated ticket.
-- fallback-transport / heartbeat / sub-agent return contract: unchanged.
+- fallback-transport: a stale SENDING claim (owner crashed before finalize) is recoverable in BOTH the
+  primary claim and the fallback (`BotPing.is_stale_sending` is the shared staleness SSOT), so one crash
+  mid-delivery cannot permanently block a reused day-granular key; a fresh SENDING still blocks.
+- heartbeat / sub-agent return contract: unchanged.
 
 ## 8. Identity and key normalization
 
@@ -56,4 +63,8 @@ canonical key (unique constraint).
 Both functions are tightened, not narrowed. `allocate_redis_slot` keeps: idempotent already-allocated
 return, lowest-free selection, `RedisSlotsExhaustedError` on exhaustion, configurable count.
 `notify_user` keeps: SENT no-op, FAILED/NOOP recoverable retry (#1306), never-raise on DatabaseError,
-all hard-failure paths. No must-block test inverted; no privacy/security matcher touched.
+all hard-failure paths. The SENDING claim status is NOT a new permanent block: a stale SENDING (crashed
+owner) is recoverable in both `claim_delivery` and the fallback, preserving the old code's self-healing
+property for reused day-granular keys (`loops_tick_errors:{utc_day}`). The fallback's NOOP-not-recoverable
+behavior is preserved (NOOP means no backend; fallback can't help). No must-block test inverted; no
+privacy/security matcher touched.
