@@ -1,0 +1,24 @@
+rules:
+  - id: consume-before-side-effect-not-atomic
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Single-use approval consumed then audited outside one transaction.atomic.
+      Consume + audit + side-effect must share ONE transaction.atomic so a
+      failed post rolls back the consume and the audit never lies.
+      See on_behalf_gate_recorded.py:97.
+    metadata:
+      issue: souliane/teatree#1879
+      status: warn
+    paths:
+      include:
+        - "/src/teatree/core/on_behalf_gate_recorded.py"
+        - "/src/teatree/core/reply_transport.py"
+    patterns:
+      - pattern: |
+          $C = OnBehalfApproval.consume(...)
+          ...
+          OnBehalfAudit.objects.create(...)
+      - pattern-not-inside: |
+          with transaction.atomic(...):
+              ...
