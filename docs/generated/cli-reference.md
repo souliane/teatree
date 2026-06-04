@@ -2839,6 +2839,7 @@ Usage: t3 mutation run [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --target        TEXT  Base ref to diff against [default: origin/main]        │
+│ --all                 Mutate the whole registry, not just the diff (weekly)  │
 │ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

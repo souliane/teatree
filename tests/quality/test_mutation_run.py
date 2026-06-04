@@ -10,12 +10,16 @@ from pathlib import Path
 
 import pytest
 
+from teatree.quality import mutation_run
 from teatree.quality.mutation_run import (
     MutationOutcome,
+    MutationResult,
+    MutationSettings,
     build_mutmut_config,
     decide_verdict,
     load_settings,
     parse_results,
+    run_scoped,
 )
 
 
@@ -99,6 +103,52 @@ class TestDecideVerdict:
     def test_no_op_outcome_passes_in_any_mode(self) -> None:
         outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
         assert decide_verdict(outcome, mode="block", baseline=0) == 0
+
+
+class TestRunScopedWiring:
+    _REGISTRY = ("src/teatree/a.py", "src/teatree/b.py")
+    _SETTINGS = MutationSettings(
+        mode="warn",
+        timeout_seconds=10,
+        module_tests={"default": ("tests/",)},
+        baseline_total=0,
+    )
+
+    def _spy(self, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+        calls: list[tuple[str, ...]] = []
+
+        def fake(modules, **_kwargs):
+            calls.append(tuple(modules))
+            return MutationResult(killed=(), survived=(), inconclusive=())
+
+        monkeypatch.setattr(mutation_run, "_run_mutmut", fake)
+        return calls
+
+    def test_no_op_skips_mutmut_when_diff_touches_no_safety_module(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = self._spy(monkeypatch)
+        outcome = run_scoped(
+            changed_files=("README.md",),
+            settings=self._SETTINGS,
+            registry=self._REGISTRY,
+        )
+        assert outcome.is_no_op
+        assert calls == []
+
+    def test_diff_scopes_to_touched_modules(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = self._spy(monkeypatch)
+        outcome = run_scoped(
+            changed_files=("src/teatree/b.py", "README.md"),
+            settings=self._SETTINGS,
+            registry=self._REGISTRY,
+        )
+        assert outcome.scoped_modules == ("src/teatree/b.py",)
+        assert calls == [("src/teatree/b.py",)]
+
+    def test_all_modules_mutates_whole_registry_without_diffing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls = self._spy(monkeypatch)
+        outcome = run_scoped(all_modules=True, settings=self._SETTINGS, registry=self._REGISTRY)
+        assert outcome.scoped_modules == self._REGISTRY
+        assert calls == [self._REGISTRY]
 
 
 class TestLoadSettings:

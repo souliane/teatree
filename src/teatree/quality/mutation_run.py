@@ -178,16 +178,19 @@ def changed_files_vs_main(repo: str = ".", target: str = "origin/main") -> tuple
 
 def run_scoped(
     *,
-    repo: str = ".",
     target: str = "origin/main",
+    all_modules: bool = False,
     changed_files: Iterable[str] | None = None,
     settings: MutationSettings | None = None,
     registry: Sequence[str] | None = None,
 ) -> MutationOutcome:
     settings = settings or load_settings()
-    registry = registry if registry is not None else load_high_value_modules()
-    changed = tuple(changed_files) if changed_files is not None else changed_files_vs_main(repo, target)
-    scoped = scope_modules(changed, registry=registry)
+    registry = tuple(registry) if registry is not None else load_high_value_modules()
+    if all_modules:
+        scoped = registry
+    else:
+        changed = tuple(changed_files) if changed_files is not None else changed_files_vs_main(target=target)
+        scoped = scope_modules(changed, registry=registry)
     if not scoped:
         return MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
 
@@ -197,7 +200,7 @@ def run_scoped(
             if path not in tests_dir:
                 tests_dir.append(path)
 
-    result = _run_mutmut(scoped, tests_dir=tuple(tests_dir), repo=repo, timeout=settings.timeout_seconds)
+    result = _run_mutmut(scoped, tests_dir=tuple(tests_dir), repo=".", timeout=settings.timeout_seconds)
     return MutationOutcome(
         scoped_modules=scoped,
         survived=result.survived,
@@ -240,7 +243,15 @@ def _run_mutmut(modules: Sequence[str], *, tests_dir: Sequence[str], repo: str, 
     env = _mutmut_env()
     try:
         run_allowed_to_fail([*_MUTMUT_CMD, "run"], expected_codes=None, cwd=repo, env=env, timeout=timeout)
-        results = run_allowed_to_fail([*_MUTMUT_CMD, "results"], expected_codes=None, cwd=repo, env=env, timeout=60)
+        # ``results --all`` lists killed mutants too — without ``--all`` mutmut
+        # hides them, so the kill-proof could not observe a kill.
+        results = run_allowed_to_fail(
+            [*_MUTMUT_CMD, "results", "--all"],
+            expected_codes=None,
+            cwd=repo,
+            env=env,
+            timeout=60,
+        )
     finally:
         config_path.unlink(missing_ok=True)
         pytest_ini.unlink(missing_ok=True)

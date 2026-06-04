@@ -37,10 +37,11 @@ def _report(outcome: MutationOutcome, *, mode: str) -> None:
 def run(
     *,
     target: str = typer.Option("origin/main", "--target", help="Base ref to diff against"),
+    all_modules: bool = typer.Option(False, "--all", help="Mutate the whole registry, not just the diff (weekly)"),
 ) -> None:
     """Mutate the safety modules a PR touches; warn/block per the ratchet."""
     settings = load_settings()
-    outcome = run_scoped(target=target)
+    outcome = run_scoped(target=target, all_modules=all_modules)
     _report(outcome, mode=settings.mode)
     code = decide_verdict(outcome, mode=settings.mode, baseline=settings.baseline_total)
     if code != 0:
