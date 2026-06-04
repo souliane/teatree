@@ -582,6 +582,7 @@ graph TD
     teatree.cli_reference --> teatree.cli
     teatree.triage --> teatree.utils
     teatree.url_title_fetcher --> teatree.utils
+    teatree.quality --> teatree.utils
     teatree.paths
     teatree.types
     teatree.templates
@@ -594,7 +595,6 @@ graph TD
     teatree.skill_map
     teatree.memory_audit
     teatree.trigger_parser
-    teatree.quality
 ```
 
 <!-- tach-dependency-graph:end -->

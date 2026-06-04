@@ -1,0 +1,20 @@
+rules:
+  - id: gate-fails-open-on-nonzero
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Gate maps ANY nonzero subprocess exit straight to the deny branch. A
+      scanner crash (exit >= 2) is then indistinguishable from a real finding
+      (exit 1) -> a crash becomes a false DENY. Distinguish error from a real
+      finding: branch on returncode == 1 for the finding, treat other nonzero
+      exits as a tool error. See the ai-sig-scan gate.
+    metadata:
+      issue: souliane/teatree#1884
+      status: warn
+    paths:
+      include:
+        - "/hooks/scripts/hook_router.py"
+    patterns:
+      - pattern: |
+          if $R.returncode != 0:
+              return emit_pretooluse_deny(...)
