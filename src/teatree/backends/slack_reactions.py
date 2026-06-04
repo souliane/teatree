@@ -7,6 +7,7 @@ on rework, …).  The review permalink stored on each PR entry gives us the
 Slack ``channel`` and ``timestamp`` needed for ``reactions.add``.
 """
 
+import json
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -61,9 +62,10 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
 
     Treats ``already_reacted`` as success — the desired end state is the
     emoji being present on the message. Transport-level failures (HTTP
-    5xx, ``httpx.HTTPError``) return ``False`` and are logged: a Slack
-    outage must not block FSM transitions, and there is no auth gap to
-    surface.
+    5xx, ``httpx.HTTPError``, and a 2xx body that is not parseable JSON)
+    return ``False`` and are logged: a Slack outage or a proxy that
+    returns HTML on a 2xx must not block FSM transitions, and there is no
+    auth gap to surface.
 
     Slack-API-level failures (``ok:false`` — ``missing_scope``,
     ``not_in_channel``, ``mcp_externally_shared_channel_restricted``, …)
@@ -91,7 +93,11 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
     if not response.is_success:
         logger.warning("Slack reactions.add HTTP %s", response.status_code)
         return False
-    payload = response.json()
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Slack reactions.add returned a non-JSON 2xx body: %s", exc)
+        return False
     if payload.get("ok"):
         return True
     error = payload.get("error", "")
