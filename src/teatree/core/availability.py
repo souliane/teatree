@@ -67,6 +67,14 @@ _VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY})
 # is correctly treated as away by the schedule.
 PRESENCE_FRESHNESS = timedelta(minutes=15)
 
+# How recently a ``UserPromptSubmit`` must have landed, IN THIS SESSION, for the
+# current turn to count as user-driven (#189). Intentionally far shorter than
+# :data:`PRESENCE_FRESHNESS`: this is "the user typed THIS turn", not "the user
+# is reachable today". It must outlive the few tool calls between the prompt and
+# the agent's ``AskUserQuestion`` reply, but expire long before a follow-on
+# autonomous turn could be mistaken for a fresh keystroke.
+LIVE_TURN_FRESHNESS = timedelta(seconds=90)
+
 # A query landing exactly on a fire instant counts as inside that fire's span.
 _CRON_EPSILON = timedelta(microseconds=1)
 
@@ -385,6 +393,20 @@ def clear_override(path: Path | None = None) -> bool:
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class UserTurn:
+    """A recorded ``UserPromptSubmit`` — when it landed and in which session.
+
+    Carries the session id so the live-turn predicate can tell THIS
+    session's fresh prompt apart from a foreign session's (#189). A legacy
+    plain-ISO heartbeat (pre-#189) parses with an empty :attr:`session_id`,
+    which can therefore never satisfy the same-session check.
+    """
+
+    at: datetime
+    session_id: str
+
+
 class PresenceHeartbeat:
     """The durable live-presence signal — a prompt proves the user is here.
 
@@ -394,17 +416,24 @@ class PresenceHeartbeat:
     resolves it lazily through :func:`presence_path`, so a test repointing
     ``availability.presence_path`` is honoured); a test may also construct a
     heartbeat with an explicit locator.
+
+    The on-disk format is a small JSON document (``{"at": ..., "session":
+    ...}``). :meth:`last_seen` still reads a legacy plain-ISO file so a
+    heartbeat written before the format gained a session id keeps upgrading
+    the schedule.
     """
 
     def __init__(self, locate: Callable[[], Path] = presence_path) -> None:
         self.locate = locate
 
-    def record(self, *, now: datetime | None = None) -> Path:
+    def record(self, *, session_id: str = "", now: datetime | None = None) -> Path:
         """Stamp the heartbeat atomically via ``tmp.replace``.
 
-        Called from the ``UserPromptSubmit`` hook on every prompt the user
-        submits. :meth:`last_seen` reads the stamp and :func:`resolve_mode`
-        uses it to upgrade a schedule-derived ``away`` to ``present``.
+        Called from the ``UserPromptSubmit`` hook on every genuine user
+        prompt. :meth:`last_seen` reads the timestamp (the resolver uses it
+        to upgrade a schedule-derived ``away`` to ``present``);
+        :meth:`last_user_turn` reads the timestamp plus the session id (the
+        #189 live-turn predicate uses both).
         """
         moment = now or datetime.now(tz=UTC)
         if moment.tzinfo is None:
@@ -415,7 +444,7 @@ class PresenceHeartbeat:
         tmp_path = Path(tmp_str)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(moment.isoformat())
+                json.dump({"at": moment.isoformat(), "session": session_id}, fh, sort_keys=True)
                 fh.write("\n")
             tmp_path.replace(target)
         except BaseException:
@@ -424,12 +453,23 @@ class PresenceHeartbeat:
         return target
 
     def last_seen(self) -> datetime | None:
-        """Read the heartbeat, if present and well-formed.
+        """Read the heartbeat timestamp, if present and well-formed.
 
         A malformed or unreadable stamp returns ``None`` rather than
         raising — the resolver then ignores live presence and falls through
         to the schedule, so a corrupt heartbeat never blocks the user from
         being correctly classified by their cron windows.
+        """
+        turn = self.last_user_turn()
+        return turn.at if turn is not None else None
+
+    def last_user_turn(self) -> UserTurn | None:
+        """Read the recorded turn (timestamp + session), if well-formed.
+
+        Tolerates both the JSON format and a legacy plain-ISO file (parsed
+        with an empty session id). A malformed or unreadable stamp returns
+        ``None`` — the live-turn predicate then treats the turn as not
+        user-driven (the safe, deferring default).
         """
         target = self.locate()
         if not target.is_file():
@@ -440,16 +480,53 @@ class PresenceHeartbeat:
             return None
         if not raw:
             return None
-        try:
-            stamp = datetime.fromisoformat(raw)
-        except ValueError:
+        at, session_id = self._parse(raw)
+        if at is None:
             return None
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=UTC)
-        return stamp
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=UTC)
+        return UserTurn(at=at, session_id=session_id)
+
+    @staticmethod
+    def _parse(raw: str) -> tuple[datetime | None, str]:
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            doc = None
+        if isinstance(doc, dict):
+            stamp = str(doc.get("at", "")).strip()
+            session_id = str(doc.get("session", "")).strip()
+            try:
+                return datetime.fromisoformat(stamp), session_id
+            except ValueError:
+                return None, ""
+        try:
+            return datetime.fromisoformat(raw), ""
+        except ValueError:
+            return None, ""
 
 
 PRESENCE = PresenceHeartbeat()
+
+
+def is_live_user_turn(*, session_id: str, now: datetime | None = None) -> bool:
+    """True when the user typed a prompt in *session_id* within the live window.
+
+    The #189 user-driven escape: an ``AskUserQuestion`` raised on such a
+    turn may render in-client even under away-mode, because the user is
+    demonstrably right here, right now. Requires a non-empty *session_id*
+    matching the recorded turn's session and a recorded prompt no older than
+    :data:`LIVE_TURN_FRESHNESS`. Any missing / foreign-session / stale /
+    unparsable signal returns ``False`` — the safe (defer) default that
+    keeps BLUEPRINT §17.1 invariant 9 intact for autonomous turns.
+    """
+    if not session_id:
+        return False
+    turn = PRESENCE.last_user_turn()
+    if turn is None or turn.session_id != session_id:
+        return False
+    moment = now or datetime.now(tz=UTC)
+    return moment - turn.at <= LIVE_TURN_FRESHNESS
 
 
 def pending_questions_count(*, using: str | None = None) -> int:
@@ -463,6 +540,7 @@ def iter_pending_questions(*, using: str | None = None) -> Iterable[DeferredQues
 
 
 __all__ = [
+    "LIVE_TURN_FRESHNESS",
     "MODE_AWAY",
     "MODE_PRESENT",
     "PRESENCE",
@@ -471,7 +549,9 @@ __all__ = [
     "PresenceHeartbeat",
     "Resolution",
     "Schedule",
+    "UserTurn",
     "clear_override",
+    "is_live_user_turn",
     "iter_pending_questions",
     "load_override",
     "load_schedule",

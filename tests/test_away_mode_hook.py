@@ -109,6 +109,49 @@ class TestPresentModeDoesNotIntercept:
         assert DeferredQuestion.objects.count() == 0
 
 
+class TestUserDrivenTurnRendersLiveEvenWhenAway:
+    """#189: a fresh same-session user prompt renders the question LIVE.
+
+    The whole point of ``/checking`` (and "shoot me questions from here"):
+    when the user is the one driving THIS turn — a fresh live prompt this
+    turn, in this session — their ``AskUserQuestion`` must render in-client
+    even under a manual-away override, with NO availability flip. The
+    handler must NOT defer and must NOT create a ``DeferredQuestion`` row.
+    """
+
+    def test_user_driven_away_turn_renders_live_and_does_not_defer(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: True)
+        result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id="s-live"))
+        assert result is False
+        assert _stdout(capsys) == {}
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_loop_driven_away_turn_still_defers_invariant_9(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE must-not-regress test: a loop-driven / no-fresh-prompt turn under
+        # manual-away MUST still capture the question durably + emit the deny.
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
+        result = handle_route_away_mode_question(_ask_payload("Approve A or B?", session_id="s-loop"))
+        assert result is True
+        out = _stdout(capsys)
+        assert out["permissionDecision"] == "deny"
+        assert "DeferredQuestion" in out["permissionDecisionReason"]
+        assert DeferredQuestion.objects.count() == 1
+
+    def test_unknown_live_turn_signal_fails_safe_to_deferring(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A missing/unknown presence signal must default to the safe (defer)
+        # path — never silently render live and lose the away capture.
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
+        result = handle_route_away_mode_question(_ask_payload("Ship?", session_id="s-unknown"))
+        assert result is True
+        assert DeferredQuestion.objects.count() == 1
+
+
 class TestAwayModeMirrorsToSlack:
     """In away mode the question must ALSO reach the user's Slack DM (#182).
 
