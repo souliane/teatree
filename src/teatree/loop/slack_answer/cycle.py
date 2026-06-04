@@ -175,22 +175,52 @@ def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
     return True
 
 
+def _unmark_unit_loop_replied(unit: _Unit) -> None:
+    """Release the whole unit's loop-reply claim — the rollback of :func:`_mark_unit_loop_replied`."""
+    for row in unit.rows:
+        row.unmark_loop_replied()
+
+
 def _react_eyes_once(backend: MessagingBackend, unit: _Unit) -> bool:
-    """No-LLM receipt reaction on every row of the unit, each at most once."""
+    """No-LLM receipt reaction on every row of the unit, each at most once.
+
+    Claim -> react -> release-on-failure (#1880): each row's CAS
+    ``mark_eyes_reacted`` claims the slot BEFORE the reaction so a
+    concurrent cycle cannot also react; if ``backend.react`` raises, the
+    claim is released so the row is reacted again next cycle instead of
+    carrying a receipt for a reaction that never landed. The raise still
+    propagates to the per-unit handler in :func:`run_slack_answer_cycle`,
+    which logs and moves on — the released row simply retries.
+    """
     reacted = False
     for row in unit.rows:
         if row.eyes_reacted_at is not None or not row.mark_eyes_reacted():
             continue
-        backend.react(channel=row.channel, ts=row.slack_ts, emoji=_EYES_EMOJI)
+        try:
+            backend.react(channel=row.channel, ts=row.slack_ts, emoji=_EYES_EMOJI)
+        except Exception:
+            row.unmark_eyes_reacted()
+            raise
         reacted = True
     return reacted
 
 
 def _handle_ack(backend: MessagingBackend, unit: _Unit) -> bool:
-    """React ✅ on the lead, mark the whole unit answered, NO thread reply."""
+    """React ✅ on the lead, mark the whole unit answered, NO thread reply.
+
+    Claim -> react -> release-on-failure (#1880): the unit's loop-reply CAS
+    claims the slot BEFORE the ✅ reaction (so a concurrent cycle that lost
+    the CAS skips), then the reaction lands; if it raises, the whole unit's
+    claim is released so the unit re-enters ``loop_unreplied()`` and retries
+    next cycle. Mirrors ``react_merge_on_post``'s claim/release pattern.
+    """
     if not _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.ACK):
         return False
-    backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=_ACK_EMOJI)
+    try:
+        backend.react(channel=unit.channel, ts=unit.slack_ts, emoji=_ACK_EMOJI)
+    except Exception:
+        _unmark_unit_loop_replied(unit)
+        raise
     return True
 
 
