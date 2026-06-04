@@ -333,8 +333,11 @@ class TestReviewRequestPostHappyPath(_DataDirMixin, TestCase):
         assert code == 0
         assert payload["action"] == "suppress"
         assert payload["reason"] == "no_messaging_backend"
-        # The approval was consumed before the messaging check — single-use.
-        assert OnBehalfAudit.objects.count() == 1
+        # No backend → no post → the approval is NOT consumed (#1879). The
+        # non-consuming peek lets a real post later reuse it; nothing is burned
+        # and no audit lies about a post that never happened.
+        assert OnBehalfAudit.objects.count() == 0
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=False).count() == 0
 
 
 class TestReviewRequestPostFinalizesClaim(_DataDirMixin, TestCase):

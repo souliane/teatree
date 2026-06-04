@@ -21,6 +21,8 @@ discovery, by a privacy-scan subprocess, etc.) before
 ``django.setup()`` has run.
 """
 
+from collections.abc import Callable
+
 import typer
 
 
@@ -62,20 +64,31 @@ def gate_target(repo: str, mr: int) -> str:
 def check_on_behalf(repo: str, mr: int, action: str) -> str:
     """Return an actionable error string when the on-behalf gate refuses, else ``""``.
 
-    The caller short-circuits with ``(message, 1)`` on a non-empty
-    return, so no GitLab API call is attempted while the gate is on
-    and no recorded :class:`OnBehalfApproval` matches the call.
+    The *non-consuming* peek (#1879): the caller short-circuits with
+    ``(message, 1)`` on a non-empty return, so no GitLab API call is
+    attempted while the gate is on and no recorded :class:`OnBehalfApproval`
+    matches. It never consumes — the single-use approval is consumed
+    atomically with the actual GitLab post via :func:`publish_on_behalf`, so
+    a peek that passes here never burns the approval if a later check refuses
+    or the post fails.
     """
-    from teatree.core.on_behalf_gate_recorded import (  # noqa: PLC0415
-        OnBehalfPostBlockedError,
-        require_on_behalf_approval,
-    )
+    from teatree.core.on_behalf_gate_recorded import on_behalf_block_message  # noqa: PLC0415
 
-    try:
-        require_on_behalf_approval(target=gate_target(repo, mr), action=action)
-    except OnBehalfPostBlockedError as blocked:
-        return str(blocked)
-    return ""
+    return on_behalf_block_message(gate_target(repo, mr), action)
+
+
+def publish_on_behalf[T](repo: str, mr: int, action: str, publish: Callable[[], T]) -> T:
+    """Run *publish* atomically with the on-behalf consume + audit (#1879).
+
+    The consuming half of the split: every ``ReviewService`` GitLab post
+    goes through here so consume, the GitLab call, and the audit share one
+    ``transaction.atomic``. A post that raises rolls back the consume (the
+    approval survives a retry) and writes no audit; a BLOCK with no recorded
+    approval raises :class:`OnBehalfPostBlockedError` before *publish* runs.
+    """
+    from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval  # noqa: PLC0415
+
+    return require_on_behalf_approval(target=gate_target(repo, mr), action=action, publish=publish)
 
 
 def register(review_app: typer.Typer) -> None:
