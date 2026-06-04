@@ -108,6 +108,13 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: jscpd
+        name: jscpd (copy/paste duplication in src/teatree — threshold 0)
+        entry: jscpd --config .jscpd.json src/teatree
+        language: node
+        additional_dependencies: ["jscpd@4.2.4"]
+        pass_filenames: false
+        files: ^src/teatree/.*\.py$
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
@@ -252,6 +259,13 @@ repos:
         entry: uv run python scripts/hooks/check_chokepoints.py
         types: [python]
         files: ^src/teatree/
+      - id: no-silent-skip
+        name: Ban unconditionally-disabled tests (skip / skipif(True))
+        language: system
+        entry: uv run python scripts/hooks/check_no_silent_skip.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
       - id: skill-prose-ban
         name: Ban new imperative rules in skill MD without companion code (#140)
         language: system
