@@ -22,16 +22,16 @@ scoped to ``(<repo>!<mr>, <method_name>)`` — the next matching
 invocation publishes and consumes the row.
 """
 
+from collections.abc import Callable
 from http import HTTPStatus
 
 import typer
 
-from teatree.cli.review_approval import identity_has_reviewed, identity_in_approved_by
-from teatree.cli.review_audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
+from teatree.cli.review_approval import identity_has_reviewed
 from teatree.cli.review_diff import find_added_line, resolve_inline_position
 from teatree.cli.review_drafts import register as _register_drafts
 from teatree.cli.review_evidence_gate import FindingEvidence, check_finding_evidence
-from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active
+from teatree.cli.review_on_behalf import check_on_behalf, on_behalf_gate_active, publish_on_behalf
 from teatree.cli.review_on_behalf import register as _register_on_behalf
 from teatree.cli.review_shape_gate import check_review_shape
 from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor
@@ -50,7 +50,6 @@ _resolve_inline_position = resolve_inline_position
 
 review_app = typer.Typer(no_args_is_help=True, help="Code review helpers.")
 _TOKEN_PARTS_COUNT = 2
-_HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
 class ReviewService:
@@ -85,6 +84,27 @@ class ReviewService:
         from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
+
+    @staticmethod
+    def _publish_or_blocked(
+        repo: str,
+        mr: int,
+        action: str,
+        body: Callable[[], tuple[str, int]],
+    ) -> tuple[str, int]:
+        """Run *body* (the GitLab post) atomically with the on-behalf consume + audit (#1879).
+
+        ``check_on_behalf`` already peeked non-consuming; here the approval is
+        consumed in the same ``transaction.atomic`` as the post, so a failed
+        post rolls back the consume (no burn) and writes no lying audit. A
+        BLOCK racing in after the peek is surfaced as ``(message, 1)``.
+        """
+        from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415
+
+        try:
+            return publish_on_behalf(repo, mr, action, body)
+        except OnBehalfPostBlockedError as blocked:
+            return str(blocked), 1
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -144,7 +164,9 @@ class ReviewService:
         )
         if refusal:
             return refusal, 1
-        return self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+        return self._publish_or_blocked(
+            repo, mr, "post_draft_note", lambda: self._post_draft_note_impl(repo, mr, note, file=file, line=line)
+        )
 
     def _run_pre_publish_gates(  # noqa: PLR0913
         self,
@@ -266,7 +288,9 @@ class ReviewService:
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1
-        return self._post_comment_impl(repo, mr, note, file=file, line=line)
+        return self._publish_or_blocked(
+            repo, mr, "post_comment", lambda: self._post_comment_impl(repo, mr, note, file=file, line=line)
+        )
 
     def delete_draft_note(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a draft note. Returns (message, exit_code)."""
@@ -288,22 +312,12 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "publish_draft_notes")
         if blocked:
             return blocked, 1
-        api = self._get_api()
+        from teatree.cli.review_post_impl import publish_draft_notes_impl  # noqa: PLC0415
+
         encoded = repo.replace("/", "%2F")
-        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
-        if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
-            record_note_claim(self._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="publish_draft_notes",
-                    summary=f"published all draft notes on {repo}!{mr}",
-                ),
-            )
-            return "OK — all draft notes published", 0
-        return f"Failed: HTTP {status}", 1
+        return self._publish_or_blocked(
+            repo, mr, "publish_draft_notes", lambda: publish_draft_notes_impl(self, repo, mr, encoded=encoded)
+        )
 
     def reply_to_discussion(self, repo: str, mr: int, discussion_id: str, body: str) -> tuple[str, int]:
         """Reply to an existing discussion thread on an MR. Returns (message, exit_code).
@@ -315,6 +329,8 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "reply_to_discussion")
         if blocked:
             return blocked, 1
+        from teatree.cli.review_post_impl import reply_to_discussion_impl  # noqa: PLC0415
+
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         # Reply bodies are always inline (anchored on the existing discussion's
@@ -322,28 +338,12 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=True)
         if shape_error:
             return shape_error, 1
-        result = api.post_json(
-            f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}/notes",
-            {"body": body},
-        )
-        if not result:
-            return "Failed to post reply", 1
-        result_dict = dict(result) if isinstance(result, dict) else {}
-        note_id = result_dict.get("id")
-        record_note_claim(
-            self._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
-        )
-        notify_review_after_receipt(
-            self._resolve_base_url,
+        return self._publish_or_blocked(
             repo,
             mr,
-            review_action=ReviewAfterReceipt(
-                action="reply_to_discussion",
-                summary=f"replied to discussion {discussion_id} (note_id={note_id}) on {repo}!{mr}",
-                note_web_url=str(result_dict.get("web_url", "")),
-            ),
+            "reply_to_discussion",
+            lambda: reply_to_discussion_impl(self, repo, mr, discussion_id, body, encoded=encoded),
         )
-        return f"OK reply_note_id={note_id}", 0
 
     def resolve_discussion(self, repo: str, mr: int, discussion_id: str, *, resolved: bool = True) -> tuple[str, int]:
         """Mark a discussion thread resolved or unresolved. Returns (message, exit_code).
@@ -355,30 +355,15 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "resolve_discussion")
         if blocked:
             return blocked, 1
-        api = self._get_api()
+        from teatree.cli.review_post_impl import resolve_discussion_impl  # noqa: PLC0415
+
         encoded = repo.replace("/", "%2F")
-        flag = "true" if resolved else "false"
-        status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
-        if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
-            record_note_claim(
-                self._resolve_base_url,
-                repo,
-                mr,
-                f"{discussion_id}#resolved={flag}",
-                endpoint="discussions/resolve",
-                resolved=resolved,
-            )
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="resolve_discussion",
-                    summary=f"set discussion {discussion_id} resolved={resolved} on {repo}!{mr}",
-                ),
-            )
-            return f"OK resolved={resolved}", 0
-        return f"Failed: HTTP {status}", 1
+        return self._publish_or_blocked(
+            repo,
+            mr,
+            "resolve_discussion",
+            lambda: resolve_discussion_impl(self, repo, mr, discussion_id, resolved=resolved, encoded=encoded),
+        )
 
     def update_note(self, repo: str, mr: int, note_id: int, body: str) -> tuple[str, int]:
         """Update a note (draft or published) on an MR.
@@ -393,6 +378,8 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "update_note")
         if blocked:
             return blocked, 1
+        from teatree.cli.review_post_impl import update_note_impl  # noqa: PLC0415
+
         api = self._get_api()
         encoded = repo.replace("/", "%2F")
         # Without diff coordinates here, treat the updated body as MR-level
@@ -401,45 +388,9 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=False)
         if shape_error:
             return shape_error, 1
-
-        draft_status = api.put_status(
-            f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
-            {"note": body},
+        return self._publish_or_blocked(
+            repo, mr, "update_note", lambda: update_note_impl(self, repo, mr, note_id, body, encoded=encoded)
         )
-        if draft_status == HTTPStatus.OK:
-            record_note_claim(
-                self._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update"
-            )
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="update_note",
-                    summary=f"updated draft_note_id={note_id} on {repo}!{mr}",
-                ),
-            )
-            return f"OK updated draft_note_id={note_id}", 0
-        if draft_status != HTTPStatus.NOT_FOUND:
-            return f"Failed (draft): HTTP {draft_status}", 1
-
-        pub_status = api.put_status(
-            f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
-            {"body": body},
-        )
-        if pub_status == HTTPStatus.OK:
-            record_note_claim(self._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="update_note",
-                    summary=f"updated published note_id={note_id} on {repo}!{mr}",
-                ),
-            )
-            return f"OK updated note_id={note_id}", 0
-        return f"Failed: HTTP {pub_status}", 1
 
     def delete_discussion(self, repo: str, mr: int, note_id: int) -> tuple[str, int]:
         """Delete a *published* note from an MR. Returns (message, exit_code).
@@ -457,21 +408,12 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "delete_discussion")
         if blocked:
             return blocked, 1
-        api = self._get_api()
+        from teatree.cli.review_post_impl import delete_discussion_impl  # noqa: PLC0415
+
         encoded = repo.replace("/", "%2F")
-        status = api.delete(f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}")
-        if status == HTTPStatus.NO_CONTENT:
-            notify_review_after_receipt(
-                self._resolve_base_url,
-                repo,
-                mr,
-                review_action=ReviewAfterReceipt(
-                    action="delete_discussion",
-                    summary=f"deleted published note_id={note_id} on {repo}!{mr}",
-                ),
-            )
-            return f"OK deleted note_id={note_id}", 0
-        return f"Failed: HTTP {status}", status
+        return self._publish_or_blocked(
+            repo, mr, "delete_discussion", lambda: delete_discussion_impl(self, repo, mr, note_id, encoded=encoded)
+        )
 
     def list_draft_notes(self, repo: str, mr: int) -> tuple[str, int]:
         """List draft notes. Returns (message, exit_code)."""
@@ -523,17 +465,9 @@ class ReviewService:
                 "`post-draft-note`) first, then approve."
             )
             return msg, 1
-        api = self._get_api()
-        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
-        if status in _HTTP_OK_CODES:
-            record_note_claim(self._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
-            return f"OK approved !{mr}", 0
-        # GitLab returns 401 for the idempotent already-approved case as
-        # well as a genuine auth failure (#1029). Probe /approvals to
-        # distinguish: identity already in approved_by → no-op success.
-        if identity_in_approved_by(api, encoded, mr):
-            return f"Already approved by {api.current_username()} (!{mr})", 0
-        return f"Failed: HTTP {status}", 1
+        from teatree.cli.review_post_impl import approve_impl  # noqa: PLC0415
+
+        return self._publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
         """Revoke this identity's approval on an MR. Returns (message, exit_code).
@@ -550,15 +484,10 @@ class ReviewService:
         blocked = check_on_behalf(repo, mr, "unapprove")
         if blocked:
             return blocked, 1
-        api = self._get_api()
+        from teatree.cli.review_post_impl import unapprove_impl  # noqa: PLC0415
+
         encoded = repo.replace("/", "%2F")
-        status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
-        if status in _HTTP_OK_CODES:
-            record_note_claim(
-                self._resolve_base_url, repo, mr, "unapprove", kind="gitlab_approve", endpoint="unapprove"
-            )
-            return f"OK unapproved !{mr}", 0
-        return f"Failed: HTTP {status}", 1
+        return self._publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
 
 
 # Register sibling-module typer commands. Kept out of this file so the
