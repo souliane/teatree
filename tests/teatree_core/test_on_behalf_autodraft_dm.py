@@ -31,6 +31,10 @@ from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval
 pytestmark = pytest.mark.django_db
 
 
+def _noop() -> None:
+    return None
+
+
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(
@@ -66,7 +70,7 @@ class TestAutoDraftDmOnePerTargetAction:
         # notify orchestration runs for real, including the BotPing ledger.
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 
-        require_on_behalf_approval(target="org/repo!7", action="post_draft_note")
+        require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
 
         key = "on_behalf_autodraft:org/repo!7:post_draft_note"
         ping = BotPing.objects.get(idempotency_key=key)
@@ -83,8 +87,8 @@ class TestAutoDraftDmOnePerTargetAction:
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 
-        require_on_behalf_approval(target="org/repo!7", action="post_draft_note")
-        require_on_behalf_approval(target="org/repo!7", action="post_draft_note")
+        require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
+        require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
 
         key = "on_behalf_autodraft:org/repo!7:post_draft_note"
         assert BotPing.objects.filter(idempotency_key=key).count() == 1
@@ -96,8 +100,8 @@ class TestAutoDraftDmOnePerTargetAction:
         backend = _stub_backend()
         self.monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda: backend)
 
-        require_on_behalf_approval(target="org/repo!7", action="post_draft_note")
-        require_on_behalf_approval(target="org/repo!42", action="post_draft_note")
+        require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)
+        require_on_behalf_approval(target="org/repo!42", action="post_draft_note", publish=_noop)
 
         assert BotPing.objects.filter(idempotency_key__startswith="on_behalf_autodraft:").count() == 2
         assert backend.post_message.call_count == 2

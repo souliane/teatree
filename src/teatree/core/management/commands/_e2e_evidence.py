@@ -26,7 +26,11 @@ from typing import TypedDict
 
 from teatree.backends.protocols import CodeHostBackend
 from teatree.core.models import Ticket, Worktree
-from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval
+from teatree.core.on_behalf_gate_recorded import (
+    OnBehalfPostBlockedError,
+    on_behalf_block_message,
+    require_on_behalf_approval,
+)
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
@@ -397,11 +401,16 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
     Runs only after every validator passed. The on-behalf gate is the last
     check before any side effect: a BLOCK with no recorded approval raises
     :class:`OnBehalfPostBlockedError`, which the command surfaces as a
-    non-zero exit rather than publishing unattended. Idempotency is keyed on
-    the hidden ``(env, commit)`` marker: a matching prior comment is edited
-    in place (``action="updated"``); otherwise a new comment is created.
+    non-zero exit rather than publishing unattended. The non-consuming peek
+    raises *before* any artifact upload; the consume then happens atomically
+    with the comment post (#1879), so a failed post burns no approval and
+    writes no lying audit. Idempotency is keyed on the hidden ``(env, commit)``
+    marker: a matching prior comment is edited in place (``action="updated"``);
+    otherwise a new comment is created.
     """
-    require_on_behalf_approval(target=post.issue_url, action=_ON_BEHALF_ACTION)
+    blocked = on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION)
+    if blocked:
+        raise OnBehalfPostBlockedError(post.issue_url, _ON_BEHALF_ACTION)
 
     before_md = _upload_artifact(host, repo=post.repo, filepath=str(post.before_path), label="before")
     after_md = _upload_artifact(host, repo=post.repo, filepath=str(post.after_path), label="after")
@@ -424,11 +433,19 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
         commit=post.commit,
     )
     if match_id is not None:
-        result = host.update_issue_comment(issue_url=post.issue_url, comment_id=match_id, body=body)
+        result = require_on_behalf_approval(
+            target=post.issue_url,
+            action=_ON_BEHALF_ACTION,
+            publish=lambda: host.update_issue_comment(issue_url=post.issue_url, comment_id=match_id, body=body),
+        )
         action = "updated"
         comment_id = match_id
     else:
-        result = host.post_issue_comment(issue_url=post.issue_url, body=body)
+        result = require_on_behalf_approval(
+            target=post.issue_url,
+            action=_ON_BEHALF_ACTION,
+            publish=lambda: host.post_issue_comment(issue_url=post.issue_url, body=body),
+        )
         action = "created"
         comment_id = _comment_id(result)
 

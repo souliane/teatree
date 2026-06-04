@@ -25,9 +25,9 @@
   file: .semgrep/blocking/predictable-temp-path.yaml
 
 - id: consume-before-side-effect-not-atomic
-  issue: souliane/teatree#1879
-  status: warn
-  file: .semgrep/warn/consume-before-side-effect-not-atomic.yaml
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .semgrep/blocking/consume-before-side-effect-not-atomic.yaml
 
 - id: cas-stamp-before-side-effect
   issue: souliane/teatree#1880

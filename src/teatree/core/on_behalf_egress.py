@@ -95,8 +95,11 @@ class OnBehalfSlackEgress:
         """
         if self._is_self_dm(channel):
             return self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
-        require_on_behalf_approval(target=target, action=action)
-        response = self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji)
+        response = require_on_behalf_approval(
+            target=target,
+            action=action,
+            publish=lambda: self._messaging.react_routed(channel=channel, ts=ts, emoji=emoji),
+        )
         if response.get("ok"):
             notify_user_on_behalf_post(
                 target=target,
@@ -129,8 +132,11 @@ class OnBehalfSlackEgress:
         """
         if self._is_self_dm(channel):
             return self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
-        require_on_behalf_approval(target=target, action=action)
-        response = self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
+        response = require_on_behalf_approval(
+            target=target,
+            action=action,
+            publish=lambda: self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts),
+        )
         if response.get("ok"):
             notify_user_on_behalf_post(
                 target=target,
