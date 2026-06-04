@@ -1,79 +1,86 @@
-# Architecture pre-check — OnBehalfSlackEgress (away-mode colleague-react incident)
+# Architecture pre-check — souliane/teatree#128 (generic chokepoint registry)
 
 ## 1. BLUEPRINT § alignment
 
-§ "Slack token routing" (#1750 route_token self-vs-colleague) + the on-behalf gate
-section (`on_behalf_post_mode`, `require_on_behalf_approval`, `notify_user_on_behalf_post`).
-Claim: every colleague-surface Slack post/react under the user's identity flows through
-one cohesive `OnBehalfSlackEgress` that runs gate→route→emit→audit in one place; self-DM
-short-circuits ungated via the same #1750 classifier (fail-closed on unknown surface).
+Extends the §17.1-invariant-2 flywheel (enforcement-as-structure) and the
+quality-catalog machinery (`antipatterns.yaml`/`regression_rules.yaml`): one
+declarative registry {protected symbol -> sole allowed module} + one generic
+AST checker for call-site authorization. Distinct from tach (import graph) and
+semgrep (intra-body shapes).
 
 ## 2. FSM phase boundaries
 
-n/a — no `Ticket.State` / `Worktree.State` transition added. The FSM-driven signals.py
-reaction path is deliberately out of scope (separate slack_reactions transport, already
-gate+audit-correct).
+n/a — no `Ticket.State`/`Worktree.State` transition touched.
 
 ## 3. Extension-point contracts
 
-No `OverlayBase` / scanner-registration / `*Backend` Protocol change. `MessagingBackend`
-Protocol is unchanged — the self-DM classifier duck-types `route_token` (not on the
-Protocol) so no Protocol surface grows and no fake needs updating. Consumers rewired:
-review_claim.emit_review_done_reactions, review_request_merge_react.react_merge_on_post,
-slack_broadcasts._react_done, review_nag._post_thread_nag, notify.Command.post/react,
-slack_listen.react_command +_ack_messages.
+n/a — no `OverlayBase`/scanner/hook-router/`*Backend` Protocol surface changed.
+The registry references existing symbols (`subprocess.*`, `post_routed`,
+`react_routed`, `react`, `post_message`) but adds no new contract.
 
 ## 4. Component boundaries
 
-`src/teatree/core/on_behalf_egress.py`. Both reused seams (the gate
-`on_behalf_gate_recorded`, the audit `on_behalf_post_receipt`) already live in
-teatree.core; `MessagingBackend`/`RawAPIDict` are in teatree.backends/teatree.types which
-core depends on. teatree.messaging is the wrong home (the gate+audit are not there).
+- Registry data: `src/teatree/quality/chokepoints.yaml` (sibling of
+  `antipatterns.yaml`/`regression_rules.yaml`).
+- Loader: `src/teatree/quality/chokepoints.py` (mirrors `regression_catalog.py`
+  — yaml + frozen dataclass + load-time validation, stdlib only).
+- Generic checker: `scripts/hooks/check_chokepoints.py` (generalizes
+  `check_subprocess_ban.py`'s AST visitor; registry-driven).
+- Conformance test: `tests/quality/test_chokepoints.py` (mirrors
+  `test_catalog.py`).
 
 ## 5. Dependency direction
 
-Imports: require_on_behalf_approval + OnBehalfPostBlockedError (teatree.core),
-notify_user_on_behalf_post (teatree.core), MessagingBackend (teatree.backends), RawAPIDict
-(teatree.types). All existing edges in tach.toml `teatree.core` depends_on. No new edge.
-`uv run tach check` confirms.
+`teatree.quality` is `layer=foundation`, `depends_on=["teatree.utils"]`. The
+loader imports only stdlib + `yaml` — adds no tach edge. The reachability-ledger
+assertions that touch `teatree.backends.slack_bot` live in the TEST file (tests
+are not tach-constrained). `uv run tach check` stays green.
 
 ## 6. Test surface
 
-- bypass-closed (RED-now) for the 4 loop sites: under ask + no approval, the routed
-  primitive is NOT called and the claim is released / a `.gated` signal emitted.
-- satisfiable must-FIRE: with a recorded OnBehalfApproval, reacts/posts once + one
-  `on_behalf_post:<target>:<action>` BotPing.
-- self-DM carve-out: route_token classifies self → emit, no raise, no BotPing, no approval
-  consumed; colleague D… blocks.
-- fail-closed: backend with no route_token → BLOCKS under ask.
-- audit-only-on-success: ok:false / already_reacted → no notify_user_on_behalf_post.
-- CLI bypass closed (notify react colleague → SystemExit 2; self ungated); ad-hoc
-  `t3 slack react` colleague blocks; `_ack_messages` self stays ungated.
-- import-guard fitness function: no module except on_behalf_egress.py calls
-  `.react_routed(`/`.post_routed(`; no colleague `.react(`/`.post_message(` outside the
-  documented self-ack/bot→user sinks.
+`tests/quality/test_chokepoints.py`:
+
+- schema invariants (ids unique/kebab, `match_kind` enum, non-empty
+  `allowed_modules`/`protected_attrs`);
+- reachability ledger (every `allowed_module` resolves to a real file; every
+  `protected_attr` is a real attribute on its declaring class/module);
+- green-on-tree (zero violations on real `src/teatree/` — the blocking gate);
+- anti-vacuous (synthetic `subprocess.run` / `x.post_routed()` outside allowed
+  -> rc 1; inside -> rc 0; `def post_routed` -> rc 0; annotation/except -> rc 0);
+- loader validation (bad enum / dup id / non-kebab / empty allowed rejected);
+- self-maintenance Tier-2 (subprocess entry's `protected_attrs` superset of the
+  historical `{run,Popen,check_output,check_call,call}`).
 
 ## 7. Resilience invariants
 
-External write = Slack post/react. verify-by-re-read: callers keep inspecting the raw
-Slack body (ok/error). idempotency: each call site keeps its pre-existing claim
-(OutboundClaim ledger / done_at / last_nag_step); the audit DM is deduped per
-(target, action) by notify_user_on_behalf_post's idempotency key. fallback-transport:
-unchanged per site (claim release on block/transport error). heartbeat: n/a (single call).
-sub-agent return contract: n/a.
+n/a — pure static-analysis gate, no external write, no DB row, no sub-agent.
 
 ## 8. Identity and key normalization
 
-target is canonicalized UP to the on-behalf canonical form by OnBehalfApproval.consume /
-require_on_behalf_approval — the egress passes target through verbatim; no strip/split to
-make a comparison succeed.
+The canonical key is the fully-qualified dotted module path
+(`teatree.utils.run`). `module_path_for(rel_path)` canonicalizes a scanned file
+UP to its dotted path; `allowed_modules` are stored as dotted paths and compared
+by identity — no `split`/`strip`-to-match seam.
 
 ## 9. Behavior preservation / capability deletion
 
-Replaces scattered raw egress with the class. Preserved per site: #1838 self-author skip
-(before the gate), done_at / last_nag_step atomic claim (before the gate),
-ConnectChannelBotRestrictedError re-raise + dedup (slack_broadcasts), the ok/error/
-already_reacted/missing_scope mapping (returned raw body). Dropped: review_claim._react_routed
-helper, slack_listen.post_reaction +_resolve_reaction_token (raw personal-xoxp
-reactions.add path) — clean cutover, no shim. No privacy/security matcher narrowed. No
-must-block test inverted.
+Deletes `check_subprocess_ban.py` (+ test + pre-commit block) and
+`tests/teatree_core/test_on_behalf_egress_import_guard.py`. The import-guard had
+TWO invariants, BOTH preserved as registry entries:
+
+- invariant 1 (`react_routed`/`post_routed` only inside `on_behalf_egress`)
+  -> entry `on-behalf-routed-egress` (method-kind, allowed=`teatree.core.on_behalf_egress`);
+- invariant 2 (`react`/`post_message` only at documented bot->user/self-ack
+  sinks, with the receiver-is-egress carve-out) -> entry
+  `on-behalf-colleague-primitives` (method-kind + `exempt_receivers:
+  [egress, OnBehalfSlackEgress]`, allowed = the documented sink modules).
+`exempt_receivers` is an optional refinement of the existing `method` kind, NOT
+a third `match_kind` — the DSL stays two-valued. No must-block test inverted to
+must-not-block. `os.system` deliberately NOT added (zero hits; the deleted ban
+excluded it — flagged in the commit body).
+DEFER (tracked follow-ups, would break green): httpx/requests (~15 modules),
+gh/glab forge argv (different matcher), secrets `read_pass` (~9 modules),
+merge-keystone (`merge_ticket_pr`/`record_merge_and_advance` are bare-name
+function calls — neither `module_attr` nor `method`; registering needs a third
+match_kind = scope creep). KEEP SEPARATE (term/diff scans, not call sites):
+`check_no_overlay_leak.py`, banned-terms, privacy-push-scan.
