@@ -167,12 +167,12 @@ class RecoverReport:
         if self.requeue_candidates:
             lines.append(f"Re-queue candidates ({len(self.requeue_candidates)}):")
             lines += [
-                f"  task#{c.task_pk} {c.phase or '(no phase)'} "
+                f"  task TODO-{c.task_pk} {c.phase or '(no phase)'} "
                 f"{'[outage]' if c.is_outage else '[failed]'} {c.ticket_url or '(no url)'} — {c.error}"
                 for c in self.requeue_candidates
             ]
         if self.drift_ticket_pks:
-            lines.append(f"Reconcile drift on tickets: {', '.join(f'#{pk}' for pk in self.drift_ticket_pks)}")
+            lines.append(f"Reconcile drift on tickets: {', '.join(f'teatree#{pk}' for pk in self.drift_ticket_pks)}")
         if not self.has_findings:
             lines.append("(no stranded work found)")
         return "\n".join(lines)

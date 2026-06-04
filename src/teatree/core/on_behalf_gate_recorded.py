@@ -28,12 +28,35 @@ on the tri-state :class:`~teatree.config.OnBehalfPostMode`:
     (:attr:`~teatree.config.OnBehalfPostMode.ASK` or
     :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK` for non-draft
     actions) + a recorded, unconsumed, exactly-scoped
-    :class:`OnBehalfApproval` → consume it single-use, write an
-    :class:`OnBehalfAudit` row, return — the post proceeds;
-*   BLOCK + no recorded approval → raise :class:`OnBehalfPostBlockedError`.
-    The caller must NOT publish; it surfaces the blocked post to the user
-    (the user-notify path) so the user can approve it in plain text by
-    recording an approval — never a silent drop, never an unattended post.
+    :class:`OnBehalfApproval` → inside ONE ``transaction.atomic`` block:
+    consume it single-use, run the caller's ``publish`` side-effect, write
+    an :class:`OnBehalfAudit` row — all-or-nothing. The post's result is
+    returned;
+*   BLOCK + no recorded approval → raise :class:`OnBehalfPostBlockedError`
+    *before* ``publish`` runs. The caller never publishes; it surfaces the
+    blocked post to the user (the user-notify path) so the user can approve
+    it in plain text by recording an approval — never a silent drop, never
+    an unattended post.
+
+The post is supplied as a ``publish`` callback so consume, post and audit
+share one transaction (#1879). Previously the gate consumed the single-use
+approval and wrote the audit in a transaction *separate* from the caller's
+later post: a post that failed after the gate returned burned the approval
+(forcing the user to re-approve) and left an :class:`OnBehalfAudit` row
+claiming a post that never happened. A ``publish`` that raises now rolls the
+whole block back — the approval is NOT burned, no audit is written, and a
+retry can reuse the same recorded approval. This makes the
+post→succeed→consume+audit invariant structural, the same way
+:meth:`DeferredQuestion.consume` / ``MergeClear`` / ``DbApproval`` co-locate
+consume and audit in one block, and ``red_card`` / ``review_request_merge_react``
+use the post→verify→stamp order for reactions.
+
+:func:`on_behalf_block_message` is the *non-consuming* peek: it returns the
+blocked-post message (or ``""`` when the post may proceed) without consuming
+any approval or running any side-effect — for callers that surface an early
+refusal before doing expensive prep, then publish through
+:func:`require_on_behalf_approval`. The consuming path is exactly
+:func:`require_on_behalf_approval`; the peek can never burn an approval.
 
 Default DRAFT_OR_ASK: the new default mode publishes draft-form notes
 autonomously (drafts are colleague-invisible and revocable) but blocks
@@ -43,14 +66,15 @@ every other colleague-visible mutation. The user satisfies the gate
 deliberately avoided).
 
 The ORM-model imports (``OnBehalfApproval`` / ``OnBehalfAudit``) live
-inside :func:`require_on_behalf_approval` rather than at module top
-because ``teatree.cli.review_on_behalf.check_on_behalf`` imports this
-module lazily so the ``teatree.cli`` package can be loaded before
-``django.setup()`` runs (typer command discovery, ``--help`` rendering,
-the privacy-scan subprocess). An eager ORM import here would defeat
-the lazy chain and crash the CLI with ``ImproperlyConfigured`` (see
-souliane/teatree#1003).
+inside the functions rather than at module top because
+``teatree.cli.review_on_behalf`` imports this module lazily so the
+``teatree.cli`` package can be loaded before ``django.setup()`` runs (typer
+command discovery, ``--help`` rendering, the privacy-scan subprocess). An
+eager ORM import here would defeat the lazy chain and crash the CLI with
+``ImproperlyConfigured`` (see souliane/teatree#1003).
 """
+
+from collections.abc import Callable
 
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
@@ -75,34 +99,80 @@ class OnBehalfPostBlockedError(RuntimeError):
         )
 
 
-def require_on_behalf_approval(*, target: str, action: str) -> None:
-    """Gate one on-behalf post against the tri-state mode.
+def require_on_behalf_approval[PublishResult](
+    *,
+    target: str,
+    action: str,
+    publish: Callable[[], PublishResult],
+) -> PublishResult:
+    """Gate one on-behalf post against the tri-state mode and run it atomically.
 
-    See module docstring for the four-outcome table. Fail-closed: an
-    unresolved (default) setting maps to
+    See the module docstring for the four-outcome table. ``publish`` performs
+    the colleague-visible side-effect and returns its result (the posted
+    artifact ref). Fail-closed: an unresolved (default) setting maps to
     :attr:`~teatree.config.OnBehalfPostMode.DRAFT_OR_ASK`, and that mode
     BLOCKs every action that isn't in
     :data:`~teatree.on_behalf_gate._DRAFT_FORM_ACTIONS` when no recorded
     approval matches.
+
+    *   PROCEED / AUTO_DRAFT → run ``publish`` and return its result (no
+        consume, no audit; AUTO_DRAFT also emits the autodraft DM first).
+    *   BLOCK + recorded approval → inside one ``transaction.atomic`` block
+        consume the approval, run ``publish``, write the audit, return the
+        result. A ``publish`` that raises rolls back the consume and the
+        audit (#1879) — the approval survives for a retry, no audit lies.
+    *   BLOCK + no approval → raise :class:`OnBehalfPostBlockedError` before
+        ``publish`` runs.
     """
     verdict = resolve_on_behalf_verdict(action)
     if verdict is OnBehalfVerdict.PROCEED:
-        return
+        return publish()
     if verdict is OnBehalfVerdict.AUTO_DRAFT:
         _notify_on_behalf_autodraft(target=target, action=action)
-        return
-    # BLOCK path — consume a recorded approval or raise.
+        return publish()
+
+    from django.db import transaction  # noqa: PLC0415
+
     from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
 
-    consumed = OnBehalfApproval.consume(target, action)
-    if consumed is None:
-        raise OnBehalfPostBlockedError(target, action)
-    OnBehalfAudit.objects.create(
-        approval=consumed,
-        target=consumed.target,
-        action=consumed.action,
-        approver_id=consumed.approver_id,
-    )
+    with transaction.atomic():
+        consumed = OnBehalfApproval.consume(target, action)
+        if consumed is None:
+            raise OnBehalfPostBlockedError(target, action)
+        result = publish()
+        OnBehalfAudit.objects.create(
+            approval=consumed,
+            target=consumed.target,
+            action=consumed.action,
+            approver_id=consumed.approver_id,
+        )
+        return result
+
+
+def on_behalf_block_message(target: str, action: str) -> str:
+    """Return the blocked-post message, or ``""`` when the post may proceed.
+
+    The *non-consuming* peek: it never consumes an approval, writes an audit,
+    or runs a side-effect — it only reports whether
+    :func:`require_on_behalf_approval` would raise for this (target, action).
+    Callers that do expensive prep before publishing use it to refuse early;
+    the real publish then goes through :func:`require_on_behalf_approval`,
+    which consumes the approval atomically with the post.
+
+    PROCEED / AUTO_DRAFT → ``""`` (the post may proceed; the autodraft DM is
+    deferred to the atomic publish so a peek never DMs). BLOCK + an
+    unconsumed matching approval → ``""``. BLOCK + no approval → the
+    actionable :class:`OnBehalfPostBlockedError` message.
+    """
+    verdict = resolve_on_behalf_verdict(action)
+    if verdict is not OnBehalfVerdict.BLOCK:
+        return ""
+
+    from teatree.core.models.on_behalf_approval import OnBehalfApproval  # noqa: PLC0415
+
+    if OnBehalfApproval.has_unconsumed(target, action):
+        return ""
+    return str(OnBehalfPostBlockedError(target, action))
 
 
 def _notify_on_behalf_autodraft(*, target: str, action: str) -> None:

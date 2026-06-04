@@ -13,9 +13,13 @@ because this module IS the extracted implementation of those methods.
 """
 # ruff: noqa: SLF001 — sibling-module extraction of ReviewService method bodies (#1280).
 
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from teatree.cli.review_approval import identity_in_approved_by
 from teatree.cli.review_audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
+
+_HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
 def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
@@ -143,3 +147,168 @@ def post_comment_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI
             "the MR diff may have shifted since position was resolved)"
         ), 0
     return f"OK discussion_id={discussion_id} (inline DiffNote)", 0
+
+
+def publish_draft_notes_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.publish_draft_notes`."""
+    api = service._get_api()
+    status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/draft_notes/bulk_publish")
+    if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        record_note_claim(service._resolve_base_url, repo, mr, "bulk_publish", endpoint="draft_notes/bulk_publish")
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="publish_draft_notes",
+                summary=f"published all draft notes on {repo}!{mr}",
+            ),
+        )
+        return "OK — all draft notes published", 0
+    return f"Failed: HTTP {status}", 1
+
+
+def reply_to_discussion_impl(  # noqa: PLR0913 — extracted ReviewService publish body; args mirror the method (#1280).
+    service: "ReviewService", repo: str, mr: int, discussion_id: str, body: str, *, encoded: str
+) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.reply_to_discussion`."""
+    api = service._get_api()
+    result = api.post_json(
+        f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}/notes",
+        {"body": body},
+    )
+    if not result:
+        return "Failed to post reply", 1
+    result_dict = dict(result) if isinstance(result, dict) else {}
+    note_id = result_dict.get("id")
+    record_note_claim(
+        service._resolve_base_url, repo, mr, note_id, endpoint="discussions/notes", discussion_id=discussion_id
+    )
+    notify_review_after_receipt(
+        service._resolve_base_url,
+        repo,
+        mr,
+        review_action=ReviewAfterReceipt(
+            action="reply_to_discussion",
+            summary=f"replied to discussion {discussion_id} (note_id={note_id}) on {repo}!{mr}",
+            note_web_url=str(result_dict.get("web_url", "")),
+        ),
+    )
+    return f"OK reply_note_id={note_id}", 0
+
+
+def resolve_discussion_impl(  # noqa: PLR0913 — extracted ReviewService publish body; args mirror the method (#1280).
+    service: "ReviewService", repo: str, mr: int, discussion_id: str, *, resolved: bool, encoded: str
+) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.resolve_discussion`."""
+    api = service._get_api()
+    flag = "true" if resolved else "false"
+    status = api.put_status(f"projects/{encoded}/merge_requests/{mr}/discussions/{discussion_id}?resolved={flag}")
+    if status in {HTTPStatus.OK, HTTPStatus.NO_CONTENT}:
+        record_note_claim(
+            service._resolve_base_url,
+            repo,
+            mr,
+            f"{discussion_id}#resolved={flag}",
+            endpoint="discussions/resolve",
+            resolved=resolved,
+        )
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="resolve_discussion",
+                summary=f"set discussion {discussion_id} resolved={resolved} on {repo}!{mr}",
+            ),
+        )
+        return f"OK resolved={resolved}", 0
+    return f"Failed: HTTP {status}", 1
+
+
+def update_note_impl(  # noqa: PLR0913 — extracted ReviewService publish body; args mirror the method (#1280).
+    service: "ReviewService", repo: str, mr: int, note_id: int, body: str, *, encoded: str
+) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.update_note` (draft → published fallback)."""
+    api = service._get_api()
+    draft_status = api.put_status(
+        f"projects/{encoded}/merge_requests/{mr}/draft_notes/{note_id}",
+        {"note": body},
+    )
+    if draft_status == HTTPStatus.OK:
+        record_note_claim(service._resolve_base_url, repo, mr, f"update:draft:{note_id}", endpoint="draft_notes/update")
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="update_note",
+                summary=f"updated draft_note_id={note_id} on {repo}!{mr}",
+            ),
+        )
+        return f"OK updated draft_note_id={note_id}", 0
+    if draft_status != HTTPStatus.NOT_FOUND:
+        return f"Failed (draft): HTTP {draft_status}", 1
+
+    pub_status = api.put_status(
+        f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}",
+        {"body": body},
+    )
+    if pub_status == HTTPStatus.OK:
+        record_note_claim(service._resolve_base_url, repo, mr, f"update:pub:{note_id}", endpoint="notes/update")
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="update_note",
+                summary=f"updated published note_id={note_id} on {repo}!{mr}",
+            ),
+        )
+        return f"OK updated note_id={note_id}", 0
+    return f"Failed: HTTP {pub_status}", 1
+
+
+def delete_discussion_impl(
+    service: "ReviewService", repo: str, mr: int, note_id: int, *, encoded: str
+) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.delete_discussion`."""
+    api = service._get_api()
+    status = api.delete(f"projects/{encoded}/merge_requests/{mr}/notes/{note_id}")
+    if status == HTTPStatus.NO_CONTENT:
+        notify_review_after_receipt(
+            service._resolve_base_url,
+            repo,
+            mr,
+            review_action=ReviewAfterReceipt(
+                action="delete_discussion",
+                summary=f"deleted published note_id={note_id} on {repo}!{mr}",
+            ),
+        )
+        return f"OK deleted note_id={note_id}", 0
+    return f"Failed: HTTP {status}", status
+
+
+def approve_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.approve` (post-review-precondition)."""
+    api = service._get_api()
+    status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/approve")
+    if status in _HTTP_OK_CODES:
+        record_note_claim(service._resolve_base_url, repo, mr, "approve", kind="gitlab_approve", endpoint="approve")
+        return f"OK approved !{mr}", 0
+    # GitLab returns 401 for the idempotent already-approved case as well as a
+    # genuine auth failure (#1029). Probe /approvals: identity already in
+    # approved_by → no-op success.
+    if identity_in_approved_by(api, encoded, mr):
+        return f"Already approved by {api.current_username()} (!{mr})", 0
+    return f"Failed: HTTP {status}", 1
+
+
+def unapprove_impl(service: "ReviewService", repo: str, mr: int, *, encoded: str) -> tuple[str, int]:
+    """The pre-gate-passed publish body of :meth:`ReviewService.unapprove`."""
+    api = service._get_api()
+    status = api.post_status(f"projects/{encoded}/merge_requests/{mr}/unapprove")
+    if status in _HTTP_OK_CODES:
+        record_note_claim(service._resolve_base_url, repo, mr, "unapprove", kind="gitlab_approve", endpoint="unapprove")
+        return f"OK unapproved !{mr}", 0
+    return f"Failed: HTTP {status}", 1

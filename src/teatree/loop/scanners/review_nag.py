@@ -42,12 +42,13 @@ failure, unparsable URL) fails open and the nag proceeds as before.
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from django.utils import timezone
 
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
 
@@ -88,6 +89,7 @@ class ReviewNagScanner:
     messaging: MessagingBackend | None
     user_slack_id: str
     host: CodeHostBackend | None = None
+    identities: tuple[str, ...] = field(default_factory=tuple)
     now: dt.datetime | None = None
     name: str = "review_nag"
 
@@ -168,7 +170,7 @@ class ReviewNagScanner:
             logger.warning("review_nag: open-state lookup failed for %s: %s", post.mr_url, exc)
             return None
         if open_state is PrOpenState.MERGED:
-            return react_merge_on_post(post, messaging)
+            return react_merge_on_post(post, messaging, host=self.host, identities=self.identities)
         if open_state is not PrOpenState.CLOSED:
             return None
         post.done_at = right_now
@@ -275,10 +277,23 @@ def _post_thread_nag(
     day_number = _FIBONACCI_DAYS[target_step - 1]
     text = _nag_text(messaging, post.mr_url, day_number)
     try:
-        messaging.post_message(
+        OnBehalfSlackEgress(messaging).post(
             channel=post.slack_channel_id,
             text=text,
+            target=post.mr_url,
+            action="review_nag_post",
             thread_ts=post.slack_thread_ts,
+            destination=f"review-request thread for {post.mr_url}",
+            summary=f"day-{day_number} nag",
+        )
+    except OnBehalfPostBlockedError as blocked:
+        ReviewRequestPost.objects.filter(pk=post.pk, last_nag_step=target_step).update(
+            last_nag_step=claimed_from,
+        )
+        return ScanSignal(
+            kind="review_nag.gated",
+            summary=str(blocked),
+            payload={"mr_url": post.mr_url, "post_id": post.pk},
         )
     except Exception as exc:  # noqa: BLE001 — Slack-Connect not_in_channel etc.
         # Release the claim so a future re-invitation retries the post.

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-review_signal_is_reaction_not_author_dm-fail", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll DM the author to tell them the review passed."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 teatree notify send --dm-author \"Reviewed !4120, looks good\""}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

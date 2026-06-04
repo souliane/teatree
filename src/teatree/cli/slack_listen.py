@@ -3,73 +3,15 @@
 import logging
 from pathlib import Path
 
-import httpx
 import typer
 
-from teatree.backends.slack_react_errors import SlackReactionError, build_react_error_message
 from teatree.backends.slack_receiver import default_queue_path, run_listener
-from teatree.cli.slack_user_token_setup import USER_TOKEN_PASS_KEY
+from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
 
 slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_args_is_help=True)
-
-
-def _resolve_reaction_token() -> str:
-    """Return the personal Slack user-OAuth token (``xoxp-…``) for reactions.
-
-    Reactions on user DMs and on Slack-Connect externally-shared channels
-    are rejected when sent with the bot token (``message_not_found`` and
-    ``mcp_externally_shared_channel_restricted`` respectively — see
-    BLUEPRINT § "Slack token routing" and ``feedback_slack_reactions_via_
-    personal_token_not_bot``). The personal ``xoxp-…`` token provisioned
-    by ``t3 setup slack-user-token`` (#1210/#1220/#1232) is the only
-    credential that reliably reaches both surfaces; this helper centralises
-    the lookup so every ad-hoc reaction call site (``t3 slack react`` and
-    the ``t3 slack check`` ack path) shares a single source of truth.
-    """
-    return read_pass(USER_TOKEN_PASS_KEY)
-
-
-def post_reaction(*, token: str, channel: str, ts: str, emoji: str) -> bool:
-    """Call Slack ``reactions.add`` with *token* and return success.
-
-    Treats ``already_reacted`` as success — the desired end state is the
-    emoji being present on the message. Transport-level failures (HTTP
-    5xx, ``httpx.HTTPError``) return ``False`` and are logged: there is
-    no auth gap to surface, just a network blip.
-
-    Slack-API-level failures (``ok:false`` — ``missing_scope``,
-    ``not_in_channel``, ``mcp_externally_shared_channel_restricted``, …)
-    raise :class:`SlackReactionError` (#1281). The pre-#1281 silent
-    ``return False`` let callers fall back to
-    ``chat.postMessage(text=":emoji:")`` on the broadcast's thread —
-    which the BINDING memory ``feedback_react_not_emoji_thread_comment``
-    forbids. The CLI ``react`` command translates the raise into a
-    structured exit-1 message pointing at the documented remediation.
-    """
-    if not (token and channel and ts and emoji):
-        return False
-    try:
-        response = httpx.post(
-            "https://slack.com/api/reactions.add",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"channel": channel, "timestamp": ts, "name": emoji},
-            timeout=10.0,
-        )
-    except httpx.HTTPError as exc:
-        logging.getLogger(__name__).warning("Slack reactions.add transport failed: %s", exc)
-        return False
-    if not response.is_success:
-        logging.getLogger(__name__).warning("Slack reactions.add HTTP %s", response.status_code)
-        return False
-    payload = response.json()
-    if payload.get("ok"):
-        return True
-    error = payload.get("error", "")
-    if error == "already_reacted":
-        return True
-    raise SlackReactionError(error, build_react_error_message(error, channel, ts))
 
 
 def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
@@ -175,38 +117,40 @@ def check_command() -> None:
 
 
 def _ack_messages(messages: list[dict[str, str]]) -> None:
-    """React with 👀 on each message via the personal user OAuth token.
+    """React with 👀 on each inbound user message through the on-behalf egress.
 
-    User DMs and Slack-Connect channels reject the bot token for
-    ``reactions.add`` (``message_not_found`` / ``mcp_externally_shared_
-    channel_restricted``); routing through the personal ``xoxp-…`` token
-    at ``pass slack/user-oauth-token`` is the only path that reliably
-    succeeds on both surfaces (#1232).
+    Each drained message is the user's own inbound DM/mention, so the
+    egress classifies it self-DM and the :eyes: ack stays ungated (the same
+    #1750 ``route_token`` self branch). Routing it through the one egress
+    keeps every reaction under one classifier instead of a raw personal-xoxp
+    ``reactions.add``. A reaction that fails (transport, auth gap, or a
+    colleague-channel mention now correctly gated) is logged and skipped —
+    the fast cron must not break the whole tick on one ack.
     """
-    token = _resolve_reaction_token()
-    if not token:
-        logging.getLogger(__name__).warning(
-            "Personal Slack user-OAuth token missing at `pass %s` — "
-            "run `t3 setup slack-user-token` to enable reaction acks.",
-            USER_TOKEN_PASS_KEY,
-        )
-        return
+    import django  # noqa: PLC0415
+
+    django.setup()
     for msg in messages:
+        overlay = msg.get("overlay", "")
         channel = msg.get("channel", "")
         ts = msg.get("ts", "")
+        backend = messaging_from_overlay(overlay or None)
+        if backend is None:
+            logging.getLogger(__name__).warning("No slack backend for overlay %r — skipping :eyes: ack", overlay)
+            continue
         try:
-            post_reaction(token=token, channel=channel, ts=ts, emoji="eyes")
-        except SlackReactionError as exc:
-            # ``t3 slack check`` runs from a fast cron — a Slack auth gap
-            # on a single ack must not break the whole tick. Surface the
-            # gap in the log; the next ``react`` invocation (or the
-            # operator's own re-run) gets the same structured hint.
-            logging.getLogger(__name__).warning(
-                "Skipping :eyes: ack on %s/%s: %s",
-                channel,
-                ts,
-                exc,
+            OnBehalfSlackEgress(backend).react(
+                channel=channel,
+                ts=ts,
+                emoji="eyes",
+                target=channel,
+                action="slack_check_ack",
+                destination=channel,
             )
+        except OnBehalfPostBlockedError as blocked:
+            logging.getLogger(__name__).warning("Skipping gated :eyes: ack on %s/%s: %s", channel, ts, blocked)
+        except Exception as exc:  # noqa: BLE001 — a single ack failure must not break the cron tick.
+            logging.getLogger(__name__).warning("Skipping :eyes: ack on %s/%s: %s", channel, ts, exc)
 
 
 @slack_app.command("react")
@@ -214,46 +158,48 @@ def react_command(
     channel: str = typer.Argument(..., help="Slack channel id (e.g. `D…` for a DM, `C…` for a channel)."),
     ts: str = typer.Argument(..., help="Message timestamp (e.g. `1700000000.000100`)."),
     emoji: str = typer.Argument(..., help="Emoji name without colons (e.g. `eyes`, `white_check_mark`)."),
+    overlay: str = typer.Option("", "--overlay", help="Overlay whose Slack credentials route the reaction."),
 ) -> None:
-    """Add *emoji* to ``(channel, ts)`` using the personal user-OAuth token.
+    """Add *emoji* to ``(channel, ts)`` through the on-behalf egress (#960/#1750).
 
-    The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
-    (provisioned by ``t3 setup slack-user-token``) is the only credential
-    that reliably reaches user DMs and Slack-Connect externally-shared
-    channels for ``reactions.add`` (#1232).
+    Routes through :class:`OnBehalfSlackEgress` on the route-aware backend:
+    a reaction on the user's own DM stays ungated, a reaction on a colleague
+    or channel message is gated+audited under the on-behalf discipline. The
+    backend resolves from ``--overlay`` or ``T3_OVERLAY_NAME``.
 
     Exit codes:
 
     - ``0`` — success (including the idempotent ``already_reacted`` case).
-    - ``1`` — token is missing **OR** Slack rejected the call with an
-        ``ok:false`` error (``missing_scope``, ``not_in_channel``,
-        ``mcp_externally_shared_channel_restricted``, …). The structured
-        message prints the error code, the remediation CLI
-        (``t3 setup slack-user-token``), #1232, and the BINDING that
-        forbids a thread-emoji fallback
-        (``feedback_react_not_emoji_thread_comment``).
-    - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
-
-    A non-zero exit means **stop and surface the gap** — never fall back
-    to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
+    - ``1`` — no slack backend resolvable, OR the colleague-surface reaction
+        is blocked by ``on_behalf_post_mode`` (the message names the
+        ``t3 review approve-on-behalf`` satisfier), OR Slack rejected the
+        call (``missing_scope``, ``not_in_channel``, …).
     """
-    token = _resolve_reaction_token()
-    if not token:
-        typer.echo(
-            f"ERROR Personal Slack user-OAuth token missing at `pass {USER_TOKEN_PASS_KEY}`. "
-            "Run `t3 setup slack-user-token` first."
-        )
+    import django  # noqa: PLC0415
+
+    django.setup()
+    backend = messaging_from_overlay(overlay or None)
+    if backend is None:
+        typer.echo("ERROR No slack backend resolvable — set --overlay or T3_OVERLAY_NAME.")
         raise typer.Exit(code=1)
     try:
-        success = post_reaction(token=token, channel=channel, ts=ts, emoji=emoji)
-    except SlackReactionError as exc:
-        typer.echo(f"ERROR {exc}")
-        raise typer.Exit(code=1) from exc
-    if success:
+        response = OnBehalfSlackEgress(backend).react(
+            channel=channel,
+            ts=ts,
+            emoji=emoji,
+            target=channel,
+            action="adhoc_slack_react",
+            destination=channel,
+        )
+    except OnBehalfPostBlockedError as blocked:
+        typer.echo(f"ERROR {blocked}")
+        raise typer.Exit(code=1) from blocked
+    error = str(response.get("error") or "")
+    if response.get("ok") or error == "already_reacted":
         typer.echo(f"OK    Reacted :{emoji}: on {channel}/{ts}")
         return
-    typer.echo(f"ERROR reactions.add failed for {channel}/{ts}; see logs.")
-    raise typer.Exit(code=2)
+    typer.echo(f"ERROR reactions.add failed for {channel}/{ts}: {error or 'unknown_error'}")
+    raise typer.Exit(code=1)
 
 
 @slack_app.command("status")

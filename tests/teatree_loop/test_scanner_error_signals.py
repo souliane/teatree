@@ -29,7 +29,8 @@ from teatree.backends.protocols import ApprovalState, ReviewState
 from teatree.backends.slack_bot import SlackBotBackend
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner
-from teatree.loop.scanners.pr_sweep import GhPrApiClient, NullMergeNotifier, PrSweepScanner
+from teatree.loop.scanners.pr_sweep import PrSweepScanner
+from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient, NullMergeNotifier
 from teatree.loop.tick import TickRequest, run_tick
 from teatree.types import RawAPIDict
 
@@ -61,7 +62,7 @@ class TestPrSweepGhApiClientAuthFailure:
                 ),
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient(token="")
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
@@ -76,7 +77,7 @@ class TestPrSweepGhApiClientAuthFailure:
                 stderr="API rate limit exceeded for user ID 12345.",
             )
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient(token="x")
         with pytest.raises(ScannerError) as excinfo:
             api.list_open_prs(slug="owner/repo")
@@ -95,7 +96,7 @@ class TestPrSweepGhApiClientAuthFailure:
             msg = "gh"
             raise FileNotFoundError(msg)
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient(token="x")
         assert api.list_open_prs(slug="owner/repo") == []
 
@@ -110,7 +111,7 @@ class TestPrSweepGhApiClientAuthFailure:
             _ = (cmd, kwargs)
             return _FakeCompleted(returncode=0, stdout="[]", stderr="")
 
-        monkeypatch.setattr("teatree.loop.scanners.pr_sweep.run_allowed_to_fail", _stub_run)
+        monkeypatch.setattr("teatree.loop.scanners.pr_sweep_adapters.run_allowed_to_fail", _stub_run)
         api = GhPrApiClient(token="x")
         assert api.list_open_prs(slug="owner/repo") == []
 

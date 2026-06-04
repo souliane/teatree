@@ -95,12 +95,26 @@ repos:
         types: [python]
         pass_filenames: false
         always_run: true
+      - id: import-linter
+        name: import-linter (transitive/laundered import boundaries)
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
       - id: tach-modules-declared
         name: Every teatree package declared in tach.toml (no blind spots)
         entry: uv run python scripts/hooks/check_tach_modules_declared.py
         language: system
         pass_filenames: false
         always_run: true
+      - id: jscpd
+        name: jscpd (copy/paste duplication in src/teatree — threshold 0)
+        entry: jscpd --config .jscpd.json src/teatree
+        language: node
+        additional_dependencies: ["jscpd@4.2.4"]
+        pass_filenames: false
+        files: ^src/teatree/.*\.py$
   - repo: https://github.com/pre-commit/pygrep-hooks
     rev: 3a6eb0fadf60b3cccfd80bad9dbb6fae7e47b316  # v1.10.0
     hooks:
@@ -183,7 +197,7 @@ repos:
   - repo: local
     hooks:
       - id: dependency-graph
-        name: Update tach dependency graph in BLUEPRINT.md
+        name: Update tach dependency graph in docs/dependency-graph.md
         language: system
         entry: uv run python scripts/hooks/update_dependency_graph.py
         pass_filenames: false
@@ -239,13 +253,19 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
-      - id: subprocess-ban
-        name: Ban raw subprocess calls in src/teatree/ (use teatree.utils.run)
+      - id: check-chokepoints
+        name: Chokepoint call-site authorization (registry-driven)
         language: system
-        entry: uv run python scripts/hooks/check_subprocess_ban.py
+        entry: uv run python scripts/hooks/check_chokepoints.py
         types: [python]
         files: ^src/teatree/
-        exclude: ^src/teatree/utils/run\.py$
+      - id: no-silent-skip
+        name: Ban unconditionally-disabled tests (skip / skipif(True))
+        language: system
+        entry: uv run python scripts/hooks/check_no_silent_skip.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
       - id: skill-prose-ban
         name: Ban new imperative rules in skill MD without companion code (#140)
         language: system
@@ -317,15 +337,13 @@ repos:
         stages: [manual]
 
   # Phase 8b - Pre-push
+  # No full-suite pytest gate here on purpose: the test suite is CI's job, never
+  # the local push path. A host under load times out unrelated wall-clock and
+  # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
+  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) stay as
+  # explicit opt-ins. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
-      - id: pytest-fast
-        name: pytest (fast gate, Python 3.13, parallel — matches CI)
-        language: script
-        entry: dev/test-fast.sh
-        pass_filenames: false
-        always_run: true
-        stages: [push]
       - id: doc-update-gate
         name: README/BLUEPRINT update gate (#1461)
         language: system
@@ -350,11 +368,26 @@ repos:
 
   # Phase 9 - Manual
   - repo: https://github.com/semgrep/semgrep
-    rev: 984f76026160ea94163eee091bc3caa876476b35  # v1.139.0
+    rev: 4cc850aff696dce0f6beddd4bb72db7f4c9abbc0  # v1.165.0 (parses PEP 695 `type` statements)
     hooks:
       - id: semgrep
         additional_dependencies: [semgrep]
         args: [--config=p/ci, --config=p/owasp-top-ten, --error, --timeout=120]
+        stages: [manual]
+      - id: semgrep
+        alias: semgrep-regressions
+        name: Named regression-detector rules (blocking; zero-findings on main)
+        additional_dependencies: [semgrep]
+        args: [scan, --config=.semgrep/blocking, --error, --quiet]
+        pass_filenames: false
+        always_run: true
+      - id: semgrep
+        alias: semgrep-regressions-warn
+        name: Named regression-detector rules (advisory; never blocks)
+        additional_dependencies: [semgrep]
+        entry: bash -c 'semgrep scan --config .semgrep/warn --quiet || true'
+        pass_filenames: false
+        always_run: true
         stages: [manual]
 
   # Phase 10 - Commit-msg

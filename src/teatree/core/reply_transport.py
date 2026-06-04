@@ -27,7 +27,7 @@ from django.db import IntegrityError, transaction
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.slack_mrkdwn import normalize_slack_message
+from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
     from teatree.backends.github import GitHubCodeHost
@@ -176,7 +176,15 @@ class _BaseReplier:
             return dispatch
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             try:
-                require_on_behalf_approval(target=spec.target_ref, action=spec.action_name)
+                # #1879: consume + deliver + audit run in one transaction.atomic
+                # inside the gate, so a delivery failure rolls back the consume
+                # (the approval is never burned) and no audit lies. A BLOCK with
+                # no recorded approval raises before any wire call.
+                posted_ref = require_on_behalf_approval(
+                    target=spec.target_ref,
+                    action=spec.action_name,
+                    publish=lambda: self._deliver(spec),
+                )
             except OnBehalfPostBlockedError as blocked:
                 # Surface, never silently drop and never post unattended: the
                 # FAILED row + actionable message is the user-notify path —
@@ -188,15 +196,19 @@ class _BaseReplier:
                     status=ReplyDispatch.Status.FAILED,
                     error_message=str(blocked),
                 )
-        try:
-            # Savepoint so a DB-level error raised inside subclass
-            # `_deliver` (e.g. a create-vs-create race) does not poison
-            # the outer transaction and the FAILED finalize can still run.
-            with transaction.atomic():
-                posted_ref = self._deliver(spec)
-        except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
-            logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
-            return self._finalize(dispatch, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
+            except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
+                logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
+                return self._finalize(dispatch, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
+        else:
+            try:
+                # Savepoint so a DB-level error raised inside subclass
+                # `_deliver` (e.g. a create-vs-create race) does not poison
+                # the outer transaction and the FAILED finalize can still run.
+                with transaction.atomic():
+                    posted_ref = self._deliver(spec)
+            except Exception as exc:  # noqa: BLE001 — any backend failure becomes a FAILED row
+                logger.warning("Reply %s delivery failed: %s", spec.idempotency_key, exc)
+                return self._finalize(dispatch, status=ReplyDispatch.Status.FAILED, error_message=str(exc))
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             # #949: after-receipt visibility DM. Fires only for the same
             # colleague-visible actions the pre-gate scopes (post_dm /
@@ -235,18 +247,27 @@ class _BaseReplier:
         retry never bypasses it: if still blocked, :class:`OnBehalfPostBlockedError`
         propagates and the sweep keeps the row FAILED until the user records
         an approval.
+
+        #1879: the consume + deliver + audit run in one ``transaction.atomic``
+        inside the gate, so a redeliver that fails rolls back the consume —
+        the recorded approval is REUSED across redelivers instead of a fresh
+        approval being burned on every retry.
         """
-        if dispatch.action_name in self._ON_BEHALF_ACTIONS:
-            require_on_behalf_approval(target=dispatch.target_ref, action=dispatch.action_name)
-        posted_ref = self._deliver(
-            ReplySpec(
-                event=dispatch.event,
-                target_ref=dispatch.target_ref,
-                body=dispatch.body,
-                idempotency_key=dispatch.idempotency_key,
-                action_name=dispatch.action_name,
-            ),
+        spec = ReplySpec(
+            event=dispatch.event,
+            target_ref=dispatch.target_ref,
+            body=dispatch.body,
+            idempotency_key=dispatch.idempotency_key,
+            action_name=dispatch.action_name,
         )
+        if dispatch.action_name in self._ON_BEHALF_ACTIONS:
+            posted_ref = require_on_behalf_approval(
+                target=dispatch.target_ref,
+                action=dispatch.action_name,
+                publish=lambda: self._deliver(spec),
+            )
+        else:
+            posted_ref = self._deliver(spec)
         if dispatch.action_name in self._ON_BEHALF_ACTIONS:
             notify_user_on_behalf_post(
                 target=dispatch.target_ref,
@@ -279,6 +300,32 @@ class NoopReplier(_BaseReplier):
         return ""
 
 
+def _linkify_for_slack(body: str) -> str:
+    """Deterministically rewrite bare ``!N`` / ``#N`` refs to Slack mrkdwn links.
+
+    The send-time chokepoint for the clickable-references rule on the Slack
+    surface (#654 transport). Resolution is code-only — the active overlay's
+    ``resolve_mr_token`` / ``resolve_issue_token`` (DB ``PullRequest`` store
+    first, repo-context construction fallback) supply each URL, so the model
+    is never asked to rewrite. An unresolvable ref is left bare for the
+    bare-reference gate to handle. Best-effort: any resolver/overlay failure
+    returns the body unchanged so a Slack post never crashes on linkifying.
+    """
+    if not body:
+        return body
+    try:
+        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+        overlay = get_overlay()
+    except Exception:  # noqa: BLE001 — overlay resolution is best-effort; never crash a post
+        return slack_linkify(body)
+    return slack_linkify(
+        body,
+        mr_resolver=overlay.resolve_mr_token,
+        issue_resolver=overlay.resolve_issue_token,
+    )
+
+
 class SlackReplier(_BaseReplier):
     """Posts via the Slack Web API (``SlackBotBackend``)."""
 
@@ -291,7 +338,7 @@ class SlackReplier(_BaseReplier):
         # to a lead. Thread/comment replies always go back to the
         # originating event's channel/thread; the spec's target_ref there
         # is the composite recorded for audit, not a routing override.
-        normalized = normalize_slack_message(spec.body)
+        normalized = normalize_slack_message(_linkify_for_slack(spec.body))
         if spec.action_name == "post_dm":
             channel = self._bot.open_dm(spec.target_ref)
             if not channel:

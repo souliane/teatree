@@ -13,6 +13,7 @@ tools:
 skills:
   - rules
   - workspace
+  - architecture-design
   - code
 ---
 

@@ -39,6 +39,7 @@ from teatree.cli import (
 from teatree.cli import (
     triage_tools as _triage_tools,  # noqa: F401  (side-effect: registers triage commands onto tool_app)
 )
+from teatree.cli import verify_gates as _verify_gates  # noqa: F401  (side-effect: registers verify-gates onto tool_app)
 from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
@@ -49,6 +50,7 @@ from teatree.cli.dogfood import dogfood_app
 from teatree.cli.eval import eval_app
 from teatree.cli.infra import infra_app
 from teatree.cli.loop import loop_app
+from teatree.cli.mutation import mutation_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.recover import recover_app
@@ -149,6 +151,7 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
 app.add_typer(recover_app, name="recover")
 app.add_typer(dogfood_app, name="dogfood")
+app.add_typer(mutation_app, name="mutation")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

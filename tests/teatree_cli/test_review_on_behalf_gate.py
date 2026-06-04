@@ -30,6 +30,7 @@ no-TTY satisfier — its end-to-end behaviour is also exercised here so
 the gated method ↔ approval recording loop is verified in one suite.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -475,14 +476,15 @@ class TestReviewServiceGateIntegration:
 
         called: list[tuple[str, str]] = []
 
-        def _fake_require(*, target: str, action: str) -> None:
+        def _fake_require[T](*, target: str, action: str, publish: Callable[[], T]) -> T:
             called.append((target, action))
+            return publish()
 
         with patch.object(gate_mod, "require_on_behalf_approval", _fake_require):
             service, _stub = _service_with_stub()
             service.post_comment("org/repo", 7, "lgtm")
 
-        # Default path => the on-behalf action recorded is the draft-form
+        # Default path => the on-behalf action consumed is the draft-form
         # ``post_draft_note``, NOT ``post_comment``. ``post_comment`` is
         # reserved for the ``--live`` colleague-visible branch.
         assert called == [("org/repo!7", "post_draft_note")]
@@ -490,11 +492,18 @@ class TestReviewServiceGateIntegration:
     def test_post_comment_live_calls_require_with_post_comment(self) -> None:
         """The ``--live`` branch still gates on the ``post_comment`` on-behalf action."""
         from teatree.core import on_behalf_gate_recorded as gate_mod  # noqa: PLC0415
+        from teatree.core.models import LivePostApproval  # noqa: PLC0415
+
+        # The live publish reaches the atomic gate only past the LivePostApproval
+        # authorization (#1207); record one so the post site (and thus the
+        # consume) is reached.
+        LivePostApproval.record(mr_url="org/repo!7", slack_ts="1700000000.0001", slack_user_id="U-OPERATOR")
 
         called: list[tuple[str, str]] = []
 
-        def _fake_require(*, target: str, action: str) -> None:
+        def _fake_require[T](*, target: str, action: str, publish: Callable[[], T]) -> T:
             called.append((target, action))
+            return publish()
 
         with patch.object(gate_mod, "require_on_behalf_approval", _fake_require):
             service, _stub = _service_with_stub()

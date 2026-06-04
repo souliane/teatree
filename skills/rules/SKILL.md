@@ -44,6 +44,7 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 **Communication & references**
 
 14. [Clickable References](#clickable-references)
+14b. [ID Namespace Disambiguation](#id-namespace-disambiguation-non-negotiable)
 14a. [Lead a Completion Report With the Assigned-Work Status](#lead-a-completion-report-with-the-assigned-work-status)
 15. [No AI Signature on Posts Made on the User's Behalf](#no-ai-signature-on-posts-made-on-the-users-behalf-non-negotiable)
 15a. [Ask Before Posting on the User's Behalf](#ask-before-posting-on-the-users-behalf-non-negotiable)
@@ -214,6 +215,16 @@ Every PR, ticket, issue, or note reference — in markdown files, platform comme
 
 This applies everywhere: MR/PR descriptions, inline comments, test evidence, chat messages, and responses to the user.
 
+## ID Namespace Disambiguation (Non-Negotiable)
+
+Id references must be namespace-qualified — they are never bare. A harness/teatree **task id** and a forge **issue/ticket/PR id** are different namespaces that both number from ~1, so a bare `#<n>` standing next to another bare `#<n>` is undecidable: an agent cannot tell whether `task #5` next to `ticket #5` are the same thing or two unrelated objects, and may resolve a task id against the issue tracker and act on the wrong object.
+
+- **Harness/teatree task ids** render as `TODO-<n>` (e.g. `TODO-7`) — never `task #<n>` or bare `#<n>`. This is `Task` PKs and harness TODO ids alike.
+- **Forge issue/ticket/PR ids** render as `<repo>#<n>` when ambiguity with a task id (or a cross-repo ref) is possible (e.g. `teatree#11`, `<overlay-repo>#42`/`!42`). A bare `#<n>` for a forge ref is acceptable only inside a context already scoped to one forge namespace (e.g. a statusline line prefixed `[overlay]`, or a single-namespace section), never side-by-side with a task id.
+- Never emit a bare `#<n>` for a task id sitting next to a bare `#<n>` for a ticket.
+
+This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `src/teatree/eval/scenarios/id_namespace_disambiguation.yaml`.
+
 ## Token Extraction
 
 When extracting an API token from a CLI tool, always extract to a variable first — never inline in curl. See your platform reference (`t3:platforms`) § "Token Extraction" for the platform-specific recipe.
@@ -268,7 +279,7 @@ Every artifact you publish under the user's identity — git commits, MR/PR desc
 - `"ask"` — every on-behalf action including draft-note creation is BLOCKED until the user records an approval (strict pre-ask).
 - `"immediate"` — gate is lifted: the agent publishes per the resolved `mode` doctrine without the pre-ask (the user has opted the overlay into trusted unattended posting).
 
-Resolved by `teatree.on_behalf_gate.resolve_on_behalf_verdict(action)` which returns `PASS` / `BLOCK` / `AUTO_DRAFT`. Enforced uniformly inside teatree at two chokepoints: `teatree.core.reply_transport._BaseReplier` (Slack thread reply / Slack channel / GitLab MR comment / GitHub PR comment) and `teatree.cli.review.ReviewService` (`post_comment`, `post_draft_note`, `publish_draft_notes`, `reply_to_discussion`, `resolve_discussion`, `update_note`, `delete_discussion`). The `PullRequest.approve()` → ✅ reaction signal and the ticket-transition emoji signal route through the same gate.
+Resolved by `teatree.on_behalf_gate.resolve_on_behalf_verdict(action)` which returns `PASS` / `BLOCK` / `AUTO_DRAFT`. Enforced uniformly inside teatree at three chokepoints: `teatree.core.reply_transport._BaseReplier` (Slack thread reply / Slack channel / GitLab MR comment / GitHub PR comment), `teatree.cli.review.ReviewService` (`post_comment`, `post_draft_note`, `publish_draft_notes`, `reply_to_discussion`, `resolve_discussion`, `update_note`, `delete_discussion`), and `teatree.core.on_behalf_egress.OnBehalfSlackEgress` — the single owner of **every colleague-surface Slack post/react** under the user's identity (review-DONE reactions, the `:merge:` reaction, broadcast outcome reactions, review-nag posts, the `notify post`/`notify react` CLI, `t3 slack react`). `OnBehalfSlackEgress.post/.react` run gate→route→emit→audit in one place; a self-DM (the #1750 `route_token` classifier, fail-closed to colleague on an unknown surface) short-circuits ungated, so a colleague reaction can never bypass the gate while a self-ack stays free. The `PullRequest.approve()` → ✅ reaction signal and the ticket-transition emoji signal route through the same gate (on the separate `slack_reactions` transport).
 
 When the verdict is `BLOCK`, before any post/comment/approval/reaction the agent makes **under the user's identity to a colleague or customer surface** — a GitLab/GitHub PR/MR comment, an issue comment, a PR/MR approve or unapprove, a Slack channel or thread message, a Notion page or comment, an emoji reaction on someone else's message — the agent must obtain the user's explicit approval **first** (via `AskUserQuestion` for ad-hoc agent posts, or by recording an `OnBehalfApproval` for teatree code paths — see below) and publish only after the user confirms.
 
@@ -312,6 +323,20 @@ If the target is **PUBLIC**, the body must not contain internal identifiers: cus
 **Ambiguous destinations need a question.** When the user says "file a bug" without a repo and there are multiple candidates (public upstream vs. private overlay, team repo vs. personal repo), use `AskUserQuestion` to confirm the target before writing the body. Never guess — the cost of asking is low; the cost of publishing internal info is high.
 
 **The authorization to "file a bug" does not authorize posting internal info to a public repo.** User instructions like "file a teatree bug" authorize the _action_ of filing, not the _destination_. A public target always requires a scrubbed body.
+
+## Self-Apply `needs-triage` on Agent-Filed Issues (Non-Negotiable)
+
+`needs-triage` is a maintainer-review gate: the autonomous loop's issue-implementer claim path filters out any open issue carrying it (`IssueImplementerScanner` skips it at selection time, before the claim), so the factory never starts an issue the maintainer has not cleared.
+
+The complication is that the factory files its own backlog issues **as the maintainer's own account** (e.g. `souliane`). The auto-apply GitHub Action keys on the issue author, so it cannot distinguish a human maintainer's issue from an agent-filed one — both look like the maintainer. The author-only Action therefore can't gate agent-filed issues on its own.
+
+The convention closes that gap: **an agent self-applies `needs-triage` by default on anything it files that is not a direct user implementation order.** Concretely:
+
+- When the agent files an issue autonomously (a backlog item surfaced mid-session, a retro/review enforcement gap, a research finding), include `needs-triage` in the labels.
+- Omit `needs-triage` only when the user explicitly directed the implementation (the issue is the tracking record for work the user asked for now).
+- Teatree's programmatic filing path encodes this: `FilingContext.auto_filed` defaults to `True` and adds `NEEDS_TRIAGE_LABEL`; a user-directed caller sets `auto_filed=False`.
+
+When in doubt, apply `needs-triage` — a withheld issue costs the maintainer one label-removal; an un-withheld one risks the factory implementing something the maintainer never decided to build.
 
 ## Leak Remediation — Silent Scrubs (Non-Negotiable)
 
@@ -526,7 +551,7 @@ The main agent's job during a long operation is to stay responsive — collect t
 
 **Why this matters beyond UX:** when Slack is configured, the `PreToolUse` hook automatically mirrors every `AskUserQuestion` call to the user's Slack DM. The user can see pending questions on their phone even when away from the terminal. Plain-text questions bypass this mirror and are invisible on Slack.
 
-**This is hook-enforced, not a remembered preference (#807).** A non-bypassable `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, or a "let me know if/whether …" soft-ask; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it. See `BLUEPRINT.md` § "Structured-question Stop gate" for the full heuristic and rationale.
+**This is hook-enforced, not a remembered preference (#807).** A `Stop` gate (`handle_enforce_structured_question` in `hook_router.py`) inspects the final assistant turn: if it poses a user-directed decision question inline in prose with no `AskUserQuestion` tool call in that turn, the Stop hook **blocks** and instructs the agent to re-ask through the structured tool. There is no `relax:` escape — it is a gate, like the other Stop-time gates. Detection is a precision-tuned heuristic (`?` + a second-person/decision cue, or a "let me know if/whether …" soft-ask; fenced code stripped first). A bare `?` (rhetorical aside, explanatory sentence, echoing the user) does not trip it. **Scope:** the gate only enforces on a loop-driven turn (`_session_drives_loop`: this session owns the tick, or there is no live owner) — that is where an inline question is invisible (it reads as a log line, so the decision is lost). In an attended interactive session that a _different_ live owner is driving, a human is reading the prose, so the gate is skipped; an unknown/unreadable ownership signal fails safe and keeps it firing. See `BLUEPRINT.md` § "Structured-question Stop gate" for the full heuristic and rationale.
 
 **Away-mode (24/7 dual question-mode, #58).** When `t3 teatree availability show` resolves to `away`, the PreToolUse hook converts the `AskUserQuestion` tool call into a durable `DeferredQuestion` row instead of waiting on a TTY — the §807 gate stays satisfied because the tool_use block is still recorded. Use `/t3:availability` for the configuration surface (`t3 teatree availability away`, `t3 teatree availability present`, `t3 teatree availability auto`, `t3 teatree questions list`, `t3 teatree questions answer`, `t3 teatree questions dismiss`) and BLUEPRINT.md §5.6.3 + §17.1 invariant 9 for the spec.
 

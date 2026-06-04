@@ -1,8 +1,9 @@
 """Typed subprocess wrappers.
 
 Every ``subprocess.run`` / ``subprocess.Popen`` call in ``src/teatree`` MUST go
-through these wrappers.  Raw subprocess usage is banned by the
-``check_subprocess_ban`` prek hook (see ``scripts/hooks/check_subprocess_ban.py``).
+through these wrappers.  Raw subprocess usage is the ``subprocess-egress``
+chokepoint in ``src/teatree/quality/chokepoints.yaml``, enforced by the
+``check-chokepoints`` prek hook (see ``scripts/hooks/check_chokepoints.py``).
 
 Three entry points:
 

@@ -925,6 +925,33 @@ class TestGitHubCodeHost:
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
+    def test_get_pr_author_returns_login(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"user": {"login": "souliane"}}) as mock_get:
+            host = GitHubCodeHost(token="tok")
+            assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == "souliane"
+        mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
+
+    def test_get_pr_author_author_less_payload_is_empty(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}):
+            host = GitHubCodeHost()
+            assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
+
+    def test_get_pr_author_non_dict_payload_is_empty(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
+            host = GitHubCodeHost()
+            assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
+
+    def test_get_pr_author_unparsable_url_is_empty(self) -> None:
+        with patch.object(github_mod, "_gh_api_get") as mock_get:
+            host = GitHubCodeHost()
+            assert host.get_pr_author(pr_url="https://gitlab.com/o/r/-/merge_requests/7") == ""
+        mock_get.assert_not_called()
+
+    def test_get_pr_author_any_exception_fails_safe_to_empty(self) -> None:
+        with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
+            host = GitHubCodeHost()
+            assert host.get_pr_author(pr_url="https://github.com/o/r/pull/7") == ""
+
 
 import pytest  # noqa: E402
 

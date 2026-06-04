@@ -1,9 +1,13 @@
+import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import httpx
 
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
@@ -20,11 +24,14 @@ from teatree.types import (
     ToolCommand,
     ValidationResult,
 )
+from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
     from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 # Re-export all types so existing ``from teatree.core.overlay import X`` still works.
 __all__ = [
@@ -402,15 +409,16 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_issue_title(self, url: str) -> str:
         from teatree.backends.loader import get_code_host  # noqa: PLC0415
 
-        try:
-            host = get_code_host(self)
-            if host is None:
-                return ""
-            data = host.get_issue(url)
-            title = data.get("title", "") if isinstance(data, dict) else ""
-            return str(title)
-        except Exception:  # noqa: BLE001
+        host = get_code_host(self)
+        if host is None:
             return ""
+        try:
+            data = host.get_issue(url)
+        except (httpx.HTTPError, CommandFailedError, TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+            logger.warning("get_issue_title fetch failed for %s: %s", url, exc)
+            return ""
+        title = data.get("title", "") if isinstance(data, dict) else ""
+        return str(title)
 
     # ── Provisioning hooks ───────────────────────────────────────────
 
@@ -613,23 +621,30 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def resolve_mr_token(self, iid: int) -> str | None:
         """Return the canonical URL for ``!<iid>`` on this overlay's code host.
 
-        Overridden by overlays that own merge/pull requests across multiple
-        repositories and can resolve a bare ``!N`` to its repo's web URL.
-        The default returns ``None`` —
-        :func:`teatree.slack_mrkdwn.slack_linkify` leaves the bare token
-        unrewritten when no resolver can claim it, so the Slack reader sees
-        inert text rather than a guessed-wrong URL.
+        The default delegates to the deterministic
+        :class:`~teatree.core.reference_linkifier.ReferenceResolver`: it looks
+        ``!N`` up in the ``PullRequest`` ref->URL store first, then constructs
+        the URL from this overlay's ``code_host`` + the active repo's git
+        remote slug. Returns ``None`` when neither resolves —
+        :func:`teatree.slack_mrkdwn.slack_linkify` and
+        :func:`teatree.core.reference_linkifier.linkify` then leave the bare
+        token untouched (the gate's fallback) rather than guess a wrong URL.
+        Overlays may still override for bespoke multi-repo resolution.
         """
-        _ = iid
-        return None
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+
+        return ReferenceResolver.from_overlay(self).resolve_mr(iid)
 
     def resolve_issue_token(self, iid: int) -> str | None:
         """Return the canonical URL for ``#<iid>`` on this overlay's code host.
 
-        Default ``None``, for the same reason as :meth:`resolve_mr_token`.
+        Same DB-first, construction-fallback contract as
+        :meth:`resolve_mr_token`, resolving the ``#N`` issue (or, via the
+        ``PullRequest`` store, a PR number) instead.
         """
-        _ = iid
-        return None
+        from teatree.core.reference_linkifier import ReferenceResolver  # noqa: PLC0415
+
+        return ReferenceResolver.from_overlay(self).resolve_issue(iid)
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.

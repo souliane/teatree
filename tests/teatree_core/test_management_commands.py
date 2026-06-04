@@ -397,6 +397,32 @@ class TestSessionTodoRendering(TestCase):
         session_view.render_session_todos([], harness_todos=[], session_id="claude-abc", stream=out)
         assert "No todos for this session" in out.getvalue()
 
+    def test_task_id_uses_distinct_prefix_not_bare_hash(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_todos(
+            [self._row(7, status="pending", ticket_id=42, reason="do it")],
+            harness_todos=[],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "TODO-7" in printed
+        assert "(ticket #42" in printed
+        assert "task #7" not in printed
+
+    def test_same_number_task_and_ticket_render_distinctly(self) -> None:
+        out = io.StringIO()
+        session_view.render_session_todos(
+            [self._row(5, status="pending", ticket_id=5, reason="collision case")],
+            harness_todos=[],
+            session_id="claude-abc",
+            stream=out,
+        )
+        printed = out.getvalue()
+        assert "TODO-5" in printed
+        assert "ticket #5" in printed
+        assert "task #5" not in printed
+
 
 class TestReadHarnessTodos(TestCase):
     """The harness TODO list is read from the harness task store, with a legacy fallback."""

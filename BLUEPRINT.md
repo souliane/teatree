@@ -123,7 +123,7 @@ The agent layer is `teatree.agents` (headless executor + prompt + skill bundle +
 
 **Structured result schema (`agents/result_schema.py`).** Agents return JSON: `summary`, `files_modified`, `tests_run`, `tests_passed`, `tests_failed`, `decisions`, `needs_user_input`, `user_input_reason`, `next_steps`, `commands_executed`. `additionalProperties: false`. Validated without the `jsonschema` library to keep the dep tree small.
 
-**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development`), topo-sorted `requires:` resolution, per-overlay `companion_skills` (#1132). Reviewer-dispatch review skills come from `OverlayConfig.get_review_companion_skills()` (deduped `[pr_review_companion, *companion_skills]`, #1135 default `code-review`); on the `reviewing` phase `build_system_context` embeds them IN FULL, else a `claude -p` reviewer (which never auto-loads skills) sees only the demoted summary and reviews without overlay knowledge. For an *orchestrator-built* reviewer dispatch (Agent tool / dynamic workflow), `agents/prompt.build_reviewer_dispatch_prompt()` is the single shared builder: it prepends a REQUIRED Skill-tool load block (lifecycle `t3:review` + the overlay review skills) to the review instruction, so the conventions reach the reviewer structurally rather than via orchestrator memory; the `shipping`-phase auto-review gate emits this block verbatim ([#1368](https://github.com/souliane/teatree/issues/1368)).
+**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development`), topo-sorted `requires:` resolution, per-overlay `companion_skills` (#1132). Reviewer-dispatch review skills come from `OverlayConfig.get_review_companion_skills()` (deduped `[pr_review_companion, *companion_skills]`, #1135 default `code-review`); on the `reviewing` phase `build_system_context` embeds them IN FULL, else a `claude -p` reviewer (which never auto-loads skills) sees only the demoted summary and reviews without overlay knowledge. For an *orchestrator-built* reviewer dispatch (Agent tool / dynamic workflow), `agents/prompt.build_reviewer_dispatch_prompt()` is the single shared builder: it prepends a REQUIRED Skill-tool load block (lifecycle `t3:review` + the overlay review skills) to the review instruction, so the conventions reach the reviewer structurally rather than via orchestrator memory; the `shipping`-phase auto-review gate emits this block verbatim ([#1368](https://github.com/souliane/teatree/issues/1368)). The **coding phase** force-loads a symmetric contract: `build_task_prompt`/`build_system_context` emit a REQUIRED load block (`/t3:architecture-design`+`/t3:code`), embed `architecture-design` in full (`_CODING_PHASE_ALWAYS_FULL`), and carry behavior-preservation (a rewrite enumerate-and-preserves old behavior, never silently narrows a gate or inverts a must-block test) + no-AI-signature clauses, so the enumerate-preserve discipline reaches a skill-stripped builder instead of being a post-hoc cold-review catch.
 
 **Model tiering.** `agents/model_tiering.resolve_phase_model(phase)` downgrades mechanical phases (`reviewing`/`testing`/`shipping` → sonnet, `retrospecting` → haiku) by default; reasoning phases (`coding`, `debugging`) inherit the user's default. Per-phase overrides via `[agent] phase_models` in `~/.teatree.toml`.
 
@@ -141,7 +141,7 @@ TeaTree drives the day from a single long-lived Claude Code session running a fa
 
 **Deep mechanics live in [docs/blueprint/loop-topology.md](docs/blueprint/loop-topology.md).** The DB-lease singleton, the session-scoped loop-owner claim and `SessionStart` tick-owner record, the per-agent self-pump, the Stop-gate family, post-compaction snapshot recovery, the three-stage tick (scan → dispatch → render), the full scanner set, the multi-overlay / multi-host / multi-identity scanning, the auto-start / dispositions / completion phases, and §5.6.1 Statusline rendering / §5.6.2 Mode + training-wheel / §5.6.3 Availability all live there. Top-level architectural notes that are teatree-CORE always-on or load-bearing for cross-references: the periodic `architectural_review` cadence-and-merge-count scanner (always-on for every overlay, `architectural_review_disabled` escape hatch); the daily `scanning_news` scanner ([#1191](https://github.com/souliane/teatree/issues/1191)) gated by `scanning_news_disabled`, with the [#1391](https://github.com/souliane/teatree/issues/1391) ask-gate (`ask_before_creating_news_tickets`, default on) recording each candidate as a `PendingArticleSuggestion` rather than auto-filing; the daily `dogfood_smoke` scanner ([#1308](https://github.com/souliane/teatree/issues/1308), `dogfood_smoke_disabled`); the always-on `review_request_merge_react` scanner ([#1797](https://github.com/souliane/teatree/issues/1797)) that reacts `:merge:` on a review-request's Slack message once its MR merges (#1750 `react_routed` routing); the closure-reverify Stop WARN ([#1448](https://github.com/souliane/teatree/issues/1448), `teatree.hooks.closure_reverify_scanner`, non-blocking so it cannot deadlock the loop); the `SessionHandover` hand-off (`t3 <overlay> handover`, claimed+injected on `SessionStart`); and the public `jobs_for_domain(domain, backend, *, all_backends)` seam ([#1482](https://github.com/souliane/teatree/issues/1482), `Domain` StrEnum) that partitions the per-overlay scanner fan-out into one typed surface.
 
-The [#1554](https://github.com/souliane/teatree/issues/1554) `issue_implementer` mini-loop closes the auto-implement-intake gate: each tick its per-overlay scanner lists the overlay's open issues, keeps the ones carrying `issue_implementer_label`, and claims each via the TOCTOU-safe `ImplementedIssueMarker.claim` so two concurrent ticks never double-dispatch. It is **default-OFF behind a triple gate** — the master `issue_implementer_enabled` flag (default `false`), the `ImplementedIssueMarker.in_flight_count(overlay) < issue_implementer_max_concurrent` budget (default 1), and the per-issue `claim()` idempotency — gated by `[teatree]` config (`issue_implementer_enabled` / `issue_implementer_label` / `issue_implementer_max_concurrent` / `issue_implementer_cadence_hours`, per-overlay overridable, with the `T3_ISSUE_IMPLEMENTER_ENABLED` env kill-switch). Enabled with an empty `issue_implementer_label` is a safe no-op that logs one WARNING so the operator sees why nothing dispatches. Each newly-claimed issue emits `issue_implementer.claimed`, which routes to `t3:orchestrator` as a **maker-side kickoff** — it starts the normal maker pipeline for the issue, issues no `MergeClear`, and gains no merge authority (the §17.4 maker≠checker boundary is untouched).
+The [#1554](https://github.com/souliane/teatree/issues/1554) `issue_implementer` mini-loop closes the auto-implement-intake gate: each tick its per-overlay scanner lists the overlay's open issues, keeps the ones carrying `issue_implementer_label`, and claims each via the TOCTOU-safe `ImplementedIssueMarker.claim` so two concurrent ticks never double-dispatch. It is **default-OFF behind a triple gate** — the master `issue_implementer_enabled` flag (default `false`), the `ImplementedIssueMarker.in_flight_count(overlay) < issue_implementer_max_concurrent` budget (default 1), and the per-issue `claim()` idempotency — gated by `[teatree]` config (`issue_implementer_enabled` / `issue_implementer_label` / `issue_implementer_max_concurrent` / `issue_implementer_cadence_hours`, per-overlay overridable, with the `T3_ISSUE_IMPLEMENTER_ENABLED` env kill-switch). Enabled with an empty `issue_implementer_label` is a safe no-op that logs one WARNING so the operator sees why nothing dispatches. Each newly-claimed issue emits `issue_implementer.claimed`, which routes to `t3:orchestrator` as a **maker-side kickoff** — it starts the normal maker pipeline for the issue, issues no `MergeClear`, and gains no merge authority (the §17.4 maker≠checker boundary is untouched). The scanner **skips any issue carrying `NEEDS_TRIAGE_LABEL`** (`needs-triage`) before the claim — a maintainer-applied hold so the factory never starts an issue the maintainer has not cleared. Since the factory files issues *as* the maintainer, the author-only auto-apply Action can't gate agent-filed issues; agents self-apply `needs-triage` on anything they file that is not a direct user order (`FilingContext.auto_filed`).
 
 ### 5.7 Self-Improving Monitor
 
@@ -151,7 +151,7 @@ Sibling loop scanners (under `loop/scanners/`, not `SelfImprove` detectors) clos
 
 | Scanner | Closes | Contract |
 |---|---|---|
-| `PrSweepScanner` ([#1248](https://github.com/souliane/teatree/issues/1248), wired [#1257](https://github.com/souliane/teatree/issues/1257)) | forgotten merges | Invokes the §17.4 keystone merge for any open PR whose `MergeClear` is actionable, head SHA matches, and required checks are green (`--fallback-uv-audit` escalation when the only red check is `uv-audit` and `main` is red too). |
+| `PrSweepScanner` ([#1248](https://github.com/souliane/teatree/issues/1248), wired [#1257](https://github.com/souliane/teatree/issues/1257)) | forgotten / conflicted / un-reviewed merges | Invokes the §17.4 keystone merge for any open PR whose `MergeClear` is actionable, head SHA matches, and required checks are green (`--fallback-uv-audit` escalation when the only red check is `uv-audit` and `main` is red too). A conflicted PR emits `pr_sweep.flag_conflict` ([#78](https://github.com/souliane/teatree/issues/78)), flag only — never an auto-rebase; a solo bypass lacking a recorded cold-review emits `pr_sweep.flag_no_review` ([#68](https://github.com/souliane/teatree/issues/68)) (below). |
 | `SlackBroadcastsScanner` ([#1131](https://github.com/souliane/teatree/issues/1131), wired [#1255](https://github.com/souliane/teatree/issues/1255)) | inbound review-request | Polls the review channel for MR-link broadcasts → `slack.review_intent` dispatch without an explicit reaction. |
 | `SelfUpdateScanner` ([#1249](https://github.com/souliane/teatree/issues/1249)) | editable-install drift | Ff-only updates the editable teatree clone (`T3_REPO`) + every overlay clone on `self_update_cadence_hours` (1h); `SelfUpdateMarker` carries the cadence. |
 | `PullMainCloneScanner` | stale work-repo main clones | Same ff-only contract for the `$T3_WORKSPACE_DIR` main clones a worktree is created from, so a clone parked behind never poisons `git show` / `grep`; `pull_main_clone_cadence_hours` (1h), `PullMainCloneMarker`. |
@@ -161,7 +161,7 @@ Sibling loop scanners (under `loop/scanners/`, not `SelfImprove` detectors) clos
 
 `CodexReviewScanner`'s and `PrSweepScanner`'s auto-dispatch is gated on the fleet doctrine (`mode = "auto"` + `require_human_approval_to_merge = false`); every other overlay stays manual. All scanner knobs are per-overlay overridable.
 
-The monitor never auto-merges substrate, never auto-edits memory / skills / `BLUEPRINT.md`, and never bypasses the §17.4 `MergeClear` reviewer-attestation requirement **except** on a solo overlay the user has explicitly declared end-to-end-trusted (`mode = "auto"` + `require_human_approval_to_merge = false`) — where maker and reviewer are the same human identity and `MergeClear.issue` mechanically refuses a self-attested CLEAR (`is_non_reviewer_role`), so an unrelaxed gate would silently no-op every green PR forever ([#1309](https://github.com/souliane/teatree/issues/1309)). The carve-out is *minimal*: every precondition gate (draft, changes-requested, CI verdict, uv-audit escalation) stays in force; only the CLEAR-row requirement is replaced by the `gh pr merge --squash` fallback. Overlays that did not opt in keep the CLEAR requirement in full force.
+The monitor never auto-merges substrate, never auto-edits memory / skills / `BLUEPRINT.md`, and never bypasses the §17.4 `MergeClear` reviewer-attestation requirement **except** on a solo overlay the user has explicitly declared end-to-end-trusted (`mode = "auto"` + `require_human_approval_to_merge = false`) — where the per-diff CLEAR cannot be issued because maker and reviewer are the same human identity and `MergeClear.issue` mechanically refuses a self-attested CLEAR (`is_non_reviewer_role`), so an unrelaxed gate would silently no-op every green PR forever ([#1309](https://github.com/souliane/teatree/issues/1309)). The carve-out is *minimal*: every precondition gate (draft, changes-requested, CI verdict, uv-audit escalation) stays in force; the per-diff CLEAR row is replaced by the `gh pr merge --squash` fallback, but the **cold-review floor still holds** — the bypass requires a recorded INDEPENDENT `merge_safe` `ReviewVerdict` at the live head (`reviewer != maker`), else it does NOT merge ([#68](https://github.com/souliane/teatree/issues/68)), so the only-identity-on-repo maker can never self-merge. Overlays that did not opt in keep the CLEAR requirement in full force.
 
 ### 5.8 Reactive Slack-Answer Loop
 
@@ -210,9 +210,11 @@ Request parameters are grouped into frozen `slots=True` dataclasses (`PullReques
 
 **Inbound events.** `t3 slack listen` runs a Socket Mode receiver that writes events to append-only JSONL queues (`slack-events.jsonl`, `slack-reactions.jsonl`) so scanners can drain atomically without racing.
 
-**Reaction surface (#1281).** `t3 slack react` is the only sanctioned reaction surface. `reactions.add` failures (`missing_scope`, `not_in_channel`, `mcp_externally_shared_channel_restricted`, …) raise `SlackReactionError` from `backends/slack_react_errors.py` — never silently return `False` — so callers cannot fall back to a `chat.postMessage(text=":emoji:")` thread reply. The CLI translates the raise into a structured exit-1 message pointing at `t3 setup slack-user-token` and souliane/teatree#1232. `SlackBotBackend.post_message` / `post_reply` reject bodies matching `^:[a-z0-9_+\-]+:$` with `SingleEmojiBodyRefusedError`, foreclosing the failure-mode shape at the backend boundary. FSM-side wrappers (`add_reactions_for_transition`, `add_approval_reaction`) catch the raise locally so Slack auth gaps cannot roll back FSM transitions.
+**Reaction surface (#1281).** FSM `reactions.add` failures (`missing_scope`, `not_in_channel`, `mcp_externally_shared_channel_restricted`, …) raise `SlackReactionError` from `backends/slack_react_errors.py` — never silently return `False` — so callers cannot fall back to a `chat.postMessage(text=":emoji:")` thread reply. `SlackBotBackend.post_message` / `post_reply` reject bodies matching `^:[a-z0-9_+\-]+:$` with `SingleEmojiBodyRefusedError`, foreclosing the failure-mode shape at the backend boundary. FSM-side wrappers (`add_reactions_for_transition`, `add_approval_reaction`) catch the raise locally so Slack auth gaps cannot roll back FSM transitions.
 
-**Destination-routed post/react ([#1750](https://github.com/souliane/teatree/issues/1750)).** `t3 notify post`/`react` pick the token by *destination* via `SlackBotBackend._route_token`: user's own DM → bot; colleague/channel → personal `xoxp`.
+**Destination-routed post/react ([#1750](https://github.com/souliane/teatree/issues/1750)).** Token picked by *destination* via `SlackBotBackend._route_token`: user's own DM → bot; colleague/channel → personal `xoxp`. Every colleague-surface post/react under the user's identity routes through the one gate+route+audit chokepoint `core/on_behalf_egress.OnBehalfSlackEgress` (self-DM acks ungated); the call-site authorization is pinned by the `on-behalf-routed-egress` / `on-behalf-colleague-primitives` entries in the chokepoint registry (`quality/chokepoints.yaml`, enforced by `scripts/hooks/check_chokepoints.py`); see [`skills/rules/SKILL.md`](skills/rules/SKILL.md).
+
+**Deterministic reference linkifier.** The clickable-references rule (a bare `#N` / `!N` on a user-facing surface must become a clickable link) is enforced *in code* by `core/reference_linkifier.py`, not by asking the model. `ReferenceResolver` resolves DB-first (`PullRequest`, `Ticket.issue_url`) then constructs from the active repo context (overlay `code_host` + git-remote slug); the overlay hooks `resolve_mr_token` / `resolve_issue_token` default to it. `linkify` (idempotent; skips linked refs, inline code, fenced blocks; leaves unresolvable refs alone) runs at the Slack chokepoint (`SlackReplier._deliver`). Forge posts are NOT linkified (forge auto-links bare ids). It is the sole mechanism for the rule — the former PreToolUse/Stop bare-reference *blocking* gate was removed (it over-blocked routine commands and asked the model to rewrite refs non-deterministically); the linkifier rewrites in code with no block and no model round-trip.
 
 **Sync ABC (`core/sync.py`).** `SyncBackend` is an ABC with `is_configured(overlay)` and `sync(overlay) → SyncResult`. Implementations: `GitHubSyncBackend`, `GitLabSyncBackend`. Both consume `CodeHostBackend` — platform-specific code lives only in the Protocol implementation, not in sync logic.
 
@@ -274,9 +276,8 @@ Egress-leak gate family — one doctrine, several entry points, each named here 
 
 - **Public-repo diff privacy-scan** (#685, #730): pre-push hook `refuse-public-push-with-leak.sh` runs `t3 tool privacy-scan` over the pushed diff + commit messages when `origin` is PUBLIC, blocking emails / home paths / private IPs / keys / internal hostnames / banned terms. It fails CLOSED on a genuine finding (a dedicated exit code) but fails OPEN on any other non-zero so a scanner crash cannot wedge every push (#126).
 - **Banned-terms posting gate** (#1415, `teatree.hooks.banned_terms_scanner`): the `PreToolUse` non-commit sibling, scanning gh/glab post bodies.
-- **Bare-reference link gate** (#1530, `teatree.hooks.bare_reference_scanner`): **destination-KIND-aware** (`publish_destination_kind`) — HARD-denies a USER-FACING body citing an unlinked bare ref, but EXEMPTS external-forge posts (the forge auto-renders the ref) and verbatim quoted blocks. Fail-safe toward user-facing; a `Stop` sibling soft-warns on final chat text.
 - **Pre-dispatch quote-scanner** (#1401, `handle_dispatch_prompt_quote_scanner`): the dispatch-boundary companion to #1213 — denies only a HIGH user-voice/PII match in an `Agent`/`Task` prompt, with a `[quote-ok: <reason>]` opt-out, so a verbatim quote cannot leak downstream.
-- **Diff comment detectors** (added-lines-only): `code_comment_self_reference` (#1465) flags bookkeeping self-references inside comment syntax; `code_comment_density` (#1538) is the commit-side half of the near-zero-comments rule (dispatch-side half in the sub-agent prompt preambles, #1532). Both **fail-open per detector** (#1536). The density logic is also a standalone reusable gate (#1369, `t3 tool comment-density`) shared by the pre-push hook and the `comment-density-gate` CI job (re-run on the PR-vs-base diff so a prek bypass still trips). A golden corpus (`tests/test_comment_density_gate.py`) and a trajectory eval pin must-DENY symmetric with must-ALLOW as the anti-vacuous proof.
+- **Diff comment detectors** (added-lines-only): `code_comment_self_reference` (#1465) is a **blocking** `privacy_scan.py` diff detector (**fail-open per detector**, #1536) for bookkeeping self-references. `code_comment_density` (#1538) is the commit-side half of the near-zero-comments rule (#1532); it is **advisory** — the standalone check (#1369, `t3 tool comment-density`), the pre-push hook, and the `comment-density-warning` CI job warn and **exit 0**, never blocking, and it is NOT a `privacy_scan.py` blocking detector (#1844 — no content-blind "overly long prose" heuristic spares legit long comments). A golden corpus (`tests/test_comment_density_gate.py`) and an eval pin must-DENY symmetric with must-ALLOW. The push-stage gates (`doc-update-gate`, `ensure-pr`, the leak gate) are `stages: [push]` — skipped by a bare `prek run --all-files` but re-run by CI — so `t3 tool verify-gates` runs both stages and returns the combined exit code; skills and the builder prompt point at it so local green == CI green.
 - **Full-tree banned-brand backstop** (#1570, `core.banned_terms_tree`, CLI `t3 banned-terms scan-tree`, CI job `banned-terms-tree`): catches what the diff/payload gates structurally cannot — a brand ALREADY committed, invisible to any post-landing diff — by scanning every tracked file's content with an underscore-tolerant boundary.
 
 ---
@@ -331,7 +332,7 @@ On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the
 | `pytest` + `pytest-cov` | >90% branch coverage |
 | `ruff` | All rules enabled, specific ignores justified (`# noqa` requires approval) |
 | `ty` | Static type checker with `error-on-warning = true` |
-| `import-linter` | Dependency boundaries (tach module map) |
+| `import-linter` | Transitive/laundered dependency boundaries tach's direct-edge model misses (`core → messaging` even via an intermediate module, substrate → `contrib`, mini-loop independence); config in `pyproject.toml [tool.importlinter]` |
 | `codespell` | Spell check |
 | `prek` | Runs all above on commit |
 
@@ -434,6 +435,8 @@ The flywheel diagram, components (C1 Retro / C2 Code-health loop / C3 Availabili
 
 **Anti-pattern catalog ([#166](https://github.com/souliane/teatree/issues/166)).** `src/teatree/quality/antipatterns.yaml` is the SSOT for recurring architectural anti-patterns; `teatree.quality.catalog` loads it and `scripts/hooks/generate_antipattern_catalog.py` renders [docs/generated/antipattern-catalog.md](docs/generated/antipattern-catalog.md). Each entry's `detection` tier (`greppable` vs `judgement`) feeds the three review tiers off the one catalog: design-time (`architecture-design`), per-PR deterministic (`check_antipatterns.py`, manual stage — gate promotion deferred), periodic holistic (`ac-reviewing-codebase`). `tests/quality/test_catalog.py` is the reachability ledger — every named `linter` resolves to a real hook/tool, every `eval_invariant` to a real transcript invariant. The sibling `teatree.quality.test_shape` check (`t3 tool test-shape`) flags N≥3 near-identical unparametrized test functions and a test:source ratio regression past the committed `[tool.teatree.test_shape]` baseline — advisory `warn` by default (never a PreToolUse gate), opt-in `block` via `mode`; a must-FLAG/must-NOT-FLAG golden corpus prevents false positives on parametrized or distinct tests.
 
+**Scoped mutation testing ([#131](https://github.com/souliane/teatree/issues/131)).** `t3 mutation run` runs mutmut over only diff-touched modules in the NARROW `[tool.teatree.mutation]` safety registry; `tests/quality/test_mutation*.py` carry the ledger + kill-proof.
+
 **Behavioral eval harness ([#1160](https://github.com/souliane/teatree/issues/1160)).** `src/teatree/eval/` grades agent behaviour from a `claude -p` run: matchers, pass@k, trigger-QA, a baseline run-store, a model matrix, an LLM judge, and a free deterministic regression corpus (`t3 eval regression`) pinning recurring gate/checker failure classes on the real code path. A run and the LLM judge **default to the `claude-sonnet-4-6` tier** (per-scenario `model:`/`judge.model:` and the `--models` matrix flag override) so a bare run keeps Opus quota free. The recurring-failure-class scenarios and their anti-vacuous `_pass`/`_fail`/`_noop` fixtures are declared once in `scripts/eval/corpus_gen` and emitted by `scripts/eval/generate_corpus.py` (drift-checked by `tests/eval/test_corpus_generation.py`). Schema, CLI, and the failure-class index in [src/teatree/eval/README.md](src/teatree/eval/README.md).
 
 ---
@@ -460,138 +463,4 @@ A pre-commit gate (`scripts/hooks/check_blueprint_size.py`, [#1180](https://gith
 
 ## Module Dependency Graph
 
-<!-- tach-dependency-graph:start -->
-
-```mermaid
-graph TD
-    teatree.config --> teatree.paths
-    teatree.config --> teatree.types
-    teatree.config --> teatree.utils
-    teatree.config --> teatree.update_check
-    teatree.update_check --> teatree.paths
-    teatree.update_check --> teatree.utils
-    teatree.utils --> teatree.paths
-    teatree.self_update --> teatree.utils
-    teatree.hooks --> teatree.utils
-    teatree.timeouts --> teatree.config
-    teatree.repo_mode --> teatree.paths
-    teatree.repo_mode --> teatree.utils
-    teatree.repo_mode --> teatree.config
-    teatree.skill_loading --> teatree.types
-    teatree.skill_loading --> teatree.utils
-    teatree.skill_loading --> teatree.skill_deps
-    teatree.core --> teatree.types
-    teatree.core --> teatree.paths
-    teatree.core --> teatree.config
-    teatree.core --> teatree.utils
-    teatree.core --> teatree.timeouts
-    teatree.core --> teatree.skill_schema
-    teatree.core --> teatree.skill_deps
-    teatree.core --> teatree.skill_map
-    teatree.core --> teatree.trigger_parser
-    teatree.core --> teatree.agents
-    teatree.core --> teatree.backends
-    teatree.core --> teatree.hooks
-    teatree.core --> teatree.on_behalf_gate
-    teatree.core --> teatree.slack_mrkdwn
-    teatree.agents --> teatree.types
-    teatree.agents --> teatree.core
-    teatree.agents --> teatree.skill_loading
-    teatree.agents --> teatree.utils
-    teatree.agents --> teatree.config
-    teatree.backends --> teatree.types
-    teatree.backends --> teatree.utils
-    teatree.backends --> teatree.core
-    teatree.backends --> teatree.identity
-    teatree.contrib --> teatree.types
-    teatree.contrib --> teatree.core
-    teatree.contrib --> teatree.config
-    teatree.contrib --> teatree.docker
-    teatree.contrib --> teatree.utils
-    teatree.contrib --> teatree.visual_qa
-    teatree.cli --> teatree.paths
-    teatree.cli --> teatree.config
-    teatree.cli --> teatree.core
-    teatree.cli --> teatree.agents
-    teatree.cli --> teatree.backends
-    teatree.cli --> teatree.eval
-    teatree.cli --> teatree.skill_loading
-    teatree.cli --> teatree.skill_schema
-    teatree.cli --> teatree.skill_ref_validator
-    teatree.cli --> teatree.claude_sessions
-    teatree.cli --> teatree.overlay_init
-    teatree.cli --> teatree.loop
-    teatree.cli --> teatree.utils
-    teatree.cli --> teatree.self_update
-    teatree.cli --> teatree.repo_mode
-    teatree.cli --> teatree.triage
-    teatree.cli --> teatree.skill_deps
-    teatree.cli --> teatree.memory_audit
-    teatree.cli --> teatree.on_behalf_gate
-    teatree.cli --> teatree.outbound_claim
-    teatree.cli --> teatree.messaging
-    teatree.cli --> teatree.quality
-    teatree.cli --> teatree.hooks
-    teatree.eval --> teatree.core
-    teatree.eval --> teatree.hooks
-    teatree.eval --> teatree.utils
-    teatree.eval --> teatree.trigger_parser
-    teatree.core.management --> teatree.core
-    teatree.core.management --> teatree.agents
-    teatree.core.management --> teatree.backends
-    teatree.core.management --> teatree.config
-    teatree.core.management --> teatree.docker
-    teatree.core.management --> teatree.loop
-    teatree.core.management --> teatree.loops
-    teatree.core.management --> teatree.messaging
-    teatree.core.management --> teatree.paths
-    teatree.core.management --> teatree.types
-    teatree.core.management --> teatree.utils
-    teatree.core.management --> teatree.visual_qa
-    teatree.loop --> teatree.types
-    teatree.loop --> teatree.paths
-    teatree.loop --> teatree.utils
-    teatree.loop --> teatree.self_update
-    teatree.loop --> teatree.config
-    teatree.loop --> teatree.core
-    teatree.loop --> teatree.backends
-    teatree.loop --> teatree.notify
-    teatree.loop --> teatree.messaging
-    teatree.loops --> teatree.config
-    teatree.loops --> teatree.core
-    teatree.loops --> teatree.loop
-    teatree.loops --> teatree.messaging
-    teatree.loops --> teatree.notify
-    teatree.loops --> teatree.utils
-    teatree.docker --> teatree.types
-    teatree.docker --> teatree.utils
-    teatree.visual_qa --> teatree.core
-    teatree.visual_qa --> teatree.utils
-    teatree.identity --> teatree.config
-    teatree.on_behalf_gate --> teatree.config
-    teatree.notify --> teatree.core
-    teatree.messaging --> teatree.core
-    teatree.messaging --> teatree.notify
-    teatree.messaging --> teatree.backends
-    teatree.outbound_claim --> teatree.core
-    teatree.settings --> teatree.config
-    teatree.settings --> teatree.paths
-    teatree.cli_reference --> teatree.cli
-    teatree.triage --> teatree.utils
-    teatree.url_title_fetcher --> teatree.utils
-    teatree.paths
-    teatree.types
-    teatree.templates
-    teatree.claude_sessions
-    teatree.overlay_init
-    teatree.skill_schema
-    teatree.skill_ref_validator
-    teatree.slack_mrkdwn
-    teatree.skill_deps
-    teatree.skill_map
-    teatree.memory_audit
-    teatree.trigger_parser
-    teatree.quality
-```
-
-<!-- tach-dependency-graph:end -->
+See [docs/dependency-graph.md](docs/dependency-graph.md) for the auto-generated graph.

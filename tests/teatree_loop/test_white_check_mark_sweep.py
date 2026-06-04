@@ -8,14 +8,21 @@ channel that already has the green check.
 
 from dataclasses import dataclass, field
 
+import pytest
 from django.test import TestCase
 
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.loop.scanners.slack_broadcasts import MrState, SlackBroadcastsScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 MR = "https://gitlab.example.com/team/proj/-/merge_requests/777"
 CHANNELS = ["C_AAA", "C_BBB", "C_CCC"]
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
 @dataclass
@@ -25,6 +32,9 @@ class FakeMessaging:
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        return self.react(channel=channel, ts=ts, emoji=emoji)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         del since

@@ -82,7 +82,7 @@ class TestStartedStateRendersStateLabelledCanonicalShape:
 
     def test_started_anchor_has_state_prefix(self, tmp_path: Path) -> None:
         zones = zones_for(
-            [_ticket_action("8495", "started", overlay="acme", title="extra margin")],
+            [_ticket_action("8495", "started", overlay="acme", title="widget margin")],
             colorize=False,
         )
         target = tmp_path / "statusline.txt"
@@ -90,11 +90,11 @@ class TestStartedStateRendersStateLabelledCanonicalShape:
         body = target.read_text()
         assert "started:" in body, repr(body)
         assert "#8495" in body, repr(body)
-        assert "(extra margin)" in body, repr(body)
+        assert "(widget margin)" in body, repr(body)
 
     def test_anchor_line_matches_state_labelled_format_regex(self, tmp_path: Path) -> None:
         zones = zones_for(
-            [_ticket_action("8495", "started", overlay="acme", title="extra margin")],
+            [_ticket_action("8495", "started", overlay="acme", title="widget margin")],
             colorize=True,
         )
         target = tmp_path / "statusline.txt"

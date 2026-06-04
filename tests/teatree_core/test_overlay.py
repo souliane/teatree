@@ -1,9 +1,12 @@
+import json
+import logging
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
@@ -11,6 +14,7 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import get_all_overlay_names, get_overlay, reset_overlay_cache
+from teatree.utils.run import CommandFailedError
 
 
 class DummyOverlay(OverlayBase):
@@ -255,7 +259,7 @@ class TestOverlayConfig(TestCase):
         assert overlays["dummy-ep"].config.exclude_labels == ["Process::DEV review"]
 
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
-        # Subclasses that pass only ``settings_module`` (like OperConfig) miss
+        # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss
         # TOML overrides unless apply_toml_overrides is called explicitly.
         # Entry-point discovery uses that call site to keep overlay names
         # honest, so the method must be callable after __init__ and must
@@ -564,3 +568,57 @@ class TestReadinessProbes(TestCase):
             db_name="test_db",
         )
         assert DummyOverlay().get_readiness_probes(worktree) == []
+
+
+class TestGetIssueTitle:
+    URL = "https://github.com/owner/repo/issues/7"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            CommandFailedError(["gh", "api"], 1, "", "HTTP 401: Bad credentials"),
+            httpx.ConnectError("connection refused"),
+            json.JSONDecodeError("Expecting value", "", 0),
+        ],
+    )
+    def test_fetch_failure_is_logged_and_returns_empty(self, caplog: pytest.LogCaptureFixture, exc: Exception) -> None:
+        host = MagicMock()
+        host.get_issue.side_effect = exc
+        with (
+            patch("teatree.backends.loader.get_code_host", return_value=host),
+            caplog.at_level(logging.WARNING, logger="teatree.core.overlay"),
+        ):
+            title = DummyOverlay().get_issue_title(self.URL)
+
+        assert title == ""
+        records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert records, "a fetch failure must be logged, not silently flattened to ''"
+        assert self.URL in records[0].getMessage()
+
+    def test_genuine_empty_title_is_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        host = MagicMock()
+        host.get_issue.return_value = {"title": ""}
+        with (
+            patch("teatree.backends.loader.get_code_host", return_value=host),
+            caplog.at_level(logging.WARNING, logger="teatree.core.overlay"),
+        ):
+            title = DummyOverlay().get_issue_title(self.URL)
+
+        assert title == ""
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_unconfigured_host_is_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with (
+            patch("teatree.backends.loader.get_code_host", return_value=None),
+            caplog.at_level(logging.WARNING, logger="teatree.core.overlay"),
+        ):
+            title = DummyOverlay().get_issue_title(self.URL)
+
+        assert title == ""
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_successful_fetch_returns_title(self) -> None:
+        host = MagicMock()
+        host.get_issue.return_value = {"title": "Fix Login Flow"}
+        with patch("teatree.backends.loader.get_code_host", return_value=host):
+            assert DummyOverlay().get_issue_title(self.URL) == "Fix Login Flow"

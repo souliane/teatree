@@ -123,6 +123,8 @@ class CodeHostBackend(Protocol):
 
     def get_pr_open_state(self, *, pr_url: str) -> PrOpenState: ...  # pragma: no branch
 
+    def get_pr_author(self, *, pr_url: str) -> str: ...  # pragma: no branch
+
     def post_pr_comment(self, *, repo: str, pr_iid: int, body: str) -> RawAPIDict: ...  # pragma: no branch
 
     def update_pr_comment(

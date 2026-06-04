@@ -54,11 +54,30 @@ post hook is recoverable, never a permanent "merged-on-GitHub, not-in-FSM"
 brick. This does not weaken the single-use, SHA-bind, or maker≠checker
 guarantees: the authorization guards run *before* reconciliation, and the
 row-locked single-use re-check is unchanged.
+
+Transient-response retry (#1813) — a sibling window to #928. The forge merge
+call can fail with a TRUNCATED/empty body (``unexpected end of JSON input``),
+a network error, a timeout, or a 5xx — the forge momentarily failing to
+answer, NOT a verdict on the merge (the #1804 stranding: a cleared PR left
+OPEN with a consumed-by-nothing CLEAR after a truncated merge response).
+``execute_bound_merge`` classifies such a response as transient
+(:func:`_is_transient_merge_response`, distinct from a policy refusal and from
+a head-moved) and auto-retries a bounded number of times
+(:data:`MERGE_TRANSIENT_ATTEMPTS`, exponential backoff) before raising
+:class:`MergeTransientError`. The single-use CLEAR stays idempotently
+reusable: a transient failure raises BEFORE the post hook, so the CLEAR is
+never consumed and a retry of the SAME CLEAR can merge. Before each retry the
+PR's merge state is re-probed — a transient response whose merge ACTUALLY
+LANDED reconciles via the #928 path (the existing merge commit is returned and
+the idempotent post hook runs) rather than re-issuing a merge the forge would
+now 405. A policy refusal (not-mergeable / required-checks / 405 / 422) and a
+head-moved are never retried — they are verdicts, not transient failures.
 """
 
 import json
 import logging
 import shutil
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
 from urllib.parse import urlparse
@@ -106,6 +125,84 @@ class MergeReplayError(MergePreconditionError):
     the row ``select_for_update``-locked and re-asserts ``consumed_at is
     None`` so exactly one executor wins; the loser raises this.
     """
+
+
+class MergeTransientError(MergePreconditionError):
+    """The forge merge call failed with a transient/empty-JSON/network/5xx response.
+
+    Distinct from a policy refusal (not-mergeable / required-checks /
+    review-required) and from a head-moved (:class:`MergeHeadMovedError`):
+    a truncated or empty API body (``unexpected end of JSON input``), a
+    network error, a timeout, or a 5xx is the forge momentarily failing to
+    answer, NOT a verdict on the merge. ``execute_bound_merge`` auto-retries
+    a bounded number of times before raising this; only after the retries are
+    exhausted does it surface so the caller re-escalates into the durable
+    backlog. Because it is raised BEFORE the post hook, the single-use CLEAR
+    is never consumed — a manual / loop retry of the SAME CLEAR can merge
+    (the #1804 stranding window).
+    """
+
+
+MERGE_TRANSIENT_ATTEMPTS = 3
+MERGE_TRANSIENT_BASE_DELAY = 0.5
+
+# Lower-cased substrings that mark a forge merge response as TRANSIENT — the
+# forge momentarily failing to answer rather than refusing the merge. A
+# truncated/empty JSON body (the #1804 window), a network/connection error, a
+# timeout, or a 5xx. Matched against the combined stdout+stderr.
+_TRANSIENT_MERGE_MARKERS = (
+    "unexpected end of json input",
+    "unexpected eof",
+    "empty response",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "broken pipe",
+    "timeout",
+    "timed out",
+    "eof",
+    "i/o timeout",
+    "temporary failure",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "502",
+    "503",
+    "504",
+)
+
+# Lower-cased substrings that mark a forge merge response as a POLICY REFUSAL —
+# a verdict on the merge, never retried. Checked first so a refusal that also
+# mentions a transient-looking token (rare) is still classified as a refusal.
+_POLICY_REFUSAL_MERGE_MARKERS = (
+    "not mergeable",
+    "is not mergeable",
+    "required status check",
+    "review required",
+    "changes requested",
+    "merge conflict",
+    "405",
+    "422",
+)
+
+
+def _is_transient_merge_response(rc: int, out: str, err: str) -> bool:
+    """True iff a non-zero forge merge response is transient (retryable).
+
+    A policy refusal (not-mergeable / required-checks / 405 / 422) is never
+    transient — checked first so a refusal is never mis-retried. An empty
+    body with no recognisable marker (rc != 0, no stdout, no stderr) is the
+    truncated/dropped-response shape and is treated as transient. Anything
+    else with an explicit non-transient message is NOT transient.
+    """
+    if rc == 0:
+        return False
+    combined = f"{out}\n{err}".lower()
+    if any(marker in combined for marker in _POLICY_REFUSAL_MERGE_MARKERS):
+        return False
+    if any(marker in combined for marker in _TRANSIENT_MERGE_MARKERS):
+        return True
+    return not combined.strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1095,9 +1192,73 @@ def execute_bound_merge(
     as :class:`MergeHeadMovedError` — a failed check, never a
     retry-with-new-head (§17.4.3 "bind execution to the exact verified
     SHA, fail closed").
+
+    A transient/empty-JSON/network/5xx forge response (#1813 — the #1804
+    ``unexpected end of JSON input`` window) is the forge momentarily
+    failing to answer, NOT a verdict: it is auto-retried up to
+    :data:`MERGE_TRANSIENT_ATTEMPTS` times with exponential backoff before
+    raising :class:`MergeTransientError`. Because the failure is raised
+    BEFORE the post hook, the single-use CLEAR is never consumed — a retry
+    of the SAME CLEAR can merge. Before each retry the PR's merge state is
+    re-probed: a transient response whose merge ACTUALLY LANDED at the
+    bound SHA returns the existing merge commit so the caller runs the post
+    hook idempotently instead of re-issuing the (then-405-bricking) merge.
+    A policy refusal (not-mergeable / required-checks / 405 / 422) and a
+    head-moved are NOT transient — they raise on the first attempt.
     """
+    for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
+        if attempt > 0:
+            landed = _already_merged_at(
+                slug=slug,
+                pr_id=pr_id,
+                expected_head_oid=expected_head_oid,
+                host_kind=host_kind,
+            )
+            if landed:
+                return landed
+            time.sleep(MERGE_TRANSIENT_BASE_DELAY * (2 ** (attempt - 1)))
+        try:
+            return _attempt_bound_merge(
+                slug=slug,
+                pr_id=pr_id,
+                expected_head_oid=expected_head_oid,
+                host_kind=host_kind,
+            )
+        except MergeTransientError as exc:
+            if attempt == MERGE_TRANSIENT_ATTEMPTS - 1:
+                raise
+            logger.info(
+                "merge_execution: transient forge response on merge attempt %d/%d for %s#%s — %s",
+                attempt + 1,
+                MERGE_TRANSIENT_ATTEMPTS,
+                slug,
+                pr_id,
+                exc,
+            )
+    msg = f"merge of {slug}#{pr_id} exhausted {MERGE_TRANSIENT_ATTEMPTS} transient retries"  # pragma: no cover
+    raise MergeTransientError(msg)  # pragma: no cover — the final attempt re-raises before the loop can fall through
+
+
+def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+    """The existing merge commit when the PR/MR is ALREADY merged at ``expected_head_oid``.
+
+    A transient response may mask a merge that actually LANDED on the forge
+    (the body was truncated, not the action). Re-probing before the next
+    retry detects that and returns the existing merge commit (or the bound
+    SHA when the forge exposes no merge-commit oid), so the caller runs the
+    idempotent post hook rather than re-issuing a merge the forge would now
+    405. Returns ``""`` when the PR/MR is not (yet) merged.
+    """
+    merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
+    if not merge_state.is_merged:
+        return ""
+    return merge_state.merge_commit_oid or expected_head_oid
+
+
+def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
+    """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response."""
     if host_kind == "gitlab":
-        return _execute_bound_merge_gitlab(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+        return _attempt_bound_merge_gitlab(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
     endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
     rc, out, err = _run_gh(
         [
@@ -1123,6 +1284,12 @@ def execute_bound_merge(
                 f"NOT retried with a new head (§17.4.3)"
             )
             raise MergeHeadMovedError(msg)
+        if _is_transient_merge_response(rc, out, err):
+            msg = (
+                f"merge of {slug}#{pr_id} hit a transient forge response: "
+                f"{err.strip() or out.strip() or 'empty gh api response'} — retrying (#1813)"
+            )
+            raise MergeTransientError(msg)
         msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
         raise MergePreconditionError(msg)
 
@@ -1134,7 +1301,7 @@ def execute_bound_merge(
     return merged_sha or expected_head_oid
 
 
-def _execute_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str) -> str:
+def _attempt_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str) -> str:
     endpoint = f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}/merge"
     rc, out, err = _run_glab(
         [
@@ -1158,6 +1325,12 @@ def _execute_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str
                 f"NOT retried with a new head (§17.4.3)"
             )
             raise MergeHeadMovedError(msg)
+        if _is_transient_merge_response(rc, out, err):
+            msg = (
+                f"merge of {slug}!{pr_id} hit a transient forge response: "
+                f"{err.strip() or out.strip() or 'empty glab api response'} — retrying (#1813)"
+            )
+            raise MergeTransientError(msg)
         msg = f"merge of {slug}!{pr_id} failed: {err.strip() or out.strip() or 'glab api non-zero'}"
         raise MergePreconditionError(msg)
     try:

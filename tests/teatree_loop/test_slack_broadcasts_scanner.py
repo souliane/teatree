@@ -30,6 +30,13 @@ from teatree.loop.scanners.slack_broadcasts import (
     _parse_gitlab_mr_url,
 )
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 CHANNEL = "C0AM3TENTLK"
 TS_A = "1779201478.501469"
@@ -53,6 +60,9 @@ class FakeMessaging:
             raise self.react_raises
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        return self.react(channel=channel, ts=ts, emoji=emoji)
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
         _ = since
@@ -143,7 +153,10 @@ class TestClassificationBehaviour(TestCase):
         row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
         assert row.classification == ScannedBroadcast.Classification.ALL_MERGED
 
-    def test_all_pending_broadcast_reacts_eyes_and_dispatches_every_url(self) -> None:
+    def test_all_pending_broadcast_dispatches_every_url_without_eyes_claim(self) -> None:
+        # #113/#86: an open colleague MR queues a reviewer dispatch but posts
+        # NO ``:eyes:`` claim reaction at discovery — the claim reaction
+        # belongs to review-DONE, never to start.
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"new review thread {MR_OPEN} {MR_OPEN_2}", TS_A)]}
         states = {
@@ -162,12 +175,12 @@ class TestClassificationBehaviour(TestCase):
         assert [s.kind for s in signals] == ["slack.review_intent", "slack.review_intent"]
         assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
         assert {s.payload["trigger"] for s in signals} == {"broadcast"}
-        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert backend.react_calls == []
         row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
         assert row.classification == ScannedBroadcast.Classification.PENDING
         assert row.mr_urls == [MR_OPEN, MR_OPEN_2]
 
-    def test_mixed_broadcast_dispatches_only_open_subset(self) -> None:
+    def test_mixed_broadcast_dispatches_only_open_subset_without_eyes_claim(self) -> None:
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"{MR_MERGED} {MR_OPEN}", TS_A)]}
         states = {
@@ -185,7 +198,7 @@ class TestClassificationBehaviour(TestCase):
 
         assert len(signals) == 1
         assert signals[0].payload["mr_url"] == MR_OPEN
-        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert backend.react_calls == []
 
 
 class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
@@ -219,7 +232,7 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
         row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
         assert row.classification == ScannedBroadcast.Classification.PENDING
 
-    def test_colleague_mr_broadcast_still_reacts_eyes(self) -> None:
+    def test_colleague_mr_broadcast_dispatches_without_eyes_claim(self) -> None:
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
         states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="colleague")}
@@ -234,12 +247,15 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
         signals = scanner.scan()
 
         assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
-        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        # #113/#86: a colleague MR is dispatched but NOT :eyes:-claimed at
+        # discovery — the claim reaction is review-DONE-only.
+        assert backend.react_calls == []
 
-    def test_mixed_authorship_open_subset_still_reacts_eyes(self) -> None:
+    def test_mixed_authorship_open_subset_dispatches_without_eyes_claim(self) -> None:
         # One own MR + one colleague MR open in the same broadcast: a
         # colleague MR still needs review, so the broadcast is not "all mine"
-        # and the :eyes: react + dispatch for the colleague's MR must fire.
+        # and the dispatch for the colleague's MR must fire — with no :eyes:
+        # claim reaction at discovery (#113/#86).
         backend = FakeMessaging()
         history = {CHANNEL: [_message(f"{MR_OPEN} {MR_OPEN_2}", TS_A)]}
         states = {
@@ -257,7 +273,7 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
         signals = scanner.scan()
 
         assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
-        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert backend.react_calls == []
 
 
 class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
@@ -303,7 +319,8 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
         signals = scanner.scan()
 
         assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
-        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        # No discovery-time claim reaction (#113/#86).
+        assert scanner.backend.react_calls == []
 
     def test_non_eyes_colleague_reaction_still_dispatches(self) -> None:
         message = _message_with_reactions(
@@ -316,7 +333,7 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
         signals = scanner.scan()
 
         assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
-        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        assert scanner.backend.react_calls == []
 
     def test_no_user_id_configured_cannot_be_overridden_by_mention(self) -> None:
         message = _message_with_reactions(
@@ -355,7 +372,9 @@ class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):
 
         assert {s.kind for s in signals} == {"slack.review_intent", "review_request_in_slack"}
         assert {s.payload["mr_url"] for s in signals} == {MR_OPEN}
-        assert scanner.backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        # The user mention re-opens dispatch, but still no discovery-time
+        # claim reaction (#113/#86).
+        assert scanner.backend.react_calls == []
 
 
 class TestIdempotency(TestCase):
@@ -375,9 +394,9 @@ class TestIdempotency(TestCase):
 
         assert len(first) == 1
         assert second == []
-        # Only one react across the two scans — the second scan no-ops on the
-        # idempotency row.
-        assert backend.react_calls == [(CHANNEL, TS_A, "eyes")]
+        # No discovery-time claim reaction on either scan (#113/#86); the
+        # second scan no-ops on the idempotency row.
+        assert backend.react_calls == []
         assert ScannedBroadcast.objects.filter(channel=CHANNEL, slack_ts=TS_A).count() == 1
 
     def test_pending_to_all_merged_reclassifies_and_reacts_green(self) -> None:
@@ -403,10 +422,9 @@ class TestIdempotency(TestCase):
         signals = merged_scanner.scan()
 
         assert signals == []
-        assert backend.react_calls == [
-            (CHANNEL, TS_A, "eyes"),
-            (CHANNEL, TS_A, "white_check_mark"),
-        ]
+        # No :eyes: claim on the pending scan (#113/#86); the all-merged
+        # reclassification posts the :white_check_mark: outcome reaction.
+        assert backend.react_calls == [(CHANNEL, TS_A, "white_check_mark")]
         row = ScannedBroadcast.objects.get(channel=CHANNEL, slack_ts=TS_A)
         assert row.classification == ScannedBroadcast.Classification.ALL_MERGED
         assert row.reclassified_at is not None
@@ -414,9 +432,12 @@ class TestIdempotency(TestCase):
 
 class TestConnectChannelHardFail(TestCase):
     def test_connect_channel_bot_restricted_hard_fails(self) -> None:
+        # The only reaction the scanner posts now is the all-merged
+        # :white_check_mark: outcome reaction; a Connect-restricted channel
+        # rejecting it must still hard-fail loudly (#1131).
         backend = FakeMessaging(react_raises=RuntimeError("Slack API not_in_channel"))
-        history = {CHANNEL: [_message(f"{MR_OPEN}", TS_A)]}
-        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False)}
+        history = {CHANNEL: [_message(f"{MR_MERGED}", TS_A)]}
+        states = {MR_MERGED: MrState(url=MR_MERGED, merged=True, approved=True)}
         scanner = SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],
@@ -451,7 +472,7 @@ class TestNoiseHandling(TestCase):
 
         assert len(signals) == 1
         assert signals[0].payload["mr_url"] == MR_OPEN
-        assert backend.react_calls == [(CHANNEL, TS_B, "eyes")]
+        assert backend.react_calls == []
         assert ScannedBroadcast.objects.count() == 1
 
 

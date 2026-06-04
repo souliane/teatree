@@ -294,6 +294,28 @@ def _resolve_broadcast_channels(config: object) -> list[tuple[str, str]]:
     return pairs
 
 
+def _own_author_identity(backend: OverlayBackends) -> str:
+    """Resolve the user's forge username for the own-MR review skip (#1844 L3).
+
+    The own-author ``:eyes:``-and-dispatch skip in
+    :class:`SlackBroadcastsScanner` needs to know who "we" are. Deriving
+    this from ``overlay.config.get_gitlab_username()`` breaks for every
+    overlay that leaves the getter at the core default ``""`` — an empty
+    value disables the skip and the loop reviews the user's own MRs. The
+    self-identity source of truth is the same one
+    :class:`ReviewerPrsScanner` uses: ``backend.identities`` (the
+    multi-alias operator set) with a ``host.current_user()`` fallback, so
+    the skip works regardless of whether an overlay implements the getter.
+    """
+    if backend.identities:
+        return backend.identities[0]
+    for host in backend.hosts:
+        user = host.current_user()
+        if user:
+            return user
+    return ""
+
+
 def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsScanner | None:
     """Build a per-overlay broadcast scanner from the overlay's review channel (#1255).
 
@@ -313,12 +335,7 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
         return None
     glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
     github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
-    # #1384: pass the user's forge username so the scanner skips :eyes: on
-    # their own-author MR broadcasts. Empty (no getter / unconfigured) leaves
-    # the filter off, preserving react-on-every-pending for legacy overlays.
-    current_gitlab_username = (
-        overlay.config.get_gitlab_username() if hasattr(overlay.config, "get_gitlab_username") else ""
-    )
+    current_gitlab_username = _own_author_identity(backend)
     return SlackBroadcastsScanner(
         backend=backend.messaging,
         channels=channel_ids,
@@ -1032,6 +1049,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                         messaging=backend.messaging,
                         user_slack_id=_user_slack_id_for_overlay(tag),
                         host=backend.host,
+                        identities=backend.identities,
                     ),
                     overlay=tag,
                 ),
@@ -1039,6 +1057,7 @@ def _followup_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
                     scanner=ReviewRequestMergeReactScanner(
                         messaging=backend.messaging,
                         host=backend.host,
+                        identities=backend.identities,
                     ),
                     overlay=tag,
                 ),
@@ -1218,6 +1237,7 @@ def _messaging_jobs_for_backend(
                     messaging=messaging,
                     user_slack_id=_user_slack_id_for_overlay(tag),
                     host=backend.host,
+                    identities=backend.identities,
                 ),
                 overlay=tag,
             ),

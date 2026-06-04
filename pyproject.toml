@@ -55,6 +55,7 @@ dev = [
   "cyclonedx-bom>=6",
   "django-types>=0.23",
   "factory-boy>=3.3",
+  "import-linter>=2.3",
   "inline-snapshot>=0.13",
   "patchy>=2.7",
   "prek>=0.2.12",
@@ -74,6 +75,13 @@ dev = [
 docs = [
   "mkdocs>=1.6",
   "mkdocs-material>=9",
+]
+# Scoped mutation testing — `t3 mutation run` shells out to `uv run --group
+# mutation mutmut` so the mutant child shares the project's test env (Django,
+# pytest plugins) rather than an isolated uvx env. Out of the default `dev`
+# group: it is a narrow, opt-in safety gate, not part of routine `uv sync`.
+mutation = [
+  "mutmut>=3.5,<4",
 ]
 
 [tool.ruff]
@@ -203,6 +211,11 @@ lint.unfixable = [ "F401", "F811" ] # Never auto-delete imports — ruff misjudg
 lint.flake8-implicit-str-concat.allow-multiline = false
 lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
 lint.isort.split-on-trailing-comma = false
+# Cyclomatic-complexity ceiling (C901). Pinned explicit so it cannot silently
+# drift up: the tree is green at 10 (ruff's implicit default). Raising it is a
+# relaxation the quality-gates guard flags. The scripts/ tree exempts C901
+# below, since intent detection is inherently branchy.
+lint.mccabe.max-complexity = 10
 lint.pydocstyle.convention = "google"
 # Complexity limits
 lint.pylint.max-args = 5
@@ -272,6 +285,62 @@ omit = [ "src/teatree/core/migrations/*.py" ]
 # Tighter than the project-wide 93% floor for newly-added modules where a
 # small file dropping to 30% would still leave the project >= 93%.
 
+# --- import-linter ---
+# Complements tach: tach's depends_on is a direct-edge allow-list; these
+# contracts catch the transitive/laundered chains and the wildcard
+# sibling-independence invariants tach's per-module model cannot express
+# (BLUEPRINT §17.6.2, #724/#725). Only contracts that are GREEN on the current
+# tree are kept; the transitive-layers, acyclic, backend-independence and
+# domain-forbids-typer/httpx contracts are deferred until the core↔backends
+# cycles are broken (#179/#180) — see the PR body.
+
+[tool.importlinter]
+root_package = "teatree"
+
+[[tool.importlinter.contracts]]
+name = "Substrate must not import a concrete overlay"
+type = "forbidden"
+source_modules = [
+  "teatree.core",
+  "teatree.cli",
+  "teatree.loop",
+  "teatree.loops",
+  "teatree.backends",
+  "teatree.agents",
+]
+forbidden_modules = [ "teatree.contrib" ]
+
+[[tool.importlinter.contracts]]
+name = "Mini-loops are mutually independent"
+type = "independence"
+modules = [
+  "teatree.loops.arch_review",
+  "teatree.loops.audit",
+  "teatree.loops.dispatch",
+  "teatree.loops.dogfood",
+  "teatree.loops.followup",
+  "teatree.loops.housekeeping",
+  "teatree.loops.inbox",
+  "teatree.loops.issue_implementer",
+  "teatree.loops.news",
+  "teatree.loops.resource_pressure",
+  "teatree.loops.review",
+  "teatree.loops.ship",
+  "teatree.loops.tickets",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain core must not import the messaging layer"
+type = "forbidden"
+source_modules = [ "teatree.core" ]
+forbidden_modules = [ "teatree.messaging", "teatree.notify" ]
+# teatree.core.management is the interface (CLI-command) layer per tach, not the
+# domain layer this contract guards; its commands legitimately drive the loop
+# (which reaches messaging). Excluding the interface subtree leaves the contract
+# biting every domain module under teatree.core — none of which reaches
+# messaging today.
+ignore_imports = [ "teatree.core.management.** -> **" ]
+
 [tool.teatree.coverage]
 per_module_floors = [
   { path = "src/teatree/loop/persistence.py", floor = 80 },
@@ -294,6 +363,60 @@ min_cluster = 3
 test_lines = 117490
 source_lines = 64500
 tolerance = 0.05
+
+# Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
+# ``src/teatree/quality/mutation.py``). Mutation testing is expensive and
+# OpenClaw (a 1.4M-LOC AI-native codebase) uses none, so teatree applies it
+# ONLY to verified high-value SAFETY modules where a silent regression is
+# worst: a fail-closed gate that stops failing closed, a lost-update in a
+# claim/CAS path, a merge-clear/keystone that stops gating. ``t3 mutation
+# run`` mutates ONLY the registry entries a PR's diff touches and no-ops when
+# none are touched, so most PRs pay nothing. ``mode`` defaults to "warn"
+# (the CI ``mutation-diff`` job never fails the pipeline); flip to "block" to
+# promote it to a gate without a workflow change. ``baseline_surviving`` is the
+# ratchet floor (only shrinks): a per-module count of mutants knowingly left
+# alive, so "block" mode fails only on a NEW survivor, never on the documented
+# backlog. NARROW BY DESIGN — do NOT add the whole codebase; the conformance
+# test ``tests/quality/test_mutation.py`` caps the registry size.
+
+[tool.teatree.mutation]
+mode = "warn"
+timeout_seconds = 540
+high_value_modules = [
+  "src/teatree/on_behalf_gate.py",
+  "src/teatree/core/on_behalf_gate_recorded.py",
+  "src/teatree/core/merge_execution.py",
+  "src/teatree/core/models/merge_clear.py",
+  "src/teatree/core/availability.py",
+  "src/teatree/core/loop_lease_manager.py",
+  "src/teatree/loop/review_claim.py",
+]
+# Ratchet floor (only shrinks). The 7 on_behalf_gate.py survivors are all in the
+# DEPRECATED ask_before_post_on_behalf_enabled boolean shim (slated for removal),
+# not the live resolve_on_behalf_verdict gate — whose BLOCK->PROCEED mutants the
+# existing suite KILLS (the kill-proof). Recorded so a future "block" mode does
+# not fail on this documented backlog; shrink it as the shim is retired.
+baseline_surviving = [
+  { path = "src/teatree/on_behalf_gate.py", count = 7 },
+]
+
+# Per-module test scope. mutmut maps a mutant to the tests that exercise its
+# function by name, but its baseline "clean tests" pass runs the whole
+# ``tests_dir`` once — so a narrow dir keeps each scoped run inside the 10-min
+# CI cap. ``default`` is the fallback for an entry with no explicit mapping.
+
+[tool.teatree.mutation.module_tests]
+default = [ "tests/" ]
+"src/teatree/on_behalf_gate.py" = [
+  "tests/test_on_behalf_gate.py",
+  "tests/test_on_behalf_post_mode.py",
+]
+"src/teatree/core/on_behalf_gate_recorded.py" = [ "tests/teatree_core/test_on_behalf_gate_recorded.py" ]
+"src/teatree/core/merge_execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
+"src/teatree/core/availability.py" = [ "tests/teatree_core/test_availability.py" ]
+"src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]
+"src/teatree/loop/review_claim.py" = [ "tests/teatree_loop/test_review_claim_discipline.py" ]
 
 [tool.uv.build-backend]
 module-name = [ "teatree", "t3_bootstrap" ]

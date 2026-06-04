@@ -1,19 +1,24 @@
-"""``code_comment_density`` detector for the diff privacy-scanner.
+"""``code_comment_density`` density pass for the near-zero-comments rule.
 
-The diff privacy-scanner (``scripts/privacy_scan.py`` →
-``t3 tool privacy-scan``, wired into the pre-push gate
-``scripts/hooks/refuse-public-push-with-leak.sh``) scans the pushed diff
-for emails / keys / IPs / banned terms, plus the content-aware
-``code_comment_self_reference`` detector for bookkeeping refs left in
-comments. This module adds the commit-side half of the near-zero-comments
-rule: a **content-blind** density pass that catches the plain
-WHAT-narration the self-reference detector misses (a run of comments that
+This module is the commit-side half of the near-zero-comments rule
+(names + types are the documentation): a **content-blind** density pass
+that catches the plain WHAT-narration the content-aware
+``code_comment_self_reference`` detector misses (a run of comments that
 merely restate what the code already says, with no tracker token to match).
+
+The check is **advisory** — its consumers (the ``check_comment_density.py``
+pre-push hook, the ``comment-density-gate`` CI job, and the
+``t3 tool comment-density`` command) print the findings as a warning and
+exit 0. There is no good content-blind heuristic for "overly long prose"
+that does not also flag legitimate long comments, so the signal is
+surfaced without blocking the commit, push, or pipeline. It is deliberately
+NOT one of ``privacy_scan.py``'s blocking diff detectors — a comment-dense
+diff is a code-quality nudge, not a privacy leak.
 
 A file's ADDED lines are flagged when EITHER the ratio of added
 comment-only lines to added code lines exceeds a conservative threshold
 (with a floor on added code lines so a tiny diff cannot trip it), OR there
-is a block of 3+ consecutive comment-only lines.
+is a block of consecutive comment-only lines past the warn threshold.
 
 Comment-only is decided language-aware on the FILE SUFFIX (Python ``#``,
 JS/TS ``//`` and ``/* */`` line/block markers). Exempt from the comment
@@ -38,8 +43,8 @@ The thresholds are deliberately conservative: the ratio rule applies only
 once a meaningful number of comment lines is present (the comment-line
 floor) and there are enough code lines to compare against (the code-line
 floor), so a single explanatory comment never trips it however small the
-diff. A run of 3+ consecutive comment lines is the strong WHAT-narration
-signal and flags on its own.
+diff. A run of consecutive comment lines past the warn threshold is the
+strong WHAT-narration signal and warns on its own.
 """
 
 import re
@@ -74,7 +79,7 @@ _PRAGMA_RE = re.compile(
 _RATIO_THRESHOLD = 0.15
 _MIN_ADDED_CODE_LINES = 3
 _MIN_ADDED_COMMENT_LINES = 3
-_MAX_CONSECUTIVE_COMMENT_LINES = 2
+_CONSECUTIVE_COMMENT_WARN_THRESHOLD = 2
 
 _HASH_COMMENT_SUFFIXES = (".py", ".sh", ".bash", ".rb")
 _SLASH_COMMENT_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".java", ".go", ".c", ".cpp", ".cs", ".scss", ".css")
@@ -192,7 +197,7 @@ class _FileScan:
 
     @property
     def is_flagged(self) -> bool:
-        if self.max_consecutive > _MAX_CONSECUTIVE_COMMENT_LINES:
+        if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
             return True
         if self.comment_lines < _MIN_ADDED_COMMENT_LINES or self.code_lines < _MIN_ADDED_CODE_LINES:
             return False
@@ -200,10 +205,8 @@ class _FileScan:
 
     @property
     def reason(self) -> str:
-        if self.max_consecutive > _MAX_CONSECUTIVE_COMMENT_LINES:
-            return (
-                f"{self.max_consecutive} consecutive comment-only lines (max allowed {_MAX_CONSECUTIVE_COMMENT_LINES})"
-            )
+        if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
+            return f"{self.max_consecutive} consecutive comment-only lines"
         return (
             f"{self.comment_lines} added comment lines vs {self.code_lines} added code lines "
             f"(ratio {self.ratio:.2f} > {_RATIO_THRESHOLD:.2f})"
@@ -237,8 +240,7 @@ def _iter_file_scans(text: str) -> "list[tuple[int, str, _FileScan]]":
 
     Returns ``(header_lineno, path, scan)`` for every file in the diff,
     flagged or not. ``header_lineno`` is the 1-based position of the
-    ``+++`` line within ``text``. The single scanning loop is shared by
-    :func:`scan_diff` and :func:`report_diff` so the parsing rules never fork.
+    ``+++`` line within ``text``. Drives :func:`report_diff`.
     """
     results: list[tuple[int, str, _FileScan]] = []
     current_path: str | None = None
@@ -267,30 +269,15 @@ def _iter_file_scans(text: str) -> "list[tuple[int, str, _FileScan]]":
     return results
 
 
-def scan_diff(text: str) -> list[tuple[int, str, str]]:
-    """Scan a unified diff for comment-dense added code, one finding per file.
-
-    Returns ``(line_number, category, match)`` findings where ``line_number``
-    is the 1-based position of the file header within ``text`` (so it lines
-    up with the per-line findings ``privacy_scan.py`` emits). Only added
-    lines (``+`` but not ``+++``) in non-exempt source files are counted, and
-    docstring bodies plus security-rationale comments are excluded from the
-    comment tally.
-    """
-    return [
-        (header_lineno, CATEGORY, f"{path}: comment-dense added lines")
-        for header_lineno, path, scan in _iter_file_scans(text)
-        if scan.is_flagged
-    ]
-
-
 def report_diff(text: str) -> list[CommentDensityFinding]:
-    """Structured per-file findings for the standalone ``comment-density`` tool.
+    """Structured per-file findings for the advisory ``comment-density`` tool.
 
-    Same parsing and thresholds as :func:`scan_diff`, but each flagged file
-    carries its added comment/code counts, the longest consecutive-comment
-    run, and a human-readable reason so the CLI / hook can print an
-    actionable message rather than a bare "comment-dense" verdict.
+    Only added lines (``+`` but not ``+++``) in non-exempt source files are
+    counted; docstring bodies, tooling pragmas, and security-rationale
+    comments are excluded from the comment tally. Each flagged file carries
+    its added comment/code counts, the longest consecutive-comment run, and
+    a human-readable reason so the CLI / hook can print an actionable warning
+    rather than a bare "comment-dense" verdict.
     """
     return [
         CommentDensityFinding(

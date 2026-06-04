@@ -41,6 +41,13 @@ from teatree.loop.scanners.slack_review_intent import SlackReviewIntentScanner
 from teatree.loop.scanners.ticket_completion import TicketCompletionScanner
 from teatree.loop.scanners.todo_sweep import TodoSweepScanner
 from teatree.types import RawAPIDict
+from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
+
+
+@pytest.fixture(autouse=True)
+def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    disable_on_behalf_gate(tmp_path_factory, monkeypatch)
+
 
 # ---------------------------------------------------------------------------
 # Shared fakes
@@ -161,6 +168,9 @@ class _FakeMessaging:
             raise self.react_raises
         self.react_calls.append((channel, ts, emoji))
         return {"ok": True}
+
+    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        return self.react(channel=channel, ts=ts, emoji=emoji)
 
     def resolve_user_id(self, handle: str) -> str:
         _ = handle
@@ -345,9 +355,12 @@ class TestSlackBroadcastsConnectChannelEscalation(TestCase):
     """ConnectChannelBotRestrictedError still propagates through the per-message guard."""
 
     def test_connect_channel_error_propagates_out_of_scan(self) -> None:
+        # The scanner posts only the all-merged :white_check_mark: outcome
+        # reaction now (no discovery-time :eyes:, #113/#86); a Connect-
+        # restricted channel rejecting it must still propagate the escalation.
         backend = _FakeMessaging(react_raises=RuntimeError("Slack API not_in_channel"))
         history = {CHANNEL: [_message(f"{MR_OPEN_A}", TS_A)]}
-        states = {MR_OPEN_A: MrState(url=MR_OPEN_A, merged=False, approved=False)}
+        states = {MR_OPEN_A: MrState(url=MR_OPEN_A, merged=True, approved=True)}
         scanner = SlackBroadcastsScanner(
             backend=backend,
             channels=[CHANNEL],

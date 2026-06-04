@@ -93,13 +93,14 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
-  comment-density-gate:
-    # Near-zero-comments gate (souliane/teatree#1369). The pre-push hook
-    # runs against staged changes; CI re-runs the SAME check on the PR diff
-    # so an agent that bypasses prek still trips the gate. Stages the
-    # PR-vs-base diff into the index so the hook's ``git diff --cached``
-    # query sees the PR contents — identical code path to prek and to
-    # ``t3 tool comment-density --staged``.
+  comment-density-warning:
+    # Near-zero-comments check (souliane/teatree#1369). Advisory: the script
+    # prints any comment-dense file as a warning and exits 0, so the job
+    # never fails the pipeline. The pre-push hook surfaces the same warning
+    # against staged changes; CI re-runs the SAME check on the PR diff so the
+    # signal is visible on every PR. Stages the PR-vs-base diff into the index
+    # so the hook's ``git diff --cached`` query sees the PR contents —
+    # identical code path to prek and to ``t3 tool comment-density --staged``.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -120,6 +121,95 @@ jobs:
           git fetch --no-tags origin "${BASE_REF}"
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_comment_density.py
+
+  semgrep-regressions:
+    # Advisory warn-set scan for the named regression-detector rules
+    # (souliane/teatree#126). The blocking set rides the prek step above
+    # (full-tree, --error, fails CI on a finding). This job runs the WARN
+    # config and ALWAYS exits 0, so a still-open regression's findings are
+    # visible on every PR without gating — mirrors comment-density-warning.
+    # Each warn rule flips warn/ -> blocking/ in its bug's fix PR.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Warn-set regression scan (advisory; never fails)
+        run: uvx semgrep@1.165.0 scan --config .semgrep/warn || true
+
+  mutation-diff:
+    # Scoped (narrow) mutation testing, PR-only (souliane/teatree#131).
+    # ``t3 mutation run`` diffs the PR vs base, intersects with
+    # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
+    # touched safety modules — a no-op (fast pass) when the PR touches none, so
+    # most PRs pay nothing. Warn-first: ``mode = "warn"`` makes the command
+    # exit 0 even with survivors, so the job never blocks the pipeline day one;
+    # flipping ``mode`` to "block" in pyproject.toml promotes it to a gate
+    # (only-shrinks ratchet via ``baseline_surviving``) with no workflow change.
+    # The 10-min cap bounds a pathological run.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Diff-scoped mutation run (warn-first; 10-min cap)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          timeout 600 uv run t3 mutation run --target "origin/$BASE_REF"
+
+  mutation-weekly:
+    # Weekly full-scope mutation run over the whole registry (not just the
+    # diff). Like the eval suite, it is metered (slow), so it runs once a week
+    # on the FIRST PR opened that ISO week — ``scripts/eval/first_pr_of_week.py``
+    # makes that decision (order-independent, re-run safe). Warn-first as above;
+    # mutates every declared safety module by passing each registry path as the
+    # changed set.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Decide whether this is the first PR of the ISO week
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
+            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
+          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_mutation=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Full-scope mutation run (warn-first)
+        if: steps.gate.outputs.run_mutation == 'true'
+        run: uv run t3 mutation run --all
 
   docs-drift:
     runs-on: ubuntu-latest

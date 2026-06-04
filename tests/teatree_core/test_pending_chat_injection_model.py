@@ -245,6 +245,48 @@ class TestMarkEyesReacted:
         assert row.eyes_reacted_at == first_stamp
 
 
+class TestUnmarkEyesReacted:
+    """Releasing the :eyes: claim so a failed reaction is retried next cycle."""
+
+    def test_unmark_clears_the_stamp_and_allows_remark(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_eyes_reacted()
+
+        assert row.unmark_eyes_reacted() is True
+        assert row.eyes_reacted_at is None
+        assert row.mark_eyes_reacted() is True
+
+    def test_unmark_on_unstamped_row_is_a_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.unmark_eyes_reacted() is False
+        assert row.eyes_reacted_at is None
+
+
+class TestUnmarkLoopReplied:
+    """Releasing the loop-reply claim so a failed ack reaction is retried."""
+
+    def test_unmark_clears_stamp_and_kind_and_allows_remark(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+        row.mark_loop_replied("ack")
+
+        assert row.unmark_loop_replied() is True
+        assert row.loop_replied_at is None
+        assert row.answer_kind == ""
+        assert row.mark_loop_replied("delegated") is True
+        assert row.answer_kind == "delegated"
+
+    def test_unmark_on_unreplied_row_is_a_no_op(self) -> None:
+        row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x")
+        assert row is not None
+
+        assert row.unmark_loop_replied() is False
+        assert row.loop_replied_at is None
+
+
 class TestStrRepr:
     def test_repr_for_pending_row(self) -> None:
         row = PendingChatInjection.record(channel="C", slack_ts="1.0", text="x", overlay="ovA")

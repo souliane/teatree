@@ -58,6 +58,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
+│ mutation        Scoped mutation testing over high-value safety modules.      │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -1470,7 +1471,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
-│ comment-density      Flag added comments that merely restate the code        │
+│ comment-density      Warn on added comments that merely restate the code     │
 │                      (near-zero-comments rule).                              │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
@@ -1484,6 +1485,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      keyword-matching title and body.                        │
 │ find-duplicates      Flag pairs of open issues with near-identical titles.   │
 │ triage-issues        Scan for resolved-but-open and stale issues.            │
+│ verify-gates         Run the FULL CI-equivalent local gate set (commit AND   │
+│                      push stages).                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1694,12 +1697,13 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Flag added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (near-zero-comments rule).
 
  Content-blind density pass over a unified diff. Reusable by any overlay:
- the dedicated prek hook and the CI job both call this command. Exits ``1``
- when a file's added lines are comment-dense, ``0`` when clean. Never a
- PreToolUse gate, so it can never lock the agent's tools.
+ the dedicated prek hook and the CI job both call this command. The check
+ is **advisory** — it prints the findings as a warning but **always exits
+ 0**, so it never blocks a commit, push, or pipeline, and it is never a
+ PreToolUse gate.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --diff            PATH  Read the unified diff from this file instead of      │
@@ -1864,6 +1868,26 @@ Usage: t3 tool triage-issues [OPTIONS] REPO
 │ --close-resolved                 Close resolved-but-open issues (with        │
 │                                  comment linking the merged PR).             │
 │ --help                           Show this message and exit.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool verify-gates`
+
+```
+Usage: t3 tool verify-gates [OPTIONS]
+
+ Run the FULL CI-equivalent local gate set (commit AND push stages).
+
+ Runs ``prek run --all-files`` then ``prek run --all-files --hook-stage
+ pre-push`` and exits non-zero if EITHER stage fails. The push-stage run is
+ what catches the gates CI fails on but a bare ``prek run --all-files``
+ cannot see (comment-density, doc-update, ensure-pr, the public-repo leak
+ gate). The full test suite is NOT a push gate -- push -> CI runs it. Report
+ this command's exit code as the green-proof
+ before declaring a branch review-ready -- not a commit-stage-only run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2628,8 +2652,8 @@ Usage: t3 slack [OPTIONS] COMMAND [ARGS]...
 │ listen  Run the Socket Mode receiver for all (or one) slack-enabled          │
 │         overlays.                                                            │
 │ check   Drain the event queue, ack with 👀, and print new user messages.     │
-│ react   Add *emoji* to ``(channel, ts)`` using the personal user-OAuth       │
-│         token.                                                               │
+│ react   Add *emoji* to ``(channel, ts)`` through the on-behalf egress        │
+│         (#960/#1750).                                                        │
 │ status  Check if the Socket Mode listener is running.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2674,27 +2698,20 @@ Usage: t3 slack check [OPTIONS]
 ```
 Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
 
- Add *emoji* to ``(channel, ts)`` using the personal user-OAuth token.
+ Add *emoji* to ``(channel, ts)`` through the on-behalf egress (#960/#1750).
 
- The personal ``xoxp-…`` token at ``pass slack/user-oauth-token``
- (provisioned by ``t3 setup slack-user-token``) is the only credential
- that reliably reaches user DMs and Slack-Connect externally-shared
- channels for ``reactions.add`` (#1232).
+ Routes through :class:`OnBehalfSlackEgress` on the route-aware backend:
+ a reaction on the user's own DM stays ungated, a reaction on a colleague
+ or channel message is gated+audited under the on-behalf discipline. The
+ backend resolves from ``--overlay`` or ``T3_OVERLAY_NAME``.
 
  Exit codes:
 
  - ``0`` — success (including the idempotent ``already_reacted`` case).
- - ``1`` — token is missing **OR** Slack rejected the call with an
-     ``ok:false`` error (``missing_scope``, ``not_in_channel``,
-     ``mcp_externally_shared_channel_restricted``, …). The structured
-     message prints the error code, the remediation CLI
-     (``t3 setup slack-user-token``), #1232, and the BINDING that
-     forbids a thread-emoji fallback
-     (``feedback_react_not_emoji_thread_comment``).
- - ``2`` — transport-level failure (HTTP 5xx, ``httpx.HTTPError``).
-
- A non-zero exit means **stop and surface the gap** — never fall back
- to ``chat.postMessage(text=":emoji:")`` on the broadcast's thread.
+ - ``1`` — no slack backend resolvable, OR the colleague-surface reaction
+     is blocked by ``on_behalf_post_mode`` (the message names the
+     ``t3 review approve-on-behalf`` satisfier), OR Slack rejected the
+     call (``missing_scope``, ``not_in_channel``, …).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    channel      TEXT  Slack channel id (e.g. `D…` for a DM, `C…` for a     │
@@ -2707,7 +2724,8 @@ Usage: t3 slack react [OPTIONS] CHANNEL TS EMOJI
 │                         [required]                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
+│ --overlay        TEXT  Overlay whose Slack credentials route the reaction.   │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2795,6 +2813,35 @@ Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
 Usage: t3 dogfood overlay-provision-smoke [OPTIONS]
 
  Forward ``t3 dogfood overlay-provision-smoke `` to the management command.
+```
+
+### `t3 mutation`
+
+```
+Usage: t3 mutation [OPTIONS] COMMAND [ARGS]...
+
+ Scoped mutation testing over high-value safety modules.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run  Mutate the safety modules a PR touches; warn/block per the ratchet.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mutation run`
+
+```
+Usage: t3 mutation run [OPTIONS]
+
+ Mutate the safety modules a PR touches; warn/block per the ratchet.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --target        TEXT  Base ref to diff against [default: origin/main]        │
+│ --all                 Mutate the whole registry, not just the diff (weekly)  │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 teatree`

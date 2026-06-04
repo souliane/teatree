@@ -1027,7 +1027,14 @@ def _loop_registration_exempt(data: dict) -> bool:
         killed every spawned coder/reviewer in the incident;
     - the durable kill-switch ``[teatree] loop_registration_gate_enabled =
         false`` is set (disable without a code edit);
-    - there is no ``session_id`` (no per-session marker to key on).
+    - there is no ``session_id`` (no per-session marker to key on);
+    - this session is NOT the loop driver — a *different* live session already
+        owns the tick (``_session_drives_loop`` is False), so this is an
+        attended, non-owner interactive session. Nagging it to ``CronCreate`` a
+        competing ``t3 loop tick`` would only spawn a duplicate loop the
+        non-owner tick gate would SKIP anyway; the rightful owner (or, with no
+        live owner, the next eligible session — see ``_session_drives_loop``)
+        still gets nagged, so the loop is never left unregistered.
     """
     if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
         return True
@@ -1035,7 +1042,9 @@ def _loop_registration_exempt(data: dict) -> bool:
         return True
     if not _loop_registration_gate_enabled():
         return True
-    return not data.get("session_id")
+    if not data.get("session_id"):
+        return True
+    return not _session_drives_loop(data["session_id"])
 
 
 def handle_enforce_loop_registration(data: dict) -> bool:
@@ -1359,18 +1368,73 @@ def _skill_load_ok_token(data: dict) -> str | None:
     return None
 
 
+# File suffixes whose Edit/Write is genuine Python/Django source work. A skill
+# demand for ``/ac-python`` / ``/ac-django`` is relevant only to these; a
+# ``.md`` / ``.yml`` / ``.toml`` / ``.sh`` / prose edit is not, so the gate must
+# not fire on it (the over-block this scope closes).
+_PYTHON_SOURCE_SUFFIXES: tuple[str, ...] = (".py", ".pyi")
+
+# A Bash command runs Python tooling when its FIRST word (after benign env /
+# `cd` prefixes are not in scope here — the heuristic is conservative on the
+# leading verb) is a Python interpreter / packaging / lint / type / test
+# runner, or it invokes ``manage.py`` / ``setup.py``. Tightly anchored so a
+# pure-git / ls / grep / markdownlint command never counts as code work.
+_PYTHON_TOOL_RE: re.Pattern[str] = re.compile(
+    r"(?:^|[;&|]\s*|\b)(?:"
+    r"python[0-9.]*\b|uv\s+run\b|uvx\b|poetry\s+run\b|pipenv\s+run\b|"
+    r"pytest\b|ruff\b|ty\s+check\b|ty-check\b|mypy\b|tox\b|"
+    r"[\w./-]*manage\.py\b|[\w./-]*setup\.py\b"
+    r")"
+)
+
+
+def _skill_gate_targets_code_work(data: dict) -> bool:
+    """True iff this tool call is genuine Python/Django code work.
+
+    The skill-loading gate demands ``/ac-python`` / ``/ac-django`` only for
+    Python/Django work, so it must fire ONLY when:
+
+    - ``Edit`` / ``Write`` touches a Python source file (``.py`` / ``.pyi``); or
+    - ``Bash`` runs Python tooling (python, uv run, pytest, ruff, ty, manage.py).
+
+    It NEVER fires on ``AskUserQuestion`` (or any other tool), nor on a
+    markdown / yaml / toml / shell / prose edit, nor on a pure-git or other
+    non-Python Bash command. This is the tight-scope alternative to a fuzzy
+    hard-block: the gate cannot cleanly separate Python edits from docs/config/
+    git work by intent text, so it keys on the concrete target instead.
+    """
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+    if not isinstance(tool_input, dict):
+        return False
+    if tool_name in {"Edit", "Write"}:
+        file_path = tool_input.get("file_path", "")
+        if not isinstance(file_path, str):
+            return False
+        return file_path.endswith(_PYTHON_SOURCE_SUFFIXES)
+    if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        return isinstance(command, str) and bool(_PYTHON_TOOL_RE.search(command))
+    return False
+
+
 def handle_enforce_skill_loading(data: dict) -> bool:
-    """Block Bash/Edit/Write when *loadable* suggested skills aren't loaded.
+    """Block Python/Django code work when *loadable* suggested skills aren't loaded.
+
+    Scoped to genuine code work (:func:`_skill_gate_targets_code_work`): an
+    ``Edit``/``Write`` of a ``.py``/``.pyi`` file or a ``Bash`` Python-tooling
+    command. It NEVER fires on ``AskUserQuestion``, a docs/config/shell edit, or
+    a pure-git Bash command — the over-block this scope closes.
 
     Fails open on a stale/unresolvable required skill (see the module
     comment above): such a name is warned about, never blocked on. A
     per-call ``[skill-load-ok: <reason>]`` token in the tool's command/
     args is an explicit escape (#1567) so a false trigger can never wedge
-    the loop; a genuine intent match still hard-blocks every call lacking
-    that token.
+    the loop; a genuine intent match still hard-blocks every code-work call
+    lacking that token.
     """
     session_id = data.get("session_id", "")
-    if not session_id:
+    if not session_id or not _skill_gate_targets_code_work(data):
         return False
 
     pending_lines = _read_lines(_state_file(session_id, "pending"))
@@ -2464,8 +2528,6 @@ def handle_validate_mr_metadata(data: dict) -> bool:
 
 # ── PreToolUse: block-ai-signature (#836 §17.6 gate 15) ─────────────
 
-_PR_BODY_FLAG_RE = re.compile(r"--(?:body|description|message)(?:[ =])\s*(['\"])(.*?)\1", re.DOTALL)
-_GIT_COMMIT_M_RE = re.compile(r"git\s+commit\b[^\n]*?-m\s+(['\"])(.*?)\1", re.DOTALL)
 # File-based message args — the standard multi-line path (#831's shape).
 # ``git commit -F/-C/--file FILE``, ``gh pr create --body-file FILE``,
 # ``glab mr create --description FILE``. The captured token is a path
@@ -2508,19 +2570,6 @@ def _read_message_file(command: str) -> str | None:
         return None
 
 
-_AI_SIG_PR_RE = re.compile(
-    r"\b(?:"
-    r"gh\s+pr\s+(?:create|edit|comment)"
-    r"|glab\s+mr\s+(?:create|update|edit)"
-    # F2: REST-API create endpoints — effective POST creates a PR/MR and
-    # must carry an AI-sig scan just like `gh pr create` / `glab mr create`.
-    # GET reads (no body flag, bare endpoint) are excluded by the
-    # _is_api_create_endpoint_write helper.
-    r"|gh\s+api\b"
-    r"|glab\s+api\b"
-    r")\b",
-)
-_AI_SIG_COMMIT_RE = re.compile(r"\bgit\s+commit\b")
 # REST-API create-endpoint: .../pulls or .../merge_requests WITHOUT /N/merge.
 # Distinguishes a PR/MR create from a list read (GET) or the merge endpoint
 # already covered by _MERGE_ENDPOINT_RE.  The \d+-free form matches both the
@@ -2555,55 +2604,60 @@ def _is_api_create_endpoint_write(command: str) -> bool:
     return not is_read
 
 
-def _extract_bash_ai_sig_payload(command: str) -> str | None:
-    """Return the scannable payload for a Bash command, or ``None``.
+def _extract_bash_ai_sig_payload(command: str, cwd: Path | None = None) -> str | None:
+    """Return the scannable forge-post body for a Bash command, or ``None``.
 
-    Split out of :func:`_extract_ai_sig_payload` to keep that function under
-    the PLR0911 return-count ceiling (same pattern as
-    :func:`_resolve_high_match`).
+    Delegates the "is this a forge post?" decision and the body extraction to
+    the SAME canonical command parser the #1213 quote-scanner, #1415
+    banned-terms, and #1530 bare-reference gates use
+    (:mod:`teatree.hooks._command_parser`). This was previously a second,
+    hand-rolled parser (``_AI_SIG_PR_RE`` / ``_AI_SIG_COMMIT_RE`` /
+    ``_PR_BODY_FLAG_RE`` / ``_GIT_COMMIT_M_RE``, all now removed) that covered
+    only ``gh pr`` / ``glab mr`` and a QUOTED ``--body`` — it missed
+    ``gh issue create/comment``,
+    ``glab issue note``, ``glab mr note``, and the ``-b``/heredoc/``-d`` body
+    forms, so an AI-signature footer leaked on those surfaces (#11, the
+    souliane/skills#38 / #1840 / #1845 recurrence). Reusing the shared parser
+    closes the whole class at once: :func:`is_publish_command` recognises every
+    forge-post command shape (the contiguous-substring catalogue + the
+    token-aware ``api`` WRITE / ``git commit`` classifiers), and
+    :func:`extract_bash_payload` pulls the body out of every flag form
+    (``--body``/``--description``/``--message``/``-b``/``-m``, ``--body-file``/
+    ``--file``/``-F``, ``-d``/``--field`` JSON, heredocs).
+
+    ``fail_closed_body_file=False`` keeps this gate's fail-OPEN contract on an
+    unreadable / missing / binary body file (an absent body contributes
+    nothing rather than a hard-block sentinel) — a broken environment must
+    never block a forge post, matching the other t3-shelling hooks.
+
+    The body extraction itself lives in the public
+    :func:`teatree.hooks.ai_signature_gate.extract_forge_post_body` so the
+    private ``_command_parser`` import stays INSIDE the ``teatree`` package (the
+    hook router cannot import a private name from an external module), mirroring
+    how ``banned_terms_scanner.extract_publish_payload`` wraps the same parser.
     """
-    is_commit = bool(_AI_SIG_COMMIT_RE.search(command))
-    if not is_commit and not _AI_SIG_PR_RE.search(command):
-        return None
-    # F2: gh api / glab api only trigger when it's actually a create-endpoint
-    # POST — a bare GET read must not be treated as PR create.
-    if not is_commit:
-        api_match = re.search(r"\b(?:gh|glab)\s+api\b", command)
-        if api_match and not _is_api_create_endpoint_write(command):
-            return None
-    # Inline message wins; file-based arg is the multi-line fallback (#831).
-    flag_re = _GIT_COMMIT_M_RE if is_commit else _PR_BODY_FLAG_RE
-    inline = flag_re.search(command)
-    if inline is not None:
-        return inline.group(2)
-    from_file = _read_message_file(command)
-    if from_file is not None:
-        return from_file
-    # A PR command with no body is still a scannable surface (empty string);
-    # a commit with no -m opens an editor — no inline payload (None).
-    return None if is_commit else ""
+    from teatree.hooks.ai_signature_gate import extract_forge_post_body  # noqa: PLC0415
+
+    return extract_forge_post_body(command, cwd)
 
 
 def _extract_ai_sig_payload(data: dict) -> str | None:
     """Return the PR-body / commit-message text to scan, else ``None``.
 
-    Covers ``gh pr create/edit/comment --body``, ``glab mr
-    create/update/edit --description``, ``git commit -m`` (inline), the
-    file-based message path (``git commit -F/-C``, ``gh pr create
-    --body-file``, ``glab mr create --description <file>`` — the standard
-    multi-line / #831 shape), ``gh api``/``glab api`` POST to a
-    PR/MR-create endpoint (F2), and the MR/PR MCP create/update tools.
-    ``None`` ⇒ not a PR/commit mutation, or a file-based arg whose file is
-    missing/binary (fail open).
-
-    Uses word-boundary + ``\\s+`` regexes (not plain ``in``) so double-space
-    variants (``git  commit``, ``glab  mr  create``) are caught (F1).
-    """  # noqa: D301
+    Covers the full forge-post command class via the shared canonical parser
+    (:func:`_extract_bash_ai_sig_payload`): ``gh pr create/edit/comment``,
+    ``gh issue create/comment``, ``glab mr create/update/note``,
+    ``glab issue create/note``, ``git commit`` (inline ``-m`` and file-based
+    ``-F``/``-C``/``--file`` / ``--body-file`` / ``--description``-file —
+    the #831 multi-line shape), the ``gh api``/``glab api`` WRITE to a forge
+    endpoint, and the MR/PR MCP create/update tools. ``None`` ⇒ not a forge
+    post / commit, or (for a file-based arg) a missing/binary file (fail open).
+    """
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
 
     if tool_name == "Bash":
-        return _extract_bash_ai_sig_payload(tool_input.get("command", ""))
+        return _extract_bash_ai_sig_payload(tool_input.get("command", ""), _resolve_cwd_repo(data))
 
     if tool_name in _PR_CREATE_TOOLS:
         return tool_input.get("body", "") or tool_input.get("description", "")
@@ -2618,17 +2672,81 @@ def _ai_sig_scan_argv() -> list[str] | None:
     return None
 
 
+# A genuine finding is recognisable by the scanner's well-formed summary
+# header ``AI-signature scan: N banned trailer(s)`` (``scripts/
+# ai_signature_scan.py`` ``_summary``). The scanner exits 1 on a finding AND
+# nonzero on a crash (a missing/unreadable ``-F`` file → typer traceback →
+# exit 1, no summary on stdout), so ``returncode != 0`` alone CANNOT tell the
+# two apart — keying on the summary line does, mirroring the sibling
+# ``_diff_coverage_finding`` structured-stdout discriminator.
+_AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
+
+
+def _ai_sig_finding(stdout: str) -> str | None:
+    """Return the finding summary iff *stdout* is a real banned-trailer finding.
+
+    ``None`` ⇒ not a genuine finding: either the clean summary (``AI-signature
+    scan: clean``) or a crash/error with no well-formed summary at all. The
+    caller maps the three outcomes to DENY-finding / ALLOW / fail-closed-error.
+    """
+    if _AI_SIG_FINDING_RE.search(stdout):
+        return stdout.strip()
+    return None
+
+
 def handle_block_ai_signature(data: dict) -> bool:
-    """Refuse a PR body / commit message carrying an AI-signature trailer.
+    """Refuse a forge-post body / commit message carrying an AI-signature trailer.
 
     Deterministic enforcement of the "No AI Signature on Posts Made on the
     User's Behalf" rule (BLUEPRINT §17.6 gate 15, #836). The rule was prose
     only in /t3:rules and unenforced at the PR-body layer — PR #831 leaked
     the banned trailer, caught only by cold review. This makes it a code
     gate at the same pre-merge layer as the draft-lock and structured-
-    question gates. Fails open on a broken environment (no ``t3``), matching
-    the other t3-shelling hooks.
+    question gates.
+
+    Body extraction now reuses the shared canonical command parser
+    (``teatree.hooks._command_parser``) so the gate fires for the WHOLE
+    forge-post command class — ``gh pr/issue create/edit/comment``,
+    ``glab mr/issue create/update/note``, ``git commit``, and every
+    ``--body``/``--body-file``/``-F``/``-b``/``-m`` flag form — closing the
+    ``gh issue`` / ``glab note`` / unquoted-body gap a hand-rolled regex
+    parser left open (#11). The handler bootstraps ``sys.path`` to import
+    ``teatree`` from the sibling ``src/`` dir (the hook runs in the user's
+    session shell with no guarantee ``teatree`` is importable, #1314) and
+    fails open on a broken environment (no ``t3`` / import error / timeout),
+    matching the other t3-shelling hooks — a gate that cannot run AT ALL must
+    not lock out every commit.
+
+    Three outcomes are kept DISTINCT (#1884), because this is a SECURITY gate
+    that prevents publishing AI signatures under the user's identity:
+    (a) scanner ran, found a trailer (well-formed ``AI-signature scan: N
+    banned trailer(s)`` summary) → DENY with the finding message;
+    (b) scanner ran, clean → ALLOW;
+    (c) scanner WAS invoked but exited nonzero with no well-formed finding
+    summary (a crash/error) → FAIL CLOSED with a clear "scanner error, not a
+    finding" message. The old gate mapped ANY nonzero exit to (a), so a crash
+    (exit 1, traceback, no summary) became a false DENY carrying the LYING
+    "banned trailer found" message. Unlike the sibling coverage gate (which
+    fails OPEN on a crash, correct for a coverage gate), a leak-prevention
+    gate must NOT fail open — an unscanned publish may carry a signature.
     """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        return _run_block_ai_signature(data)
+    except Exception:  # noqa: BLE001 — a crashing gate is worse than no scan; fail open.
+        return False
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
+def _run_block_ai_signature(data: dict) -> bool:
+    """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
     payload = _extract_ai_sig_payload(data)
     if payload is None:
         return False
@@ -2649,11 +2767,26 @@ def handle_block_ai_signature(data: dict) -> bool:
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
-    if result.returncode != 0:
+    finding = _ai_sig_finding(result.stdout or "")
+    if finding is not None:
         return emit_pretooluse_deny(
             "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
-            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n"
-            + (result.stdout or result.stderr or "").strip()
+            "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n" + finding
+        )
+    if result.returncode != 0:
+        # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
+        # a crash/error (traceback, usage error), not a finding. This is a
+        # SECURITY gate (it prevents publishing AI signatures under the user's
+        # identity), so the safe posture is FAIL CLOSED with a clear
+        # "scanner error" message — block, but never report a finding that did
+        # not happen, and never silently let an unscanned publish through.
+        # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
+        # purpose; a leak-prevention gate must not.)
+        return emit_pretooluse_deny(
+            "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
+            "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
+            "not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n"
+            + (result.stderr or result.stdout or "").strip()
         )
     return False
 
@@ -3121,7 +3254,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
     if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
         return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
 
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
     if payload is None:
         return False
 
@@ -3148,77 +3281,6 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         )
 
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))
-
-
-# ── PreToolUse: bare-reference link gate (#1530) ────────────────────
-
-
-def handle_bare_reference_pretool(data: dict) -> bool:
-    """Refuse a publish whose body cites a bare reference instead of a link.
-
-    Sibling of the #1213 quote-scanner and #1415 banned-terms gates.
-    Promotes the prose-only "always a clickable link, never a bare id"
-    rule (``feedback_always_clickable_links_never_bare_ids.md``) to a
-    deterministic pre-publish gate. Reuses the shared #1213
-    ``_command_parser`` publish-surface detection + body extraction, then
-    matches the extracted body against the bare-reference catalogue.
-
-    A bare ``#NNNN`` / ``!NNNN`` / Slack ``ts`` / forge-or-Notion URL not
-    wrapped in a clickable link ⇒ refuse via ``permissionDecision: deny``
-    + a reason naming each offending ref. Outgoing surfaces only
-    (gh/glab/git-commit/t3-notify/slack-send) — never internal reads.
-
-    Fail-open on any internal error: a crashing hook is worse than no
-    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
-    the sibling ``src/`` directory (#1314) and swallows any exception,
-    returning ``False`` so the tool use proceeds unchanged.
-
-    The Slack-MCP arm (newly reachable via the ``mcp__.*[Ss]lack.*``
-    matcher, #171) is governed by the ``[teatree]
-    mcp_privacy_gate_enabled`` canary off-switch; the Bash arm always runs.
-    """
-    if _is_slack_mcp_tool(data.get("tool_name", "")) and not _mcp_privacy_gate_enabled():
-        return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_pretool(data)
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_pretool(data: dict) -> bool:
-    """Bare-reference inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
-
-    from teatree.hooks import bare_reference_scanner, publish_destination  # noqa: PLC0415
-
-    tool_name = data.get("tool_name", "")
-    raw_input = data.get("tool_input", {}) or {}
-    if not isinstance(raw_input, dict):
-        return False
-    tool_input = cast("bare_reference_scanner.ToolInput", raw_input)
-
-    payload = bare_reference_scanner.extract_publish_payload(tool_name, tool_input)
-    if payload is None:
-        return False
-
-    command = tool_input.get("command", "")
-    if tool_name == "Bash" and publish_destination.gate_skips_destination(command, _resolve_cwd_repo(data)):
-        return False
-
-    refs = bare_reference_scanner.scan_text(payload)
-    if not refs:
-        return False
-
-    return emit_pretooluse_deny(bare_reference_scanner.format_block_message(refs))
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
@@ -5322,6 +5384,41 @@ def _session_owns_loop(session_id: str) -> bool:
     return owner is not None and owner.get("session_id") == session_id
 
 
+def _session_drives_loop(session_id: str) -> bool:
+    """True when this session is (or is the one expected to become) the loop driver.
+
+    The single signal both the loop-registration nudge and the inline-question
+    Stop gate share to decide "is this an autonomous/loop-driven turn vs an
+    attended interactive one". Reuses the existing pid-anchored tick-owner
+    registry (``_OWNER_LOOP`` / ``_session_owns_loop`` / ``_prune_dead_owner``)
+    — no new ownership primitive. A session drives the loop when EITHER:
+
+    - it already owns the live tick-owner record (the autonomous loop runner), OR
+    - there is currently NO live owner anywhere (bootstrap / fresh machine /
+        dead-owner prune). A no-owner session is the one expected to claim the
+        loop at its next SessionStart, so it must still be treated as a driver —
+        otherwise nobody is ever nagged to register and the loop never starts.
+
+    It does NOT drive the loop only when a *different* live session owns the
+    tick: that is the attended, non-owner interactive session the user is
+    actually reading, so neither gate should fire there.
+
+    DEGRADATION CONTRACT — FAIL SAFE (keep the gates firing): when ownership is
+    unknown/unreadable the substrate already biases to "no owner" — a missing or
+    corrupt registry makes ``_read_loop_registry`` return ``{}``, and an
+    unimportable ``teatree`` makes ``_prune_dead_owner`` return ``{}``. Both land
+    in the no-owner branch, so an unreadable signal yields ``True`` (driver) and
+    both gates keep enforcing. An empty ``session_id`` is likewise treated as a
+    driver here; the callers apply their own ``session_id`` exemptions.
+    """
+    if not session_id:
+        return True
+    owner = _prune_dead_owner(_read_loop_registry()).get(_OWNER_LOOP)
+    if owner is None:
+        return True
+    return owner.get("session_id") == session_id
+
+
 def _self_pump_recently_armed(marker: Path) -> bool:
     if not marker.is_file():
         return False
@@ -5799,8 +5896,21 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     because it contains decision cues but no tool call.  We detect it by
     ``_is_classifier_relax_explanation`` and let it through, avoiding the
     infinite block → explain → block loop.
+
+    Context-aware: this gate exists because an inline question is invisible in
+    an autonomous/loop run (it reads as a log line, so the decision is lost). In
+    an attended interactive session a human IS reading the prose, so the gate is
+    pointless nagging. It therefore only enforces on a loop-driven turn —
+    ``_session_drives_loop`` is the same signal the loop-registration gate uses
+    (this session owns the tick, OR there is no live owner). When a *different*
+    live session owns the loop, this is the attended session and the gate is
+    skipped. DEGRADATION CONTRACT — FAIL SAFE: an unknown/unreadable ownership
+    signal yields a driver verdict (see ``_session_drives_loop``), so the gate
+    keeps firing.
     """
     if data.get("stop_hook_active"):
+        return None
+    if not _session_drives_loop(data.get("session_id", "")):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:
@@ -7208,47 +7318,6 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
-def handle_bare_reference_stop(data: dict) -> bool | None:
-    """Warn when the assistant's final chat text cites a bare reference (#1530).
-
-    The Stop-time soft sibling of the #1530 PreToolUse hard gate. The
-    shown chat message cannot be retracted, so this never denies — it
-    emits a top-level ``systemMessage`` WARNING that surfaces the
-    violation next turn and gives a recurrence signal. Low-noise:
-    matches only clear bare ``#NNNN`` / ``!NNNN`` tokens not already
-    wrapped in a clickable link, reusing the shared detector.
-
-    Fail-safe-to-silent: any malformed input or missing transcript
-    returns ``None`` so the Stop chain is never crashed.
-    """
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_bare_reference_stop(data)
-    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
-        return None
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-def _run_bare_reference_stop(data: dict) -> bool | None:
-    from teatree.hooks import bare_reference_scanner  # noqa: PLC0415
-
-    turn = _last_assistant_turn(data.get("transcript_path", ""))
-    if turn is None:
-        return None
-    refs = bare_reference_scanner.find_bare_references(turn[0])
-    if not refs:
-        return None
-    json.dump({"systemMessage": bare_reference_scanner.format_warn_message(refs)}, sys.stdout)
-    return True
-
-
 # ── Stop: speak-on-stop arm (speak_mode == all, #1791) ──────────────────────
 
 
@@ -7792,7 +7861,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_plan_gate,
         handle_enforce_agent_plan_gate,
         handle_protect_default_branch,
-        handle_bare_reference_pretool,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,
@@ -7836,7 +7904,6 @@ _HANDLERS: dict[str, list] = {
         handle_enforce_structured_question,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,
-        handle_bare_reference_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
         handle_loop_self_pump,

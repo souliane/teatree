@@ -119,7 +119,7 @@ class ProvisionSmokeScannerTests(TestCase):
         assert _last_smoke_task() is None
 
 
-class OperProvisionSmokeWiringTests(TestCase):
+class AcmeProvisionSmokeWiringTests(TestCase):
     """Confirm the tick-job builder reads core config + active overlay (#1308)."""
 
     def _patched_settings(self, **overrides: object) -> UserSettings:

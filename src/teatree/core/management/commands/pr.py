@@ -41,7 +41,11 @@ from teatree.core.management.commands._ship_gates import check_shipping_gate as 
 from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
 from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.models import Ticket, Worktree
-from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_gate_recorded import (
+    OnBehalfPostBlockedError,
+    on_behalf_block_message,
+    require_on_behalf_approval,
+)
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
@@ -427,17 +431,19 @@ class Command(TyperCommand):
             return {"error": "No code host configured (check overlay GitLab token)"}
 
         repo_path = repo or get_overlay().metadata.get_ci_project_path()
+        target = f"{repo_path}!{mr_iid}"
 
-        try:
-            require_on_behalf_approval(target=f"{repo_path}!{mr_iid}", action="post_evidence")
-        except OnBehalfPostBlockedError as blocked:
-            return {"error": str(blocked)}
+        # Peek (non-consuming) so an unapproved post refuses before uploading
+        # anything; the consume happens atomically with the comment post below.
+        blocked = on_behalf_block_message(target, "post_evidence")
+        if blocked:
+            return {"error": blocked}
 
         # Upload files and build markdown embeds
         embeds: list[str] = []
         for filepath in files or []:
-            result = host.upload_file(repo=repo_path, filepath=filepath)
-            md = result.get("markdown", "")
+            upload = host.upload_file(repo=repo_path, filepath=filepath)
+            md = upload.get("markdown", "")
             if md:
                 embeds.append(str(md))
                 self.stdout.write(f"  Uploaded: {filepath}")
@@ -456,18 +462,25 @@ class Command(TyperCommand):
             None,
         )
 
-        if existing_note:
-            comment_id = int(str(existing_note["id"]))
-            self.stdout.write(f"  Updating existing note {comment_id}")
-            result = host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
-        else:
-            result = host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
+        def _publish() -> RawAPIDict:
+            if existing_note:
+                comment_id = int(str(existing_note["id"]))
+                self.stdout.write(f"  Updating existing note {comment_id}")
+                return host.update_pr_comment(repo=repo_path, pr_iid=mr_iid, comment_id=comment_id, body=note_body)
+            return host.post_pr_comment(repo=repo_path, pr_iid=mr_iid, body=note_body)
+
+        try:
+            # consume + post + audit atomic (#1879): a failed comment post
+            # rolls back the consume and writes no audit.
+            result = require_on_behalf_approval(target=target, action="post_evidence", publish=_publish)
+        except OnBehalfPostBlockedError as blocked_now:
+            return {"error": str(blocked_now)}
 
         notify_user_on_behalf_post(
-            target=f"{repo_path}!{mr_iid}",
+            target=target,
             action="post_evidence",
-            destination=f"{repo_path}!{mr_iid}",
-            artifact_url=str(result.get("web_url") or result.get("html_url") or f"{repo_path}!{mr_iid}"),
-            summary=f"{title} on {repo_path}!{mr_iid}",
+            destination=target,
+            artifact_url=str(result.get("web_url") or result.get("html_url") or target),
+            summary=f"{title} on {target}",
         )
         return result

@@ -20,8 +20,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode
-from teatree.core.models import BotPing, IncomingEvent, OnBehalfApproval, ReplyDispatch
-from teatree.core.reply_transport import NoopReplier
+from teatree.core.models import BotPing, IncomingEvent, OnBehalfApproval, OnBehalfAudit, ReplyDispatch
+from teatree.core.reply_transport import NoopReplier, ReplySpec, _BaseReplier
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
@@ -202,6 +202,76 @@ class TestReplyTransportAfterReceiptDm:
         NoopReplier().redeliver(dispatch)
 
         assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
+
+
+class _FlakyReplier(_BaseReplier):
+    """A replier whose ``_deliver`` fails until ``fail_first`` deliveries pass."""
+
+    def __init__(self, *, fail_count: int) -> None:
+        self._remaining_failures = fail_count
+        self.delivery_attempts = 0
+
+    def _deliver(self, spec: ReplySpec) -> str:
+        self.delivery_attempts += 1
+        if self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            msg = "transient backend failure"
+            raise RuntimeError(msg)
+        return "https://example.com/posted"
+
+
+@pytest.mark.django_db
+class TestRedeliverReusesReservation:
+    """#1879: a failed redeliver rolls back the consume — the approval is reused, not burned per retry."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _gate(tmp_path, monkeypatch, mode=OnBehalfPostMode.ASK)
+        self.monkeypatch = monkeypatch
+
+    def _event(self, key: str) -> IncomingEvent:
+        return IncomingEvent.objects.create(source=IncomingEvent.Source.SLACK, body="x", idempotency_key=key)
+
+    def _failed_dispatch(self, event: IncomingEvent, key: str) -> ReplyDispatch:
+        return ReplyDispatch.objects.create(
+            event=event,
+            target_ref="org/repo#7",
+            action_name="post_comment",
+            status=ReplyDispatch.Status.FAILED,
+            body="retry body",
+            idempotency_key=key,
+        )
+
+    def test_failed_redeliver_does_not_burn_the_approval(self) -> None:
+        approval = OnBehalfApproval.record(target="org/repo#7", action="post_comment", approver_id="souliane")
+        event = self._event("slack:rr-1")
+        dispatch = self._failed_dispatch(event, "slack:rr-1:reply")
+
+        with pytest.raises(RuntimeError, match="transient"):
+            _FlakyReplier(fail_count=1).redeliver(dispatch)
+
+        # The failed redeliver rolled back the consume — the approval survives.
+        approval.refresh_from_db()
+        assert approval.consumed_at is None, "a failed redeliver burned the approval"
+        assert OnBehalfAudit.objects.count() == 0, "a failed redeliver wrote a lying audit"
+
+    def test_n_redelivers_consume_exactly_one_approval(self) -> None:
+        # One recorded approval must satisfy a flaky redeliver that fails twice
+        # then succeeds — N retries must NOT burn N approvals.
+        OnBehalfApproval.record(target="org/repo#7", action="post_comment", approver_id="souliane")
+        event = self._event("slack:rr-2")
+        dispatch = self._failed_dispatch(event, "slack:rr-2:reply")
+        replier = _FlakyReplier(fail_count=2)
+
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="transient"):
+                replier.redeliver(dispatch)
+        # The third redeliver succeeds against the SAME single recorded approval.
+        replier.redeliver(dispatch)
+
+        assert replier.delivery_attempts == 3
+        assert OnBehalfApproval.objects.filter(consumed_at__isnull=False).count() == 1
+        assert OnBehalfAudit.objects.filter(target="org/repo#7", action="post_comment").count() == 1
 
 
 # Standalone django_db functions must be grouped in a TestCase (#98); this
