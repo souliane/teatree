@@ -173,7 +173,13 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # 202,000 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard. Raised
 # to 204,000 to restore the >=4 KB headroom (~5,307 B). Coupling invariant holds:
 # 204,000 - 90,000 = 114,000 <= 114,000.
-_BUDGET_TOTAL_BYTES = 204_000
+# Headroom-restore bump (#1878 merge): the maximized tach graph adds the
+# `teatree.quality --> teatree.utils` edge line to the BLUEPRINT dependency-graph
+# block, bringing the merged corpus to 200,014 B -- ~3.99 KB under the prior
+# 204,000 budget, just below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
+# Raised one minimal step to 206,000 to restore the >=4 KB headroom (~5,986 B).
+# Coupling invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
+_BUDGET_TOTAL_BYTES = 206_000
 
 
 def _repo_root() -> pathlib.Path:
