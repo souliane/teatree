@@ -8,8 +8,8 @@ rules:
       contract). Wrap the body and logger.exception, like every sibling
       receiver in signals.py. See signals.py:16.
     metadata:
-      issue: souliane/teatree#1882
-      status: warn
+      issue: BLOCKING-NOW
+      status: blocking
     paths:
       include:
         - "/src/teatree/core/signals.py"
