@@ -1,98 +1,75 @@
-# Architecture pre-check — souliane/teatree#1879
-
-Make on-behalf consume+audit+post atomic so a failed post cannot burn the
-approval or write a lying audit.
+# Architecture pre-check — TODO-130 (ruff anti-slop caps + jscpd duplication, layer 4)
 
 ## 1. BLUEPRINT § alignment
 
-§17.4 (recorded-approval / clear+audit family) and `/t3:rules` § "Ask Before
-Posting on the User's Behalf". The on-behalf gate consumes a single-use
-`OnBehalfApproval`, writes an `OnBehalfAudit`, and the caller posts — these
-three must be all-or-nothing. No BLUEPRINT prose change: the documented
-outcome table is unchanged; only the consume+post+audit ordering becomes
-atomic.
+§17.6 (quality gates / fitness functions). This is layer 4 of the general
+anti-drift design (wf_3c20a034 § "4. RUFF CAPS"): deterministic AST/structural
+ceilings that make slop merge-blocking. No new BLUEPRINT section needed — extends
+the existing quality-gate machinery (ruff caps + a new no-silent-skip hook +
+jscpd duplication). BLUEPRINT mentions the gate family; the per-cap table lives
+in the PR body, not the BLUEPRINT (per the size-budget gate).
 
 ## 2. FSM phase boundaries
 
-n/a — no `Ticket.State` / `Worktree.State` transition. The PR-approval and
-ticket-transition signal receivers call the gate, but the FSM transition
-itself is unchanged and never blocked.
+n/a — no Ticket.State / Worktree.State transition. Pure tooling/config.
 
 ## 3. Extension-point contracts
 
-No `OverlayBase` / scanner-registration / `*Backend` Protocol change. The
-chokepoint registry entry #1 (`on-behalf-routed-egress`: post_routed /
-react_routed) protects backend symbols, not `require_on_behalf_approval`'s
-signature — unaffected; `tests/quality/test_chokepoints.py` stays green (37
-passing). Consumers of the gate, updated in lockstep to the callback form:
-
-- `teatree.core.on_behalf_egress` (post / react)
-- `teatree.core.reply_transport` (_send / redeliver)
-- `teatree.core.signals` (transition / approval reaction)
-- `teatree.core.management.commands.review_request_post`
-- `teatree.core.management.commands.pr` (post_evidence)
-- `teatree.core.management.commands._e2e_evidence`
-- `teatree.cli.review_on_behalf` (peek `check_on_behalf` +
-  consuming `publish_on_behalf`) and `teatree.cli.review.ReviewService`
-  (8 post sites wrapped in `_publish_or_blocked`).
+n/a — no OverlayBase / scanner / hook-surface / *Backend Protocol change. New
+pre-commit hook is a leaf (`scripts/hooks/check_no_silent_skip.py`); does not
+participate in the overlay contract.
 
 ## 4. Component boundaries
 
-`teatree.core.on_behalf_gate_recorded` — unchanged home. Split into two
-purpose-typed functions: `require_on_behalf_approval(publish=…)` (the only
-consuming path: consume + callback + audit in one `transaction.atomic`) and
-`on_behalf_block_message(target, action)` (non-consuming peek for early
-refusal). `OnBehalfApproval.has_unconsumed` backs the peek.
+- ruff caps → `pyproject.toml [tool.ruff]` (explicit mccabe pin; C901/FIX/ERA
+  already active via `select=["ALL"]`).
+- no-silent-skip guard → `scripts/hooks/check_no_silent_skip.py` (AST scanner,
+  sibling of `check_module_health.py`).
+- jscpd → `.pre-commit-config.yaml` local hook (language: node) + a config file
+  `.jscpd.json`, mirroring the tach/import-linter local-hook wiring.
+- conformance tests → `tests/quality/` (sibling of `test_chokepoints.py`).
+No business logic touched; no straddling.
 
 ## 5. Dependency direction
 
-No new cross-module imports — the publish callback is passed in by each
-caller. `uv run tach check` → "All modules validated!".
+No `src/teatree/` imports added. The new hook lives under `scripts/hooks/`
+(exempt from tach module graph). `uv run tach check` unaffected.
 
 ## 6. Test surface
 
-- `tests/teatree_core/test_on_behalf_gate_recorded.py`
-  `TestPublishCallbackAtomicity`: failed publish rolls back consume + writes
-  no audit (RED-observed on pre-fix non-atomic order); success runs
-  publish→consume→audit; BLOCK+no-approval never runs publish; retry reuses
-  the approval. `TestNonConsumingPeek`: peek never consumes / DMs.
-- `tests/teatree_core/test_reply_transport_on_behalf_gate.py`
-  `TestRedeliverReusesReservation`: a failed redeliver does not burn the
-  approval; N redelivers consume exactly one (RED-observed on pre-fix
-  redeliver shape).
-- `tests/teatree_core/test_review_request_post_command.py`: no-backend
-  suppress no longer consumes (improved behavior).
+- `tests/quality/test_ruff_antislop_caps.py` — asserts C901/FIX/ERA stay
+  enabled (a probe file with a too-complex fn / a TODO comment / commented-out
+  code goes red under the project ruff config), and asserts the explicit
+  mccabe pin is present and not loosened past the current value. RED if a
+  future PR adds these to `lint.ignore` or raises the threshold.
+- `tests/test_no_silent_skip_hook.py` — must-FLAG (`@pytest.mark.skip`,
+  `skipif(True)`) + must-NOT-FLAG (conditional `skipif(shutil.which(...))`).
+  RED-first: revert the guard, the must-flag cases stop blocking.
+- `tests/quality/test_jscpd_duplication.py` — scan-COVERAGE assertion: every
+  `src/teatree/**/*.py` file is in jscpd's analyzed set (no source escapes the
+  scanner), and the config pins `--min-lines 50 --min-tokens 300 --threshold 0`.
 
 ## 7. Resilience invariants
 
-External write = the colleague post (callback).
-
-- verify-by-re-read / idempotency: `OnBehalfApproval.consume` keeps its
-  `select_for_update` + `consumed_at` single-use claim, now inside the same
-  atomic block as the post; `reply_transport` keeps its ReplyDispatch
-  reservation.
-- fallback-transport: BLOCK + no approval still raises
-  `OnBehalfPostBlockedError`; the caller surfaces the blocked post.
-- NEW invariant **atomicity**: consume + post + audit share one
-  `transaction.atomic` — a post failure rolls back the consume (no burn) and
-  writes no audit (no lie). Enforced structurally by flipping the
-  `consume-before-side-effect-not-atomic` semgrep rule warn→blocking in the
-  same PR.
-- heartbeat / sub-agent return contract: n/a (synchronous single post).
+No external write. The hooks are read-only AST/duplication scanners that exit
+0/1. Idempotent (same tree → same verdict). No fallback transport / heartbeat /
+sub-agent contract needed. jscpd via npx is provisioned by prek (`language:
+node`), same as markdownlint-cli2's node provisioning.
 
 ## 8. Identity and key normalization
 
-`canonical_on_behalf_target` already canonicalizes the target up to
-`<repo>!<iid>` at both record and consume; `has_unconsumed` reuses it. No new
-identity surface; no strip/split-to-match introduced.
+n/a — no bare-vs-qualified identity. File paths compared as-is (POSIX paths from
+git / jscpd report). No strip/split-to-match.
 
 ## 9. Behavior preservation / capability deletion
 
-Rewrites `require_on_behalf_approval`'s body to take a publish callback.
-Behaviors preserved: PROCEED (run post, no consume/audit); AUTO_DRAFT (DM +
-run post, no consume/audit); BLOCK+approval (consume+post+audit, now atomic);
-BLOCK+no-approval (raise, never post). `check_on_behalf` keeps its
-no-publish early-refusal form but is now non-consuming (the consume moved to
-the post site). No privacy/leak/security matcher narrowed; no must-block test
-inverted. The semgrep warn rule is flipped to blocking in the same PR (proven
-to bite the pre-fix code and green-on-tree after the fix).
+Purely additive. NOT removing or weakening any matcher:
+
+- subprocess.run/Popen/os.system ban stays in the chokepoint registry
+  (`chokepoints.yaml::subprocess-egress`) — NOT moved to TID251 (would be a
+  redundant second copy; the registry AST visitor is the stronger, single
+  source of truth). The design said "move … if not already there" — it IS there.
+- the 500-LOC cap stays in `check_module_health.py` (untouched).
+- `check_quality_gates.py` stays the no-widening backstop (untouched); the
+  explicit mccabe pin is written so it cannot be silently raised.
+- string/diff bans (`--no-verify`, `core.hooksPath=`) NOT routed through ruff.

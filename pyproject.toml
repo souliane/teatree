@@ -204,6 +204,11 @@ lint.unfixable = [ "F401", "F811" ] # Never auto-delete imports — ruff misjudg
 lint.flake8-implicit-str-concat.allow-multiline = false
 lint.flake8-tidy-imports.banned-api."__future__.annotations" = { msg = "Use native 3.10+ syntax (X | Y) instead of from __future__ import annotations" }
 lint.isort.split-on-trailing-comma = false
+# Cyclomatic-complexity ceiling (C901). Pinned explicit so it cannot silently
+# drift up: the tree is green at 10 (ruff's implicit default). Raising it is a
+# relaxation the quality-gates guard flags. The scripts/ tree exempts C901
+# below, since intent detection is inherently branchy.
+lint.mccabe.max-complexity = 10
 lint.pydocstyle.convention = "google"
 # Complexity limits
 lint.pylint.max-args = 5
