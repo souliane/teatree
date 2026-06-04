@@ -146,6 +146,22 @@ class OnBehalfApproval(models.Model):
         return self.target == canonical_on_behalf_target(target) and self.action == action.strip()
 
     @classmethod
+    def has_unconsumed(cls, target: str, action: str, *, using: str | None = None) -> bool:
+        """True iff an unconsumed approval is recorded for exactly *target* + *action*.
+
+        The read-only peek behind
+        :func:`~teatree.core.on_behalf_gate_recorded.on_behalf_block_message`:
+        it reports whether a consume *would* succeed without claiming the row,
+        so a caller can refuse a blocked post early before doing expensive
+        prep. It never stamps ``consumed_at`` — the actual single-use claim
+        stays inside :meth:`consume`, run atomically with the post.
+        """
+        clean_target = canonical_on_behalf_target(target)
+        clean_action = action.strip()
+        manager = cls.objects.using(using) if using else cls.objects
+        return manager.filter(target=clean_target, action=clean_action, consumed_at__isnull=True).exists()
+
+    @classmethod
     def consume(cls, target: str, action: str, *, using: str | None = None) -> "OnBehalfApproval | None":
         """Atomically claim and consume the matching unconsumed approval, if any.
 

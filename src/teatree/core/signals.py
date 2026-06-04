@@ -52,13 +52,17 @@ def _add_slack_reactions_on_transition(
     """
     target = f"ticket:{instance.pk}"
     try:
-        require_on_behalf_approval(target=target, action=f"transition_reaction:{name}")
+        reacted = require_on_behalf_approval(
+            target=target,
+            action=f"transition_reaction:{name}",
+            publish=lambda: add_reactions_for_transition(instance, name),
+        )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Transition reaction for ticket %s (%s) gated: %s", instance.pk, name, blocked)
         return
-    try:
-        reacted = add_reactions_for_transition(instance, name)
     except Exception:
+        # A failed react rolled back the consume+audit (#1879 atomicity) — the
+        # approval survives for a retry; the FSM transition must never block.
         logger.exception("Failed to add Slack reactions for ticket %s transition %s", instance.pk, name)
         return
     if reacted:
@@ -102,13 +106,18 @@ def _add_approval_reaction_on_transition(
         return
     target = _approval_reaction_target(instance)
     try:
-        require_on_behalf_approval(target=target, action="approval_reaction")
+        reacted = require_on_behalf_approval(
+            target=target,
+            action="approval_reaction",
+            publish=lambda: add_approval_reaction(instance),
+        )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Approval reaction for PR %s gated: %s", instance.pk, blocked)
-        return
-    try:
-        reacted = add_approval_reaction(instance)
+        reacted = 0
     except Exception:
+        # A failed react rolled back the consume+audit (#1879 atomicity); the
+        # approval survives. Continue to the ReviewAssignment bookkeeping —
+        # the FSM transition must never block on a reaction failure.
         logger.exception("Failed to add approval reaction for PR %s", instance.pk)
         reacted = 0
     if reacted:

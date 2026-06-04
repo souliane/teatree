@@ -24,7 +24,11 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
-from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
+from teatree.core.on_behalf_gate_recorded import (
+    OnBehalfPostBlockedError,
+    on_behalf_block_message,
+    require_on_behalf_approval,
+)
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.review_message_cache import persist_review_message
 from teatree.core.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
@@ -84,11 +88,13 @@ class Command(TyperCommand):
                 exit_code=0,
             )
 
-        try:
-            require_on_behalf_approval(target=canonical, action=_ACTION)
-        except OnBehalfPostBlockedError as err:
+        # Peek (non-consuming) so an unapproved post refuses early — before
+        # any wire call — and the orphan guard claim is rolled back. The
+        # consume happens atomically with the post below (#1879), never here.
+        blocked = on_behalf_block_message(canonical, _ACTION)
+        if blocked:
             self._rollback_orphan_claim(canonical)
-            self.stdout.write(str(err))
+            self.stdout.write(blocked)
             self._emit(
                 {"action": "refused", "reason": "on_behalf_not_approved", "mr_url": canonical},
                 exit_code=2,
@@ -102,7 +108,22 @@ class Command(TyperCommand):
             )
 
         text = f"{title or _DEFAULT_TITLE} {canonical}"
-        resp = messaging.post_message(channel=target.channel_id, text=text, thread_ts="")
+        try:
+            # consume + post + audit atomic: a failed post rolls back the
+            # consume and writes no audit; a BLOCK racing in after the peek
+            # raises here and posts nothing.
+            resp = require_on_behalf_approval(
+                target=canonical,
+                action=_ACTION,
+                publish=lambda: messaging.post_message(channel=target.channel_id, text=text, thread_ts=""),
+            )
+        except OnBehalfPostBlockedError as err:
+            self._rollback_orphan_claim(canonical)
+            self.stdout.write(str(err))
+            self._emit(
+                {"action": "refused", "reason": "on_behalf_not_approved", "mr_url": canonical},
+                exit_code=2,
+            )
         ts = str(resp.get("ts", ""))
         permalink = messaging.get_permalink(channel=target.channel_id, ts=ts)
 
