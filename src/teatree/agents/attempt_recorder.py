@@ -114,6 +114,8 @@ def record_result_envelope(
     if evidence_error:
         return _record_failure(task, error=evidence_error)
 
+    _maybe_record_plan_artifact(task, result, phase=phase)
+
     attempt = TaskAttempt.objects.create(
         task=task,
         execution_target=task.execution_target,
@@ -131,6 +133,16 @@ def record_result_envelope(
     )
     task.complete(result_artifact_path="")
     return attempt
+
+
+def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+    effective_phase = phase or task.phase
+    plan_text = result.get("plan_text")
+    if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
+        return
+    PlanArtifact.record(ticket=task.ticket, plan_text=plan_text, recorded_by=task.session.agent_id or "")
 
 
 def _record_failure(task: Task, *, error: str) -> TaskAttempt:

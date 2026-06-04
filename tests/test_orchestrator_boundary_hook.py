@@ -349,8 +349,8 @@ class TestMarginalSlowPatternsAdded:
 class TestForegroundOkEscapeHatch:
     """A ``[fg-ok: <reason>]`` marker opts a heavy command out of the gate.
 
-    The per-call escape mirrors the ``[skip-plan-gate: <reason>]`` /
-    ``[skip-skill-gate: <reason>]`` tokens — for the rare case the loop
+    The per-call escape mirrors the ``[skip-skill-gate: <reason>]`` token —
+    for the rare case the loop
     owner truly needs heavy output inline. A non-empty reason is required;
     an empty reason does not unblock.
     """
