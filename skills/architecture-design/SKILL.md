@@ -64,7 +64,7 @@ If the new code straddles two categories, split it.
 
 ### 5. Dependency direction
 
-Read `BLUEPRINT.md` "Module Dependency Graph" (the mermaid block) before adding any import. The graph encodes the DAG enforced by tach.
+Read the auto-generated dependency graph in [docs/dependency-graph.md](../../docs/dependency-graph.md) (linked from `BLUEPRINT.md` "Module Dependency Graph") before adding any import. The graph encodes the DAG enforced by tach.
 
 A lower-level module (e.g. `teatree.utils`, `teatree.config`) MUST NOT import from a higher-level one (e.g. `teatree.cli`, `teatree.core.management`). A backwards edge is a refactor first, an implementation second — surface it on the PR and propose the inversion (callback, registration, Protocol) that breaks the edge.
 
