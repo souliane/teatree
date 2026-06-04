@@ -1,0 +1,291 @@
+"""Conformance ledger for the chokepoint registry (call-site authorization).
+
+Sibling of ``test_catalog.py`` / ``test_regression_rules.py``. The green-on-tree
+assertion is what lets the checker be a trusted blocking gate and keeps main
+green: a real violation on ``src/teatree`` turns it red. The anti-vacuous suite
+proves the gate actually bites. The reachability ledger proves no entry can cite
+a symbol/module that does not exist. The Tier-2 self-maintenance assertion pins
+the subprocess coverage so the registry can never regress below the deleted
+``check_subprocess_ban.py``.
+"""
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+import scripts.hooks.check_chokepoints as checker
+from teatree.backends.protocols import MessagingBackend
+from teatree.backends.slack_bot import SlackBotBackend
+from teatree.quality.chokepoints import Chokepoint, ChokepointError, load_registry, registry_path
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC = _REPO_ROOT / "src"
+
+_HISTORICAL_SUBPROCESS_ATTRS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+
+
+@pytest.fixture(scope="module")
+def registry() -> tuple[Chokepoint, ...]:
+    return load_registry()
+
+
+@pytest.fixture
+def src_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.chdir(tmp_path)
+    target = tmp_path / "src" / "teatree" / "feature" / "mod.py"
+    target.parent.mkdir(parents=True)
+    return target
+
+
+class TestSchemaInvariants:
+    def test_registry_is_non_empty(self, registry: tuple[Chokepoint, ...]) -> None:
+        assert registry
+
+    def test_ids_are_unique_and_kebab(self, registry: tuple[Chokepoint, ...]) -> None:
+        ids = [e.id for e in registry]
+        assert len(ids) == len(set(ids))
+        assert all("-" not in i or i.islower() for i in ids)
+
+    def test_match_kind_in_enum(self, registry: tuple[Chokepoint, ...]) -> None:
+        assert all(e.match_kind in {"module_attr", "method"} for e in registry)
+
+    def test_attrs_and_allowed_modules_non_empty(self, registry: tuple[Chokepoint, ...]) -> None:
+        for entry in registry:
+            assert entry.protected_attrs, f"{entry.id}: empty protected_attrs"
+            assert entry.allowed_modules, f"{entry.id}: empty allowed_modules"
+
+    def test_protected_symbol_present_iff_module_attr(self, registry: tuple[Chokepoint, ...]) -> None:
+        for entry in registry:
+            if entry.match_kind == "module_attr":
+                assert entry.protected_symbol
+            else:
+                assert entry.protected_symbol == ""
+
+
+class TestReachabilityLedger:
+    def test_every_allowed_module_resolves_to_a_real_file(self, registry: tuple[Chokepoint, ...]) -> None:
+        for entry in registry:
+            for module in entry.allowed_modules:
+                rel = Path(*module.split(".")).with_suffix(".py")
+                pkg = _SRC / Path(*module.split(".")) / "__init__.py"
+                assert (_SRC / rel).is_file() or pkg.is_file(), (
+                    f"{entry.id}: allowed_module {module!r} resolves to no file under src/"
+                )
+
+    def test_module_attr_symbol_is_importable(self, registry: tuple[Chokepoint, ...]) -> None:
+        for entry in registry:
+            if entry.match_kind != "module_attr":
+                continue
+            assert importlib.util.find_spec(entry.protected_symbol) is not None, (
+                f"{entry.id}: protected_symbol {entry.protected_symbol!r} is not importable"
+            )
+
+    def test_on_behalf_attrs_are_real_backend_methods(self, registry: tuple[Chokepoint, ...]) -> None:
+        by_id = {e.id: e for e in registry}
+        routed = by_id["on-behalf-routed-egress"]
+        for attr in routed.protected_attrs:
+            assert callable(getattr(SlackBotBackend, attr, None)), f"SlackBotBackend has no {attr}"
+            assert hasattr(MessagingBackend, attr), f"MessagingBackend protocol has no {attr}"
+        colleague = by_id["on-behalf-colleague-primitives"]
+        for attr in colleague.protected_attrs:
+            assert callable(getattr(SlackBotBackend, attr, None)), f"SlackBotBackend has no {attr}"
+
+
+class TestCheckerBehavior:
+    def test_green_on_real_tree(self) -> None:
+        assert checker.main(["--all"]) == 0
+
+    def test_flags_subprocess_run_outside_allowed(self, src_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        src_file.write_text("import subprocess\nsubprocess.run(['ls'], check=False)\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        err = capsys.readouterr().err
+        assert "subprocess.run(...)" in err
+        assert "subprocess-egress" in err
+
+    def test_allows_subprocess_in_wrapper_module(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "utils" / "run.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("import subprocess\nsubprocess.run(['ls'], check=False)\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+    def test_subprocess_annotations_and_except_not_flagged(self, src_file: Path) -> None:
+        src_file.write_text(
+            "import subprocess\n"
+            "procs: list[subprocess.Popen[str]] = []\n"
+            "try:\n"
+            "    pass\n"
+            "except subprocess.CalledProcessError:\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        assert checker.main([str(src_file)]) == 0
+
+    def test_os_system_not_flagged(self, src_file: Path) -> None:
+        src_file.write_text("import os\nos.system('ls')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 0
+
+    def test_flags_post_routed_outside_egress(self, src_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        src_file.write_text("backend.post_routed(channel='c', text='t')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "on-behalf-routed-egress" in capsys.readouterr().err
+
+    def test_allows_post_routed_inside_egress(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "core" / "on_behalf_egress.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("self._messaging.post_routed(channel='c', text='t')\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+    def test_method_definition_not_flagged(self, src_file: Path) -> None:
+        src_file.write_text("def post_routed(self, *, channel, text):\n    return {}\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 0
+
+    def test_flags_raw_backend_react(self, src_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        src_file.write_text("backend.react(channel='c', ts='1', emoji='eyes')\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        assert "on-behalf-colleague-primitives" in capsys.readouterr().err
+
+    def test_egress_receiver_react_is_exempt(self, src_file: Path) -> None:
+        src_file.write_text(
+            "egress.react(channel='c', ts='1', emoji='eyes')\n"
+            "OnBehalfSlackEgress(backend).react(channel='c', ts='1', emoji='eyes')\n",
+            encoding="utf-8",
+        )
+        assert checker.main([str(src_file)]) == 0
+
+    def test_allows_post_message_at_documented_sink(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "core" / "notify.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("backend.post_message(channel='c', text='t', thread_ts='')\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+    def test_tests_directory_never_scanned(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "tests" / "test_thing.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("import subprocess\nsubprocess.run(['ls'])\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
+
+class TestSelfMaintenance:
+    def test_subprocess_attrs_cover_historical_ban(self, registry: tuple[Chokepoint, ...]) -> None:
+        entry = next(e for e in registry if e.id == "subprocess-egress")
+        assert set(entry.protected_attrs) >= _HISTORICAL_SUBPROCESS_ATTRS
+
+
+class TestLoaderValidation:
+    def _load(self, tmp_path: Path, body: str) -> tuple[Chokepoint, ...]:
+        path = tmp_path / "chokepoints.yaml"
+        path.write_text(body, encoding="utf-8")
+        return load_registry(path)
+
+    def test_real_registry_loads(self) -> None:
+        assert registry_path().is_file()
+        assert load_registry()
+
+    def test_bad_match_kind_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: regex\n"
+            "  protected_attrs: [run]\n  allowed_modules: [teatree.utils.run]\n"
+        )
+        with pytest.raises(ChokepointError, match="match_kind must be one of"):
+            self._load(tmp_path, body)
+
+    def test_duplicate_id_rejected(self, tmp_path: Path) -> None:
+        one = (
+            "- id: dup\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="duplicate id"):
+            self._load(tmp_path, one + one)
+
+    def test_non_kebab_id_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: Not_Kebab\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="kebab slug"):
+            self._load(tmp_path, body)
+
+    def test_empty_allowed_modules_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: []\n"
+        )
+        with pytest.raises(ChokepointError, match="allowed_modules must be a non-empty list"):
+            self._load(tmp_path, body)
+
+    def test_empty_protected_attrs_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: []\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="protected_attrs must be a non-empty list"):
+            self._load(tmp_path, body)
+
+    def test_module_attr_without_symbol_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: module_attr\n"
+            "  protected_attrs: [run]\n  allowed_modules: [teatree.utils.run]\n"
+        )
+        with pytest.raises(ChokepointError, match="requires a non-empty protected_symbol"):
+            self._load(tmp_path, body)
+
+    def test_method_with_symbol_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n  protected_symbol: foo\n"
+            "  protected_attrs: [react]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="protected_symbol is forbidden on a method entry"):
+            self._load(tmp_path, body)
+
+    def test_bad_module_path_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: ['src/teatree/core/notify.py']\n"
+        )
+        with pytest.raises(ChokepointError, match="not a dotted module path"):
+            self._load(tmp_path, body)
+
+    def test_malformed_yaml_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError):
+            self._load(tmp_path, "- id: x\n  name: [unterminated\n")
+
+    def test_top_level_not_a_list_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="top-level YAML list"):
+            self._load(tmp_path, "id: x\nname: X\n")
+
+    def test_empty_list_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="top-level YAML list"):
+            self._load(tmp_path, "[]\n")
+
+    def test_non_mapping_entry_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ChokepointError, match="each entry must be a mapping"):
+            self._load(tmp_path, "- just-a-string\n")
+
+    def test_scalar_str_list_field_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: react\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="must be a list of strings"):
+            self._load(tmp_path, body)
+
+    def test_non_string_list_element_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  name: X\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [3]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="must be a list of non-empty strings"):
+            self._load(tmp_path, body)
+
+    def test_missing_required_field_rejected(self, tmp_path: Path) -> None:
+        body = (
+            "- id: x\n  concern: c\n  match_kind: method\n"
+            "  protected_attrs: [react]\n  allowed_modules: [teatree.core.notify]\n"
+        )
+        with pytest.raises(ChokepointError, match="required string field missing or empty: 'name'"):
+            self._load(tmp_path, body)

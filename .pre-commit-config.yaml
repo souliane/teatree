@@ -239,13 +239,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
-      - id: subprocess-ban
-        name: Ban raw subprocess calls in src/teatree/ (use teatree.utils.run)
+      - id: check-chokepoints
+        name: Chokepoint call-site authorization (registry-driven)
         language: system
-        entry: uv run python scripts/hooks/check_subprocess_ban.py
+        entry: uv run python scripts/hooks/check_chokepoints.py
         types: [python]
         files: ^src/teatree/
-        exclude: ^src/teatree/utils/run\.py$
       - id: skill-prose-ban
         name: Ban new imperative rules in skill MD without companion code (#140)
         language: system
