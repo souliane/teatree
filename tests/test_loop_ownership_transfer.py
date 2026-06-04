@@ -44,6 +44,9 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reg_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
+    # Force the teatree opt-in marker active: these cover ownership transfer /
+    # claim atomicity, not the per-session opt-in gate.
+    monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
 
 
 def _live_pid() -> int:
@@ -213,6 +216,13 @@ def _race_round(
     """
     os.environ["T3_LOOP_REGISTRY_DIR"] = reg_dir
     os.environ["T3_LOOP_SKIP_DB_LEASE_CONSULT"] = "1"
+    # State dir co-located with the shared registry dir so the reloaded child's
+    # STATE_DIR (read at import from this env) sees the teatree-active marker —
+    # the bootstrap only fires for a teatree-engaged session.
+    state_dir = Path(reg_dir).parent / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+    (state_dir / f"{session_id}.teatree-active").touch()
     import importlib  # noqa: PLC0415
     import io  # noqa: PLC0415
     from contextlib import redirect_stdout  # noqa: PLC0415

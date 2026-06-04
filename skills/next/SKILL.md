@@ -3,7 +3,6 @@ name: next
 description: Wrap up the current session — retro, structured result, pipeline handoff.
 requires:
   - retro
-  - teatree
 metadata:
   version: 0.0.1
 ---

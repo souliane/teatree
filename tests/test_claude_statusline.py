@@ -33,6 +33,12 @@ def _run(
     registry_dir: Path | None = None,
     cpu: tuple[Path, int] | None = None,
 ) -> subprocess.CompletedProcess:
+    # The statusline only renders for a teatree-engaged session: stamp the
+    # opt-in marker so these rendering-mechanism tests run as if teatree were
+    # loaded (the opt-in gate itself is covered by test_teatree_opt_in.py).
+    session_id = payload.get("session_id", "")
+    if session_id:
+        (state_dir / f"{session_id}.teatree-active").touch()
     env = os.environ.copy()
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     if statusline_file is not None:

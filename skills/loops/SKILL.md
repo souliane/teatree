@@ -8,7 +8,6 @@ triggers:
     - '\b(which loops are running|loop status|loops|loop health|is the loop ticking)\b'
 requires:
   - rules
-  - teatree
 metadata:
   version: 0.0.1
   subagent_safe: false

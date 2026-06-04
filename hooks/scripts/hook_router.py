@@ -727,6 +727,30 @@ def _is_teatree_skill(name: str) -> bool:
     return normalized in {"t3:teatree", "teatree"}
 
 
+def _bare_skill_segment(name: str) -> str:
+    """The trigger index's key form: the bare segment after a namespace prefix.
+
+    ``build_trigger_index`` keys every entry (and its ``requires:`` members)
+    by the bare skill-directory name, so a qualified Skill-tool token like
+    ``t3:teatree-dogfood`` must be mapped DOWN to ``teatree-dogfood`` to match
+    an index entry and resolve its ``requires:`` closure.
+    """
+    return name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _skill_load_activates_teatree(skills: list[str]) -> bool:
+    """Does loading *skills* opt the session into teatree (directly or via requires:)?
+
+    Resolves the ``requires:`` closure against a bare-mapped copy of the input
+    so a qualified Skill-tool token (``t3:teatree-dogfood``) expands the same as
+    its bare InstructionsLoaded spelling — the trigger index is bare-keyed. The
+    bare mapping is scoped to this detection only; the recorded ``.skills``
+    closure keeps its own resolution + canonicalization contract.
+    """
+    bare = [_bare_skill_segment(s) for s in skills]
+    return any(_is_teatree_skill(s) for s in _resolve_skill_closure(bare))
+
+
 def _read_lines(path: Path) -> list[str]:
     if not path.is_file():
         return []
@@ -990,10 +1014,17 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record or if loops are
-    disabled in ``~/.teatree.toml``.
+    No-ops if a live foreign owner already holds the record, or if any of
+    the loop kill-switches are engaged: ``[loops] enabled = false`` in
+    ``~/.teatree.toml``, ``T3_LOOPS_DISABLED=all``, or ``T3_LOOP_DISOWN``
+    truthy.  Re-arming a paused loop here would resurrect the very
+    machinery the pause surface exists to silence.
     """
     if not _loops_toml_enabled():
+        return
+    if _all_loops_disabled():
+        return
+    if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
     current_pid = os.getppid()
     with _loop_registry_txn() as box:
@@ -4078,15 +4109,17 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
                 sys.path.remove(extra)
 
 
-def _record_skills(skills_file: Path, existing: set[str], skills: list[str]) -> None:
-    """Append the resolved closure of *skills* as canonical names, deduped.
+def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) -> None:
+    """Append the already-resolved *closure* as canonical names, deduped.
 
     Each name is normalized UP to its fully-qualified form
     (:func:`normalize_skill_name`) before dedup so the persisted ``.skills``
     set stays canonical regardless of whether the source was the
-    Skill-tool (already namespaced) or InstructionsLoaded (bare).
+    Skill-tool (already namespaced) or InstructionsLoaded (bare). The caller
+    passes the pre-resolved closure (rather than re-resolving inside) so the
+    recorded-set resolution happens exactly once per event.
     """
-    for resolved in _resolve_skill_closure(skills):
+    for resolved in closure:
         name = normalize_skill_name(resolved)
         if name and name not in existing:
             existing.add(name)
@@ -4113,9 +4146,8 @@ def handle_track_skill_usage(data: dict) -> None:
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
     if skill_name:
-        skills_to_record = [skill_name]
-        _record_skills(skills_file, existing, skills_to_record)
-        if any(_is_teatree_skill(s) for s in _resolve_skill_closure(skills_to_record)):
+        _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
+        if _skill_load_activates_teatree([skill_name]):
             _state_file(session_id, "teatree-active").touch()
         return
 
@@ -4130,8 +4162,8 @@ def handle_track_skill_usage(data: dict) -> None:
             continue
         if name:
             loaded.append(name)
-    _record_skills(skills_file, existing, loaded)
-    if any(_is_teatree_skill(s) for s in _resolve_skill_closure(loaded)):
+    _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
+    if _skill_load_activates_teatree(loaded):
         _state_file(session_id, "teatree-active").touch()
 
 

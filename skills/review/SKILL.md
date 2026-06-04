@@ -6,7 +6,6 @@ requires:
   - workspace
   - platforms
   - code
-  - teatree
 companions:
   - requesting-code-review
 metadata:

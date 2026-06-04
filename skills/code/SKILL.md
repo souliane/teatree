@@ -5,7 +5,6 @@ compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
   - architecture-design
-  - teatree
 companions:
   - test-driven-development
 metadata:

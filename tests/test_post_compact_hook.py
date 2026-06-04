@@ -39,6 +39,9 @@ def _isolate_filesystem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     reg_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
+    # Force the teatree opt-in marker active: these cover the post-compaction
+    # snapshot-recovery mechanism, not the per-session opt-in gate.
+    monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
     yield
     router.STATE_DIR = original_state
     router._TMP_DIR = original_tmp

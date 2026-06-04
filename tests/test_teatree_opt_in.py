@@ -150,12 +150,36 @@ class TestLoopRegistrationExemptGating:
     def test_fresh_session_without_marker_is_exempt(self) -> None:
         assert _loop_registration_exempt({"session_id": "no-teatree", "tool_name": "Bash"}) is True
 
-    def test_marked_session_is_not_exempt_by_teatree_check_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unmarked_loop_driver_is_exempt_only_because_of_teatree_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Anti-vacuous complement: an UNMARKED session that WOULD be the loop
+        # driver (empty registry => _session_drives_loop True) and that clears
+        # every other exemption (gate enabled, Bash tool, not a sub-agent) must
+        # still be exempt PURELY because the teatree-active gate fires first.
+        # Goes RED if the _teatree_active early-return is removed.
+        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
+        assert _read_loop_registry() == {}
+        assert router._session_drives_loop("unmarked-driver") is True
+        result = _loop_registration_exempt({"session_id": "unmarked-driver", "tool_name": "Bash"})
+        assert result is True
+
+    def test_marked_loop_driver_is_not_exempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Symmetric must-fire: a MARKED session that is the loop driver clears
+        # the teatree gate and is genuinely non-exempt (must be nagged).
+        _mark_active("teatree-session")
+        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
+        assert _read_loop_registry() == {}
+        assert router._session_drives_loop("teatree-session") is True
+        result = _loop_registration_exempt({"session_id": "teatree-session", "tool_name": "Bash"})
+        assert result is False
+
+    def test_marked_non_driver_session_is_exempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A MARKED session that a DIFFERENT live session owns is not the driver,
+        # so it is exempt despite passing the teatree gate.
         _mark_active("teatree-session")
         _write_loop_registry(
             {
                 _OWNER_LOOP: {
-                    "session_id": "teatree-session",
+                    "session_id": "other-live-owner",
                     "agent_id": "",
                     "pid": _live_pid(),
                 }
@@ -163,7 +187,7 @@ class TestLoopRegistrationExemptGating:
         )
         monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
         result = _loop_registration_exempt({"session_id": "teatree-session", "tool_name": "Bash"})
-        assert result is False
+        assert result is True
 
     def test_no_session_id_is_always_exempt(self) -> None:
         assert _loop_registration_exempt({"tool_name": "Bash"}) is True
@@ -264,6 +288,67 @@ class TestTrackSkillUsageSetsMarker:
         assert _is_marked_active("track-sess6")
 
 
+# ── Real closure: cross-cutting skills must NOT drag in teatree (FINDING B) ──
+
+_SKILLS_TREE = Path(__file__).resolve().parents[1] / "skills"
+# Lifecycle skills shared with downstream overlays: loading one in an overlay
+# session must NOT activate teatree's loop machinery.
+_CROSS_CUTTING_SKILLS = [
+    "code",
+    "ticket",
+    "review",
+    "ship",
+    "test",
+    "followup",
+    "handover",
+    "next",
+    "review-request",
+    "loops",
+]
+# Genuinely teatree-specific skills keep the transitive opt-in.
+_TEATREE_SPECIFIC_SKILLS = ["teatree-dogfood", "teatree-batch", "teatree-plan"]
+
+
+class TestRealClosureMarkerActivation:
+    @pytest.fixture(autouse=True)
+    def _real_skill_tree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_SKILLS_TREE))
+
+    @pytest.mark.parametrize("skill", _CROSS_CUTTING_SKILLS)
+    def test_cross_cutting_skill_does_not_set_marker(self, skill: str) -> None:
+        session = f"overlay-{skill}"
+        handle_track_skill_usage(
+            {
+                "session_id": session,
+                "tool_name": "Skill",
+                "tool_input": {"skill": f"t3:{skill}"},
+            }
+        )
+        assert not _is_marked_active(session)
+
+    @pytest.mark.parametrize("skill", _TEATREE_SPECIFIC_SKILLS)
+    def test_teatree_specific_skill_sets_marker(self, skill: str) -> None:
+        session = f"tt-{skill}"
+        handle_track_skill_usage(
+            {
+                "session_id": session,
+                "tool_name": "Skill",
+                "tool_input": {"skill": f"t3:{skill}"},
+            }
+        )
+        assert _is_marked_active(session)
+
+    def test_direct_teatree_skill_sets_marker(self) -> None:
+        handle_track_skill_usage(
+            {
+                "session_id": "tt-direct",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "t3:teatree"},
+            }
+        )
+        assert _is_marked_active("tt-direct")
+
+
 # ── Risk-6: mid-session ownership claim from prompt handler ───────────
 
 
@@ -279,7 +364,9 @@ class TestRisk6MidSessionOwnershipClaim:
         assert owner is not None
         assert owner["session_id"] == "mid-sess"
 
-    def test_loop_disabled_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_toml_loops_disabled_prevents_ownership_claim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         _mark_active("mid-sess-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
@@ -289,6 +376,26 @@ class TestRisk6MidSessionOwnershipClaim:
         monkeypatch.setenv("HOME", str(tmp_path))
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-disabled"})
+
+        assert _read_loop_registry() == {}
+
+    def test_env_loops_disabled_all_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mark_active("mid-sess-env-disabled")
+        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
+
+        handle_enforce_loop_on_prompt({"session_id": "mid-sess-env-disabled"})
+
+        assert _read_loop_registry() == {}
+
+    def test_loop_disown_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _mark_active("mid-sess-disown")
+        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setenv("T3_LOOP_DISOWN", "1")
+
+        handle_enforce_loop_on_prompt({"session_id": "mid-sess-disown"})
 
         assert _read_loop_registry() == {}
 

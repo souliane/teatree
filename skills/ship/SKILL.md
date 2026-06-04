@@ -5,7 +5,6 @@ compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules
-  - teatree
 companions:
   - finishing-a-development-branch
 metadata:

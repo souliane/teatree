@@ -5,7 +5,6 @@ compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - workspace
   - architecture-design
-  - teatree
 companions:
   - writing-plans
 triggers:
