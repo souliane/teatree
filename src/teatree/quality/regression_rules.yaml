@@ -49,7 +49,7 @@
   status: blocking
   file: .semgrep/blocking/except-swallow-to-empty.yaml
 
-- id: gate-fails-open-on-nonzero
-  issue: souliane/teatree#1884
-  status: warn
-  file: .semgrep/warn/gate-fails-open-on-nonzero.yaml
+- id: gate-conflates-scanner-error-with-finding
+  issue: BLOCKING-NOW
+  status: blocking
+  file: .semgrep/blocking/gate-conflates-scanner-error-with-finding.yaml
