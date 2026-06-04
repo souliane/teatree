@@ -14,7 +14,7 @@
     },
     {
       "name": "checking",
-      "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable, read-only"
+      "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable; then answer the pending deferred questions in-band"
     },
     {
       "name": "code",

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hooks.scripts.hook_router import handle_record_presence
+from hooks.scripts.hook_router import _LOOP_PROMPT, _is_live_user_turn, handle_record_presence
 from teatree.core import availability
 
 
@@ -65,3 +65,51 @@ class TestRecordPresenceHook:
         monkeypatch.setattr(presence, "record", _boom)
         # Fail-open: the hook swallows the error so the prompt is never blocked.
         assert handle_record_presence({"prompt": "hi", "session_id": "s1"}) is None
+
+
+class TestPresenceStampsSessionForLiveTurn:
+    """The heartbeat carries the session id so the live-turn predicate works.
+
+    It must tell THIS session's fresh prompt apart from a foreign one (#189).
+    A loop-tick prompt is autonomous, not user presence — it must NOT stamp.
+    """
+
+    def test_user_prompt_stamps_the_session(self, presence: availability.PresenceHeartbeat) -> None:
+        handle_record_presence({"prompt": "do the thing", "session_id": "s1"})
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.session_id == "s1"
+
+    def test_loop_tick_prompt_does_not_stamp_presence(self, presence: availability.PresenceHeartbeat) -> None:
+        handle_record_presence({"prompt": _LOOP_PROMPT, "session_id": "owner"})
+        assert presence.last_user_turn() is None
+        assert presence.last_seen() is None
+
+
+class TestIsLiveUserTurnHookPredicate:
+    """The hook-side ``_is_live_user_turn`` wraps the availability predicate.
+
+    Crash-proof: it bootstraps Django, reads the heartbeat, and fails SAFE
+    (False => defer) on any error or missing signal.
+    """
+
+    def test_returns_true_for_fresh_same_session_prompt(self, presence: availability.PresenceHeartbeat) -> None:
+        handle_record_presence({"prompt": "approve?", "session_id": "s-live"})
+        assert _is_live_user_turn({"session_id": "s-live"}) is True
+
+    def test_returns_false_when_no_recent_prompt(self, presence: availability.PresenceHeartbeat) -> None:
+        assert _is_live_user_turn({"session_id": "s-live"}) is False
+
+    def test_returns_false_for_foreign_session(self, presence: availability.PresenceHeartbeat) -> None:
+        handle_record_presence({"prompt": "approve?", "session_id": "s-live"})
+        assert _is_live_user_turn({"session_id": "s-other"}) is False
+
+    def test_fails_safe_when_predicate_raises(
+        self, presence: availability.PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(**_kwargs: object) -> bool:
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(availability, "is_live_user_turn", _boom)
+        assert _is_live_user_turn({"session_id": "s-live"}) is False
