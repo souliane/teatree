@@ -859,14 +859,21 @@ def handle_record_presence(data: dict) -> None:
     cannot be written never blocks the prompt (the schedule then decides
     as before).
     """
-    if not data.get("prompt"):
+    prompt = data.get("prompt")
+    if not prompt:
+        return
+    # A loop-tick continuation is autonomous, not user presence — stamping it
+    # would let the #189 live-turn predicate mistake an owner-session tick for a
+    # fresh keystroke, and it is not evidence the user is at the keyboard for the
+    # 15-min schedule upgrade either. Skip it on both counts.
+    if prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
         return
     if not _bootstrap_teatree_django():
         return
     try:
         from teatree.core.availability import PRESENCE  # noqa: PLC0415
 
-        PRESENCE.record()
+        PRESENCE.record(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — heartbeat is best-effort; never block the prompt.
         return
 
@@ -6959,6 +6966,27 @@ def _resolved_away_mode() -> bool:
         return False
 
 
+def _is_live_user_turn(data: dict) -> bool:
+    """True when the user typed a prompt THIS turn in this session (#189).
+
+    The user-driven escape for away-mode: ``/checking`` (and "shoot me
+    questions from here") work because a question raised on a live user
+    turn renders in-client even under a manual-away override — no
+    availability flip needed. Crash-proof and FAIL-SAFE: a missing
+    ``teatree`` import, an unreadable heartbeat, or any error returns
+    ``False`` so an autonomous turn always falls through to the durable
+    deferral path (BLUEPRINT §17.1 invariant 9 unweakened).
+    """
+    if not _bootstrap_teatree_django():
+        return False
+    try:
+        from teatree.core import availability  # noqa: PLC0415
+
+        return availability.is_live_user_turn(session_id=str(data.get("session_id", "")))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def handle_route_away_mode_question(data: dict) -> bool:
     """Convert an ``AskUserQuestion`` to a ``DeferredQuestion`` when availability=away.
 
@@ -6974,10 +7002,24 @@ def handle_route_away_mode_question(data: dict) -> bool:
     transcript, so the §807 structured-question Stop gate
     ``_last_assistant_turn`` detects ``used_question_tool=True`` and lets
     the turn complete.
+
+    Exception (#189): on a USER-DRIVEN turn — a fresh same-session
+    ``UserPromptSubmit`` within ``LIVE_TURN_FRESHNESS`` — the question
+    renders in-client instead of deferring, even under a manual-away
+    override. That is what lets ``/checking`` walk the user through the
+    backlog without flipping availability. An autonomous / loop-driven
+    turn is not live, so it still defers (invariant 9 intact).
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
     if not _resolved_away_mode():
+        return False
+    if _is_live_user_turn(data):
+        # The user is driving THIS turn (a fresh same-session prompt seconds
+        # ago) — let the question render in-client even under away. This is
+        # the #189 escape that makes `/checking` work without an availability
+        # flip. An autonomous / loop-driven turn is NOT live, so it still
+        # defers below — invariant 9 holds for the loop's own questions.
         return False
     questions = data.get("tool_input", {}).get("questions", []) or []
     first = questions[0] if isinstance(questions, list) and questions else {}

@@ -76,10 +76,15 @@ Multiple expressions OR together — any active = present.
 
 ## How away-mode works
 
-When mode resolves to `away` and the agent calls `AskUserQuestion`, the `handle_route_away_mode_question` PreToolUse hook:
+When mode resolves to `away` and the agent calls `AskUserQuestion`, the `handle_route_away_mode_question` PreToolUse hook first checks whether the current turn is **user-driven**:
+
+- **User-driven turn** (`is_live_user_turn` returns True — a `UserPromptSubmit` for the same session within `LIVE_TURN_FRESHNESS` = 90 s): the hook passes through and the question renders **in-client**, even under manual-away. No defer, no Slack mirror. This is the #189 escape that makes `/checking` work without an availability flip. `LIVE_TURN_FRESHNESS` is intentionally short (seconds), distinct from the 15-min `PRESENCE_FRESHNESS` used for the schedule-upgrade layer.
+- **Autonomous / loop-driven turn** (no recent same-session prompt): the hook defers as described below. Invariant 9 holds — autonomous questions are always captured.
+
+For the **defer path** (autonomous turns or no live-turn signal):
 
 1. Records the question as a `DeferredQuestion` row (durable, single-use).
-2. Mirrors the question text + option labels to the user's Slack DM (the user reads Slack, not the CLI). Idempotent by a stable hash of the question payload + session, so a harness retry does not double-post; fail-open, so a Slack/IO error never blocks the deny.
+2. Mirrors the question text + option labels to the user's Slack DM. Idempotent by a stable hash of the question payload + session, so a harness retry does not double-post; fail-open, so a Slack/IO error never blocks the deny.
 3. Emits `permissionDecision=deny` with a friendly reason naming the row id.
 4. Lets the `tool_use` block stay in the transcript so the §807 structured-question Stop gate sees it and the turn completes — the away-mode path is a *sanctioned destination* for the same tool call, never a prose fallback.
 
