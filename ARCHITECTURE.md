@@ -1,98 +1,63 @@
-# Architecture pre-check — souliane/teatree#1879
-
-Make on-behalf consume+audit+post atomic so a failed post cannot burn the
-approval or write a lying audit.
+# Architecture pre-check — souliane/teatree#1880
 
 ## 1. BLUEPRINT § alignment
 
-§17.4 (recorded-approval / clear+audit family) and `/t3:rules` § "Ask Before
-Posting on the User's Behalf". The on-behalf gate consumes a single-use
-`OnBehalfApproval`, writes an `OnBehalfAudit`, and the caller posts — these
-three must be all-or-nothing. No BLUEPRINT prose change: the documented
-outcome table is unchanged; only the consume+post+audit ordering becomes
-atomic.
+§17.1 invariant 2 (resilience: verify-by-re-read / idempotency / retry-safety on external writes)
+and §5.6 (loop topology — the reactive Slack-answer cycle). Claim: a loop side-effect (Slack
+react/reply) must land before its receipt is finalized, so a failed side-effect rolls the claim
+back and retries, never leaves a lying receipt.
 
 ## 2. FSM phase boundaries
 
-n/a — no `Ticket.State` / `Worktree.State` transition. The PR-approval and
-ticket-transition signal receivers call the gate, but the FSM transition
-itself is unchanged and never blocked.
+n/a — no `Ticket.State` / `Worktree.State` transition. The change is on the per-row CAS receipt
+columns of `PendingChatInjection` (`eyes_reacted_at`, `loop_replied_at`), not the session FSM.
 
 ## 3. Extension-point contracts
 
-No `OverlayBase` / scanner-registration / `*Backend` Protocol change. The
-chokepoint registry entry #1 (`on-behalf-routed-egress`: post_routed /
-react_routed) protects backend symbols, not `require_on_behalf_approval`'s
-signature — unaffected; `tests/quality/test_chokepoints.py` stays green (37
-passing). Consumers of the gate, updated in lockstep to the callback form:
-
-- `teatree.core.on_behalf_egress` (post / react)
-- `teatree.core.reply_transport` (_send / redeliver)
-- `teatree.core.signals` (transition / approval reaction)
-- `teatree.core.management.commands.review_request_post`
-- `teatree.core.management.commands.pr` (post_evidence)
-- `teatree.core.management.commands._e2e_evidence`
-- `teatree.cli.review_on_behalf` (peek `check_on_behalf` +
-  consuming `publish_on_behalf`) and `teatree.cli.review.ReviewService`
-  (8 post sites wrapped in `_publish_or_blocked`).
+No `OverlayBase` / scanner-registration / `*Backend` Protocol surface changes. `MessagingBackend.react`
+is consumed unchanged. The fix is internal to `cycle.py` + two new rollback CAS methods on the
+`PendingChatInjection` model.
 
 ## 4. Component boundaries
 
-`teatree.core.on_behalf_gate_recorded` — unchanged home. Split into two
-purpose-typed functions: `require_on_behalf_approval(publish=…)` (the only
-consuming path: consume + callback + audit in one `transaction.atomic`) and
-`on_behalf_block_message(target, action)` (non-consuming peek for early
-refusal). `OnBehalfApproval.has_unconsumed` backs the peek.
+- `src/teatree/core/models/pending_chat_injection.py` — the rollback CAS methods (`unmark_eyes_reacted`,
+  `unmark_loop_replied`) live on the model (Fat Model: the single-use CAS lives with the data, beside
+  `mark_eyes_reacted` / `mark_loop_replied`).
+- `src/teatree/loop/slack_answer/cycle.py` — the claim→side-effect→release-on-failure sequencing
+  (loop body orchestration).
 
 ## 5. Dependency direction
 
-No new cross-module imports — the publish callback is passed in by each
-caller. `uv run tach check` → "All modules validated!".
+No new imports. `cycle.py` already imports the model; the model gains no imports. No backwards edge.
 
 ## 6. Test surface
 
-- `tests/teatree_core/test_on_behalf_gate_recorded.py`
-  `TestPublishCallbackAtomicity`: failed publish rolls back consume + writes
-  no audit (RED-observed on pre-fix non-atomic order); success runs
-  publish→consume→audit; BLOCK+no-approval never runs publish; retry reuses
-  the approval. `TestNonConsumingPeek`: peek never consumes / DMs.
-- `tests/teatree_core/test_reply_transport_on_behalf_gate.py`
-  `TestRedeliverReusesReservation`: a failed redeliver does not burn the
-  approval; N redelivers consume exactly one (RED-observed on pre-fix
-  redeliver shape).
-- `tests/teatree_core/test_review_request_post_command.py`: no-backend
-  suppress no longer consumes (improved behavior).
+`tests/teatree_loop/slack_answer/test_cycle_internals.py`:
+
+- eyes: `backend.react` raises → `eyes_reacted_at` is rolled back to NULL (row retries) — RED on pre-fix.
+- eyes: success path stamps `eyes_reacted_at` exactly once.
+- eyes: two concurrent attempts react exactly once (CAS exclusivity preserved).
+- ack: `backend.react` raises → `loop_replied_at`/`answer_kind` rolled back for the whole unit.
+- ack: success path stamps once.
+`tests/teatree_core/test_pending_chat_injection_model.py`: the rollback CAS methods round-trip.
 
 ## 7. Resilience invariants
 
-External write = the colleague post (callback).
-
-- verify-by-re-read / idempotency: `OnBehalfApproval.consume` keeps its
-  `select_for_update` + `consumed_at` single-use claim, now inside the same
-  atomic block as the post; `reply_transport` keeps its ReplyDispatch
-  reservation.
-- fallback-transport: BLOCK + no approval still raises
-  `OnBehalfPostBlockedError`; the caller surfaces the blocked post.
-- NEW invariant **atomicity**: consume + post + audit share one
-  `transaction.atomic` — a post failure rolls back the consume (no burn) and
-  writes no audit (no lie). Enforced structurally by flipping the
-  `consume-before-side-effect-not-atomic` semgrep rule warn→blocking in the
-  same PR.
-- heartbeat / sub-agent return contract: n/a (synchronous single post).
+- verify-by-re-read: success path keeps the existing `verify_reply_visible` readback (SIMPLE) and now
+  the eyes/ack receipt is only durable after the side-effect returns without raising.
+- fallback-transport: n/a (the durable retry IS the fallback — the row stays in `loop_unreplied()`).
+- idempotency: the CAS claim is the idempotency lock — a re-run / concurrent tick matches 0 rows.
+  Rollback only fires on the claimant's own failure, so it cannot release another tick's claim.
+- heartbeat: n/a (bounded per-cycle batch).
+- sub-agent return contract: n/a.
 
 ## 8. Identity and key normalization
 
-`canonical_on_behalf_target` already canonicalizes the target up to
-`<repo>!<iid>` at both record and consume; `has_unconsumed` reuses it. No new
-identity surface; no strip/split-to-match introduced.
+n/a — no bare-vs-qualified identity. Rows are keyed by pk in the conditional UPDATEs.
 
 ## 9. Behavior preservation / capability deletion
 
-Rewrites `require_on_behalf_approval`'s body to take a publish callback.
-Behaviors preserved: PROCEED (run post, no consume/audit); AUTO_DRAFT (DM +
-run post, no consume/audit); BLOCK+approval (consume+post+audit, now atomic);
-BLOCK+no-approval (raise, never post). `check_on_behalf` keeps its
-no-publish early-refusal form but is now non-consuming (the consume moved to
-the post site). No privacy/leak/security matcher narrowed; no must-block test
-inverted. The semgrep warn rule is flipped to blocking in the same PR (proven
-to bite the pre-fix code and green-on-tree after the fix).
+Purely additive sequencing change. Exactly-once (the CAS claim) is preserved unchanged; the only new
+behavior is rollback-on-failure. No matcher narrowed, no must-block test inverted. `_handle_simple`
+already had the correct post→verify→stamp order and is untouched. The WHEN semantics
+(react-eyes-once, ack-only-when-classified-ACK) and dedup are unchanged.

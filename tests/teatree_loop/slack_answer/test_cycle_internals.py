@@ -65,6 +65,16 @@ class RecordingBackend:
         return ""
 
 
+@dataclass
+class FailingReactBackend(RecordingBackend):
+    """A backend whose ``react`` always raises — models a Slack outage."""
+
+    def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
+        _ = (channel, ts, emoji)
+        msg = "slack react failed"
+        raise RuntimeError(msg)
+
+
 def _row(text: str, ts: str = "1.0") -> PendingChatInjection:
     row = PendingChatInjection.record(channel="C1", slack_ts=ts, text=text)
     assert row is not None
@@ -98,6 +108,42 @@ class TestReactEyesOnce:
         assert backend.reactions == []
 
 
+class TestReactEyesRetriesOnFailedSideEffect:
+    """#1880: claim -> react -> release-on-failure, so a failed :eyes: retries."""
+
+    def test_failed_react_rolls_back_the_receipt(self) -> None:
+        row = _row("thanks")
+        backend = FailingReactBackend()
+
+        with pytest.raises(RuntimeError, match="slack react failed"):
+            _react_eyes_once(backend, _Unit([row]))
+
+        row.refresh_from_db()
+        assert row.eyes_reacted_at is None  # not stamped -> next cycle retries
+
+    def test_successful_react_stamps_exactly_once(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+
+        assert _react_eyes_once(backend, _Unit([row])) is True
+        row.refresh_from_db()
+        assert row.eyes_reacted_at is not None
+        assert backend.reactions == [("C1", "1.0", "eyes")]
+
+    def test_two_concurrent_attempts_react_exactly_once(self) -> None:
+        row_a = _row("thanks")
+        row_b = PendingChatInjection.objects.get(pk=row_a.pk)
+        backend_a = RecordingBackend()
+        backend_b = RecordingBackend()
+
+        first = _react_eyes_once(backend_a, _Unit([row_a]))
+        second = _react_eyes_once(backend_b, _Unit([row_b]))
+
+        assert (first, second) == (True, False)
+        assert backend_a.reactions == [("C1", "1.0", "eyes")]
+        assert backend_b.reactions == []
+
+
 class TestHandleAckCasLost:
     def test_cas_lost_skips_reaction(self) -> None:
         row = _row("thanks")
@@ -105,6 +151,34 @@ class TestHandleAckCasLost:
         with patch.object(type(row), "mark_loop_replied", return_value=False):
             assert _handle_ack(backend, _Unit([row])) is False
         assert backend.reactions == []
+
+
+class TestHandleAckRetriesOnFailedSideEffect:
+    """#1880: ack claims the loop-reply, then reacts; a failed react rolls back."""
+
+    def test_failed_react_rolls_back_the_whole_unit(self) -> None:
+        lead = _row("thanks", ts="1.0")
+        follow = _row("thanks again", ts="1.1")
+        backend = FailingReactBackend()
+
+        with pytest.raises(RuntimeError, match="slack react failed"):
+            _handle_ack(backend, _Unit([lead, follow]))
+
+        lead.refresh_from_db()
+        follow.refresh_from_db()
+        assert lead.loop_replied_at is None
+        assert lead.answer_kind == ""
+        assert follow.loop_replied_at is None
+
+    def test_successful_react_stamps_the_unit_once(self) -> None:
+        row = _row("thanks")
+        backend = RecordingBackend()
+
+        assert _handle_ack(backend, _Unit([row])) is True
+        row.refresh_from_db()
+        assert row.loop_replied_at is not None
+        assert row.answer_kind == "ack"
+        assert backend.reactions == [("C1", "1.0", "white_check_mark")]
 
 
 class TestDelegateCasLost:
