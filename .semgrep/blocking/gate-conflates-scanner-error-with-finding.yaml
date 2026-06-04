@@ -1,0 +1,29 @@
+rules:
+  - id: gate-conflates-scanner-error-with-finding
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Security-gate maps ANY nonzero subprocess exit straight to a deny whose
+      message claims a real FINDING was detected. The scanner exits nonzero on a
+      crash/error AS WELL AS on a real finding, so a crash becomes a false DENY
+      carrying a lying "found a trailer" message (and a fail-open variant would
+      silently let an unscanned publish through). Distinguish a real finding from
+      a scanner error FIRST (parse the scanner's well-formed result), then deny
+      the finding with the finding message and fail this security gate CLOSED on
+      a scanner error with a distinct "scanner error, not a finding" message. See
+      the ai-sig-scan gate _ai_sig_finding discriminator and the sibling
+      _diff_coverage_finding.
+    metadata:
+      issue: BLOCKING-NOW
+      status: blocking
+    paths:
+      include:
+        - "/hooks/scripts/hook_router.py"
+    patterns:
+      - pattern: |
+          if $R.returncode != 0:
+              return emit_pretooluse_deny($MSG, ...)
+      - metavariable-pattern:
+          metavariable: $MSG
+          patterns:
+            - pattern-regex: "banned trailer in the PR body or commit message"
