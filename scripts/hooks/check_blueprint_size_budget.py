@@ -55,7 +55,11 @@ _APPENDIX_DIR = "docs/blueprint"
 # moved from BLUEPRINT.md to docs/dependency-graph.md. The live top-level
 # corpus drops to ~82 KB; lowered to 87,000 B to keep the budget meaningful
 # while preserving >=4 KB headroom.
-_BUDGET_TOP_LEVEL_BYTES = 87_000
+# Headroom-restore bump (#1829): the SHA-bound anti-vacuity gate paragraph is a
+# load-bearing safety fact (a new merge/review-request gate); the trimmed
+# paragraph took the live file to ~84 KB, under the 4 KB headroom guard. Raised
+# to 88,000 B to restore the invariant.
+_BUDGET_TOP_LEVEL_BYTES = 88_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -195,7 +199,12 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # (~4 KB) from BLUEPRINT.md to docs/dependency-graph.md shrinks the top-level
 # corpus to ~82 KB; total drops correspondingly. Lowered to 203,000. Coupling
 # invariant holds: 203,000 - 87,000 = 116,000 <= 116,000.
-_BUDGET_TOTAL_BYTES = 203_000
+# Headroom-restore bump (#1829): the anti-vacuity gate paragraph took the merged
+# corpus to ~199,478 B, ~3.5 KB under the prior 203,000 budget -- below the 4 KB
+# `TestRealCorpusFitsWithHeadroom` guard. Raised one minimal step to 204,000 to
+# restore the >=4 KB headroom. Coupling invariant holds: total minus top-level
+# (204,000 minus 88,000) stays within the unchanged appendices cap of 116,000.
+_BUDGET_TOTAL_BYTES = 204_000
 
 
 def _repo_root() -> pathlib.Path:
