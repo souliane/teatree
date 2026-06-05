@@ -31,13 +31,19 @@ def _bootstrap_stdout(data: dict) -> str:
 
 
 class _RegistryIsolation(TestCase):
-    """Point the loop registry + tty sink at temp paths (no real machine state)."""
+    """Point the loop registry + tty sink at temp paths (no real machine state).
+
+    The teatree opt-in marker is forced active so the SessionStart bootstrap
+    fires: these tests cover the handover-pickup mechanism, not the per-session
+    opt-in gate (covered by ``test_teatree_opt_in.py``).
+    """
 
     def setUp(self) -> None:
         super().setUp()
         reg_dir = Path(self.enterContext(_tmp_dir()))
         self.enterContext(_env("T3_LOOP_REGISTRY_DIR", str(reg_dir)))
         self.enterContext(mock.patch.object(router, "_TTY_PATH", str(reg_dir / "fake-tty")))
+        self.enterContext(mock.patch.object(router, "_teatree_active", return_value=True))
 
 
 class TestClaimSessionHandover(_RegistryIsolation):

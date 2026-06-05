@@ -36,6 +36,9 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reg_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg_dir))
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
+    # Force the teatree opt-in marker active: these cover the snapshot /
+    # compact-recovery mechanism, not the per-session opt-in gate.
+    monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
 
 
 def _snapshot_for(session_id: str) -> Path:
