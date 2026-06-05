@@ -33,7 +33,13 @@ def _auto_ship_enabled() -> bool:
 if TYPE_CHECKING:
     from teatree.core.models.session import Session
     from teatree.core.models.task import Task
-    from teatree.core.models.types import ReviewContext, ReviewSkillRun, TicketExtra, TicketSiblingFields
+    from teatree.core.models.types import (
+        AntiVacuityAttestation,
+        ReviewContext,
+        ReviewSkillRun,
+        TicketExtra,
+        TicketSiblingFields,
+    )
     from teatree.core.models.worktree import Worktree
 
 
@@ -977,6 +983,35 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             "at": timezone.now().isoformat(),
         }
         self.merge_extra(set_keys={"review_context": context})
+
+    def record_anti_vacuity_attestation(
+        self,
+        head_sha: str,
+        ac_coverage: str,
+        proven_tests: list[str],
+        *,
+        no_new_tests: bool = False,
+    ) -> None:
+        """Stamp the SHA-bound anti-vacuity attestation backing review-request/merge (#1829).
+
+        ``head_sha`` binds the attestation to the exact tree the maker
+        self-reviewed; the anti-vacuity gate (``teatree.core.anti_vacuity_gate``)
+        drops it when the live head moves. ``ac_coverage`` records how the diff
+        was mapped to the acceptance criteria. ``proven_tests`` lists every new
+        regression test proven anti-vacuous (revert fix -> RED); ``no_new_tests``
+        is the explicit "this diff adds no new regression test" claim so an
+        empty ``proven_tests`` can never silently pass. Written through the
+        canonical locked ``merge_extra`` primitive so a concurrent ``extra``
+        writer's key survives; the timestamp is UTC ISO.
+        """
+        attestation: AntiVacuityAttestation = {
+            "head_sha": head_sha.strip().lower(),
+            "ac_coverage": ac_coverage,
+            "proven_tests": list(proven_tests),
+            "no_new_tests": no_new_tests,
+            "at": timezone.now().isoformat(),
+        }
+        self.merge_extra(set_keys={"anti_vacuity_attestation": attestation})
 
     def review_context_satisfied(self) -> bool:
         """Whether the ``-> reviewing`` deep-retrieval precondition is met.
