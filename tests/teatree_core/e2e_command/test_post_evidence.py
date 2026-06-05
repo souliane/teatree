@@ -6,11 +6,14 @@ Mirrors ``tests/teatree_core/pr_command/test_post_evidence_and_sweep.py``:
 trip the on-behalf gate.
 
 The hard-fail half asserts the validators refuse bad evidence with no host
-side effect; the idempotency half asserts the (env, commit) hidden-marker
-create-or-update flow; the pure-validator half exercises the regex / hash /
-enum helpers directly.
+side effect; the idempotency half asserts the one-comment-per-(ticket, env)
+hidden-marker create-or-update flow (a new commit on the same env edits in
+place with an old -> new delta); the gate half asserts the on-behalf gate
+stays in front of both branches; the pure-validator half exercises the regex
+/ hash / enum helpers directly.
 """
 
+from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -194,7 +197,7 @@ class TestHardFail(_EvidenceTestBase):
 
 
 class TestIdempotency(_EvidenceTestBase):
-    """The (env, commit) hidden-marker create-or-update flow (gate disabled)."""
+    """The (ticket, env) hidden-marker create-or-update flow (gate disabled)."""
 
     def _ticket(self) -> None:
         from teatree.core.models import Ticket  # noqa: PLC0415
@@ -209,8 +212,8 @@ class TestIdempotency(_EvidenceTestBase):
             return cast("dict[str, object]", call_command("e2e", "post-evidence", **kwargs))
 
     def _existing_comment(self, *, env: str, commit: str, comment_id: int) -> dict[str, object]:
-        marker = f"<!-- t3-e2e-evidence env={env} commit={commit} -->"
-        return {"id": comment_id, "body": f"{marker}\n## old"}
+        marker = f"<!-- t3-e2e-evidence env={env} -->"
+        return {"id": comment_id, "body": f"{marker}\n## old\nCommit tested: `{commit}`\n"}
 
     def test_creates_new_when_list_empty(self) -> None:
         self._ticket()
@@ -234,10 +237,11 @@ class TestIdempotency(_EvidenceTestBase):
         host.post_issue_comment.assert_called_once()
         host.update_issue_comment.assert_not_called()
         body = host.post_issue_comment.call_args.kwargs["body"]
-        assert "t3-e2e-evidence env=dev commit=" + "a" * 40 in body
+        assert "t3-e2e-evidence env=dev -->" in body
+        assert "Commit tested: `" + "a" * 40 + "`" in body
         assert "The thing works" in body
 
-    def test_updates_when_marker_env_and_commit_match(self) -> None:
+    def test_updates_when_marker_env_matches(self) -> None:
         self._ticket()
         before, after = self._before_after()
         host = MagicMock()
@@ -260,52 +264,14 @@ class TestIdempotency(_EvidenceTestBase):
         host.update_issue_comment.assert_called_once()
         host.post_issue_comment.assert_not_called()
 
-    def test_short_commit_dedups_against_full_sha_marker(self) -> None:
-        # #1652: a supplied short `--commit` is expanded to the canonical
-        # full SHA, so it matches a prior comment whose marker carries the
-        # full 40-char SHA (the no-`--commit` auto-detect form) instead of
-        # posting a duplicate.
-        self._ticket()
-        before, after = self._before_after()
-        full = "a" * 40
-        host = MagicMock()
-        host.list_issue_comments.return_value = [
-            self._existing_comment(env="dev", commit=full, comment_id=55),
-        ]
-        host.update_issue_comment.return_value = {"id": 55, "web_url": "u"}
-
-        self._patch_host(host)
-        self._monkeypatch.setattr(_evidence.git, "status_porcelain", lambda repo=".": "")
-        self._monkeypatch.setattr(_evidence.git, "run_strict", lambda *, repo=".", args: full)
-        host.upload_file.return_value = {"markdown": "![x](u)"}
-        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
-            result = cast(
-                "dict[str, object]",
-                call_command(
-                    "e2e",
-                    "post-evidence",
-                    ticket=_ISSUE_URL,
-                    env="dev",
-                    commit="aaaaaaa",
-                    before=before,
-                    after=after,
-                    assertion="works",
-                ),
-            )
-
-        assert result["action"] == "updated"
-        assert result["commit"] == full
-        host.update_issue_comment.assert_called_once()
-        host.post_issue_comment.assert_not_called()
-
-    def test_new_comment_when_commit_differs(self) -> None:
+    def test_updates_in_place_when_commit_differs(self) -> None:
         self._ticket()
         before, after = self._before_after()
         host = MagicMock()
         host.list_issue_comments.return_value = [
             self._existing_comment(env="dev", commit="b" * 40, comment_id=33),
         ]
-        host.post_issue_comment.return_value = {"id": 88}
+        host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
 
         result = self._run(
             host,
@@ -316,9 +282,34 @@ class TestIdempotency(_EvidenceTestBase):
             assertion="works",
         )
 
-        assert result["action"] == "created"
-        host.post_issue_comment.assert_called_once()
-        host.update_issue_comment.assert_not_called()
+        assert result["action"] == "updated"
+        assert result["comment_id"] == 33
+        host.update_issue_comment.assert_called_once()
+        host.post_issue_comment.assert_not_called()
+
+    def test_update_body_renders_commit_delta(self) -> None:
+        self._ticket()
+        before, after = self._before_after()
+        host = MagicMock()
+        host.list_issue_comments.return_value = [
+            self._existing_comment(env="dev", commit="b" * 40, comment_id=33),
+        ]
+        host.update_issue_comment.return_value = {"id": 33, "web_url": "u"}
+
+        self._run(
+            host,
+            ticket=_ISSUE_URL,
+            env="dev",
+            before=before,
+            after=after,
+            assertion="works",
+        )
+
+        body = host.update_issue_comment.call_args.kwargs["body"]
+        assert "Re-verified: `" + "b" * 8 + "` -> `" + "a" * 8 + "`" in body
+        match = _evidence._E2E_MARKER_RE.search(body)
+        assert match is not None
+        assert match.group("env") == "dev"
 
     def test_new_comment_when_env_differs(self) -> None:
         self._ticket()
@@ -343,15 +334,55 @@ class TestIdempotency(_EvidenceTestBase):
         host.update_issue_comment.assert_not_called()
 
 
+class TestOnBehalfGateConsulted(TestCase):
+    """The on-behalf gate stays in front of the upsert — no bypass.
+
+    The (ticket, env) idempotency change must NOT weaken the gate: with the
+    default blocking mode and no recorded approval, neither the create nor
+    the update branch may post; the command exits non-zero with no host write.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        self._monkeypatch = monkeypatch
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+
+    def _post(self, *, comments: list[dict[str, object]]) -> MagicMock:
+        host = MagicMock()
+        host.list_issue_comments.return_value = comments
+        post = _evidence.EvidencePost(
+            issue_url=_ISSUE_URL,
+            repo="org/repo",
+            env=EvidenceEnv.DEV,
+            commit="a" * 40,
+            before_path=Path("/dev/null"),
+            after_path=Path("/dev/null"),
+            assertion="works",
+        )
+        with pytest.raises(_evidence.OnBehalfPostBlockedError):
+            _evidence.post_evidence_comment(host, post)
+        host.upload_file.assert_not_called()
+        host.post_issue_comment.assert_not_called()
+        host.update_issue_comment.assert_not_called()
+        return host
+
+    def test_create_branch_blocked_without_approval(self) -> None:
+        self._post(comments=[])
+
+    def test_update_branch_blocked_without_approval(self) -> None:
+        self._post(comments=[{"id": 1, "body": "<!-- t3-e2e-evidence env=dev -->\nx"}])
+
+
 class TestPureValidators:
     """The pure helpers in ``_e2e_evidence`` are independently testable."""
 
     def test_marker_regex_round_trip(self) -> None:
-        marker = _evidence.evidence_marker(env=EvidenceEnv.DEV, commit="c" * 40)
+        marker = _evidence.evidence_marker(env=EvidenceEnv.DEV)
         match = _evidence._E2E_MARKER_RE.search(f"prefix {marker} suffix")
         assert match is not None
         assert match.group("env") == "dev"
-        assert match.group("commit") == "c" * 40
 
     def test_before_after_hash_compare(self, tmp_path) -> None:
         a = tmp_path / "a.png"
@@ -373,14 +404,71 @@ class TestPureValidators:
         with pytest.raises(_evidence.EvidenceValidationError):
             _evidence.coerce_env("prod")
 
-    def test_find_matching_comment_ignores_other_markers(self) -> None:
+    def test_find_matching_comment_keys_on_env_only(self) -> None:
         comments = [
-            {"id": 1, "body": "<!-- t3-e2e-evidence env=dev commit=zzz -->\nx"},
+            {"id": 1, "body": "<!-- t3-e2e-evidence env=dev -->\nCommit tested: `" + "f" * 40 + "`"},
             {"id": 2, "body": "no marker here"},
-            {"id": 3, "body": "<!-- t3-e2e-evidence env=local commit=yyy -->\nx"},
+            {"id": 3, "body": "<!-- t3-e2e-evidence env=local -->\nx"},
         ]
-        assert _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV, commit="zzz") == 1
-        assert _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV, commit="nope") is None
+        dev = _evidence.find_matching_comment(comments, env=EvidenceEnv.DEV)
+        assert dev is not None
+        assert dev.comment_id == 1
+        assert dev.prior_commit == "f" * 40
+        local = _evidence.find_matching_comment(comments, env=EvidenceEnv.LOCAL)
+        assert local is not None
+        assert local.comment_id == 3
+        assert local.prior_commit == ""
+        assert _evidence.find_matching_comment([], env=EvidenceEnv.DEV) is None
+        # A marker comment with no usable id is skipped, not returned.
+        assert (
+            _evidence.find_matching_comment(
+                [{"id": 0, "body": "<!-- t3-e2e-evidence env=dev -->"}], env=EvidenceEnv.DEV
+            )
+            is None
+        )
+
+    def test_prior_commit_from_body_parses_marker(self) -> None:
+        body = "<!-- t3-e2e-evidence env=dev -->\nCommit tested: `" + "b" * 40 + "`\nclaim"
+        assert _evidence._prior_commit_from_body(body) == "b" * 40
+        assert _evidence._prior_commit_from_body("no commit line") == ""
+
+    def test_build_body_renders_delta_when_prior_commit_given(self) -> None:
+        body = _evidence.build_evidence_body(
+            _evidence.EvidenceComment(
+                env=EvidenceEnv.DEV,
+                commit="a" * 40,
+                before_md="![b](b)",
+                after_md="![a](a)",
+                assertion="claim",
+                prior_commit="b" * 40,
+            ),
+        )
+        assert ("b" * 8) in body
+        assert ("a" * 8) in body
+        assert "Re-verified:" in body
+        # No prior commit -> no delta line.
+        first = _evidence.build_evidence_body(
+            _evidence.EvidenceComment(
+                env=EvidenceEnv.DEV,
+                commit="a" * 40,
+                before_md="![b](b)",
+                after_md="![a](a)",
+                assertion="claim",
+            ),
+        )
+        assert "Re-verified:" not in first
+        # Same prior == current commit -> no delta line either.
+        same = _evidence.build_evidence_body(
+            _evidence.EvidenceComment(
+                env=EvidenceEnv.DEV,
+                commit="a" * 40,
+                before_md="![b](b)",
+                after_md="![a](a)",
+                assertion="claim",
+                prior_commit="a" * 40,
+            ),
+        )
+        assert "Re-verified:" not in same
 
     def test_resolve_commit_expands_short_to_full(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # #1652: the supplied short SHA is captured from rev-parse output as
