@@ -1166,7 +1166,10 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ list                  List discovered eval scenarios.                        │
+│ negative-control      Self-test the harness: plant a known violation and     │
+│                       assert it is caught (token-free).                      │
+│ list                  List discovered eval scenarios as a table (Name,       │
+│                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
 │                       name is given.                                         │
 │ prepare-subscription  Emit the per-scenario prompts for a LOCAL subscription │
@@ -1177,10 +1180,24 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       must-fire/must-not-fire corpus.                        │
 │ regression            Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
-│ negative-control      Self-test the harness: plant a known violation and     │
-│                       assert it is caught.                                   │
+│ all                   Run every eval lane in sequence and render one unified │
+│                       summary table.                                         │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval negative-control`
+
+```
+Usage: t3 eval negative-control [OPTIONS]
+
+ Self-test the harness: plant a known violation and assert it is caught
+ (token-free).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1189,7 +1206,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 eval list [OPTIONS]
 
- List discovered eval scenarios.
+ List discovered eval scenarios as a table (Name, Scenario, Agent, File,
+ Asserts).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1377,22 +1395,28 @@ Usage: t3 eval regression [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 eval negative-control`
+#### `t3 eval all`
 
 ```
-Usage: t3 eval negative-control [OPTIONS]
+Usage: t3 eval all [OPTIONS]
 
- Self-test the harness: plant a known violation and assert it is caught.
+ Run every eval lane in sequence and render one unified summary table.
 
- Token-free and deterministic — never shells ``claude -p``. Drives a
- deliberately-violating run of the ``worktree_first`` scenario through the
- public report path and exits 0 only when the harness reports the violation
- (naming the violated rule and the offending tool call). A non-zero exit
- means the harness went green on a genuine violation — the harness is broken.
+ Free deterministic lanes (trigger-qa, regression) always run. The AI lane
+ grades subscription-produced transcripts when present; with none on disk it
+ emits the subscription manifest plus the in-session recipe and NEVER silently
+ shells the metered ``claude -p`` runner. ``--backend sdk`` is the explicit
+ metered opt-in (CI's path).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format        TEXT  Report format: text or json. [default: text]           │
-│ --help                Show this message and exit.                            │
+│ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
+│                               grade in-session transcripts, no API spend) or │
+│                               'sdk' (metered claude -p, the explicit CI      │
+│                               opt-in with ANTHROPIC_API_KEY).                │
+│                               [default: subscription]                        │
+│ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
+│                               transcripts for the AI lane (default: cwd).    │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

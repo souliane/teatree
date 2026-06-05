@@ -82,6 +82,10 @@ def render_outcome_json(outcome: "NegativeControlOutcome") -> str:
     return json.dumps(payload, indent=2)
 
 
+def render_outcome(outcome: "NegativeControlOutcome", *, as_json: bool) -> str:
+    return render_outcome_json(outcome) if as_json else render_outcome_text(outcome)
+
+
 def _negative_control_spec() -> EvalSpec:
     spec = find_spec(NEGATIVE_CONTROL_SCENARIO)
     if spec is None:
@@ -140,7 +144,7 @@ def _bootstrap_django() -> None:
 def main() -> int:
     _bootstrap_django()
     outcome = run_negative_control()
-    typer.echo(render_outcome_text(outcome))
+    typer.echo(render_outcome(outcome, as_json=False))
     return 0 if outcome.caught else 1
 
 
