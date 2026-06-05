@@ -16,6 +16,7 @@ from teatree.loops.arch_review.loop import MINI_LOOP as ARCH_REVIEW_LOOP
 from teatree.loops.audit.loop import MINI_LOOP as AUDIT_LOOP
 from teatree.loops.dispatch.loop import MINI_LOOP as DISPATCH_LOOP
 from teatree.loops.dogfood.loop import MINI_LOOP as DOGFOOD_LOOP
+from teatree.loops.eval_local.loop import MINI_LOOP as EVAL_LOCAL_LOOP
 from teatree.loops.followup.loop import MINI_LOOP as FOLLOWUP_LOOP
 from teatree.loops.housekeeping.loop import MINI_LOOP as HOUSEKEEPING_LOOP
 from teatree.loops.inbox.loop import MINI_LOOP as INBOX_LOOP
@@ -89,6 +90,29 @@ class TestNewsLoopBuildJobs:
     def test_resolves_scanner_or_empty(self) -> None:
         jobs = NEWS_LOOP.build_jobs()
         assert isinstance(jobs, list)
+
+
+class TestEvalLocalLoopBuildJobs:
+    def test_resolves_scanner_or_empty(self) -> None:
+        jobs = EVAL_LOCAL_LOOP.build_jobs()
+        assert isinstance(jobs, list)
+
+    def test_wires_eval_local_scanner(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.loop.scanners.eval_local import EvalLocalScanner  # noqa: PLC0415
+
+        fake = EvalLocalScanner(overlay_name="t3-teatree")
+        with patch("teatree.loop.tick_jobs._eval_local_scanner", return_value=fake):
+            jobs = EVAL_LOCAL_LOOP.build_jobs()
+        assert any(j.scanner is fake and j.overlay == "" for j in jobs)
+
+    def test_omits_scanner_when_disabled(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch("teatree.loop.tick_jobs._eval_local_scanner", return_value=None):
+            jobs = EVAL_LOCAL_LOOP.build_jobs()
+        assert jobs == []
 
 
 class TestHousekeepingLoopBuildJobs:
