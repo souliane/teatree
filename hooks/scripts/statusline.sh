@@ -49,6 +49,10 @@ if ! [ -t 0 ] && command -v jq >/dev/null 2>&1; then
     fi
 fi
 
+if [ -n "$session_id" ] && [ ! -f "${state_dir}/${session_id}.teatree-active" ]; then
+    exit 0
+fi
+
 skills=""
 todos_done=""
 todos_total=""
