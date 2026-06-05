@@ -42,6 +42,40 @@ def _pg_args() -> tuple[str, str, dict[str, str]]:
     return pg_host(), pg_user(), pg_env()
 
 
+def _is_pipenv_repo(repo: Path) -> bool:
+    """True iff *repo* is managed by pipenv rather than uv.
+
+    A repo is pipenv-managed when it carries a ``Pipfile`` and has no usable
+    ``uv.lock`` — either no lock at all, or a stub lock with no resolved
+    packages (only ``version``/``revision``/``requires-python``). Running
+    ``uv --directory <repo> run`` against such a stub builds a bare venv with
+    none of the repo's deps, so ``import django`` fails (souliane/teatree#1973).
+    """
+    if not (repo / "Pipfile").is_file():
+        return False
+    lock = repo / "uv.lock"
+    if not lock.is_file():
+        return True
+    try:
+        return "[[package]]" not in lock.read_text(encoding="utf-8")
+    except OSError:
+        return True
+
+
+def _migrate_runner_prefix(repo: Path) -> list[str]:
+    """Build the interpreter prefix that runs ``python`` from *repo*'s environment.
+
+    Pipenv repos (see :func:`_is_pipenv_repo`) resolve through ``pipenv run``
+    with ``PIPENV_PIPFILE`` pinned to *repo*'s ``Pipfile``, so pipenv resolves
+    *repo*'s populated venv regardless of the subprocess cwd. Everything else
+    keeps the uv path: ``uv --directory <repo> run`` auto-isolates the repo's
+    locked environment.
+    """
+    if _is_pipenv_repo(repo):
+        return ["env", f"PIPENV_PIPFILE={repo / 'Pipfile'}", "pipenv", "run", "python"]
+    return ["uv", "--directory", str(repo), "run", "python"]
+
+
 def _local_db_url(db_name: str) -> str:
     from urllib.parse import quote  # noqa: PLC0415
 
@@ -219,7 +253,8 @@ class DjangoDbImporter:
         run_env = {**inherited_env, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **cfg.migrate_env_extra}
 
         self.stdout.write(f"  Migrating reference DB ({cfg.ref_db_name}) using main repo...\n")
-        migrate_cmd = ["uv", "--directory", cfg.main_repo_path, "run", "python", "manage.py", "migrate", "--no-input"]
+        runner = _migrate_runner_prefix(Path(cfg.main_repo_path))
+        migrate_cmd = [*runner, "manage.py", "migrate", "--no-input"]
         for _attempt in range(_MAX_MIGRATE_RETRIES):
             result = run_allowed_to_fail(migrate_cmd, cwd=cfg.main_repo_path, env=run_env, expected_codes=None)
             if result.returncode == 0:
@@ -262,19 +297,9 @@ class DjangoDbImporter:
         app_label, migration_name = failing.split(".", 1)
         reason = "schema already exists" if "already exists" in combined else "table absent from dump"
         self.stdout.write(f"  Faking {failing} on reference DB ({reason})...\n")
+        runner = _migrate_runner_prefix(Path(self.cfg.main_repo_path))
         run_allowed_to_fail(
-            [
-                "uv",
-                "--directory",
-                self.cfg.main_repo_path,
-                "run",
-                "python",
-                "manage.py",
-                "migrate",
-                app_label,
-                migration_name,
-                "--fake",
-            ],
+            [*runner, "manage.py", "migrate", app_label, migration_name, "--fake"],
             cwd=self.cfg.main_repo_path,
             env=run_env,
             expected_codes=None,
