@@ -422,6 +422,41 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
 
+  test-shim:
+    # Required-context shim for pure-docs PRs (souliane/teatree#1942).
+    # Branch protection requires the context `test (3.13)`. The heavy `test`
+    # lane is path-skipped on a provably pure-docs diff (preflight
+    # run_heavy_python == 'false'), so it NEVER reports that context — and a
+    # never-reported required context leaves the PR permanently pending /
+    # BLOCKED. This job reports a passing `test (3.13)` ONLY in that exact
+    # skip case, so a docs-only PR can merge without re-running the suite.
+    #
+    # It must never mask a real failure: it runs ONLY when the heavy lane was
+    # path-skipped (run_heavy_python == 'false') AND only on pull_request
+    # events. On push-to-main, on the schedule, and on any non-pure-docs PR
+    # the heavy `test` lane runs and owns the `test (3.13)` context; this
+    # shim is skipped (its `if` is false), so the two can never both report.
+    #
+    # The `name: test` + matrix `python-version: ["3.13"]` makes the produced
+    # check context the exact string `test (3.13)` the branch protection
+    # requires — verify with `gh pr checks` after this lands.
+    name: test
+    needs: preflight
+    if: >
+      github.event_name == 'pull_request' &&
+      needs.preflight.outputs.run_heavy_python == 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      - name: Report the required test context for a path-skipped docs-only PR
+        run: >
+          echo "Pure-docs PR: the heavy test lane was path-skipped
+          (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
+          so the required status context is satisfied without re-running the suite."
+
   eval-weekly:
     # Weekly behavioral-eval gate. The eval suite shells out to `claude -p`
     # (cost, network, model variance), so it must NOT run on every push or
