@@ -17,7 +17,7 @@ operate on plain captured tool calls.
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
-t3 eval all                                  # all lanes (trigger-qa + regression + AI) in one summary table
+t3 eval all                                  # all five lanes (trigger-qa + regression + negative-control + transcript-replay + AI) in one summary table
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output

@@ -1,9 +1,11 @@
 """``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
 
-The free deterministic lanes (trigger-qa, regression) always run. The AI/trajectory
-lane grades subscription-produced transcripts when they exist on disk; with none it
-emits the subscription manifest plus the in-session recipe and NEVER silently shells
-the metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
+The four free deterministic lanes (trigger-qa, regression, negative-control,
+transcript-replay) always run; transcript-replay surfaces as a SKIP when no real
+session transcript is in scope (never a FAIL). The AI/trajectory lane grades
+subscription-produced transcripts when they exist on disk; with none it emits the
+subscription manifest plus the in-session recipe and NEVER silently shells the
+metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
 """
 
 import dataclasses
@@ -16,8 +18,10 @@ from rich.table import Table
 from teatree.cli.eval_run_modes import build_subscription_manifest, render_subscription_text
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec
+from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import RegressionReport
 from teatree.eval.report import ScenarioResult, evaluate
+from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerQAReport
 
 
@@ -80,6 +84,36 @@ def regression_lane(report: RegressionReport) -> LaneResult:
         passed=report.ok,
         skipped=False,
         detail=f"{len(report.results)} checks, {len(report.failures)} failed",
+    )
+
+
+def negative_control_lane(outcome: NegativeControlOutcome) -> LaneResult:
+    detail = "harness caught the planted violation" if outcome.caught else "harness MISSED the planted violation"
+    return LaneResult(
+        name="negative-control",
+        cost="free",
+        passed=outcome.caught,
+        skipped=False,
+        detail=detail,
+    )
+
+
+def transcript_replay_lane(results: list[InvariantResult] | None) -> LaneResult:
+    if results is None:
+        return LaneResult(
+            name="transcript-replay",
+            cost="free",
+            passed=True,
+            skipped=True,
+            detail="no session transcript in scope",
+        )
+    failed = sum(1 for result in results if not result.ok)
+    return LaneResult(
+        name="transcript-replay",
+        cost="free",
+        passed=failed == 0,
+        skipped=False,
+        detail=f"{len(results)} invariants, {failed} violated",
     )
 
 
