@@ -10,8 +10,8 @@
 # a `run_eval` dotenv flag; `eval-weekly` runs the suite only when the flag is
 # set. Both jobs only attach to merge-request pipelines.
 #
-# Manual on-demand runs do not go through CI — the user runs `t3 eval run`
-# (and `t3 eval trigger-qa`) locally whenever they want.
+# On-demand runs: either the `eval-manual` job below (a `when: manual` play
+# button on the MR pipeline) or `t3 eval run` / `t3 eval trigger-qa` locally.
 
 stages:
   - gate
@@ -19,6 +19,38 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
+
+# Shared body of the weekly and manual eval-suite jobs — one definition so the
+# two never drift (image, setup, retry, and the suite script live here only).
+.eval-suite:
+  image: python:3.13-slim
+  before_script:
+    - pip install --no-cache-dir uv
+    - uv sync
+  # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+      - api_failure
+      - script_failure
+  script:
+    # Trigger-QA is deterministic and free; the scenario suite SKIPs cleanly
+    # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
+    # job runs the suite if a CLI is provisioned and is a no-op otherwise.
+    - uv run t3 eval trigger-qa
+    # The needs_db regression checks open the self-DB, so migrate it first.
+    - uv run python -m teatree migrate --no-input
+    - uv run t3 eval regression
+    # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
+    # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
+    # spend). Mirrors the GitHub `eval-weekly` job.
+    # `--require-executed` (armed only when ANTHROPIC_API_KEY is set) fails the job
+    # if the suite collected scenarios but executed none, so a fully-skipped run
+    # cannot pass green with zero behavioral coverage (souliane/teatree#1811).
+    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
+    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
 
 eval-gate:
   stage: gate
@@ -47,57 +79,22 @@ eval-gate:
       dotenv: eval.env
 
 eval-weekly:
+  extends: .eval-suite
   stage: eval
   needs: ["eval-gate"]
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $RUN_EVAL == "true"'
-  image: python:3.13-slim
-  before_script:
-    - pip install --no-cache-dir uv
-    - uv sync
-  # Bounded retry on transient infra classes (script_failure = a model/network ReadTimeout); a real miss still fails fast.
-  retry:
-    max: 2
-    when:
-      - runner_system_failure
-      - stuck_or_timeout_failure
-      - api_failure
-      - script_failure
-  script:
-    # Trigger-QA is deterministic and free; the scenario suite SKIPs cleanly
-    # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
-    # weekly job runs the suite if a CLI is provisioned and is a no-op otherwise.
-    - uv run t3 eval trigger-qa
-    # The needs_db regression checks open the self-DB, so migrate it first.
-    - uv run python -m teatree migrate --no-input
-    - uv run t3 eval regression
-    # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
-    # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
-    # spend). Mirrors the GitHub `eval-weekly` job.
-    # `--require-executed` (armed only when ANTHROPIC_API_KEY is set) fails the job
-    # if the suite collected scenarios but executed none, so a fully-skipped run
-    # cannot pass green with zero behavioral coverage (souliane/teatree#1811).
-    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
-    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
   allow_failure: false
 
 # On-demand manual run, the GitLab mirror of the GitHub `workflow_dispatch`
 # trigger. `when: manual` adds a play button on merge-request pipelines so a
 # maintainer can run the full suite at an arbitrary time without waiting for the
 # first-of-week gate. It is allow_failure so a manual run never blocks the MR.
+# Shares `.eval-suite` (image, setup, retry, script) with `eval-weekly`.
 eval-manual:
+  extends: .eval-suite
   stage: eval
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: manual
       allow_failure: true
-  image: python:3.13-slim
-  before_script:
-    - pip install --no-cache-dir uv
-    - uv sync
-  script:
-    - uv run t3 eval trigger-qa
-    - uv run python -m teatree migrate --no-input
-    - uv run t3 eval regression
-    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
-    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED

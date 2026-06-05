@@ -160,6 +160,16 @@ _DOTTED_MODULE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A Slack message timestamp is ``<epoch-seconds>.<microseconds>`` — ten digits,
+# a dot, six digits (Slack's ``ts`` format). An answerer records its post as a
+# Slack ts; the channel-bearing forms (``slack:<channel>:<ts>`` and bare
+# ``<channel>:<ts>``) carry a Slack channel id (``C``/``D``/``G`` + uppercase
+# alnum), the bare ``<ts>`` does not. All three are auditor-followable pointers.
+_SLACK_TS = r"\d{10}\.\d{6}"
+_SLACK_CHANNEL = r"[CDG][A-Z0-9]{6,}"
+_SLACK_QUALIFIED_TS_RE = re.compile(rf"\b(?:slack:)?(?P<channel>{_SLACK_CHANNEL}):(?P<ts>{_SLACK_TS})\b")
+_SLACK_BARE_TS_RE = re.compile(rf"(?<![\d.]){_SLACK_TS}(?![\d.])")
+
 
 class CompletionEvidenceError(InvalidTransitionError):
     """A completion asserting an external outcome carried no resolvable pointer.
@@ -233,10 +243,11 @@ def has_resolvable_pointer(note: str) -> bool:
     """True iff *note* contains at least one auditor-followable pointer.
 
     A full URL, an MR/PR/issue reference, a forge note id, a cued git SHA (a
-    hex run with a ``commit``/``sha``/``rev``/``@`` cue), or a real-looking path
-    (rooted, extensioned, or an anchored dotted module path). A bare ``a/b``
-    token, a bare hex/digit run with no commit cue, and ordinary dotted prose
-    are intentionally NOT pointers.
+    hex run with a ``commit``/``sha``/``rev``/``@`` cue), a real-looking path
+    (rooted, extensioned, or an anchored dotted module path), or a Slack message
+    ts (``slack:<channel>:<ts>`` / ``<channel>:<ts>`` / bare ``<ts>``). A bare
+    ``a/b`` token, a bare hex/digit run with no commit cue, and ordinary dotted
+    prose are intentionally NOT pointers.
     """
     text = note or ""
     return any(
@@ -249,8 +260,30 @@ def has_resolvable_pointer(note: str) -> bool:
             _FILE_EXT_RE,
             _ROOTED_PATH_RE,
             _DOTTED_MODULE_RE,
+            _SLACK_QUALIFIED_TS_RE,
+            _SLACK_BARE_TS_RE,
         )
     )
+
+
+def normalize_artifact_pointers(note: str) -> str:
+    """Rewrite channel-bearing Slack-ts pointers to the archives permalink.
+
+    ``slack:<channel>:<ts>`` and bare ``<channel>:<ts>`` become
+    ``https://slack.com/archives/<channel>/p<ts-without-dot>`` — the canonical,
+    auditor-followable form stored on the completion. A bare ``<ts>`` (no
+    channel) cannot form a permalink and is left as-is; everything else (real
+    URLs, SHAs, paths) is untouched. This is the single normalization seam:
+    the ``tasks complete`` note is canonicalized UP through it before both the
+    evidence gate and storage.
+    """
+
+    def _to_permalink(match: re.Match[str]) -> str:
+        channel = match.group("channel")
+        ts = match.group("ts").replace(".", "")
+        return f"https://slack.com/archives/{channel}/p{ts}"
+
+    return _SLACK_QUALIFIED_TS_RE.sub(_to_permalink, note or "")
 
 
 def evidence_from_note(note: str) -> CompletionEvidence:
