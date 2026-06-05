@@ -60,8 +60,6 @@ class TicketPlanCommandTest(TestCase):
     def test_plan_on_non_started_ticket_returns_error_not_crash(self) -> None:
         # plan() is sourced only from STARTED; running it on a CODED ticket
         # surfaces the transition refusal as a structured error, not a crash.
-        from typing import cast  # noqa: PLC0415
-
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
         result = cast("dict[str, object]", call_command("ticket", "plan", str(ticket.pk), "a plan"))
         assert result.get("error")

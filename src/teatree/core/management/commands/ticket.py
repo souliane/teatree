@@ -1,7 +1,7 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
 import logging
-from typing import Annotated, TypedDict
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 import click
 import typer
@@ -9,11 +9,15 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, group
 
+from teatree.core.e2e_mandatory_gate import check_clear_e2e_mandatory
 from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
 from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import TicketExtra
 
 
 class CompletionResult(TypedDict, total=False):
@@ -70,6 +74,14 @@ class DodOverrideResult(TypedDict, total=False):
     reason: str
     by: str
     at: str
+
+
+class E2EBypassResult(TypedDict, total=False):
+    recorded: bool
+    error: str
+    ticket_id: int
+    head_sha: str
+    approver: str
 
 
 class PlanResult(TypedDict, total=False):
@@ -137,6 +149,35 @@ def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
         f"record-review-context {ticket.pk} --work-item <url> --documents <urls> "
         f"--analysis <how-checked>` and retry."
     )
+
+
+def _resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
+    """Resolve the INVOKING worktree's diff for the #1967 CLEAR-side E2E gate.
+
+    Lives in the command layer (not the domain gate) so the integration-layer
+    git-diff helper is reached from a layer allowed to depend on it. Shares the
+    canonical :func:`resolve_ship_worktree` (#776) so the CLEAR side classifies
+    the same tree the ship side does — the branch the CLEAR acts on, recorded on
+    ``extra['ship_invoking_branch']`` — not the ticket's earliest (often
+    already-merged) worktree row a reused multi-workstream ticket carries.
+    Returns the ``origin/main...HEAD`` changed-file list, or an empty list when
+    no worktree / no resolvable diff (the gate treats an empty diff as
+    fail-closed impacting for a customer-facing overlay).
+    """
+    if ticket is None:
+        return []
+
+    from teatree import visual_qa  # noqa: PLC0415
+    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+    extra = cast("TicketExtra", ticket.extra or {})
+    worktree = resolve_ship_worktree(ticket, extra)
+    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    try:
+        return visual_qa.changed_files(repo=repo_path)
+    except (CommandFailedError, RuntimeError, ValueError):
+        return []
 
 
 class Command(TyperCommand):
@@ -262,6 +303,51 @@ class Command(TyperCommand):
 
         self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
         return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="e2e-bypass")
+    def e2e_bypass(
+        self,
+        ticket_id: int,
+        *,
+        approver: Annotated[
+            str,
+            typer.Option(
+                "--approver",
+                help="Human user id authorising the bypass; a maker/coding-agent/loop id is refused (#1967).",
+            ),
+        ],
+        head_sha: Annotated[
+            str,
+            typer.Option("--head-sha", help="Full 40-char hex SHA of the reviewed tree the bypass authorises."),
+        ],
+    ) -> "E2EBypassResult":
+        """Record a single-use user bypass of the mandatory-E2E gate (#1967).
+
+        The ONLY way past the mandatory-E2E gate without recorded green E2E
+        evidence — and it requires explicit user approval, never the
+        implementing agent's own judgment. Mirrors ``OnBehalfApproval`` /
+        ``MergeClear``: durable, single-use, scoped to the ticket + reviewed
+        head SHA, maker≠checker enforced (a maker/coding-agent/loop ``--approver``
+        is refused). The next ship-gate / §17.4 CLEAR evaluation at that exact
+        SHA consumes it once.
+        """
+        from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError  # noqa: PLC0415
+
+        ticket = self._resolve_ticket(ticket_id)
+        try:
+            approval = E2EBypassApproval.record(ticket=ticket, head_sha=head_sha, approver_id=approver)
+        except E2EBypassApprovalError as exc:
+            self.stderr.write(f"  e2e-bypass refused: {exc}")
+            return {"recorded": False, "error": str(exc)}
+        self.stdout.write(
+            f"  E2E bypass recorded for ticket {ticket.pk} @ {approval.head_sha[:8]} by {approval.approver_id}"
+        )
+        return {
+            "recorded": True,
+            "ticket_id": int(ticket.pk),
+            "head_sha": approval.head_sha,
+            "approver": approval.approver_id,
+        }
 
     @command(name="plan-bypass")
     def plan_bypass(
@@ -527,6 +613,17 @@ class Command(TyperCommand):
         if currency_error is not None:
             self.stdout.write(f"  CLEAR refused: {currency_error}")
             return {"issued": False, "error": currency_error}
+
+        # #1967: a customer-display-impacting change must carry green E2E
+        # evidence at the reviewed tree (or a single-use user bypass) before a
+        # CLEAR authorises its merge. The second gate site, symmetric with the
+        # `pr create` ship-gate. No-op for an out-of-FSM CLEAR (no ticket).
+        e2e_refusal = check_clear_e2e_mandatory(
+            resolved_ticket, reviewed_sha, _resolve_clear_changed_files(resolved_ticket)
+        )
+        if e2e_refusal:
+            self.stdout.write(f"  CLEAR refused: {e2e_refusal}")
+            return {"issued": False, "error": e2e_refusal}
 
         try:
             clear = MergeClear.issue(

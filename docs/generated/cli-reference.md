@@ -1168,6 +1168,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
 │                       assert it is caught (token-free).                      │
+│ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
+│                       scenario's transcript path.                            │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1198,6 +1200,36 @@ Usage: t3 eval negative-control [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval capture-subagent`
+
+```
+Usage: t3 eval capture-subagent [OPTIONS] NAME
+
+ Copy the freshest in-session sub-agent JSONL to a scenario's transcript path.
+
+ After the ``/t3:running-evals`` skill dispatches an ``Agent`` sub-agent for a
+ scenario, Claude Code writes that sub-agent's trajectory under
+ ``~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl``. This
+ command finds the newest such file (optionally one written at/after
+ ``--since``), validates it is a sub-agent transcript, and copies it to
+ ``<transcript_dir>/<scenario>.jsonl`` so ``t3 eval run --backend
+ subscription`` grades it — no ``claude -p`` spend. Record an epoch BEFORE each
+ dispatch and pass it as ``--since`` so back-to-back scenarios never grab a
+ prior sub-agent's file.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Scenario name whose transcript to capture. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH   Where to write <scenario>.jsonl (default:     │
+│                                cwd) — must match `prepare-subscription`.     │
+│ --since                 FLOAT  Only consider sub-agent JSONLs modified       │
+│                                at/after this epoch (disambiguates sequential │
+│                                dispatches).                                  │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1318,16 +1350,17 @@ Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
  The eval CLI is a plain process with no in-session ``Agent`` tool, so it
  cannot itself drive a subscription-covered turn. This command prints, per
  scenario, the agent definition, prompt, and the transcript path the
- ``subscription`` backend will read — so an operator (or an in-session
- ``/loop`` driver) runs each prompt via an in-session sub-agent with
- ``--output-format stream-json``, saves it to that path, then grades with
+ ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+ in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
+ prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
+ sub-agent's JSONL to that path, and finally grades with
  ``t3 eval run --backend subscription``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --transcript-dir        PATH  Where the operator will save each              │
+│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
 │                               <scenario>.jsonl transcript (default: cwd).    │
 │ --format                TEXT  Manifest format: text or json. [default: text] │
 │ --help                        Show this message and exit.                    │
@@ -5085,6 +5118,10 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                          to PLANNED (--human-authorize).                     │
 │ plan-reconcile-inflight  Retroactively advance STARTED tickets to PLANNED    │
 │                          after the gate was added.                           │
+│ e2e-bypass               Record a single-use user bypass of the              │
+│                          mandatory-E2E gate (#1967).                         │
+│ dod-override             Record the DoD local-E2E gate escape hatch for a    │
+│                          ticket (#88).                                       │
 │ clear                    Issue a per-diff CLEAR — the orchestrator's only    │
 │                          merge output (BLUEPRINT §17.4.2).                   │
 │ merge                    Execute the IN_REVIEW → MERGED keystone transition  │
@@ -5197,6 +5234,61 @@ Usage: t3 teatree ticket plan-reconcile-inflight [OPTIONS]
 │    --dry-run                      List affected tickets without modifying    │
 │                                   them.                                      │
 │    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket e2e-bypass`
+
+```
+Usage: t3 teatree ticket e2e-bypass [OPTIONS] TICKET_ID
+
+ Record a single-use user bypass of the mandatory-E2E gate (#1967).
+
+ The ONLY way past the mandatory-E2E gate without recorded green E2E
+ evidence — and it requires explicit user approval, never the
+ implementing agent's own judgment. Mirrors ``OnBehalfApproval`` /
+ ``MergeClear``: durable, single-use, scoped to the ticket + reviewed
+ head SHA, maker≠checker enforced (a maker/coding-agent/loop ``--approver``
+ is refused). The next ship-gate / §17.4 CLEAR evaluation at that exact
+ SHA consumes it once.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Human user id authorising the bypass; a           │
+│                            maker/coding-agent/loop id is refused (#1967).    │
+│                            [required]                                        │
+│ *  --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the     │
+│                            bypass authorises.                                │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket dod-override`
+
+```
+Usage: t3 teatree ticket dod-override [OPTIONS] TICKET_ID
+
+ Record the DoD local-E2E gate escape hatch for a ticket (#88).
+
+ The gate refuses to ship a UI-visible ticket without a green
+ local-stack E2E artifact. This records an explicit, audited override
+ so a genuinely non-UI or exempt ticket the heuristic mis-flags can
+ still ship — the gate can never hard-trap a legitimate ticket. A
+ blank ``--reason`` is refused: a silent bypass is exactly what #88
+ forecloses.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --reason        TEXT  Why this UI-visible ticket may ship without a       │
+│                          local-stack E2E (#88).                              │
+│                          [required]                                          │
+│    --by            TEXT  Who is recording the override (audit trail).        │
+│    --help                Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

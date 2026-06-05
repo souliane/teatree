@@ -41,6 +41,18 @@ def test_get_dslr_tenant_for_variant_default_returns_variant_verbatim():
     assert overlay.get_dslr_tenant_for_variant("") == ""
 
 
+def test_classify_customer_display_impact_default_fails_closed():
+    """The default returns True for any diff (#1967).
+
+    An overlay that has not declared its path rules treats every change as
+    display-impacting so the mandatory-E2E gate is never silently skipped.
+    """
+    overlay = _MinimalOverlay()
+    assert overlay.classify_customer_display_impact(["app/views.py"]) is True
+    assert overlay.classify_customer_display_impact(["README.md"]) is True
+    assert overlay.classify_customer_display_impact([]) is True
+
+
 def test_get_dslr_tenant_for_variant_supports_alias_mapping_in_override():
     """An overlay can map a child variant to its parent tenant (#1306).
 

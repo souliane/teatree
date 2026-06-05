@@ -201,6 +201,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("plan", 'Record a PlanArtifact and advance STARTED → PLANNED (`plan <id> "<text>"`).'),
             ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLANNED (--human-authorize)."),
             ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
+            ("e2e-bypass", "Record a single-use user bypass of the mandatory-E2E gate (#1967)."),
+            ("dod-override", "Record the DoD local-E2E gate escape hatch for a ticket (#88)."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),
