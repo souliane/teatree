@@ -570,6 +570,25 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         _ = changed_files
         return []
 
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        """True iff *changed_files* could impact what is displayed to the customer (#1967).
+
+        The mandatory-E2E gate (:mod:`teatree.core.e2e_mandatory_gate`) calls
+        this to decide whether a change requires green E2E evidence before
+        shipping / CLEAR. The default is FAIL-CLOSED — it returns ``True`` for
+        every non-empty diff and for the empty diff alike — so an overlay that
+        has not declared its path rules treats every change as
+        display-impacting and the gate is never silently skipped.
+
+        An overlay declares its non-impacting paths (tests, migrations,
+        tooling) and returns
+        :func:`~teatree.core.customer_display_impact.classify_paths`; an overlay
+        with no customer surfaces at all (the dogfood overlay) returns
+        ``False``.
+        """
+        _ = changed_files
+        return True
+
     def get_eval_scenarios_dir(self) -> Path | None:
         """Return the directory holding overlay-contributed behavioral eval scenarios.
 

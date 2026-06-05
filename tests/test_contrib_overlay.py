@@ -76,6 +76,15 @@ class TestGetRepos:
         assert overlay.get_repos() == ["teatree"]
 
 
+class TestClassifyCustomerDisplayImpact:
+    def test_dogfood_overlay_has_no_customer_surface(self) -> None:
+        # Teatree is a developer harness — no change is customer-display-impacting,
+        # so the mandatory-E2E gate (#1967) is inert for this overlay.
+        overlay = TeatreeOverlay()
+        assert overlay.classify_customer_display_impact(["src/teatree/core/views/x.py"]) is False
+        assert overlay.classify_customer_display_impact(["anything.py"]) is False
+
+
 class TestGetWorkspaceRepos:
     def test_falls_back_to_get_repos_when_discovery_empty(
         self,
