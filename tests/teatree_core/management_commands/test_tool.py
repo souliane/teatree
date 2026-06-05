@@ -1,8 +1,7 @@
 """Tests for the tool management command."""
 
-import subprocess
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -14,6 +13,17 @@ from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, MINIM
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
+
+
+def _popen_mock(returncode: int = 0) -> MagicMock:
+    """A ``Popen`` context-manager mock matching ``run_streamed``'s usage."""
+    proc = MagicMock()
+    proc.stderr = iter(())
+    proc.wait.return_value = returncode
+    ctx = MagicMock()
+    ctx.__enter__.return_value = proc
+    ctx.__exit__.return_value = False
+    return MagicMock(return_value=ctx)
 
 
 # ── Tool commands ──────────────────────────────────────────────────
@@ -51,14 +61,13 @@ class TestToolRun(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_executes_command(self) -> None:
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        mock_run = _popen_mock()
+        with patch.object(utils_run_mod, "Popen", mock_run):
             result = cast("str", call_command("tool", "run", "migrate"))
 
         assert "completed" in result.lower()
         mock_run.assert_called_once()
-        call_args = mock_run.call_args
-        assert call_args[0][0] == ["echo", "migrate"]
+        assert mock_run.call_args[0][0] == ["echo", "migrate"]
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -86,8 +95,8 @@ class TestToolRun(TestCase):
     @override_settings(**SETTINGS)
     def test_forwards_extra_args(self) -> None:
         """Extra args after the tool name are appended to the command."""
-        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess([], 0, "", "")
+        mock_run = _popen_mock()
+        with patch.object(utils_run_mod, "Popen", mock_run):
             result = cast(
                 "str",
                 call_command("tool", "run", "migrate", "--verbose", "--dry-run"),

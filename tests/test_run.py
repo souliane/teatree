@@ -1,6 +1,6 @@
 import pytest
 
-from teatree.utils.run import PIPE, CommandFailedError, run_allowed_to_fail, run_checked, spawn
+from teatree.utils.run import PIPE, CommandFailedError, run_allowed_to_fail, run_checked, run_streamed, spawn
 
 
 class TestRunChecked:
@@ -33,6 +33,33 @@ class TestRunChecked:
     def test_feeds_stdin(self) -> None:
         result = run_checked(["cat"], stdin_text="hello\n")
         assert result.stdout == "hello\n"
+
+
+class TestRunStreamed:
+    def test_returns_zero_on_success(self) -> None:
+        assert run_streamed(["true"]) == 0
+
+    def test_returns_code_when_check_disabled(self) -> None:
+        assert run_streamed(["sh", "-c", "exit 3"], check=False) == 3
+
+    def test_raises_with_returncode_on_nonzero(self) -> None:
+        with pytest.raises(CommandFailedError) as exc:
+            run_streamed(["false"])
+        assert exc.value.returncode == 1
+        assert exc.value.cmd == ["false"]
+
+    def test_surfaces_subcommand_stderr_in_raised_error(self) -> None:
+        # The failing subcommand's stderr must name itself in the error so the
+        # next breakage is diagnosable, not a bare `command failed (rc=1)`.
+        with pytest.raises(CommandFailedError) as exc:
+            run_streamed(["sh", "-c", "echo 'unknown option --thread-ts' >&2; exit 1"])
+        assert "unknown option --thread-ts" in exc.value.stderr
+        assert "unknown option --thread-ts" in str(exc.value)
+
+    def test_streams_stderr_to_parent_while_capturing(self, capfd: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(CommandFailedError):
+            run_streamed(["sh", "-c", "echo live-stderr >&2; exit 1"])
+        assert "live-stderr" in capfd.readouterr().err
 
 
 class TestRunAllowedToFail:

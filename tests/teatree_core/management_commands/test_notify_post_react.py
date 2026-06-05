@@ -48,7 +48,7 @@ class TestNotifyPost:
         backend.post_routed.assert_called_once_with(channel="C_TEAM", text="hi team", thread_ts="")
         assert "1700.0001" in out
 
-    def test_post_threads_when_thread_given(self) -> None:
+    def test_post_threads_when_thread_ts_given(self) -> None:
         backend = MagicMock()
         backend.post_routed.return_value = {"ok": True, "ts": "1700.9"}
         with patch(
@@ -56,11 +56,38 @@ class TestNotifyPost:
             return_value=backend,
         ):
             _out, _err, code = _call(
-                "notify", "post", "--channel", "C_TEAM", "--thread", "1700.0001", "--text", "reply"
+                "notify", "post", "--channel", "C_TEAM", "--thread-ts", "1700.0001", "--text", "reply"
             )
 
         assert code == 0
         backend.post_routed.assert_called_once_with(channel="C_TEAM", text="reply", thread_ts="1700.0001")
+
+    def test_post_self_dm_threaded_reply_lands_thread_ts_in_payload(self) -> None:
+        # Self-DM reply (the user's own bot DM) is the ungated path; the
+        # ``--thread-ts`` value must reach the chat.postMessage payload so a
+        # threaded user-reply actually threads. Mock only the HTTP egress.
+        from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+
+        backend = SlackBotBackend(
+            bot_token="xoxb-test",
+            user_id="U_ME",
+            dm_channel_id="D_ME",
+        )
+        with (
+            patch.object(backend, "_post", return_value={"ok": True, "ts": "1.0"}) as post,
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=backend,
+            ),
+        ):
+            _out, _err, code = _call(
+                "notify", "post", "--channel", "D_ME", "--thread-ts", "1780685008.488439", "--text", "reply"
+            )
+
+        assert code == 0
+        payload = post.call_args.args[1]
+        assert payload["thread_ts"] == "1780685008.488439"
+        assert payload["channel"] == "D_ME"
 
     def test_post_text_dash_reads_stdin(self) -> None:
         backend = MagicMock()
