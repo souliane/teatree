@@ -193,6 +193,89 @@ class TestMigrateReferenceDb:
         assert "worktree_only.settings_local" in combined_output
 
 
+class TestMigrateRunnerSelection:
+    """The reference-DB migrate must honor the main clone's dependency manager.
+
+    Regression: souliane/teatree#1973 — a Pipfile-based (pipenv) main clone may
+    carry only a stub ``uv.lock`` (no ``[[package]]`` entries).
+    ``uv --directory <clone> run python`` builds a bare venv from that stub lock,
+    so ``import django`` raises ``ModuleNotFoundError``; the migrate is then
+    misclassified as a config error, ``_MigrateResult.FAILED`` aborts the
+    restore, and the ticket DB is never cloned. The runner prefix must be
+    selected from the main clone's dependency manager.
+    """
+
+    @staticmethod
+    def _capture_migrate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def capture_run(args, **_kw):
+            calls.append(list(args))
+            return CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", capture_run)
+        assert _make_importer(tmp_path)._migrate_reference_db() is _MigrateResult.APPLIED
+        return calls
+
+    def test_pipfile_with_stub_uv_lock_uses_pipenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        (tmp_path / "uv.lock").write_text('version = 1\nrevision = 3\nrequires-python = ">=3.12"\n', encoding="utf-8")
+        cmd = self._capture_migrate(tmp_path, monkeypatch)[0]
+        assert "uv" not in cmd, f"pipenv main clone must not use `uv run`: {cmd}"
+        assert cmd[:2] == ["env", f"PIPENV_PIPFILE={tmp_path / 'Pipfile'}"], cmd
+        assert cmd[2:5] == ["pipenv", "run", "python"], cmd
+        assert cmd[5:] == ["manage.py", "migrate", "--no-input"], cmd
+
+    def test_pipfile_without_uv_lock_uses_pipenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        cmd = self._capture_migrate(tmp_path, monkeypatch)[0]
+        assert cmd[:5] == ["env", f"PIPENV_PIPFILE={tmp_path / 'Pipfile'}", "pipenv", "run", "python"], cmd
+
+    def test_real_uv_lock_keeps_uv_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "uv.lock").write_text(
+            'version = 1\n\n[[package]]\nname = "django"\nversion = "5.0"\n', encoding="utf-8"
+        )
+        cmd = self._capture_migrate(tmp_path, monkeypatch)[0]
+        assert cmd[:5] == ["uv", "--directory", str(tmp_path), "run", "python"], cmd
+
+    def test_no_lockfile_no_pipfile_keeps_uv_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cmd = self._capture_migrate(tmp_path, monkeypatch)[0]
+        assert cmd[:5] == ["uv", "--directory", str(tmp_path), "run", "python"], cmd
+
+    def test_unreadable_uv_lock_treated_as_pipenv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.django_db import _is_pipenv_repo  # noqa: PLC0415
+
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        (tmp_path / "uv.lock").write_text("[[package]]\n", encoding="utf-8")
+
+        def boom(*_a: object, **_kw: object) -> str:
+            raise OSError
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        assert _is_pipenv_repo(tmp_path) is True
+
+    def test_fake_step_reuses_pipenv_runner(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        calls: list[list[str]] = []
+        call_count = 0
+
+        def fake_run(args, **_kw):
+            nonlocal call_count
+            calls.append(list(args))
+            call_count += 1
+            if call_count == 1:
+                return CompletedProcess(args, 1, "Applying myapp.0005_add_field...\n", "already exists")
+            return CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(run_mod.subprocess, "run", fake_run)
+        assert _make_importer(tmp_path)._migrate_reference_db() is _MigrateResult.APPLIED
+        assert "--fake" in calls[1]
+        assert "uv" not in calls[1], f"fake step must also use pipenv: {calls[1]}"
+        assert calls[1][:4] == ["env", f"PIPENV_PIPFILE={tmp_path / 'Pipfile'}", "pipenv", "run"], calls[1]
+
+
 class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
     """0027 collapses the legacy ``teatree`` overlay value to ``t3-teatree``.
 
