@@ -72,6 +72,19 @@ class DodOverrideResult(TypedDict, total=False):
     at: str
 
 
+class PlanResult(TypedDict, total=False):
+    ticket_id: int
+    artifact_id: int
+    state: str
+    error: str
+
+
+class PlanReconcileResult(TypedDict, total=False):
+    inspected: int
+    bypassed: int
+    skipped: int
+
+
 class ReattributeResult(TypedDict, total=False):
     ticket_id: int
     issue_url: str
@@ -85,6 +98,7 @@ logger = logging.getLogger(__name__)
 _ALLOWED_TRANSITIONS = {
     "scope",
     "start",
+    "plan",
     "code",
     "test",
     "review",
@@ -205,6 +219,122 @@ class Command(TyperCommand):
         )
         self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
         return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
+
+    @command(name="plan-bypass")
+    def plan_bypass(
+        self,
+        ticket_id: int,
+        *,
+        human_authorize: Annotated[
+            str,
+            typer.Option(
+                "--human-authorize",
+                help="Username of the human explicitly authorising this plan bypass.",
+            ),
+        ],
+        reason: Annotated[
+            str,
+            typer.Option(help="Documented reason for bypassing the plan gate (required)."),
+        ],
+    ) -> PlanResult:
+        """Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
+
+        The ONLY escape from the plan gate outside the normal planner flow.
+        Both --human-authorize and --reason are required; a silent bypass is
+        not allowed. Records a PlanArtifact with bypass_reason set, then
+        drives ticket.plan() → STARTED→PLANNED.
+        """
+        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+        cleaned_reason = reason.strip()
+        cleaned_authorizer = human_authorize.strip()
+        if not cleaned_authorizer:
+            self.stderr.write("  refused: --human-authorize is required")
+            raise SystemExit(1)
+        if not cleaned_reason:
+            self.stderr.write("  refused: --reason is required (a silent plan bypass is not allowed)")
+            raise SystemExit(1)
+
+        ticket = self._resolve_ticket(ticket_id)
+        try:
+            with transaction.atomic():
+                artifact = PlanArtifact.record(
+                    ticket=ticket,
+                    plan_text=f"[audited bypass by {cleaned_authorizer}] {cleaned_reason}",
+                    recorded_by=cleaned_authorizer,
+                )
+                ticket.plan()
+                ticket.save()
+        except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
+            return PlanResult(ticket_id=int(ticket.pk), error=str(exc))
+
+        self.stdout.write(
+            f"  plan bypass recorded for ticket {ticket.pk} "
+            f"(artifact {artifact.pk}, authorizer={cleaned_authorizer}); state → {ticket.state}"
+        )
+        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
+    @command(name="plan-reconcile-inflight")
+    def plan_reconcile_inflight(
+        self,
+        *,
+        human_authorize: Annotated[
+            str,
+            typer.Option(
+                "--human-authorize",
+                help="Human/operator authorising retroactive plan bypass for in-flight STARTED tickets.",
+            ),
+        ],
+        issue_ref: Annotated[
+            str,
+            typer.Option(help="Issue/PR reference identifying why this reconcile is necessary."),
+        ] = "",
+        dry_run: Annotated[
+            bool, typer.Option("--dry-run", help="List affected tickets without modifying them.")
+        ] = False,
+    ) -> PlanReconcileResult:
+        """Retroactively advance STARTED tickets to PLANNED after the gate was added.
+
+        Enumerates every STARTED ticket and records an audited PlanArtifact
+        bypass for each, then drives plan(). Requires --human-authorize.
+        Intended as a one-time operator command; a data migration would fabricate
+        an authorizer it cannot legitimately name.
+
+        Use --dry-run to inspect which tickets would be affected.
+        """
+        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+        cleaned_authorizer = human_authorize.strip()
+        if not cleaned_authorizer:
+            self.stderr.write("  refused: --human-authorize is required")
+            raise SystemExit(1)
+
+        started_tickets = list(Ticket.objects.filter(state=Ticket.State.STARTED))
+        self.stdout.write(f"  found {len(started_tickets)} STARTED ticket(s)")
+        bypassed = 0
+        skipped = 0
+        for ticket in started_tickets:
+            bypass_reason = "retroactive — PLANNED state added mid-flight" + (f" ({issue_ref})" if issue_ref else "")
+            if dry_run:
+                self.stdout.write(f"  [dry-run] would bypass ticket {ticket.pk}: {bypass_reason}")
+                skipped += 1
+                continue
+            try:
+                with transaction.atomic():
+                    PlanArtifact.record(
+                        ticket=ticket,
+                        plan_text=f"[audited bypass by {cleaned_authorizer}] {bypass_reason}",
+                        recorded_by=cleaned_authorizer,
+                    )
+                    ticket.plan()
+                    ticket.save()
+                self.stdout.write(f"  ticket {ticket.pk}: STARTED → PLANNED (bypass recorded)")
+                bypassed += 1
+            except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
+                self.stderr.write(f"  ticket {ticket.pk}: skipped — {exc}")
+                skipped += 1
+
+        return PlanReconcileResult(inspected=len(started_tickets), bypassed=bypassed, skipped=skipped)
 
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).

@@ -601,6 +601,13 @@ class TestCodingPhaseDispatchContract(TestCase):
         assert "Co-Authored-By" in prompt
         assert "Generated with Claude Code" in prompt
 
+    def test_task_prompt_has_open_questions_clause(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "OPEN QUESTIONS & ASSUMPTIONS" in prompt
+        assert "Open questions & assumptions" in prompt
+        assert "commit message" in prompt
+        assert "PR description" in prompt
+
     def test_task_prompt_verify_step_replaces_bare_run_tests(self) -> None:
         prompt = build_task_prompt(self._coding_task())
         # Step 5 now points at the CI-parity verify command, not the vague

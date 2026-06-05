@@ -14,6 +14,7 @@ transition method that records it.
 
 # Canonical token -> every accepted alias (including the canonical itself).
 _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
+    "planning": ("plan", "planning"),
     "scoping": ("scope", "scoping"),
     "coding": ("code", "coding"),
     "testing": ("test", "testing"),
@@ -34,6 +35,7 @@ CANONICAL_PHASES: frozenset[str] = frozenset(_PHASE_ALIASES)
 
 # Canonical phase -> the ``Ticket`` FSM transition method that records it.
 _CANONICAL_TO_TRANSITION: dict[str, str] = {
+    "planning": "plan",
     "scoping": "scope",
     "coding": "code",
     "testing": "test",
@@ -52,8 +54,8 @@ _CANONICAL_TO_TRANSITION: dict[str, str] = {
 #: executor when a phase task is claimed; the orchestrator does synthesis and
 #: dispatch, not execution). Keyed on the canonical phase token so a task
 #: stored with any accepted spelling resolves through ``normalize_phase``.
-#: Adding ``("author", "planning"): "t3:planner"`` later is a one-line change.
 SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
+    ("author", "planning"): "t3:planner",
     ("reviewer", "reviewing"): "t3:reviewer",
     ("author", "coding"): "t3:coder",
     ("author", "testing"): "t3:tester",

@@ -18,11 +18,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.hook_router import (
-    handle_enforce_agent_plan_gate,
-    handle_enforce_skill_loading,
-    handle_validate_mr_metadata,
-)
+from hooks.scripts.hook_router import handle_enforce_skill_loading, handle_validate_mr_metadata
 
 
 def _capture(handler, data: dict) -> tuple[bool, dict | None]:
@@ -48,28 +44,6 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     return home
-
-
-# ── agent-plan-gate ─────────────────────────────────────────────────
-
-
-def _agent(prompt: str) -> dict:
-    return {"session_id": "s1", "tool_name": "Agent", "tool_input": {"description": "d", "prompt": prompt}}
-
-
-class TestAgentPlanGateRouting:
-    def test_denies_without_plan_when_fail_open_off(self, home: Path) -> None:
-        _write_fail_open(home, on=False)
-        blocked, payload = _capture(handle_enforce_agent_plan_gate, _agent("do the thing"))
-        assert blocked is True
-        assert payload is not None
-        assert payload["permissionDecision"] == "deny"
-
-    def test_passes_through_when_fail_open_on(self, home: Path) -> None:
-        _write_fail_open(home, on=True)
-        blocked, payload = _capture(handle_enforce_agent_plan_gate, _agent("do the thing"))
-        assert blocked is False
-        assert payload is None
 
 
 # ── validate-mr broken-env ──────────────────────────────────────────

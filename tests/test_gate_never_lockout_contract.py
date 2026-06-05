@@ -89,11 +89,11 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
     "handle_route_away_mode_question": "converts AskUserQuestion to DeferredQuestion (away-mode); not a Bash deny",
-    # Broad-deny gates carrying their OWN never-lockout escapes, pending migration.
-    "handle_enforce_plan_gate": (
-        "broad Edit/Write deny; opt-in per overlay (plan_gate=true), cleared by /plan or a source-read. "
-        "TODO(never-lockout): route through _fail_open_or_deny"
+    # Narrow targeted-command gate — denies only Edit/Write when ticket is in STARTED (pre-plan) state.
+    "handle_block_edit_before_planned": (
+        "denies Edit/Write only when the ticket FSM is in STARTED (no PlanArtifact yet); fail-open on any error"
     ),
+    # Broad-deny gates carrying their OWN never-lockout escapes, pending migration.
     "handle_enforce_orchestrator_boundary": (
         "broad heavy-Bash deny; kill-switch orchestrator_bash_gate_enabled=false + [fg-ok:] + sub-agent exempt. "
         "TODO(never-lockout): route through _fail_open_or_deny"

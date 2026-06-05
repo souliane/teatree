@@ -2,6 +2,10 @@ class InvalidTransitionError(ValueError):
     pass
 
 
+class NoPlanArtifactError(InvalidTransitionError):
+    """plan() was attempted without a PlanArtifact record for the ticket."""
+
+
 class QualityGateError(ValueError):
     pass
 
