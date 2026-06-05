@@ -112,12 +112,24 @@ def _make_behind_conflicting_sha(tmp_path: Path) -> tuple[Path, str]:
     return clone, feature_sha
 
 
+class _SafeOverlay:
+    """Non-impacting overlay double — keeps the orthogonal #1967 E2E gate inert."""
+
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        _ = changed_files
+        return False
+
+
 class TestTicketClearBranchCurrency(TestCase):
     """`ticket clear` refuses a CLEAR only on a real merge conflict (#940)."""
 
     @pytest.fixture(autouse=True)
-    def _inject_tmp(self, tmp_path: Path) -> None:
+    def _inject_tmp(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
+        # The #1967 mandatory-E2E gate also runs at `ticket clear`; pin a
+        # non-impacting overlay so these branch-currency tests exercise only
+        # the #940 currency behaviour they are about.
+        monkeypatch.setattr("teatree.core.e2e_mandatory_gate.get_overlay", lambda *_a, **_k: _SafeOverlay())
 
     def _attach_ticket(self, clone: Path, branch: str) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)

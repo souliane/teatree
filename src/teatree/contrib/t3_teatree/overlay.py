@@ -167,6 +167,14 @@ class TeatreeOverlay(OverlayBase):
         return ["/"] if matches_triggers(changed_files, teatree_globs) else []
 
     @override
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        # Teatree is a developer CLI / agent harness with no customer-facing
+        # product surface, so no change ships to a customer display. The
+        # mandatory-E2E gate (#1967) is a no-op for this overlay.
+        _ = changed_files
+        return False
+
+    @override
     def reap_worktree_external_resources(self, worktree: Worktree) -> list[str]:
         result = reap_compose_project(compose_project(worktree))
         return [] if result.is_noop else [str(result)]

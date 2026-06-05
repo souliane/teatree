@@ -4,6 +4,8 @@ from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
+from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
 from teatree.core.models.eval_run import (
     EvalRunRecord,
@@ -73,6 +75,10 @@ __all__ = [
     "DeferredQuestionError",
     "DeliveryClaim",
     "DirtyWorktreeError",
+    "E2EBypassApproval",
+    "E2EBypassApprovalError",
+    "E2EBypassAudit",
+    "E2eMandatoryRun",
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",

@@ -14,6 +14,7 @@ from typing import TypedDict, cast
 
 from teatree import visual_qa
 from teatree.core.branch_currency import require_current_branch
+from teatree.core.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.management.commands._ship_exec import ShippingGateFailure
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
@@ -261,3 +262,49 @@ def run_visual_qa_gate(ticket: Ticket, *, skip_reason: str = "") -> VisualQAGate
         report_markdown=visual_qa.format_report(report),
         hint="Fix the findings, or pass --skip-visual-qa <reason> to bypass.",
     )
+
+
+class E2EMandatoryGateFailure(TypedDict):
+    """Pre-ship mandatory-E2E gate refusal (#1967).
+
+    Returned when the change is customer-display-impacting but has no green E2E
+    evidence at the reviewed tree and no recorded user bypass. ``error`` names
+    both remedies verbatim (the record-e2e-run command and the e2e-bypass
+    command).
+    """
+
+    allowed: bool
+    error: str
+
+
+def run_e2e_mandatory_gate(ticket: Ticket) -> E2EMandatoryGateFailure | None:
+    """Refuse a customer-display-impacting ship without green E2E evidence (#1967).
+
+    Resolves the ship worktree's diff (the same ``origin/main...HEAD`` source
+    the visual-QA gate uses) and head SHA, asks the active overlay to classify
+    display impact, then runs the mandatory-E2E gate. A recorded user bypass at
+    the reviewed tree is consumed single-use here. Returns a structured failure
+    naming both remedies on a block, or ``None`` when the gate passes.
+
+    When the worktree path or head SHA cannot be resolved (no real repo, git
+    error) the gate cannot bind to a tree — it returns ``None`` (unverifiable,
+    not a confirmed block), mirroring the inconclusive posture of
+    :func:`assert_commits_ahead_of_base` / the branch-currency gate.
+    """
+    extra = cast("TicketExtra", ticket.extra or {})
+    worktree = resolve_ship_worktree(ticket, extra)
+    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    try:
+        head = git.head_sha(repo=repo_path)
+        diff = visual_qa.changed_files(repo=repo_path)
+    except (CommandFailedError, RuntimeError, ValueError):
+        return None
+    if not head:
+        return None
+
+    inputs = resolve_gate_inputs(ticket, changed_files=diff, head_sha=head)
+    try:
+        check_e2e_mandatory(inputs)
+    except E2EMandatoryGateError as exc:
+        return E2EMandatoryGateFailure(allowed=False, error=str(exc))
+    return None
