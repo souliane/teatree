@@ -198,6 +198,9 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         "Ticket state management.",
         [
             ("transition", "Transition a ticket to a new state."),
+            ("plan", 'Record a PlanArtifact and advance STARTED → PLANNED (`plan <id> "<text>"`).'),
+            ("plan-bypass", "Record an audited PlanArtifact bypass and advance to PLANNED (--human-authorize)."),
+            ("plan-reconcile-inflight", "Retroactively advance STARTED tickets to PLANNED after the gate was added."),
             ("clear", "Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2)."),
             ("merge", "Execute the IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4)."),
             ("list", "List tickets, optionally filtered by state and/or overlay."),

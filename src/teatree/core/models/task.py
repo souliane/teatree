@@ -169,6 +169,49 @@ class Task(models.Model):
             )
             self._advance_ticket()
 
+    def complete_surfacing_advance_failure(self, *, result_artifact_path: str = "") -> str:
+        """Complete the task; on a TYPED FSM-advance refusal, keep the task done.
+
+        The operator out-of-band-done path (``tasks complete``, #1977): a
+        deliberate gate refusal during the auto-advance — a ``planning`` task on
+        a ticket with no ``PlanArtifact`` (``NoPlanArtifactError``), a dirty
+        worktree (``DirtyWorktreeError``), a missing shipping attestation
+        (``QualityGateError``), or any ``TransitionNotAllowed`` — must NOT wedge
+        the task ``claimed`` by rolling back the completion. The task-completion
+        bookkeeping commits in its OWN boundary, then the FSM advance runs in a
+        SEPARATE one; a typed refusal there is returned (caller surfaces it
+        loudly) instead of propagating to roll back the completion. The
+        ``replay_orphaned_transitions`` boot/tick sweep fires the transition
+        later once the gate is satisfied. Returns ``""`` on a clean advance,
+        else the refusal reason.
+
+        ``complete()`` keeps its #883 single-atomic coupling for the loop /
+        headless callers; this is the deliberate operator-only decoupling.
+        """
+        from django_fsm import TransitionNotAllowed  # noqa: PLC0415
+
+        from teatree.core.models.errors import QualityGateError  # noqa: PLC0415
+
+        with transaction.atomic():
+            self.status = self.Status.COMPLETED
+            self.result_artifact_path = result_artifact_path
+            self._clear_claim()
+            self.save(
+                update_fields=[
+                    "status",
+                    "result_artifact_path",
+                    "claimed_at",
+                    "claimed_by",
+                    "lease_expires_at",
+                    "heartbeat_at",
+                ],
+            )
+        try:
+            self._advance_ticket()
+        except (InvalidTransitionError, QualityGateError, TransitionNotAllowed) as exc:
+            return str(exc) or exc.__class__.__name__
+        return ""
+
     def _advance_ticket(self) -> None:
         """Auto-advance ticket state based on the completed task's phase.
 

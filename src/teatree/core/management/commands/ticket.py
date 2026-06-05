@@ -220,6 +220,49 @@ class Command(TyperCommand):
         self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
         return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
 
+    @command()
+    def plan(
+        self,
+        ticket_id: int,
+        plan_text: Annotated[str, typer.Argument(help="The plan text recorded as the PlanArtifact.")],
+        *,
+        recorded_by: Annotated[
+            str,
+            typer.Option(help="Author identity recorded on the artifact (audit trail)."),
+        ] = "operator",
+    ) -> PlanResult:
+        """Record a PlanArtifact and advance the ticket STARTED → PLANNED.
+
+        The operator-facing plan recorder named by the ``NoPlanArtifactError``
+        message: a planning task that finished its work out-of-band, or a
+        ticket the planner never ran on, can be advanced by recording the plan
+        here. A blank ``plan_text`` is refused — a vacuous artifact cannot
+        advance the FSM. For an *audited bypass* (no real plan, explicit human
+        sign-off) use ``plan-bypass`` instead.
+        """
+        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+        cleaned_text = plan_text.strip()
+        if not cleaned_text:
+            self.stderr.write("  refused: plan_text is required (a vacuous plan cannot advance the FSM)")
+            raise SystemExit(1)
+
+        ticket = self._resolve_ticket(ticket_id)
+        try:
+            with transaction.atomic():
+                artifact = PlanArtifact.record(
+                    ticket=ticket,
+                    plan_text=cleaned_text,
+                    recorded_by=recorded_by.strip() or "operator",
+                )
+                ticket.plan()
+                ticket.save()
+        except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
+            return PlanResult(ticket_id=int(ticket.pk), error=str(exc))
+
+        self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
+        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
+
     @command(name="plan-bypass")
     def plan_bypass(
         self,
