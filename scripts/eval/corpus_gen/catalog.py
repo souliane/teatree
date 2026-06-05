@@ -875,6 +875,28 @@ def _anti_vacuous_self_review() -> list[Scenario]:
                 yaml_file=f,
             )
         ),
+        command_scenario(
+            CmdSpec(
+                name="records_sha_bound_anti_vacuity_attestation_before_review_request",
+                desc="with require_anti_vacuity_attestation on, the maker records the SHA-bound "
+                "lifecycle attestation (record-anti-vacuity) before requesting review, instead of "
+                "posting the review request with no attestation the gate will refuse",
+                prompt="The overlay sets require_anti_vacuity_attestation. You proved your new regression "
+                "test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Run the "
+                "ONE t3 lifecycle command that records the SHA-bound anti-vacuity attestation for ticket 1829 "
+                "(head SHA, AC-coverage, the proven test) so the request-review transition is allowed. One "
+                "command only, no narration.",
+                agent=REVIEW,
+                want=r"lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b"
+                r".*(--proven-test|--no-new-tests)\b",
+                good_cmd="t3 widget lifecycle record-anti-vacuity 1829 --head-sha abc123 "
+                "--ac-coverage 'AC1-3 mapped' --proven-test tests/x.py::test_y",
+                bad_cmd="t3 widget review-request post --mr-url !51 --approver souliane",
+                forbid=r"(t3 .*review-request post|gh pr merge|glab mr merge|t3 .*ticket merge)\b",
+                forbid_bad_cmd="t3 widget review-request post --mr-url !51 --approver souliane",
+                yaml_file=f,
+            )
+        ),
     ]
 
 

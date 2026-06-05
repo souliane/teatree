@@ -89,6 +89,9 @@ class TicketExtra(TypedDict, total=False):
     # Deep-retrieval evidence backing a ``reviewing`` attestation; read by
     # ``review_context_gate`` (see ``ReviewContext`` below).
     review_context: "ReviewContext"
+    # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
+    # ``AntiVacuityAttestation`` below).
+    anti_vacuity_attestation: "AntiVacuityAttestation"
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -125,6 +128,34 @@ class ReviewContext(TypedDict, total=False):
     work_item: str
     documents: list[str]
     analysis: str
+    at: str
+
+
+class AntiVacuityAttestation(TypedDict, total=False):
+    """SHA-bound proof the diff is AC-mapped and its regression tests guard the fix (#1829).
+
+    Recorded by ``Ticket.record_anti_vacuity_attestation`` once the maker has
+    run the skilled self-review. The anti-vacuity gate
+    (``teatree.core.anti_vacuity_gate``) consumes it to refuse a request-review
+    or merge transition when ``require_anti_vacuity_attestation`` is on.
+
+    ``head_sha`` is the full 40-char commit the attestation binds to; the gate
+    drops the attestation when the live head moves off it (a new revision must
+    be re-attested — mirrors ``MergeClear.reviewed_sha``). ``ac_coverage`` is how
+    the diff was mapped against the ticket/spec acceptance criteria (the
+    deep-retrieval footprint is the input). ``proven_tests`` are the
+    new/modified regression tests for which a revert-fix -> RED proof was
+    produced; an empty list means the attester claims the diff adds no new
+    regression test, in which case ``no_new_tests`` must be ``True`` so a
+    forgotten test can never pass as "none to prove". ``no_new_tests`` is the
+    explicit claim that the diff introduces no new regression test (so
+    ``proven_tests`` is legitimately empty).
+    """
+
+    head_sha: str
+    ac_coverage: str
+    proven_tests: list[str]
+    no_new_tests: bool
     at: str
 
 

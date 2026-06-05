@@ -180,6 +180,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("clear-ledger", "Clear a reused ticket's stale phase ledger (sanctioned session-retire)."),
             ("record-review-skill-run", "Record evidence the configured review skill ran (reviewing-phase gate)."),
             ("record-review-context", "Record referenced-context retrieval before reviewing (deep-retrieval gate)."),
+            ("record-anti-vacuity", "Record the SHA-bound anti-vacuity attestation before review-request/merge."),
         ],
     ),
     "env": DjangoGroup(

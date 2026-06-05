@@ -1085,6 +1085,30 @@ def _reconcile_if_already_merged(
     )
 
 
+def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
+    """Refuse a merge whose CLEAR ticket lacks a SHA-bound anti-vacuity proof (#1829).
+
+    NO-OP when ``require_anti_vacuity_attestation`` is off (opt-in default) or
+    the CLEAR carries no ticket (the attestation lives on the ticket's durable
+    ``extra``). The :class:`AntiVacuityAttestationError` raised on a block is
+    re-wrapped as a :class:`MergePreconditionError` so the merge command's
+    single re-escalation path surfaces it (the loop never self-issues a
+    replacement CLEAR).
+    """
+    from teatree.core.anti_vacuity_gate import (  # noqa: PLC0415
+        AntiVacuityAttestationError,
+        check_anti_vacuity_attestation,
+    )
+
+    ticket = clear.ticket
+    if ticket is None:
+        return
+    try:
+        check_anti_vacuity_attestation(ticket, head_sha, transition="merge")
+    except AntiVacuityAttestationError as exc:
+        raise MergePreconditionError(str(exc)) from exc
+
+
 def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; each kwarg is a documented step input.
     *,
     clear: object,
@@ -1147,6 +1171,10 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
             f"(§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
+
+    # §17.4.3 + #1829: bound to the just-verified ``live_sha`` so a force-push
+    # invalidates the CLEAR and the attestation together (see _assert_anti_vacuity).
+    _assert_anti_vacuity(authorized_clear, live_sha)
 
     reconcile = _reconcile_if_already_merged(
         slug=slug,

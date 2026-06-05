@@ -59,14 +59,35 @@ class Command(TyperCommand):
         mr_url: Annotated[str, typer.Option("--mr-url", help="Canonical MR/PR URL to post.")],
         approver: Annotated[str, typer.Option("--approver", help="User id that recorded the #960 approval.")],
         title: Annotated[str, typer.Option("--title", help="Review-request subject (recommended).")] = "",
+        ticket_id: Annotated[
+            str,
+            typer.Option("--ticket-id", help="Ticket pk carrying the #1829 anti-vacuity attestation (gate input)."),
+        ] = "",
+        head_sha: Annotated[
+            str,
+            typer.Option("--head-sha", help="Full head SHA the #1829 anti-vacuity attestation must bind to."),
+        ] = "",
     ) -> None:
-        """Post a review request after #1094 dedup + #960 recorded approval.
+        """Post a review request after #1829 anti-vacuity + #1094 dedup + #960 approval.
 
         Machine-legible: prints a single JSON dict (``action`` is
         ``post``/``suppress``/``refused``) and uses exit codes — ``0``
-        post/suppress, ``2`` refused (no recorded approval).
+        post/suppress, ``2`` refused (no recorded approval / no anti-vacuity
+        attestation).
         """
         _ = approver  # the #960 approver is bound at approve-on-behalf record time.
+
+        # #1829 anti-vacuity gate runs FIRST — before the dedup claim or any
+        # wire call — so a missing attestation refuses without leaving an
+        # orphan ``ReviewRequestPost`` claim to roll back. NO-OP when
+        # ``require_anti_vacuity_attestation`` is off (opt-in default).
+        anti_vacuity_block = self._anti_vacuity_block(ticket_id, head_sha)
+        if anti_vacuity_block:
+            self.stdout.write(anti_vacuity_block)
+            self._emit(
+                {"action": "refused", "reason": "anti_vacuity_not_attested", "mr_url": mr_url},
+                exit_code=2,
+            )
 
         target = resolve_guard_target()
         if target is None:
@@ -159,6 +180,42 @@ class Command(TyperCommand):
             {"action": "post", "permalink": permalink, "mr_url": canonical},
             exit_code=0,
         )
+
+    @staticmethod
+    def _anti_vacuity_block(ticket_id: str, head_sha: str) -> str:
+        """The #1829 block message, or ``""`` when allowed / the gate is off.
+
+        NO-OP (returns ``""``) when ``require_anti_vacuity_attestation`` is off.
+        When on, a ``--ticket-id`` + ``--head-sha`` is required (the gate reads
+        the attestation off the ticket and binds it to the head); a missing one
+        is itself a block with actionable steering, since the request-review
+        transition must be SHA-bound.
+        """
+        from teatree.core.anti_vacuity_gate import (  # noqa: PLC0415
+            AntiVacuityAttestationError,
+            anti_vacuity_required,
+            check_anti_vacuity_attestation,
+        )
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        if not anti_vacuity_required():
+            return ""
+        if not ticket_id.strip() or not head_sha.strip():
+            return (
+                "request review refused (require_anti_vacuity_attestation): pass --ticket-id and "
+                "--head-sha so the anti-vacuity attestation can be verified SHA-bound. Record it first "
+                "with `lifecycle record-anti-vacuity <ticket> --head-sha <sha> --ac-coverage <...> "
+                "--proven-test <test::id>` (or `--no-new-tests`)."
+            )
+        try:
+            ticket = Ticket.objects.resolve(ticket_id)
+        except Ticket.DoesNotExist:
+            return f"request review refused: ticket {ticket_id!r} not found (anti-vacuity gate needs a ticket)."
+        try:
+            check_anti_vacuity_attestation(ticket, head_sha, transition="request review")
+        except AntiVacuityAttestationError as exc:
+            return str(exc)
+        return ""
 
     @staticmethod
     def _rollback_orphan_claim(canonical: str) -> None:

@@ -199,6 +199,52 @@ class Command(TyperCommand):
         ticket.record_review_context(work_item, document_list, analysis)
         return f"Recorded review context for ticket {ticket.pk} ({len(document_list)} document(s))"
 
+    @command(name="record-anti-vacuity")
+    def record_anti_vacuity(
+        self,
+        ticket_id: str,
+        *,
+        head_sha: Annotated[
+            str,
+            typer.Option(help="Full 40-char head SHA the attestation binds to (re-attest when it moves)."),
+        ] = "",
+        ac_coverage: Annotated[
+            str,
+            typer.Option(help="How the diff was mapped against the ticket/spec acceptance criteria."),
+        ] = "",
+        proven_test: Annotated[
+            list[str] | None,
+            typer.Option(help="A new regression test proven anti-vacuous (revert fix -> RED). Repeatable."),
+        ] = None,
+        no_new_tests: Annotated[
+            bool,
+            typer.Option(help="The diff genuinely adds no new regression test (so --proven-test is empty)."),
+        ] = False,
+    ) -> str:
+        """Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829).
+
+        Stamps ``ticket.extra['anti_vacuity_attestation']`` so the anti-vacuity
+        gate (``teatree.core.anti_vacuity_gate``) can attest, before the
+        ``request review`` / merge transition, that the diff was mapped to the
+        acceptance criteria AND every new regression test was proven
+        anti-vacuous (revert the production fix -> the test goes RED). The
+        attestation binds to ``--head-sha``; the gate drops it when the live
+        head moves. A record missing the head SHA, AC-coverage, or (a proven
+        test OR ``--no-new-tests``) does not satisfy the gate.
+        """
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        proven = [test.strip() for test in (proven_test or []) if test.strip()]
+        if not head_sha.strip() or not ac_coverage.strip() or (not proven and not no_new_tests):
+            return (
+                f"record-anti-vacuity refused for ticket {ticket.pk}: --head-sha and --ac-coverage are "
+                f"required, plus at least one --proven-test OR --no-new-tests (a partial record never "
+                f"satisfies the anti-vacuity gate)"
+            )
+        ticket.record_anti_vacuity_attestation(head_sha, ac_coverage, proven, no_new_tests=no_new_tests)
+        proven_summary = f"{len(proven)} proven test(s)" if proven else "no new tests"
+        return f"Recorded anti-vacuity attestation for ticket {ticket.pk} ({proven_summary})"
+
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
     """Refuse a ``reviewing`` visit without an explicit, non-maker reviewer id.
