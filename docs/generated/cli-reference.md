@@ -5111,19 +5111,30 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ transition        Transition a ticket to a new state.                        │
-│ clear             Issue a per-diff CLEAR — the orchestrator's only merge     │
-│                   output (BLUEPRINT §17.4.2).                                │
-│ merge             Execute the IN_REVIEW → MERGED keystone transition         │
-│                   (BLUEPRINT §17.4).                                         │
-│ list              List tickets, optionally filtered by state and/or overlay. │
-│ sync-completions  Check post-ship tickets against upstream issues and        │
-│                   advance completed ones.                                    │
-│ comment           Post a comment to an issue or work item by its URL.        │
-│ create-sub        Create a child work item nested under a parent issue/work  │
-│                   item.                                                      │
-│ context           Durable per-ticket knowledge store: show / add / edit      │
-│                   (#627).                                                    │
+│ transition               Transition a ticket to a new state.                 │
+│ plan                     Record a PlanArtifact and advance STARTED → PLANNED │
+│                          (`plan <id> "<text>"`).                             │
+│ plan-bypass              Record an audited PlanArtifact bypass and advance   │
+│                          to PLANNED (--human-authorize).                     │
+│ plan-reconcile-inflight  Retroactively advance STARTED tickets to PLANNED    │
+│                          after the gate was added.                           │
+│ e2e-bypass               Record a single-use user bypass of the              │
+│                          mandatory-E2E gate (#1967).                         │
+│ dod-override             Record the DoD local-E2E gate escape hatch for a    │
+│                          ticket (#88).                                       │
+│ clear                    Issue a per-diff CLEAR — the orchestrator's only    │
+│                          merge output (BLUEPRINT §17.4.2).                   │
+│ merge                    Execute the IN_REVIEW → MERGED keystone transition  │
+│                          (BLUEPRINT §17.4).                                  │
+│ list                     List tickets, optionally filtered by state and/or   │
+│                          overlay.                                            │
+│ sync-completions         Check post-ship tickets against upstream issues and │
+│                          advance completed ones.                             │
+│ comment                  Post a comment to an issue or work item by its URL. │
+│ create-sub               Create a child work item nested under a parent      │
+│                          issue/work item.                                    │
+│ context                  Durable per-ticket knowledge store: show / add /    │
+│                          edit (#627).                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5144,6 +5155,140 @@ Usage: t3 teatree ticket transition [OPTIONS] TICKET_ID TRANSITION_NAME
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket plan`
+
+```
+Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
+
+ Record a PlanArtifact and advance the ticket STARTED → PLANNED.
+
+ The operator-facing plan recorder named by the ``NoPlanArtifactError``
+ message: a planning task that finished its work out-of-band, or a
+ ticket the planner never ran on, can be advanced by recording the plan
+ here. A blank ``plan_text`` is refused — a vacuous artifact cannot
+ advance the FSM. For an *audited bypass* (no real plan, explicit human
+ sign-off) use ``plan-bypass`` instead.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+│ *    plan_text      TEXT     The plan text recorded as the PlanArtifact.     │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --recorded-by        TEXT  Author identity recorded on the artifact (audit   │
+│                            trail).                                           │
+│                            [default: operator]                               │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket plan-bypass`
+
+```
+Usage: t3 teatree ticket plan-bypass [OPTIONS] TICKET_ID
+
+ Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
+
+ The ONLY escape from the plan gate outside the normal planner flow.
+ Both --human-authorize and --reason are required; a silent bypass is
+ not allowed. Records a PlanArtifact with bypass_reason set, then
+ drives ticket.plan() → STARTED→PLANNED.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --human-authorize        TEXT  Username of the human explicitly           │
+│                                   authorising this plan bypass.              │
+│                                   [required]                                 │
+│ *  --reason                 TEXT  Documented reason for bypassing the plan   │
+│                                   gate (required).                           │
+│                                   [required]                                 │
+│    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket plan-reconcile-inflight`
+
+```
+Usage: t3 teatree ticket plan-reconcile-inflight [OPTIONS]
+
+ Retroactively advance STARTED tickets to PLANNED after the gate was added.
+
+ Enumerates every STARTED ticket and records an audited PlanArtifact
+ bypass for each, then drives plan(). Requires --human-authorize.
+ Intended as a one-time operator command; a data migration would fabricate
+ an authorizer it cannot legitimately name.
+
+ Use --dry-run to inspect which tickets would be affected.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --human-authorize        TEXT  Human/operator authorising retroactive     │
+│                                   plan bypass for in-flight STARTED tickets. │
+│                                   [required]                                 │
+│    --issue-ref              TEXT  Issue/PR reference identifying why this    │
+│                                   reconcile is necessary.                    │
+│    --dry-run                      List affected tickets without modifying    │
+│                                   them.                                      │
+│    --help                         Show this message and exit.                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket e2e-bypass`
+
+```
+Usage: t3 teatree ticket e2e-bypass [OPTIONS] TICKET_ID
+
+ Record a single-use user bypass of the mandatory-E2E gate (#1967).
+
+ The ONLY way past the mandatory-E2E gate without recorded green E2E
+ evidence — and it requires explicit user approval, never the
+ implementing agent's own judgment. Mirrors ``OnBehalfApproval`` /
+ ``MergeClear``: durable, single-use, scoped to the ticket + reviewed
+ head SHA, maker≠checker enforced (a maker/coding-agent/loop ``--approver``
+ is refused). The next ship-gate / §17.4 CLEAR evaluation at that exact
+ SHA consumes it once.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --approver        TEXT  Human user id authorising the bypass; a           │
+│                            maker/coding-agent/loop id is refused (#1967).    │
+│                            [required]                                        │
+│ *  --head-sha        TEXT  Full 40-char hex SHA of the reviewed tree the     │
+│                            bypass authorises.                                │
+│                            [required]                                        │
+│    --help                  Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree ticket dod-override`
+
+```
+Usage: t3 teatree ticket dod-override [OPTIONS] TICKET_ID
+
+ Record the DoD local-E2E gate escape hatch for a ticket (#88).
+
+ The gate refuses to ship a UI-visible ticket without a green
+ local-stack E2E artifact. This records an explicit, audited override
+ so a genuinely non-UI or exempt ticket the heuristic mis-flags can
+ still ship — the gate can never hard-trap a legitimate ticket. A
+ blank ``--reason`` is refused: a silent bypass is exactly what #88
+ forecloses.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --reason        TEXT  Why this UI-visible ticket may ship without a       │
+│                          local-stack E2E (#88).                              │
+│                          [required]                                          │
+│    --by            TEXT  Who is recording the override (audit trail).        │
+│    --help                Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
