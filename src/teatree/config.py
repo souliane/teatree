@@ -1358,14 +1358,41 @@ def discover_active_overlay() -> OverlayEntry | None:
 
 
 def _discover_from_manage_py() -> OverlayEntry | None:
-    """Walk up from cwd to find a manage.py and extract its settings module."""
+    """Walk up from cwd to find a manage.py and extract its settings module.
+
+    The directory basename names the overlay, but a clone dir can differ from
+    the registered entry-point name (``teatree`` on disk vs the registered
+    ``t3-teatree``). ``_canonical_active_overlay_name`` folds the basename onto
+    the registered entry point so every consumer — most importantly the scanners
+    that stamp ``ticket.overlay`` — writes the dispatchable name, never a stale
+    alias that the queue then can't resolve (souliane/teatree#1959).
+    """
     for directory in [Path.cwd(), *Path.cwd().parents]:
         manage_py = directory / "manage.py"
         if manage_py.is_file():
             settings_module = _extract_settings_module(manage_py)
             if settings_module:
-                return OverlayEntry(name=directory.name, overlay_class="", project_path=directory)
+                name = _canonical_active_overlay_name(directory.name)
+                return OverlayEntry(name=name, overlay_class="", project_path=directory)
     return None
+
+
+def _canonical_active_overlay_name(directory_name: str) -> str:
+    """Fold a clone-directory basename onto its registered entry-point name, if one exists.
+
+    Stays inside the ``platform`` layer (``config``): reads the entry-point
+    names directly and reuses the local ``_match_canonical_ep`` alias rule
+    rather than calling into the ``core`` overlay loader.
+    """
+    from importlib.metadata import entry_points  # noqa: PLC0415
+
+    try:
+        ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
+    except Exception:  # noqa: BLE001 — discovery must not crash before django.setup()
+        return directory_name
+    if directory_name in ep_names:
+        return directory_name
+    return _match_canonical_ep(directory_name, ep_names) or directory_name
 
 
 def _resolve_ep_project_path(overlay_class: str) -> Path | None:
