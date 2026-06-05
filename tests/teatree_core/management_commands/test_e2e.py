@@ -40,6 +40,23 @@ pytestmark = pytest.mark.filterwarnings(
 _GIT = shutil.which("git") or "git"
 
 
+def _popen_for(result: MagicMock) -> MagicMock:
+    """Wrap a ``MagicMock(returncode=N)`` into a ``Popen`` context-manager mock.
+
+    ``run_streamed`` now drives ``Popen``: it tees ``proc.stderr`` then reads
+    ``proc.wait()``. The returned mock records the ``Popen(cmd, env=...)`` call
+    (so ``call_args[0][0]`` / ``call_args[1]["env"]`` assertions keep working)
+    and yields a proc whose ``wait()`` returns the original mock's returncode.
+    """
+    proc = MagicMock()
+    proc.stderr = iter(getattr(result, "_streamed_stderr", ()) or ())
+    proc.wait.return_value = result.returncode
+    ctx = MagicMock()
+    ctx.__enter__.return_value = proc
+    ctx.__exit__.return_value = False
+    return MagicMock(return_value=ctx)
+
+
 class TestE2eTriggerCi(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -95,7 +112,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             result = cast("str", call_command("e2e", "project", docker=False))
 
@@ -110,7 +127,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=1)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             pytest.raises(SystemExit) as exc_info,
         ):
             call_command("e2e", "project", docker=False)
@@ -124,7 +141,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "project", headed=True, docker=False)
 
@@ -138,7 +155,7 @@ class TestE2eProject(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "project", test_path="tests/e2e/test_login.py", docker=False)
 
@@ -172,7 +189,7 @@ class TestE2eProject(TestCase):
                     return_value=MagicMock(extra={"worktree_path": str(wt)}),
                 ),
                 patch.object(Path, "exists", fake_exists),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 call_command(
                     "e2e",
@@ -384,7 +401,7 @@ class TestE2eExternal(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(wt_dir)}, clear=False),
                 patch.object(config_mod, "load_config") as mock_cfg,
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
                 mock_cfg.return_value.raw = {"teatree": {"private_tests": str(private_dir)}}
                 os.environ.pop("T3_PRIVATE_TESTS", None)
@@ -430,7 +447,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external"))
             assert "passed" in result
@@ -477,7 +494,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", target="local"))
             assert "passed" in result
@@ -551,7 +568,7 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 os.environ.pop("BASE_URL", None)
                 result = cast(
@@ -611,7 +628,7 @@ class TestE2eExternal(TestCase):
                     {"T3_PRIVATE_TESTS": str(private_dir), "BASE_URL": "https://dev.example.com"},
                     clear=False,
                 ),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 os.environ.pop("COMPOSE_PROJECT_NAME", None)
                 result = cast("str", call_command("e2e", "external", target="dev"))
@@ -643,7 +660,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
                 pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("e2e", "external", headed=True)
@@ -676,7 +693,7 @@ class TestE2eExternal(TestCase):
             with (
                 patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 call_command("e2e", "external", test_path="tests/login.py")
             cmd = mock_run.call_args[0][0]
@@ -727,7 +744,7 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external"))
 
@@ -751,7 +768,7 @@ class TestE2eExternal(TestCase):
                 patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_mod, "_discover_frontend_port") as mock_discover,
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="svc"))
 
@@ -790,7 +807,7 @@ class TestE2eExternalPreflight(TestCase):
                 ),
                 patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_record),
                 patch.object(e2e_mod, "_discover_frontend_port"),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
                 result = cast("str", call_command("e2e", "external"))
 
@@ -823,7 +840,7 @@ class TestE2eExternalPreflight(TestCase):
                     clear=False,
                 ),
                 patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_failing),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
                 patch.object(e2e_mod, "_discover_frontend_port"),
                 pytest.raises(SystemExit) as exc_info,
             ):
@@ -842,7 +859,7 @@ class TestE2eRun(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             result = cast("str", call_command("e2e", "run", docker=False))
 
@@ -858,7 +875,7 @@ class TestE2eRun(TestCase):
             patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
         ):
             mock_result = MagicMock(returncode=0)
-            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
+            with patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run:
                 result = cast("str", call_command("e2e", "run"))
 
             assert "passed" in result
@@ -871,7 +888,7 @@ class TestE2eRun(TestCase):
         mock_result = MagicMock(returncode=0)
         with (
             patch.object(e2e_mod, "resolve_worktree", return_value=None),
-            patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+            patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
         ):
             call_command("e2e", "run", docker=False)
         assert "pytest" in mock_run.call_args[0][0]
@@ -884,7 +901,7 @@ class TestE2eRun(TestCase):
             patch.dict("os.environ", {"T3_PRIVATE_TESTS": tmp, "BASE_URL": "https://dev.example"}, clear=False),
         ):
             mock_result = MagicMock(returncode=0)
-            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
+            with patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run:
                 call_command("e2e", "run")
             assert "playwright" in mock_run.call_args[0][0]
 
@@ -1008,7 +1025,7 @@ class TestE2eExternalRepo(TestCase):
                 patch.object(e2e_mod, "load_e2e_repos", return_value=[repo]),
                 patch.object(e2e_mod, "_clone_or_update_e2e_repo", return_value=playwright_root),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4200),
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run,
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 result = cast("str", call_command("e2e", "external", repo="demo-svc"))
 

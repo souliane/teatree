@@ -31,6 +31,22 @@ pytestmark = [
 ]
 
 
+def _popen_mock(returncode: int = 0) -> MagicMock:
+    """A ``Popen`` context-manager mock matching ``run_streamed``'s usage.
+
+    ``run backend`` launches docker compose through ``run_streamed``, which
+    now drives ``Popen`` (tee stderr, then ``wait()``). The mock records each
+    ``Popen(cmd, ...)`` call so a test can assert the docker invocation.
+    """
+    proc = MagicMock()
+    proc.stderr = iter(())
+    proc.wait.return_value = returncode
+    ctx = MagicMock()
+    ctx.__enter__.return_value = proc
+    ctx.__exit__.return_value = False
+    return MagicMock(return_value=ctx)
+
+
 class _WorkflowMetadata(OverlayMetadata):
     def get_tool_commands(self) -> list[ToolCommand]:
         return [
@@ -548,9 +564,10 @@ class TestRunBackend(TestCase):
 
         mock_config = MagicMock()
         mock_config.user.workspace_dir = self._tmp_path
+        mock_popen = _popen_mock()
         with (
             _patch_overlay(),
-            patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_sp_run,
+            patch.object(utils_run_mod, "Popen", mock_popen),
             patch("teatree.config.load_config", return_value=mock_config),
         ):
             result = cast("str", call_command("run", "backend", path=str(wt_dir)))
@@ -558,7 +575,7 @@ class TestRunBackend(TestCase):
         assert result == "Backend started via docker-compose."
 
         # Should have called docker compose up -d web
-        docker_calls = [c for c in mock_sp_run.call_args_list if "docker" in str(c)]
+        docker_calls = [c for c in mock_popen.call_args_list if "docker" in str(c)]
         assert len(docker_calls) >= 1
 
     @override_settings(**WORKFLOW_SETTINGS)
@@ -651,9 +668,10 @@ class TestRunBackend(TestCase):
         # --- Step 3: run backend (docker compose) ---
         mock_config = MagicMock()
         mock_config.user.workspace_dir = self._tmp_path
+        mock_popen = _popen_mock()
         with (
             _patch_overlay(),
-            patch.object(utils_run_mod.subprocess, "run", return_value=MagicMock(returncode=0)) as mock_run_sp,
+            patch.object(utils_run_mod, "Popen", mock_popen),
             patch("teatree.config.load_config", return_value=mock_config),
         ):
             run_result = cast("str", call_command("run", "backend", path=backend_wt_path))
@@ -661,7 +679,7 @@ class TestRunBackend(TestCase):
         assert run_result == "Backend started via docker-compose."
 
         # Docker compose was called
-        docker_calls = [c for c in mock_run_sp.call_args_list if "docker" in str(c)]
+        docker_calls = [c for c in mock_popen.call_args_list if "docker" in str(c)]
         assert len(docker_calls) >= 1
 
 
@@ -687,16 +705,16 @@ class TestToolAndCleanCommands(TestCase):
         assert "check-translations" in result
         assert "Check translations" in result
 
+        mock_popen = _popen_mock()
         with (
             _patch_overlay(),
-            patch.object(utils_run_mod, "subprocess") as mock_sp,
+            patch.object(utils_run_mod, "Popen", mock_popen),
         ):
-            mock_sp.run.return_value = MagicMock(returncode=0)
             result = cast("str", call_command("tool", "run", "check-translations"))
 
         assert result == "Tool 'check-translations' completed."
-        mock_sp.run.assert_called_once()
-        assert "check_translations" in mock_sp.run.call_args.args[0]
+        mock_popen.assert_called_once()
+        assert "check_translations" in mock_popen.call_args.args[0]
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_clean_only_removes_created_worktrees(self) -> None:
