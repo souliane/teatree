@@ -71,7 +71,7 @@ import re
 from pathlib import Path
 from typing import Final
 
-from teatree.hooks import _commit_repo_dir, _gh_glab_hiding, _repo_visibility
+from teatree.hooks import _commit_carve_out, _commit_repo_dir, _gh_glab_hiding, _repo_visibility
 
 # Repo-visibility / privacy resolution lives in ``_repo_visibility``; the
 # structural purity primitives (segment splitting, per-token classification)
@@ -310,7 +310,7 @@ def _segment_target_slug(words: list[str], cwd: Path | None) -> str:
     return ""
 
 
-def _segment_target_is_private(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
+def segment_target_is_private(words: list[str], cwd: Path | None, *, config_path: Path | None) -> bool:
     """Return True iff this posting segment's resolved target is known-private.
 
     An explicit ``--repo owner/name`` slug has no host prefix; it is matched
@@ -357,7 +357,7 @@ def command_is_pure_private_gh_glab_post(
         create``, ``gh issue comment``, ``glab mr create``, ... but NOT
         ``gh api`` / ``glab api`` raw REST (which can target any surface) nor a
         read verb (``gh issue view``); and
-    - targeting a known-PRIVATE repo (:func:`_segment_target_is_private`) --
+    - targeting a known-PRIVATE repo (:func:`segment_target_is_private`) --
         ``--repo``/``-R`` LAST-WINS, then ``GH_REPO`` for ``gh``, then the CWD
         fallback. One public/unknown target fails the proof.
 
@@ -377,7 +377,7 @@ def command_is_pure_private_gh_glab_post(
     segments = _command_segments(command)
     if not segments:
         return False
-    if not any(_segment_is_posting_verb(_strip_cd_prefix(words)) for words in segments):
+    if not any(_segment_is_posting_verb(strip_cd_prefix(words)) for words in segments):
         return False
     return all(_segment_proves_pure_private_post(words, cwd, config_path=config_path) for words in segments)
 
@@ -399,17 +399,17 @@ def _segment_proves_pure_private_post(words: list[str], cwd: Path | None, *, con
     public/unknown target -- makes the segment not provably good, so the whole
     command fails the proof.
     """
-    rest = _strip_cd_prefix(words)
+    rest = strip_cd_prefix(words)
     if not rest:
         return True
     return (
         _segment_is_pure_gh_glab_post(words)
         and not _segment_is_raw_rest(rest)
-        and _segment_target_is_private(rest, cwd, config_path=config_path)
+        and segment_target_is_private(rest, cwd, config_path=config_path)
     )
 
 
-def _strip_cd_prefix(words: list[str]) -> list[str]:
+def strip_cd_prefix(words: list[str]) -> list[str]:
     """Return ``words`` with a leading ``cd <path>`` and ``VAR=value`` prefix removed.
 
     The posting-verb recognition and target resolution must see the ``gh``/
@@ -492,117 +492,25 @@ def carve_out_applies(
         return False
 
     if is_git_commit_command(command):
-        return _commit_branch_downgrades(command, cwd, config_path=config_path)
+        return _commit_carve_out.commit_branch_downgrades(command, cwd, config_path=config_path)
 
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
 
 
-def _commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
-    r"""Return True iff the commit BODY's repo target makes it downgrade-eligible.
-
-    The repo the commit lands in is resolved by :func:`effective_repo_dir` --
-    a leading ``cd``/``pushd`` prefix, then ``--git-dir`` else the ``-C``-
-    adjusted dir, never ``--work-tree`` -- when the command carries such a
-    flag/prefix, else the ambient ``cwd``. From that dir the nearest enclosing
-    ``.git`` root is walked up to (:func:`git_root_for_dir`) so a commit run
-    from a SUBDIR of a worktree still resolves to the worktree's repo.
-
-    Three target states, distinguished explicitly:
-
-    - the enclosing repo is known-PRIVATE => downgrade-eligible (True);
-    - the enclosing repo is resolvable but PUBLIC / unknown-visibility =>
-        hard-block (False) -- a commit in the public ``souliane/teatree``
-        clone keeps the banned-term block, never weakened;
-    - NO commit dir is resolvable at all (no ``cd``/``-C``/``--git-dir``, no
-        ambient cwd, or the resolved dir is not inside ANY git repo) =>
-        FAIL-OPEN (True). A bare ``git commit`` whose hook cwd is the
-        workspace root is a purely LOCAL operation: it cannot leak, and git
-        itself rejects a commit outside a repo, so the banned-term block here
-        only over-blocked a legitimate private commit. The fail-open is for
-        the COMMIT BODY only; the chained-segment proof still runs separately.
-
-    The :data:`UNRESOLVABLE_REPO_DIR` sentinel (a ``-C`` value carrying a
-    substitution marker) is the one case that hard-blocks rather than
-    fail-opens: it is a value the gate cannot pin down, not a proven non-repo.
-    """
-    repo_dir = effective_repo_dir(command)
-    if repo_dir == UNRESOLVABLE_REPO_DIR:
-        return False
-    commit_target = Path(repo_dir) if repo_dir else cwd
-    if commit_target is None:
-        return True
-    repo_root = git_root_for_dir(commit_target)
-    if repo_root is None:
-        return True
-    return commit_targets_private_repo(repo_root, config_path=config_path)
+def own_slug_term_downgrades(
+    command: str,
+    term: str,
+    cwd: Path | None,
+    *,
+    config_path: Path | None = None,
+) -> bool:
+    """Downgrade a ``git commit`` that tripped on its OWN repo-slug term (see ``_commit_carve_out``)."""
+    return _commit_carve_out.own_slug_term_downgrades(command, term, cwd, config_path=config_path)
 
 
-def _commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
-    r"""Return True iff a ``git commit`` command may downgrade to warn.
-
-    The first segment is the ``git commit`` (:func:`is_git_commit_command`),
-    whose body downgrade-eligibility is decided by
-    :func:`_commit_target_downgrades` (private repo, or a genuinely-
-    unresolvable LOCAL commit that cannot leak), while a resolvable PUBLIC
-    target stays hard-blocked.
-
-    Every CHAINED segment must additionally be PROVABLY publish-inert with
-    respect to that body: either a pure private ``gh``/``glab`` post
-    (:func:`command_is_pure_private_gh_glab_post` over that segment), or a
-    segment that provably cannot carry the body to an external surface
-    (:func:`_segment_is_publish_inert` -- no forge tool, no execution-transport
-    or substitution construct anywhere). A chained ``&& gh ... --repo PUBLIC``,
-    a ``&& sh -c "gh ... PUBLIC"``, or any other publishing construct that is
-    not a proven pure private post fails the proof and the hard-block stands --
-    the fail-open for an unresolvable commit body NEVER relaxes a chained
-    public post.
-
-    This mirrors the posting-path inversion: the commit downgrades only when
-    the WHOLE chain is provably good, never by failing to detect a hidden
-    public post.
-    """
-    if not _commit_target_downgrades(command, cwd, config_path=config_path):
-        return False
-    for words in _command_segments(command):
-        if is_git_commit_command(" ".join(words)):
-            continue
-        if _segment_is_publish_inert(words):
-            continue
-        if _segment_is_pure_gh_glab_post(words) and _segment_target_is_private(
-            _strip_cd_prefix(words), cwd, config_path=config_path
-        ):
-            continue
-        return False
-    return True
-
-
-# A forge-tool command word the body could be posted through. Detected as a
-# SUBSTRING in any token so a forge invocation hidden inside a quoted shell
-# string (``sh -c "gh ... PUBLIC"``) is not treated as publish-inert.
-_FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
-
-
-def _segment_is_publish_inert(words: list[str]) -> bool:
-    r"""Return True iff ``words`` provably cannot publish a body externally.
-
-    A chained segment after a private ``git commit`` is publish-inert when it
-    carries NO forge tool (``gh``/``glab``/``curl`` as a substring of any
-    token -- so a forge call hidden in a quoted ``sh -c "gh ..."`` string is
-    NOT inert) and NO execution-transport / substitution construct
-    (substitution marker, redirection, group opener) anywhere. Such a segment
-    (``git push origin main``, ``echo done``, ``make build``) cannot carry the
-    commit body to a public surface, so it does not block the commit downgrade.
-
-    This is the positive complement of the pure-post proof for the commit
-    chain: a chained segment is either provably inert (here) or a proven pure
-    private post; anything else fails the proof and the hard-block stands.
-    """
-    for token in words:
-        if _token_has_substitution_marker(token) or _token_is_transport_construct(token):
-            return False
-        if any(marker in token for marker in _FORGE_TOOL_MARKERS):
-            return False
-    return True
+# Re-exported so ``publish_destination`` keeps importing the commit publish-inert
+# check from ``publish_surface``; the implementation lives in ``_commit_carve_out``.
+_segment_is_publish_inert = _commit_carve_out.segment_is_publish_inert
 
 
 def visibility_unknown_for_block(
