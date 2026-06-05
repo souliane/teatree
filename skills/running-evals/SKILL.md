@@ -28,21 +28,24 @@ The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t
 |------|-----------------|------|
 | skill-trigger eval | `t3 eval trigger-qa` | free |
 | regression corpus | `t3 eval regression` | free |
-| AI/trajectory eval (subscription) | `t3 eval prepare-subscription` → produce transcripts in-session → `t3 eval run --backend subscription` | subscription |
+| AI/trajectory eval (subscription) | `t3 eval prepare-subscription` → dispatch in-session sub-agent → `t3 eval capture-subagent` → `t3 eval run --backend subscription` | subscription |
 | AI/trajectory eval (metered CI) | `t3 eval run --backend sdk` | metered API (`ANTHROPIC_API_KEY`) |
 
 The default backend is `subscription` (grade in-session transcripts, no API spend). The metered `claude -p`/SDK path is **never** a silent fallback — it runs only when `--backend sdk` is passed explicitly (CI's path).
 
 ## What this skill auto-drives
 
-In ONE invocation, without the human running `prepare-subscription` by hand:
+In ONE invocation, without the human running `prepare-subscription` or `capture-subagent` by hand:
 
 1. `t3 eval prepare-subscription` → the per-scenario agent definition, prompt, and the transcript path the `subscription` backend will read.
-2. For each scenario, dispatch an in-session `Agent` sub-agent that runs the prompt with `--output-format stream-json` and writes the transcript to the printed path.
-3. `t3 eval run --backend subscription` to grade the transcripts.
-4. Print ONE unified results table.
+2. For each scenario, dispatch an in-session `Agent` sub-agent that runs the prompt. Claude Code writes that sub-agent's trajectory to `~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl` — NOT to the grader's path.
+3. `t3 eval capture-subagent <scenario> --since <epoch>` copies the freshest sub-agent JSONL to the transcript path the grader reads. Record the epoch BEFORE each dispatch and pass it as `--since` so back-to-back scenarios never grab a prior sub-agent's file.
+4. `t3 eval run --backend subscription` to grade the captured transcripts.
+5. Print ONE unified results table.
 
-The free deterministic lanes (`t3 eval trigger-qa`, `t3 eval regression`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only step 2 — producing the subscription transcripts — needs this in-session skill.
+The free deterministic lanes (`t3 eval trigger-qa`, `t3 eval regression`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
+
+The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
 
 ## `t3 eval all` — the orchestratable non-session piece
 
@@ -69,8 +72,9 @@ t3 eval regression
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
 t3 eval list
 
-# Subscription AI path (no API spend): prepare → produce in-session → grade.
-t3 eval prepare-subscription
+# Subscription AI path (no API spend): prepare → produce in-session → capture → grade.
+t3 eval prepare-subscription --transcript-dir ./transcripts
+t3 eval capture-subagent <scenario> --transcript-dir ./transcripts --since <epoch>
 t3 eval run --backend subscription --transcript-dir ./transcripts
 
 # Whole picture in one command (the non-session orchestratable piece).

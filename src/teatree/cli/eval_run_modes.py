@@ -148,9 +148,9 @@ def render_subscription_text(manifest: list[dict[str, str]]) -> str:
     blocks = [
         (
             f"scenario: {entry['scenario']}  (model {entry['model']})\n"
-            f"  agent:      {entry['agent_path']}\n"
-            f"  save to:    {entry['transcript_path']}\n"
-            f"  prompt:     {entry['prompt']}\n"
+            f"  agent:        {entry['agent_path']}\n"
+            f"  capture to:   {entry['transcript_path']}  (via `t3 eval capture-subagent {entry['scenario']}`)\n"
+            f"  prompt:       {entry['prompt']}\n"
         )
         for entry in manifest
     ]
