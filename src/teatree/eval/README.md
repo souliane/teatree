@@ -39,6 +39,15 @@ t3 eval transcript-replay                     # replay a real session against in
 t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
 t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
 t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
+t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
+t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
+```
+
+The `eval-agent-behavior` prek hook (manual stage) shells the same token-free
+self-test (`uv run python -m teatree.eval.negative_control`):
+
+```bash
+prek run --hook-stage manual eval-agent-behavior
 ```
 
 ### Execution backends and the cost split (default = subscription)
@@ -510,12 +519,34 @@ concurrently-evolving router and the tach module-edge rules); a lockstep test in
 `tests/test_transcript_replay_conformance.py` asserts they stay equal to the
 router source.
 
+## Negative control (harness self-test)
+
+`t3 eval negative-control` ([teatree#1160](https://github.com/souliane/teatree/issues/1160)
+AC5/AC6) is the harness's own self-test: it plants a known rule violation (an
+agent editing the canonical clone without `git worktree add` first), drives it
+through the *public* report path, and exits 0 only when the harness reports the
+violation — naming the violated rule and the offending tool call. It is
+token-free and deterministic (it never shells `claude -p`), so it runs in the
+`eval-agent-behavior` prek manual hook. A non-zero exit means the harness went
+green on a genuine violation, i.e. the harness itself is broken.
+
+It is anti-vacuous by construction: `src/teatree/eval/negative_control.py`
+builds both a violating run (caught) and a compliant run (not caught) of the
+same scenario, and `tests/eval/test_negative_control.py` asserts the control
+fires on the former and stays quiet on the latter.
+
+The generic per-scenario anti-vacuity gate (`tests/eval/test_scenarios_anti_vacuous.py`)
+proves every scenario's `_fail` fixture drives a red *verdict*; the negative
+control additionally proves the red *report content* (the violated rule + the
+offending tool call) is emitted in both text and JSON.
+
 ## Deferred
 
-- Negative-control scenario.
 - Final-state matcher.
-- prek manual hook integration.
-- The remaining catalog from [teatree#1160](https://github.com/souliane/teatree/issues/1160).
+- The remaining pain-point catalog from
+  [teatree#1160](https://github.com/souliane/teatree/issues/1160) beyond the
+  5+ scenarios already shipped (CI integration, UI/screenshot eval, perf
+  benchmarking — all flagged out-of-scope in the ticket itself).
 - Transcript-replay AMBER/RED-tier invariants (correlative / judgement
   confidence) and loop-signal-derived invariants — the conformance registry
   ships GREEN-tier only for now.

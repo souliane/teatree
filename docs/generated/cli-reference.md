@@ -1177,6 +1177,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       must-fire/must-not-fire corpus.                        │
 │ regression            Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
+│ negative-control      Self-test the harness: plant a known violation and     │
+│                       assert it is caught.                                   │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -1368,6 +1370,25 @@ Usage: t3 eval regression [OPTIONS]
  bare-reference gate, the substrate-merge and maker≠checker floors, the
  pid-anchored loop lease, the migration-graph leaf count) on a must-block and
  a must-allow input. Any violated invariant exits non-zero.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval negative-control`
+
+```
+Usage: t3 eval negative-control [OPTIONS]
+
+ Self-test the harness: plant a known violation and assert it is caught.
+
+ Token-free and deterministic — never shells ``claude -p``. Drives a
+ deliberately-violating run of the ``worktree_first`` scenario through the
+ public report path and exits 0 only when the harness reports the violation
+ (naming the violated rule and the offending tool call). A non-zero exit
+ means the harness went green on a genuine violation — the harness is broken.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │

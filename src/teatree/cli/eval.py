@@ -23,6 +23,7 @@ from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRu
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.models import EvalSpec
+from teatree.eval.negative_control import render_outcome_json, render_outcome_text, run_negative_control
 from teatree.eval.pass_at_k import run_pass_at_k
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
@@ -38,6 +39,12 @@ from teatree.eval.trigger_qa import run_trigger_qa
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 
 _VALID_FORMATS = ("text", "json")
+
+
+def _require_valid_format(output_format: str) -> None:
+    if output_format not in _VALID_FORMATS:
+        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
+        raise typer.Exit(code=2)
 
 
 def _bootstrap_django() -> None:
@@ -165,9 +172,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     subscription backend's legitimate pre-transcript all-skip stays green.
     """
     _bootstrap_django()
-    if output_format not in _VALID_FORMATS:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
+    _require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
@@ -375,9 +380,7 @@ def prepare_subscription(
     ``t3 eval run --backend subscription``.
     """
     _bootstrap_django()
-    if output_format not in _VALID_FORMATS:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
+    _require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
     typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
@@ -406,9 +409,7 @@ def history(
     baseline (demoting the prior baseline for that model).
     """
     _bootstrap_django()
-    if output_format not in _VALID_FORMATS:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
+    _require_valid_format(output_format)
     from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415
 
@@ -454,12 +455,30 @@ def regression(
     a must-allow input. Any violated invariant exits non-zero.
     """
     _bootstrap_django()
-    if output_format not in _VALID_FORMATS:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
+    _require_valid_format(output_format)
     report = run_regression_corpus()
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
     if not report.ok:
+        sys.exit(1)
+
+
+@eval_app.command("negative-control")
+def negative_control(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+) -> None:
+    """Self-test the harness: plant a known violation and assert it is caught.
+
+    Token-free and deterministic — never shells ``claude -p``. Drives a
+    deliberately-violating run of the ``worktree_first`` scenario through the
+    public report path and exits 0 only when the harness reports the violation
+    (naming the violated rule and the offending tool call). A non-zero exit
+    means the harness went green on a genuine violation — the harness is broken.
+    """
+    _bootstrap_django()
+    _require_valid_format(output_format)
+    outcome = run_negative_control()
+    typer.echo(render_outcome_json(outcome) if output_format == "json" else render_outcome_text(outcome))
+    if not outcome.caught:
         sys.exit(1)
 
 
