@@ -20,6 +20,7 @@ from typing import TypedDict
 
 from teatree.backends.protocols import PullRequestSpec
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git
@@ -99,6 +100,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         setting_enabled=get_overlay().config.mr_close_ticket,
     )
     description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
+    warn_if_open_questions_missing(description)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git.slug_from_remote(remote)
