@@ -104,8 +104,8 @@ def _emit_subscription_recipe(specs: list[EvalSpec], target_dir: Path) -> None:
     typer.echo(render_subscription_text(build_subscription_manifest(specs, target_dir)))
     typer.echo(
         "\nNo subscription transcripts on disk — the AI lane was not graded. Produce them "
-        "in-session (no API spend) via the /t3:running-evals skill, save each to the path above, "
-        "then re-run `t3 eval all`.",
+        "in-session (no API spend) via the /t3:running-evals skill (it dispatches a sub-agent per "
+        "scenario and captures each with `t3 eval capture-subagent`), then re-run `t3 eval all`.",
         err=True,
     )
 
@@ -144,8 +144,9 @@ def hint_missing_transcripts(runner: SubscriptionTranscriptRunner, missing: list
     typer.echo(
         "Produce them with the subscription (no API spend): run "
         f"`t3 eval prepare-subscription {names}` for each scenario's prompt + path, drive each prompt "
-        "via an in-session sub-agent (`--output-format stream-json`), save to the path above, then "
-        "re-run `t3 eval run --backend subscription`.",
+        "via an in-session sub-agent (the /t3:running-evals skill does this), then capture its "
+        "trajectory with `t3 eval capture-subagent <scenario>` and re-run "
+        "`t3 eval run --backend subscription`.",
         err=True,
     )
 
