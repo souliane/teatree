@@ -21,6 +21,12 @@ class CommandOverlay(OverlayBase):
     def get_repos(self) -> list[str]:
         return ["backend"]
 
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        # Test double with no customer surface — the mandatory-E2E gate (#1967)
+        # is inert here (matches the dogfood overlay's posture).
+        _ = changed_files
+        return False
+
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         def remember_setup() -> None:
             extra = cast("dict[str, str]", worktree.extra or {})

@@ -483,3 +483,35 @@ mr_title_regex = "^JIRA-\\d+: .+"
         )
 
         assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
+
+    def test_e2e_mandatory_gate_default_on_and_overlay_can_disable(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """#1967: the mandatory-E2E gate defaults ON and is per-overlay disablable.
+
+        Its OWN kill-switch ``e2e_mandatory_gate_enabled`` (never a reuse of
+        another gate's switch) defaults to ``True`` and an overlay can disable
+        it via ``[overlays.<name>]`` without flipping the global.
+        """
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+
+        _write_toml(config_file, "[teatree]\n")
+        assert get_effective_settings().e2e_mandatory_gate_enabled is True
+
+        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
+        _write_toml(
+            config_file,
+            """
+[teatree]
+
+[overlays.scoped]
+class = "x.y:Z"
+e2e_mandatory_gate_enabled = false
+""",
+        )
+        assert get_effective_settings().e2e_mandatory_gate_enabled is False

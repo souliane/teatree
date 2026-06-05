@@ -1,7 +1,7 @@
 """Lifecycle and session phase operations."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 import typer
 from django.db import transaction
@@ -19,6 +19,17 @@ from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_revie
 logger = logging.getLogger(__name__)
 
 __all__ = ["Command", "ReviewContextError", "ReviewSkillEvidenceError", "ReviewerAttestationError"]
+
+
+class RecordE2ERunResult(TypedDict, total=False):
+    """Result of ``lifecycle record-e2e-run`` (#1967)."""
+
+    recorded: bool
+    error: str
+    ticket_id: int
+    head_sha: str
+    result: str
+    posted_url: str
 
 
 class ReviewerAttestationError(RuntimeError):
@@ -198,6 +209,62 @@ class Command(TyperCommand):
             )
         ticket.record_review_context(work_item, document_list, analysis)
         return f"Recorded review context for ticket {ticket.pk} ({len(document_list)} document(s))"
+
+    @command(name="record-e2e-run")
+    def record_e2e_run(
+        self,
+        ticket_id: str,
+        *,
+        spec: Annotated[str, typer.Option(help="Path to the E2E spec that ran.")] = "",
+        result: Annotated[str, typer.Option(help="Run result: green or red.")] = "green",
+        head_sha: Annotated[
+            str,
+            typer.Option("--head-sha", help="Full 40-char hex SHA of the reviewed tree the run executed against."),
+        ] = "",
+        posted_url: Annotated[
+            str,
+            typer.Option(
+                "--posted-url",
+                help="URL of the posted `e2e post-evidence` comment; required for a green run to satisfy the gate.",
+            ),
+        ] = "",
+    ) -> "RecordE2ERunResult":
+        """Record SHA-bound, POSTED E2E evidence for the mandatory-E2E gate (#1967).
+
+        Writes an :class:`~teatree.core.models.e2e_mandatory_run.E2eMandatoryRun`
+        for the ticket at ``--head-sha``. A green run satisfies the mandatory-E2E
+        gate at ``pr create`` and the §17.4 CLEAR **only when** ``--posted-url``
+        is given — recorded E2E evidence is not enough, it must be POSTED (the
+        SHA-bound ``e2e post-evidence`` ticket comment). A green run at any other
+        SHA does not carry. Re-recording the same spec at the same tree updates
+        the row in place (idempotent). A red run, or a green run with no
+        ``--posted-url``, records provenance without satisfying the gate.
+        """
+        from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun  # noqa: PLC0415
+        from teatree.core.models.merge_clear import is_commit_sha  # noqa: PLC0415
+
+        ticket = Ticket.objects.resolve(ticket_id)
+        assert_lifecycle_db_is_canonical(ticket)
+        if not spec.strip():
+            self.stderr.write("  record-e2e-run refused: --spec is required (the E2E spec path that ran).")
+            return {"recorded": False, "error": "--spec is required"}
+        if not is_commit_sha(head_sha):
+            self.stderr.write(
+                "  record-e2e-run refused: --head-sha must be a full 40-char hex SHA of the reviewed tree."
+            )
+            return {"recorded": False, "error": "--head-sha must be a full 40-char hex SHA"}
+        run = E2eMandatoryRun.record(ticket=ticket, head_sha=head_sha, spec=spec, result=result, posted_url=posted_url)
+        posted_note = "" if run.posted_url else " (UNPOSTED — does not satisfy the gate until --posted-url is set)"
+        self.stdout.write(
+            f"  recorded E2E run ({run.result}) for ticket {ticket.pk} @ {run.head_sha[:8]} ({run.spec}){posted_note}"
+        )
+        return {
+            "recorded": True,
+            "ticket_id": int(ticket.pk),
+            "head_sha": run.head_sha,
+            "result": run.result,
+            "posted_url": run.posted_url,
+        }
 
 
 def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:

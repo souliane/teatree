@@ -35,10 +35,16 @@ from teatree.core.management.commands._ship_exec import (
     _ship_sync,
 )
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
-from teatree.core.management.commands._ship_gates import BranchCurrencyFailure, NoCommitsAheadError, VisualQAGateFailure
+from teatree.core.management.commands._ship_gates import (
+    BranchCurrencyFailure,
+    E2EMandatoryGateFailure,
+    NoCommitsAheadError,
+    VisualQAGateFailure,
+)
 from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
 from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
 from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
+from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
 from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
@@ -99,7 +105,14 @@ def _run_ship_gates(
     worktree: Worktree,
     *,
     skip_visual_qa: str = "",
-) -> ShippingGateFailure | VisualQAGateFailure | BranchCurrencyFailure | PrValidationError | None:
+) -> (
+    ShippingGateFailure
+    | VisualQAGateFailure
+    | BranchCurrencyFailure
+    | E2EMandatoryGateFailure
+    | PrValidationError
+    | None
+):
     """Run the pre-ship gates in order; return the first failure or ``None``.
 
     Composed out of ``create`` so the command stays within the
@@ -125,6 +138,12 @@ def _run_ship_gates(
     visual_qa_error = _run_visual_qa_gate(ticket, skip_reason=skip_visual_qa)
     if visual_qa_error is not None:
         return visual_qa_error
+    # #1967: a customer-display-impacting change needs green E2E evidence at the
+    # reviewed tree (or a single-use user bypass). Runs after the diff-rendering
+    # visual-QA gate so both see the post-branch-currency tree.
+    e2e_error = _run_e2e_mandatory_gate(ticket)
+    if e2e_error is not None:
+        return e2e_error
     return validate_pr_metadata(ticket, worktree)
 
 
@@ -172,6 +191,7 @@ class Command(TyperCommand):
         | PrValidationError
         | VisualQAGateFailure
         | BranchCurrencyFailure
+        | E2EMandatoryGateFailure
         | ShippingGateFailure
         | WorktreeMissingError
         | NoCommitsAheadError
