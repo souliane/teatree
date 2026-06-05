@@ -1100,6 +1100,158 @@ class TestCarveOutApplies:
         )
 
 
+class TestOwnSlugTermDowngrades:
+    """A commit tripping on its OWN repo-slug term (#126 follow-up).
+
+    A work-item URL in a commit message (``host/<org>/<repo>/-/issues/N``) is
+    the repo naming itself, not a foreign customer leak. When the matched term
+    is a ``[teatree] private_repos`` allowlist entry AND the commit lands in
+    that private repo (or a genuinely-unresolvable LOCAL commit), it warns. A
+    foreign customer term, or a resolvable PUBLIC landing repo, stays blocked.
+    """
+
+    @pytest.fixture
+    def cfg(self, tmp_path: Path) -> Path:
+        return _config(tmp_path, ["acmecorp-engineering"])
+
+    @pytest.fixture
+    def private_repo(self, tmp_path: Path) -> Path:
+        return _repo_with_remote(tmp_path / "r", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+
+    # (a) Own-org slug term on the repo's own private commit -> downgrade,
+    # even when the bare commit's cwd resolution would otherwise miss it.
+    def test_own_org_slug_term_in_private_repo_downgrades(self, cfg: Path, private_repo: Path) -> None:
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                'git commit -m "feat: work item https://gitlab.com/acmecorp-engineering/acmecorp-product/-/issues/42"',
+                "acmecorp-engineering",
+                private_repo,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # (a) An unresolvable LOCAL commit (cwd not in any repo) tripping on its
+    # own org slug fails OPEN -- it cannot leak. Mirrors the body fail-open.
+    def test_own_org_slug_term_unresolvable_local_commit_downgrades(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        non_repo = tmp_path / "not-a-repo"
+        non_repo.mkdir()
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                'git commit -m "ref https://gitlab.com/acmecorp-engineering/acmecorp-product/-/issues/1"',
+                "acmecorp-engineering",
+                non_repo,
+                config_path=cfg,
+            )
+            is True
+        )
+
+    # (b) SAFETY: the SAME own-org slug term on a PUBLIC repo commit stays
+    # hard-blocked -- the carve-out is repo-scoped, never term-scoped alone.
+    def test_own_org_slug_term_in_public_repo_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        public_repo = _repo_with_remote(tmp_path / "pub", "git@github.com:someorg/public-thing.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                'git commit -m "ref https://gitlab.com/acmecorp-engineering/acmecorp-product/-/issues/1"',
+                "acmecorp-engineering",
+                public_repo,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # (b) SAFETY: a FOREIGN customer term is not an allowlist entry, so it
+    # never qualifies for the own-slug downgrade even on a private repo
+    # (its real eligibility, if any, is decided by the primary carve-out).
+    def test_foreign_customer_term_does_not_qualify(self, cfg: Path, private_repo: Path) -> None:
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                'git commit -m "fix for someforeignbank"',
+                "someforeignbank",
+                private_repo,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # A foreign term that merely CONTAINS an allowlist substring must not
+    # qualify: matching is token-equality, not substring.
+    def test_substring_of_allowlist_entry_does_not_qualify(self, cfg: Path, private_repo: Path) -> None:
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                'git commit -m "acmecorp-engineering-services audit"',
+                "acmecorp-engineering-services",
+                private_repo,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # The downgrade is git-commit-only: a gh/glab post never qualifies for
+    # the own-slug path (the posting path has its own pure-private proof).
+    def test_gh_post_does_not_qualify(self, cfg: Path, private_repo: Path) -> None:
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                "gh pr create --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmecorp-engineering",
+                private_repo,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # (c) Worktree-gitdir regression: ``git -C <private-worktree> commit`` whose
+    # ambient cwd reset to an unrelated repo still downgrades on its own slug.
+    def test_dash_c_private_worktree_own_slug_downgrades_despite_ambient_cwd(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "ref .../acmecorp-engineering/..."',
+                "acmecorp-engineering",
+                ambient_cwd,
+                config_path=cfg,
+            )
+            is True
+        )
+
+
+class TestTermIsOwnRepoSlug:
+    """``_repo_visibility.term_is_own_repo_slug`` token-equality contract."""
+
+    def test_exact_allowlist_entry_is_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp-engineering", cfg) is True
+
+    def test_token_equal_spelling_is_own_slug(self, tmp_path: Path) -> None:
+        # ``acmecorp_engineering`` tokenizes to the same tokens as the entry.
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp_engineering", cfg) is True
+
+    def test_foreign_term_is_not_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("someforeignbank", cfg) is False
+
+    def test_superset_term_is_not_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp-engineering-services", cfg) is False
+
+    def test_empty_allowlist_never_matches(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, [])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp-engineering", cfg) is False
+
+
 # Slugs used across the golden corpus: the PRIVATE namespace is injected into
 # the tmp allowlist; the PUBLIC slug is this repo, deliberately NOT allowlisted.
 _PRIV_NS = "acmecorp-engineering"
