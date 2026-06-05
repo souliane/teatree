@@ -40,7 +40,9 @@ SKILL_GATE_KEY = "skill_loading_gate_enabled"
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
 # by an explicit operator opt-in. When ON, every OVER-DENY gate flips to
 # fail-open at once; the PUBLIC-egress leak gate ignores it (fail-closed always).
-GATE_FAIL_OPEN_KEY = "gate_fail_open"
+# The ``danger_`` prefix makes a forgotten override in ``~/.teatree.toml``
+# unmissable — this switch disables protective gates wholesale.
+DANGER_GATE_FAIL_OPEN_KEY = "danger_gate_fail_open"
 
 
 def _config_path() -> Path:
@@ -79,11 +81,11 @@ def skill_loading_gate_is_enabled() -> bool:
     return _gate_key_is_enabled(SKILL_GATE_KEY)
 
 
-def gate_fail_open_is_enabled() -> bool:
-    """Resolve the master fail-open switch (``GATE_FAIL_OPEN_KEY``, default False).
+def danger_gate_fail_open_is_enabled() -> bool:
+    """Resolve the master fail-open switch (``DANGER_GATE_FAIL_OPEN_KEY``, default False).
 
-    Reads ``[teatree] gate_fail_open`` and returns True ONLY when it is an
-    explicit ``true``. Fails CLOSED to disabled (the protective default) on a
+    Reads ``[teatree] danger_gate_fail_open`` and returns True ONLY when it is
+    an explicit ``true``. Fails CLOSED to disabled (the protective default) on a
     missing/broken config or a non-table ``teatree`` section — the inverse
     posture of :func:`gate_is_enabled`, because accidentally relaxing every
     over-deny gate is exactly the failure this switch must never cause. The
@@ -100,7 +102,7 @@ def gate_fail_open_is_enabled() -> bool:
     teatree = config.get("teatree") if isinstance(config, dict) else None
     if not isinstance(teatree, dict):
         return False
-    return teatree.get(GATE_FAIL_OPEN_KEY) is True
+    return teatree.get(DANGER_GATE_FAIL_OPEN_KEY) is True
 
 
 def _set_gate_key(key: str, *, enabled: bool) -> None:
@@ -195,7 +197,7 @@ def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
     @fail_open.command(name="status")
     def status() -> None:
         """Show whether the master fail-open switch is on."""
-        if gate_fail_open_is_enabled():
+        if danger_gate_fail_open_is_enabled():
             typer.echo("fail-open ON — every over-deny gate is fail-open (leak gate still fail-closed)")
         else:
             typer.echo("fail-open OFF — over-deny gates enforce normally")
@@ -203,14 +205,14 @@ def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
     @fail_open.command(name="enable")
     def enable() -> None:
         """Turn the master fail-open switch ON (self-rescue from an over-deny lockout)."""
-        _set_gate_key(GATE_FAIL_OPEN_KEY, enabled=True)
-        typer.echo(f"fail-open ON — wrote `{GATE_FAIL_OPEN_KEY} = true` to {_config_path()}")
+        _set_gate_key(DANGER_GATE_FAIL_OPEN_KEY, enabled=True)
+        typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {_config_path()}")
 
     @fail_open.command(name="disable")
     def disable() -> None:
         """Turn the master fail-open switch OFF (restore normal gate enforcement)."""
-        _set_gate_key(GATE_FAIL_OPEN_KEY, enabled=False)
-        typer.echo(f"fail-open OFF — wrote `{GATE_FAIL_OPEN_KEY} = false` to {_config_path()}")
+        _set_gate_key(DANGER_GATE_FAIL_OPEN_KEY, enabled=False)
+        typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {_config_path()}")
 
     gate_group.add_typer(fail_open, name="fail-open")
     review_app.add_typer(gate_group, name="gate")
