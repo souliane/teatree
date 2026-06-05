@@ -23,9 +23,23 @@ class TransitionResult(TypedDict, total=False):
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     import traceback  # noqa: PLC0415
 
-    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_ticket, resolve_overlay_name  # noqa: PLC0415
 
     task_obj = Task.objects.get(pk=task_id)
+
+    # Poison-pill guard (souliane/teatree#1959): a task whose ticket names a
+    # non-empty overlay that no longer resolves crashes ``get_overlay_for_ticket``
+    # on every drain. Fail it permanently here — a recorded FAILED attempt the
+    # operator can inspect — instead of raising an exception that re-fires next
+    # tick. A blank overlay is the ambient single-overlay default and stays
+    # dispatchable (``get_overlay(None)`` resolves it).
+    if task_obj.ticket.overlay and resolve_overlay_name(task_obj.ticket.overlay) is None:
+        reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
+        logger.warning("Task %s: %s", task_obj.pk, reason)
+        if task_obj.status == Task.Status.PENDING:
+            task_obj.claim(claimed_by="unknown-overlay-guard")
+        task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
+        return {"exit_code": 1, "unknown_overlay": reason}
 
     # Fail-closed billing guard: a loop-dispatched phase task (one whose
     # (role, phase) has a registered phase agent) must run INTERACTIVE in the
@@ -72,14 +86,21 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 
 @task()
 def drain_headless_queue() -> dict[str, list[int]]:
-    """Auto-enqueue pending headless tasks for execution (safety net).
+    """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
 
     Loop-dispatched phase tasks (those whose ``(ticket.role, phase)`` has a
     registered phase agent) are skipped — the loop is their sole dispatcher,
     so draining them here would double-run them (the same guard the
     ``_auto_enqueue_headless_task`` post_save applies). Only genuinely
     headless tasks with no registered phase agent are drained.
+
+    A task whose ticket names a non-empty unknown overlay is failed permanently
+    rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
+    ``execute_headless_task`` on every tick forever — the poison pill this drain
+    must not keep feeding. A blank overlay is the ambient single-overlay default
+    and stays dispatchable.
     """
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
     from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
 
     pending = (
@@ -88,15 +109,23 @@ def drain_headless_queue() -> dict[str, list[int]]:
             status=Task.Status.PENDING,
         )
         .select_related("ticket")
-        .only("pk", "phase", "ticket__role")
+        .only("pk", "phase", "ticket__role", "ticket__overlay")
     )
     enqueued: list[int] = []
+    failed_unknown_overlay: list[int] = []
     for task_obj in pending:
         if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
             continue
+        if task_obj.ticket.overlay and resolve_overlay_name(task_obj.ticket.overlay) is None:
+            reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
+            logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
+            task_obj.claim(claimed_by="unknown-overlay-guard")
+            task_obj.complete_with_attempt(exit_code=1, error=reason, result={"unknown_overlay": reason})
+            failed_unknown_overlay.append(task_obj.pk)
+            continue
         execute_headless_task.enqueue(task_obj.pk, task_obj.phase)
         enqueued.append(task_obj.pk)
-    return {"enqueued": enqueued}
+    return {"enqueued": enqueued, "failed_unknown_overlay": failed_unknown_overlay}
 
 
 @task()

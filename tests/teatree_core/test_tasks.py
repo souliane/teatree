@@ -106,14 +106,94 @@ class TestDrainHeadlessQueue(TestCase):
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": [pending.pk]}
+        assert result.return_value == {"enqueued": [pending.pk], "failed_unknown_overlay": []}
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_no_pending_tasks(self) -> None:
         with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
             result = drain_headless_queue.enqueue()
 
-        assert result.return_value == {"enqueued": []}
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": []}
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_unknown_overlay_task_is_failed_not_enqueued(self) -> None:
+        ticket = Ticket.objects.create(overlay="ghost-overlay")
+        session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
+        poison = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = drain_headless_queue.enqueue()
+
+        assert result.return_value == {"enqueued": [], "failed_unknown_overlay": [poison.pk]}
+        poison.refresh_from_db()
+        assert poison.status == Task.Status.FAILED
+
+
+class TestExecuteHeadlessUnknownOverlay(TestCase):
+    """A task on an unknown overlay fails permanently — never an eternal re-crash (#1959)."""
+
+    def setUp(self) -> None:
+        from django.db.models.signals import post_save  # noqa: PLC0415
+
+        from teatree.core.signals import _auto_enqueue_headless_task  # noqa: PLC0415
+
+        post_save.disconnect(_auto_enqueue_headless_task, sender=Task, dispatch_uid="auto_enqueue_headless")
+        self.addCleanup(
+            post_save.connect,
+            _auto_enqueue_headless_task,
+            sender=Task,
+            dispatch_uid="auto_enqueue_headless",
+        )
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_unknown_overlay_marks_task_failed_with_attempt(self) -> None:
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="ghost-overlay")
+        session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            result = execute_headless_task.func(task.pk, task.phase)
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert result["exit_code"] == 1
+        attempt = TaskAttempt.objects.get(task=task)
+        assert attempt.exit_code == 1
+        assert "ghost-overlay" in attempt.error
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_failed_unknown_overlay_task_is_not_re_enqueued_next_drain(self) -> None:
+        from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="ghost-overlay")
+        session = Session.objects.create(ticket=ticket, overlay="ghost-overlay")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            status=Task.Status.PENDING,
+            phase="architectural_review",
+        )
+
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            execute_headless_task.func(task.pk, task.phase)
+            result = drain_headless_queue.enqueue()
+
+        assert task.pk not in result.return_value["enqueued"]
 
 
 class TestExecuteRetrospect(TestCase):
