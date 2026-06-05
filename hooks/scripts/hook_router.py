@@ -616,14 +616,14 @@ def _apply_deny_circuit_breaker(reason: str) -> _BreakerDecision:
 # * a SELF-RESCUE command (``t3 <overlay> gate disable``, ``db migrate``,
 #   ``t3 review gate fail-open enable``) is NEVER denied — no gate may block
 #   the very commands that rescue a lockout (#1472/#1474 deadlocked twice);
-# * with the master ``[teatree] gate_fail_open`` switch ON, every over-deny
-#   gate flips to fail-open at once.
+# * with the master ``[teatree] danger_gate_fail_open`` switch ON, every
+#   over-deny gate flips to fail-open at once.
 #
 # The HARD INVARIANT (regression-guarded in test_public_leak_gate_*): the
 # PUBLIC-egress leak path (quote/banned on a PUBLIC surface,
 # ``publish_surface`` carve-out) MUST NEVER call this helper and MUST NEVER
-# read ``gate_fail_open`` — it stays fail-CLOSED always. Relaxing a public
-# leak block is a privacy regression, not a lockout rescue.
+# read ``danger_gate_fail_open`` — it stays fail-CLOSED always. Relaxing a
+# public leak block is a privacy regression, not a lockout rescue.
 #
 # Both resolvers fail CLOSED to ENFORCEMENT (deny): a broken import or a
 # raising resolver must never silently relax a gate. This is the OPPOSITE of
@@ -674,8 +674,8 @@ def _is_self_rescue(command: str) -> bool:
         return False
 
 
-def _gate_fail_open_enabled() -> bool:
-    """True iff the master ``[teatree] gate_fail_open`` switch is ON.
+def _danger_gate_fail_open_enabled() -> bool:
+    """True iff the master ``[teatree] danger_gate_fail_open`` switch is ON.
 
     Fails CLOSED to disabled (return ``False``) on any import/resolution
     error so a broken environment never silently relaxes every gate.
@@ -685,7 +685,7 @@ def _gate_fail_open_enabled() -> bool:
         return False
     _, teatree_gate = modules
     try:
-        return bool(teatree_gate.gate_fail_open_is_enabled())
+        return bool(teatree_gate.danger_gate_fail_open_is_enabled())
     except Exception:  # noqa: BLE001
         return False
 
@@ -705,7 +705,7 @@ def _fail_open_or_deny(data: dict, reason: str) -> bool:
         command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
         if _is_self_rescue(command):
             return False
-        if _gate_fail_open_enabled():
+        if _danger_gate_fail_open_enabled():
             return False
     except Exception:  # noqa: BLE001 — a raising resolver must NEVER relax a gate; fail CLOSED to deny.
         return emit_pretooluse_deny(reason)
@@ -1162,7 +1162,7 @@ def handle_enforce_loop_registration(data: dict) -> bool:
     no-session) cover the first two layers; the deny itself adds two more:
 
     - it routes through :func:`_fail_open_or_deny`, so the always-allowed
-        self-rescue commands and the master ``gate_fail_open`` switch relax it;
+        self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
     - the reason carries the ``LOOP REGISTRATION`` UX-gate prefix, so the
         repeated-denial circuit breaker auto-relaxes it after K consecutive
         denials instead of blocking forever.
@@ -2232,8 +2232,8 @@ def _handle_broken_validate_env(data: dict) -> bool:
     must never reach GitLab just because the env could not validate it. The
     explicit ``T3_MR_VALIDATE_ALLOW_BROKEN_ENV`` opt-in is the per-gate
     self-rescue, and the broken-env deny additionally routes through
-    :func:`_fail_open_or_deny` so the master ``gate_fail_open`` switch and the
-    always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
+    :func:`_fail_open_or_deny` so the master ``danger_gate_fail_open`` switch and
+    the always-allowed self-rescue commands relax it too (NEVER-LOCKOUT).
     """
     if os.environ.get("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", "").strip().lower() in {"1", "true", "yes"}:
         return False
@@ -3027,8 +3027,8 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
     a missing ``session_id`` (fail-open), a broken ``~/.teatree.toml``
     (fail-disabled), and ``main``'s per-handler exception swallow. The master
-    ``gate_fail_open`` switch still protects the operator because rescue commands
-    run as ``Bash``, never as fanned-out ``Task``s.
+    ``danger_gate_fail_open`` switch still protects the operator because rescue
+    commands run as ``Bash``, never as fanned-out ``Task``s.
     """
     session_id = data.get("session_id", "")
     if not session_id or not _dispatch_quote_gate_on_task_create_enabled():
