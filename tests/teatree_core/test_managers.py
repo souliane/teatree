@@ -654,9 +654,9 @@ class TestReplayOrphanedTransitions(TestCase):
 
     def test_completed_task_with_unapplied_phase_transition_is_replayed(self) -> None:
         # Simulate the half-advanced state a mid-transition crash leaves:
-        # the coding task is COMPLETED but the ticket is still STARTED
+        # the coding task is COMPLETED but the ticket is still PLANNED
         # (the FSM ``code()`` transition never landed).
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         Task.objects.create(
             ticket=ticket,
@@ -789,10 +789,10 @@ class TestReplayOrphanedTransitions(TestCase):
         # would all no-op on the guards anyway, but the dedup keeps the
         # sweep O(tickets) not O(all completed tasks) and proves the
         # latest-per-ticket selection is exercised.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         # Older completed coding task, then the latest is also coding
-        # (e.g. a re-run). Both COMPLETED on the same STARTED ticket.
+        # (e.g. a re-run). Both COMPLETED on the same PLANNED ticket.
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
 
@@ -861,13 +861,13 @@ class TestReplayOrphanedTransitions(TestCase):
         # task (last attempt did NOT request user input) must still be
         # replay-advanced, exactly as before — the recovery sweep is
         # not over-blocked into uselessness.
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
         task.complete_with_attempt(exit_code=0, result={"summary": "done"})
         # Simulate the half-advanced orphan: complete() advanced the
-        # ticket; reset it to STARTED so the sweep has work to replay.
-        ticket.state = Ticket.State.STARTED
+        # ticket; reset it to PLANNED so the sweep has work to replay.
+        ticket.state = Ticket.State.PLANNED
         ticket.save(update_fields=["state"])
 
         replayed = Task.objects.replay_orphaned_transitions()
@@ -899,7 +899,7 @@ class TestCompleteIsAtomic(TestCase):
 
         import pytest  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id="a")
         task = Task.objects.create(
             ticket=ticket,
@@ -920,8 +920,8 @@ class TestCompleteIsAtomic(TestCase):
         # Atomic: the task save is rolled back together with the failed
         # FSM transition. Pre-fix the task was COMPLETED here (its save
         # had committed on a separate boundary) while the ticket stayed
-        # STARTED — the unrecoverable half-advance #883 is about.
+        # PLANNED — the unrecoverable half-advance #883 is about.
         assert task.status == Task.Status.CLAIMED, (
             f"task.complete() was not atomic — task is {task.status!r} but the FSM transition failed"
         )
-        assert ticket.state == Ticket.State.STARTED
+        assert ticket.state == Ticket.State.PLANNED

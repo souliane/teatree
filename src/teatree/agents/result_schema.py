@@ -42,6 +42,7 @@ class AgentResult(TypedDict, total=False):
     """
 
     summary: str
+    plan_text: str
     files_modified: list[FileChange]
     tests_run: list[TestResult]
     tests_passed: int
@@ -57,6 +58,7 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
         "summary": {"type": "string", "description": "One-line summary of what the agent did."},
+        "plan_text": {"type": "string", "description": "Full plan text produced by the planner agent."},
         "files_modified": {
             "type": "array",
             "items": {
@@ -126,6 +128,7 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
 #: Phases not in this map (``scoping``, ``retro``) carry no evidence
 #: requirement — they are intentionally lightweight.
 PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
+    "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
     "reviewing": ("decisions",),

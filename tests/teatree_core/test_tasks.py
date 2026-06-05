@@ -220,7 +220,7 @@ class TestExecuteProvision(TestCase):
         return ticket
 
     @override_settings(**IMMEDIATE_BACKEND)
-    def test_provisions_then_schedules_coding(self) -> None:
+    def test_provisions_then_schedules_planning(self) -> None:
         from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
 
         ticket = self._ticket_in_started()
@@ -231,7 +231,8 @@ class TestExecuteProvision(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
-        assert ticket.tasks.filter(phase="coding").exists()
+        assert ticket.tasks.filter(phase="planning").exists()
+        assert not ticket.tasks.filter(phase="coding").exists()
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "ok": True,
@@ -246,7 +247,7 @@ class TestExecuteProvision(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.SCOPED
-        assert not ticket.tasks.filter(phase="coding").exists()
+        assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {
             "ticket_id": ticket.pk,
             "skipped": True,
@@ -265,7 +266,7 @@ class TestExecuteProvision(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
-        assert not ticket.tasks.filter(phase="coding").exists()
+        assert not ticket.tasks.filter(phase="planning").exists()
         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
 
 
@@ -505,8 +506,8 @@ class TestAdvanceTicketNormalizesPhase(TestCase):
         # The session record agrees (already normalized by _record_phase_visit).
         assert "reviewing" in (session.visited_phases or [])
 
-    def test_short_verb_code_advances_started_to_coded(self) -> None:
-        ticket, session = self._ticket_with_session(Ticket.State.STARTED)
+    def test_short_verb_code_advances_planned_to_coded(self) -> None:
+        ticket, session = self._ticket_with_session(Ticket.State.PLANNED)
         task = Task.objects.create(ticket=ticket, session=session, phase="code")
 
         task._advance_ticket()

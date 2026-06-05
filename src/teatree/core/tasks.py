@@ -185,14 +185,14 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
 
 @task()
 def execute_provision(ticket_id: int) -> TransitionResult:
-    """Provision worktrees for a STARTED ticket and schedule the coding task.
+    """Provision worktrees for a STARTED ticket and schedule the planning task.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
     for the same transition — a lost update or a redelivered job must be safe.
 
     On success, the runner has materialised every git worktree; we then call
-    ``schedule_coding()`` so the FSM proceeds toward CODED.
+    ``schedule_planning()`` so the FSM proceeds toward CODED.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -209,7 +209,7 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        ticket.schedule_coding()
+        ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 

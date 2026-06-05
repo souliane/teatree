@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, Ticket
 from tests.teatree_core.models._shared import (
+    _advance_started_to_planned,
     _advance_ticket_to_tested,
     _attach_shippable_worktree,
     _complete_phase_task,
@@ -22,7 +23,7 @@ class TestPhaseAutoDispatch(TestCase):
     def _inject_tmp_path(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
-    def test_start_provisions_then_schedules_coding_task(self) -> None:
+    def test_start_provisions_then_schedules_planning_task(self) -> None:
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
@@ -30,12 +31,12 @@ class TestPhaseAutoDispatch(TestCase):
         _start_with_provision(self, ticket)
 
         ticket.refresh_from_db()
-        task = ticket.tasks.get(phase="coding")
-        # Coding is loop-dispatched ((author, coding) → t3:coder), so it runs
-        # as an in-session sub-agent (subscription-covered), not a metered
+        task = ticket.tasks.get(phase="planning")
+        # Planning is loop-dispatched ((author, planning) → t3:planner), so it
+        # runs as an in-session sub-agent (subscription-covered), not a metered
         # detached claude -p.
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
-        assert task.session.agent_id == "coding"
+        assert task.session.agent_id == "planning"
         assert ticket.state == Ticket.State.STARTED
 
     def test_code_auto_schedules_testing_task(self) -> None:
@@ -44,6 +45,7 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _advance_started_to_planned(ticket)
         ticket.code()
         ticket.save()
 
@@ -61,7 +63,7 @@ class TestPhaseAutoDispatch(TestCase):
         def fake_enqueue(ticket_id: int) -> None:
             target = Ticket.objects.get(pk=ticket_id)
             if target.state == Ticket.State.STARTED:
-                target.schedule_coding()
+                target.schedule_planning()
 
         ticket = Ticket.objects.create()
         ticket.scope()
@@ -80,14 +82,21 @@ class TestPhaseAutoDispatch(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.STARTED
-        # execute_provision (worker side effect of start()) scheduled the coding task
-        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+        # execute_provision (worker side effect of start()) scheduled the planning task
+        assert ticket.tasks.filter(phase="planning", status=Task.Status.PENDING).exists()
 
     def test_coding_task_completion_advances_to_coded(self) -> None:
+        from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
         ticket = Ticket.objects.create()
         ticket.scope()
         ticket.save()
         _start_with_provision(self, ticket)
+
+        PlanArtifact.record(ticket=ticket, plan_text="Plan: implement", recorded_by="t3:planner")
+        _complete_phase_task(ticket, "planning")
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLANNED
 
         _complete_phase_task(ticket, "coding")
 
@@ -101,6 +110,7 @@ class TestPhaseAutoDispatch(TestCase):
         ticket.scope()
         ticket.save()
         _start_with_provision(self, ticket)
+        _advance_started_to_planned(ticket)
         ticket.code()
         ticket.save()
 

@@ -17,10 +17,10 @@ delivered to the handler's ``event`` by a registered ``hooks.json`` matcher
 (PreToolUse: the tool name matches a matcher regex; TaskCreated/Stop: a handler
 is registered on that event).
 
-After PR B (#171) three gates remain phantoms — the PreToolUse ``Agent`` arms of
-the plan-gate, dispatch-quote, and orchestrator-boundary gates. Their handler
-logic is correct but assertion (c) fails because NO ``Agent`` matcher is wired
-in ``hooks.json`` (the registered PreToolUse matchers are ``Bash|Edit|Write``,
+After PR B (#171) two gates remain phantoms — the PreToolUse ``Agent`` arms of
+the dispatch-quote and orchestrator-boundary gates. Their handler logic is
+correct but assertion (c) fails because NO ``Agent`` matcher is wired in
+``hooks.json`` (the registered PreToolUse matchers are ``Bash|Edit|Write``,
 ``AskUserQuestion``, ``mcp__.*[Ss]lack.*``; ``Agent`` has only ever appeared in
 the PostToolUse matcher). The ``Agent`` TOOL itself DOES reach PreToolUse —
 adding an ``Agent`` matcher would make these arms genuinely live — so they are
@@ -29,18 +29,13 @@ that matters most (the orchestrator-boundary foreground-Agent guard) sits on the
 orchestrator's own hot path, so enabling it unattended is a lockout risk to be
 validated attended (#1646). Distinguish this from the ``Task``/``Workflow``
 fan-out vehicle, which genuinely DOES bypass PreToolUse and fires ``TaskCreated``
-instead (no ``run_in_background`` in its schema) — that is why the plan-gate and
-dispatch-quote concerns also carry reachable ``TaskCreated`` counterparts.
+instead (no ``run_in_background`` in its schema) — that is why the dispatch-quote
+concern also carries a reachable ``TaskCreated`` counterpart.
 They are ``xfail(strict=True)`` so the suite is GREEN now and any later genuine
 fix flips the row to an unexpected-pass that FAILS the build, forcing the xfail
 removal. The final assertion makes the phantom roster LOUD (also visible via
 ``-rsx``) so a reader sees exactly which gates are known-dead — no silent
 truncation.
-
-The plan-gate rows use the real ``teatree-plan`` / ``t3:teatree-plan`` skill
-name. The tracker now matches it by exact final-segment membership, so a real
-``/plan`` clears the gate (the validity hole is closed); the new
-``TaskCreated`` plan-gate row proves the fan-out path is enforced too.
 """
 
 import json
@@ -59,12 +54,6 @@ import hooks.scripts.hook_router as router
 
 _HOOKS_JSON: Final[Path] = Path(__file__).resolve().parents[1] / "hooks" / "hooks.json"
 _REPO_SKILLS_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "skills"
-
-# The real plan skill (skills/teatree-plan/SKILL.md frontmatter name), invoked
-# as ``t3:teatree-plan``. Its final path segment is ``teatree-plan`` — which
-# does NOT start with ``plan``, so the plan-gate tracker never records it.
-_REAL_PLAN_SKILL: Final[str] = "teatree-plan"
-_REAL_PLAN_SKILL_INVOCATION: Final[str] = "t3:teatree-plan"
 
 
 @dataclass
@@ -221,13 +210,13 @@ def _agent(prompt: str, *, run_in_background: bool = False) -> dict:
 
 def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", f"{_REAL_PLAN_SKILL}\n")
+    ctx.write_state("pending", "teatree-plan\n")
     ctx.write_state("skills", "")
 
 
 def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", f"{_REAL_PLAN_SKILL}\n")
+    ctx.write_state("pending", "teatree-plan\n")
     ctx.write_state("skills", "")
 
 
@@ -240,83 +229,33 @@ def _task_created(description: str, *, skip: bool) -> dict:
     }
 
 
-# plan gate (PreToolUse Edit/Write): opt-in per overlay; an Edit under the
-# workspace with neither a recorded /plan nor a recorded read must block.
+# block-edit-before-planned (PreToolUse Edit/Write): deny Edit/Write when the
+# worktree's ticket is still in STARTED state (no PlanArtifact yet).
+# _ticket_state_for_cwd() resolves via Django/DB, so the corpus monkeypatches it
+# directly rather than spinning up Django.
 
 
-def _arrange_plan_gate(ctx: GateContext) -> None:
-    ctx.write_teatree_toml("[overlays.acme]\nplan_gate = true\n")
-    ws = ctx.home / "workspace"
-    ws.mkdir(parents=True, exist_ok=True)
-    ctx.monkeypatch.setenv("T3_WORKSPACE_DIR", str(ws))
+def _arrange_block_edit_before_planned(ctx: GateContext) -> None:
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "started")
 
 
-def _edit_in_workspace(ctx: GateContext, *, satisfied: bool) -> dict:
-    target = ctx.home / "workspace" / "acme" / "module.py"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text("x = 1\n", encoding="utf-8")
-    if satisfied:
-        # The real plan skill is invoked as t3:teatree-plan; record what the
-        # PostToolUse tracker would actually write for it.
-        router.handle_track_plan_invocation(
-            {
-                "session_id": ctx.session_id,
-                "tool_name": "Skill",
-                "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION},
-            }
-        )
+def _block_edit_before_planned_deny(ctx: GateContext) -> dict:
     return {
         "session_id": ctx.session_id,
         "tool_name": "Edit",
-        "tool_input": {"file_path": str(target), "old_string": "x = 1", "new_string": "x = 2"},
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"file_path": str(ctx.tmp_path / "module.py"), "old_string": "a", "new_string": "b"},
     }
 
 
-# agent plan gate (Agent/Task): a fresh /plan timestamp or a [skip-plan-gate]
-# token clears it. The real /plan is t3:teatree-plan.
-
-
-def _arrange_agent_plan_gate(ctx: GateContext) -> None:
-    ctx.monkeypatch.setenv("XDG_DATA_HOME", str(ctx.tmp_path / "xdg"))
-    ctx.monkeypatch.delenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", raising=False)
-
-
-def _agent_plan_allow(ctx: GateContext) -> dict:
-    # Record a /plan exactly as the PostToolUse tracker would for the REAL
-    # plan skill name — proving (or disproving) a real /plan clears the gate.
-    router.handle_track_plan_skill_timestamp(
-        {"tool_name": "Skill", "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION}}
-    )
-    return _agent("implement the acme feature", run_in_background=True)
-
-
-# plan gate (TaskCreated): the fan-out path. A fanned-out Task with no recent
-# /plan must block; a real t3:teatree-plan or a [skip-plan-gate] token clears it.
-
-
-def _arrange_task_created_plan_gate(ctx: GateContext) -> None:
-    # The TaskCreated plan-gate ships default-OFF (opt-in, pending the
-    # correct-signal design in #1640), so the corpus must explicitly enable it
-    # to prove it CAN fire when on: reachable + denies a missing-plan fan-out +
-    # allows a planned one.
-    _arrange_agent_plan_gate(ctx)
-    ctx.write_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
-
-
-def _task_created_plan(*, skip: bool) -> dict:
-    token = "[skip-plan-gate: false-trigger] " if skip else ""
+def _block_edit_before_planned_allow(ctx: GateContext) -> dict:
+    ctx.monkeypatch.setattr(router, "_ticket_state_for_cwd", lambda _cwd: "planned")
     return {
-        "session_id": "sess-liveness",
-        "task_subject": f"{token}build the acme feature",
-        "task_description": "",
+        "session_id": ctx.session_id,
+        "tool_name": "Edit",
+        "cwd": str(ctx.tmp_path),
+        "tool_input": {"file_path": str(ctx.tmp_path / "module.py"), "old_string": "a", "new_string": "b"},
     }
-
-
-def _task_created_plan_allow(ctx: GateContext) -> dict:
-    router.handle_track_plan_skill_timestamp(
-        {"tool_name": "Skill", "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION}}
-    )
-    return _task_created_plan(skip=False)
 
 
 # protect-default-branch (PreToolUse Edit/Write/Read): an Edit on a file in a
@@ -630,11 +569,6 @@ def _classifier_stop_allow(ctx: GateContext) -> dict:
 # TaskCreated counterparts because the SEPARATE `Task`/`Workflow` fan-out vehicle
 # genuinely DOES bypass PreToolUse (verified against the Claude Code binary;
 # docs/claude-code-internals.md §9). Do not conflate the two.
-_AGENT_PLAN_GATE_PHANTOM = (
-    "phantom — no `Agent` PreToolUse matcher is wired in hooks.json; the `Agent` tool DOES "
-    "reach PreToolUse, so adding one would make this arm live. Kept unwired deliberately; "
-    "the fan-out path is enforced by the reachable enforce-plan-gate-on-task-create — see #1646"
-)
 _DISPATCH_QUOTE_PHANTOM = (
     "phantom — no `Agent` PreToolUse matcher is wired in hooks.json; the `Agent` tool DOES "
     "reach PreToolUse, so adding one would make this arm live. Kept unwired deliberately; the "
@@ -674,32 +608,13 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         arrange=_arrange_skill_loading_on_task,
     ),
     GateRow(
-        gate_id="enforce-plan-gate",
-        handler=router.handle_enforce_plan_gate,
+        gate_id="block-edit-before-planned",
+        handler=router.handle_block_edit_before_planned,
         event="PreToolUse",
         matched="Edit",
-        deny_input=lambda c: _edit_in_workspace(c, satisfied=False),
-        allow_input=lambda c: _edit_in_workspace(c, satisfied=True),
-        arrange=_arrange_plan_gate,
-    ),
-    GateRow(
-        gate_id="enforce-agent-plan-gate",
-        handler=router.handle_enforce_agent_plan_gate,
-        event="PreToolUse",
-        matched="Agent",
-        deny_input=lambda _c: _agent("implement the acme feature", run_in_background=True),
-        allow_input=_agent_plan_allow,
-        arrange=_arrange_agent_plan_gate,
-        phantom_reason=_AGENT_PLAN_GATE_PHANTOM,
-    ),
-    GateRow(
-        gate_id="enforce-plan-gate-on-task-create",
-        handler=router.handle_enforce_plan_gate_on_task_create,
-        event="TaskCreated",
-        matched="Task",
-        deny_input=lambda _c: _task_created_plan(skip=False),
-        allow_input=_task_created_plan_allow,
-        arrange=_arrange_task_created_plan_gate,
+        deny_input=_block_edit_before_planned_deny,
+        allow_input=_block_edit_before_planned_allow,
+        arrange=_arrange_block_edit_before_planned,
     ),
     GateRow(
         gate_id="protect-default-branch",
@@ -842,33 +757,29 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
 # one genuine CAUSE-B phantom — ``validate-mr-metadata-mcp`` — by adding the
 # ``mcp__glab__glab_mr_.*`` PreToolUse matcher (an ordinary MCP call merely
 # omitted from the matcher; it now fires in production). What stays phantom is
-# the THREE PreToolUse Agent arms — phantom because NO ``Agent`` matcher is wired
+# the TWO PreToolUse Agent arms — phantom because NO ``Agent`` matcher is wired
 # in ``hooks.json``, NOT because the Agent tool bypasses the event. The ``Agent``
 # TOOL itself DOES reach PreToolUse (a foreground Agent dispatch fires it with
 # ``run_in_background`` in the tool_input), so adding an ``Agent`` matcher would
-# make all three genuinely live. They are kept unwired DELIBERATELY in this PR:
+# make both genuinely live. They are kept unwired DELIBERATELY in this PR:
 # the orchestrator-boundary deny in particular sits on the orchestrator's own
 # foreground Agent-dispatch hot path, so enabling it must be validated attended
-# (#1646). Two of them ALSO carry reachable TaskCreated counterparts
-# (``enforce-plan-gate-on-task-create``, ``dispatch-prompt-quote-scanner-on-task-create``)
-# because the SEPARATE ``Task``/``Workflow`` fan-out vehicle genuinely DOES bypass
-# PreToolUse (verified against the Claude Code binary; docs/claude-code-internals.md
-# §9); the orchestrator-boundary arm has no such counterpart because the TaskCreated
-# schema lacks ``run_in_background``. They stay xfail (NOT given an ``Agent``
-# matcher) so the corpus keeps telling the truth. The categories are asserted
-# explicitly below so a row losing/gaining its phantom status without a deliberate
-# update is caught.
+# (#1646). One of them ALSO carries a reachable TaskCreated counterpart
+# (``dispatch-prompt-quote-scanner-on-task-create``) because the SEPARATE
+# ``Task``/``Workflow`` fan-out vehicle genuinely DOES bypass PreToolUse (verified
+# against the Claude Code binary; docs/claude-code-internals.md §9); the
+# orchestrator-boundary arm has no such counterpart because the TaskCreated schema
+# lacks ``run_in_background``. They stay xfail (NOT given an ``Agent`` matcher)
+# so the corpus keeps telling the truth. The categories are asserted explicitly
+# below so a row losing/gaining its phantom status without a deliberate update is caught.
 _EXPECTED_REACHABILITY_PHANTOMS: Final[frozenset[str]] = frozenset(
     {
-        "enforce-agent-plan-gate",  # no Agent matcher wired; reachable via TaskCreated counterpart too
         "dispatch-prompt-quote-scanner",  # no Agent matcher wired; reachable via TaskCreated counterpart too
         "enforce-orchestrator-boundary-agent",  # no Agent matcher wired; no TaskCreated signal, deferred (#1646)
     }
 )
-# No allow-phantoms remain: the plan-tracker mismatch (#167) is fixed, so a
-# real teatree-plan /plan now clears both plan gates.
 _EXPECTED_ALLOW_PHANTOMS: Final[frozenset[str]] = frozenset()
-_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 3
+_EXPECTED_PHANTOM_CATEGORY_COUNT: Final[int] = 2
 
 
 # ── fixtures (state isolation — the dev's real ~/.teatree.toml can't leak) ──
@@ -963,7 +874,7 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
     Makes the dead-gate roster LOUD: a reader running ``pytest -rsx`` sees each
     xfail reason, and this test fails if a phantom is silently added/removed
     from the registry without updating the expected rosters. After PR B (#171)
-    the roster is exactly the three PreToolUse Agent arms, phantom because no
+    the roster is exactly the two PreToolUse Agent arms, phantom because no
     ``Agent`` matcher is wired in ``hooks.json`` (the Agent tool DOES reach
     PreToolUse — they are kept unwired deliberately, see #1646), while the one
     genuine CAUSE-B phantom, ``validate-mr-metadata-mcp``, was repaired by a
