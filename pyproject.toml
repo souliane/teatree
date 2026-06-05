@@ -126,18 +126,6 @@ lint.extend-ignore = [
   "Q004",   # quote rules
   "W191",   # tab indentation
 ]
-lint.per-file-ignores."e2e/**/*.py" = [
-  "ANN",     # E2E test/fixture annotations not enforced
-  "ARG001",
-  "ARG002",  # overlay method signatures
-  "PLC0415", # deferred Django imports (setup not yet called)
-  "PLR6301", # overlay methods
-  "S101",    # assert in tests
-  "S105",    # hardcoded secret key (test only)
-  "S108",    # /tmp paths (test fixtures)
-  "S404",    # subprocess
-  "TRY300",  # try/return in server wait loop
-]
 # Scripts use typer (default args), deferred imports (E402), boolean params
 # (FBT), subprocess (S4xx/S6xx), and print (T201).
 lint.per-file-ignores."scripts/**/*.py" = [
@@ -160,14 +148,12 @@ lint.per-file-ignores."src/t3_bootstrap/_main.py" = [
 lint.per-file-ignores."src/teatree/cli/*.py" = [
   "B008",   # function-call-in-default-argument (typer.Option/Argument is idiomatic)
   "FBT003", # boolean positional/default (typer CLI flags)
-  "S607",   # partial executable paths (uv is a trusted internal tool)
 ]
 lint.per-file-ignores."src/teatree/cli/__init__.py" = [
   "RUF067", # Typer app construction, callbacks, helpers, and registration live here
 ]
 lint.per-file-ignores."src/teatree/core/management/commands/*.py" = [
   "PLR6301", # django-typer command methods intentionally live on Command classes
-  "S607",    # partial executable paths (git, dropdb, direnv, prek) are trusted internal tools
 ]
 lint.per-file-ignores."src/teatree/core/migrations/*.py" = [
   "ANN",    # Django migrations don't need type annotations
@@ -182,10 +168,10 @@ lint.per-file-ignores."src/teatree/core/overlay.py" = [
 lint.per-file-ignores."src/teatree/core/views/*.py" = [
   "PLR6301", # Django class-based views intentionally implement HTTP verb methods on the class
 ]
+# Trusted internal subprocess wrappers around git and postgres CLIs.
 lint.per-file-ignores."src/teatree/utils/*.py" = [
   "S404",
   "S603",
-  "S607", # trusted internal subprocess wrappers around git and postgres CLIs
 ]
 # Tests use assert, magic values, private access, etc.
 lint.per-file-ignores."tests/**/*.py" = [
