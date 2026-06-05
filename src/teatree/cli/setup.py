@@ -600,7 +600,7 @@ def run(
         echo=typer.echo,
     )
 
-    ensure_self_db_migrated(quiet=True)
+    self_db_unmigrated = ensure_self_db_migrated(quiet=True)
 
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see
@@ -608,6 +608,9 @@ def run(
     from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415
 
     report_missing_authorizations(typer.echo)
+
+    if self_db_unmigrated:
+        raise typer.Exit(code=1)
 
     typer.echo("Done.")
 

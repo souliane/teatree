@@ -13,7 +13,9 @@ from unittest.mock import patch
 import pytest
 
 
-def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, migrate_returns: bool = False):
+    import typer  # noqa: PLC0415
+
     from teatree.cli import setup as setup_module  # noqa: PLC0415
 
     skills_src = tmp_path / "core_skills"
@@ -30,23 +32,34 @@ def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (repo / "apm.yml").touch()
     (repo / ".git").mkdir()
 
+    raised: list[int] = []
     with (
         patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
         patch.object(setup_module, "_find_main_clone", return_value=repo),
         patch.object(setup_module, "_run_apm_install", return_value=True),
         patch.object(setup_module, "_install_claude_plugin", return_value=True),
-        patch.object(setup_module, "ensure_self_db_migrated", return_value=False) as mock_migrate,
+        patch.object(setup_module, "ensure_self_db_migrated", return_value=migrate_returns) as mock_migrate,
         patch("teatree.config.load_config") as mock_load,
     ):
         mock_load.return_value.user.contribute = False
         mock_load.return_value.user.excluded_skills = []
         mock_load.return_value.user.workspace_dir = str(tmp_path / "workspace")
-        setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
+        try:
+            setup_module.run(SimpleNamespace(invoked_subcommand=None), skip_plugin=True)
+        except typer.Exit as exc:
+            raised.append(exc.exit_code)
 
-    return mock_migrate
+    return mock_migrate, raised
 
 
 class TestSetupRunsSelfDbMigrations:
     def test_setup_invokes_self_db_migrate_quietly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_migrate = _run_setup(tmp_path, monkeypatch)
+        mock_migrate, raised = _run_setup(tmp_path, monkeypatch)
         mock_migrate.assert_called_once_with(quiet=True)
+        assert raised == []
+
+    def test_setup_exits_nonzero_when_self_db_left_unmigrated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_migrate, raised = _run_setup(tmp_path, monkeypatch, migrate_returns=True)
+        assert raised == [1]
