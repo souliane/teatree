@@ -211,6 +211,18 @@ def test_user_identity_aliases_ignores_non_list(tmp_path: Path) -> None:
     assert load_config(config_path).user.user_identity_aliases == []
 
 
+def test_clean_ignore_defaults_empty(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, "[teatree]\n")
+    assert load_config(config_path).user.clean_ignore == []
+
+
+def test_clean_ignore_reads_toml(tmp_path: Path) -> None:
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[teatree]\nclean_ignore = ["spike/*", "dev-override"]\n')
+    assert load_config(config_path).user.clean_ignore == ["spike/*", "dev-override"]
+
+
 def test_loop_cadence_seconds_override(tmp_path: Path) -> None:
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\nloop_cadence_seconds = 300\n")
