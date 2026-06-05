@@ -425,12 +425,25 @@ jobs:
   eval-weekly:
     # Weekly behavioral-eval gate. The eval suite shells out to `claude -p`
     # (cost, network, model variance), so it must NOT run on every push or
-    # every PR. The cadence is once a week, on the FIRST pull request opened
-    # that ISO week — `scripts/eval/first_pr_of_week.py` makes that decision
-    # (order-independent, re-run safe). Manual on-demand runs bypass CI: the
-    # user runs `t3 eval run` / `t3 eval trigger-qa` locally. The GitLab mirror
-    # carries the equivalent rule in `.gitlab-ci.yml`.
-    if: github.event_name == 'pull_request'
+    # every PR. The cadence is once a week. Two complementary paths fire it:
+    #
+    #   * PR path — on the FIRST pull request opened that ISO week
+    #     (`first_pr_of_week.py --mode first-of-week`, order-independent,
+    #     re-run safe). Covers any week that opened a PR.
+    #   * Cron path — on the daily `schedule` (the shared `17 6 * * *` cron),
+    #     but only when NO PR was opened this ISO week
+    #     (`first_pr_of_week.py --mode no-pr-week`). Closes the gap where a
+    #     PR-less week ran no eval at all. The two paths share one marker —
+    #     the week's PR list — so a week the PR path already covered is never
+    #     re-run on the cron (no double-run). The cron is further pinned to
+    #     the ISO week's Monday so a multi-day PR-less week fires once, not
+    #     every day.
+    #
+    # Manual on-demand runs bypass CI: the user runs `t3 eval run` /
+    # `t3 eval trigger-qa` locally (also wired as the periodic local-eval
+    # loop job — `EvalLocalScanner`). The GitLab mirror carries the PR-path
+    # rule in `.gitlab-ci.yml` (no scheduled-pipeline equivalent there).
+    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -448,18 +461,30 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: uv sync
-      - name: Decide whether this is the first PR of the ISO week
+      - name: Decide whether the weekly eval runs (PR path or cron path)
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # Most-recent-first so the current ISO week is on the first page even
           # for a repo with thousands of PRs. first_pr_of_week.py also keeps the
           # newest window as a second line of defence regardless of ordering.
           gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
             --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
-          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            # Cron path: run only in a PR-less ISO week (the PR path covers the
+            # rest), and only on the ISO week's Monday so a multi-day PR-less
+            # week fires the eval exactly once instead of every daily cron tick.
+            if [ "$(date -u +%u)" != "1" ]; then
+              echo "run_eval=false" >> "$GITHUB_OUTPUT"
+            elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --mode no-pr-week --skip-code 1; then
+              echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_eval=false" >> "$GITHUB_OUTPUT"
+            fi
+          elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
             echo "run_eval=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_eval=false" >> "$GITHUB_OUTPUT"

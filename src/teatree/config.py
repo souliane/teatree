@@ -337,6 +337,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
     "ask_before_creating_news_tickets": bool,
+    "eval_local_disabled": bool,
+    "eval_local_skill": str,
+    "eval_local_cadence_hours": int,
     "dogfood_smoke_disabled": bool,
     "dogfood_smoke_skill": str,
     "dogfood_smoke_cadence_hours": int,
@@ -589,6 +592,17 @@ class UserSettings:
     # backlog pollution from unconfirmed auto-filing is the failure mode
     # this gate forecloses. Per-overlay overridable.
     ask_before_creating_news_tickets: bool = True
+    # Periodic local-eval scanner — CORE always-on with a weekly cadence
+    # (168h). User directive (2026-06-05): "AI evals should be run locally
+    # from time to time, and in CI once a week." The loop fires an
+    # ``eval_local`` task per cadence window so the SCOPED eval suite runs
+    # locally via the no-API-key subscription runner (the same path
+    # ``t3 eval run`` defaults to), without depending on an external cron.
+    # Set ``eval_local_disabled = true`` in ``[teatree]`` (or per-overlay)
+    # as the escape hatch.
+    eval_local_disabled: bool = False
+    eval_local_skill: str = "eval"
+    eval_local_cadence_hours: int = 168
     # #1308 Periodic provision-smoke scanner — CORE always-on with a
     # 24h cadence by default. Queues a ``dogfood_smoke`` task per cadence
     # window so the loop exercises the active overlay's provision path
@@ -844,6 +858,9 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
         ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
+        eval_local_disabled=bool(teatree.get("eval_local_disabled", False)),
+        eval_local_skill=str(teatree.get("eval_local_skill", "eval")),
+        eval_local_cadence_hours=int(teatree.get("eval_local_cadence_hours", 168)),
         dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
         dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
         dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),

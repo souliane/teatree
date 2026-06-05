@@ -39,6 +39,7 @@ from teatree.loop.scanners import (
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
     CodexReviewScanner,
+    EvalLocalScanner,
     GhCodexPrApi,
     GhPrApiClient,
     GitLabApprovalsScanner,
@@ -746,6 +747,34 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
     )
 
 
+def _eval_local_scanner() -> EvalLocalScanner | None:
+    """Build a global local-eval scanner from teatree-core config.
+
+    User directive (2026-06-05): "AI evals should be run locally from
+    time to time, and in CI once a week." The CI half lives in
+    ``.github/workflows/ci.yml`` (``eval-weekly``); this is the local
+    half. The cadence is a teatree-core platform behaviour (weekly by
+    default), so the settings live on :class:`teatree.config.UserSettings`
+    (the ``[teatree]`` table, per-overlay overridable). Returns ``None``
+    when ``eval_local_disabled = true`` (the escape hatch).
+
+    The overlay-anchor identity is resolved via
+    :func:`teatree.config.discover_active_overlay`, falling back to the
+    canonical post-0027 overlay name (``t3-teatree``) when no overlay is
+    registered — mirroring :func:`_scanning_news_scanner`.
+    """
+    settings = load_config().user
+    if settings.eval_local_disabled:
+        return None
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    return EvalLocalScanner(
+        overlay_name=overlay_name,
+        skill=settings.eval_local_skill,
+        cadence_hours=settings.eval_local_cadence_hours,
+    )
+
+
 def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
     """Resolve :class:`UserSettings` for *overlay_name*, autonomy collapse applied.
 
@@ -1265,7 +1294,11 @@ def build_default_jobs(
     # task is anchored on the `teatree` overlay placeholder ticket so
     # the dispatcher routes through the standard pending-task pipeline.
     # #1191 / #1308 — global teatree-CORE scanners (news + provision smoke).
-    jobs.extend(_ScannerJob(scanner=s, overlay="") for s in (_scanning_news_scanner(), _dogfood_smoke_scanner()) if s)
+    jobs.extend(
+        _ScannerJob(scanner=s, overlay="")
+        for s in (_scanning_news_scanner(), _dogfood_smoke_scanner(), _eval_local_scanner())
+        if s
+    )
     # #1249 Self-update scanner — fast-forwards the editable teatree
     # core clone + every registered overlay clone to ``origin/<default>``
     # once the cadence has elapsed. Wired as a global job because it
