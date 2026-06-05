@@ -168,12 +168,22 @@ def _auto_enqueue_headless_task(
     ``_is_loop_dispatched`` stays as a belt-and-braces skip for any HEADLESS
     row of such a pair, so a ``db_worker`` draining the queue never
     double-runs (or meters) loop phase work.
+
+    A task whose ticket names a non-empty unknown overlay is never enqueued
+    (souliane/teatree#1959): dispatching it would crash ``execute_headless_task``
+    — the drain safety-net fails such rows permanently instead. A blank overlay
+    is the ambient single-overlay default and stays dispatchable.
     """
     if instance.execution_target != Task.ExecutionTarget.HEADLESS:
         return
     if instance.status != Task.Status.PENDING:
         return
     if _is_loop_dispatched(instance):
+        return
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+
+    if instance.ticket.overlay and resolve_overlay_name(instance.ticket.overlay) is None:
+        logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415
 

@@ -155,6 +155,24 @@ def test_discover_active_overlay_from_manage_py(tmp_path: Path, monkeypatch: pyt
     assert result.project_path == tmp_path
 
 
+def test_discover_active_overlay_canonicalizes_clone_dir_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A clone dir named ``teatree`` resolves to the registered ``t3-teatree`` (#1959)."""
+    project = tmp_path / "teatree"
+    _write_manage_py(project, "active.settings")
+    monkeypatch.chdir(project)
+
+    ep = MagicMock()
+    ep.name = "t3-teatree"
+    ep.value = "t3_teatree.overlay:TeatreeOverlay"
+
+    with patch("importlib.metadata.entry_points", return_value=[ep]):
+        result = discover_active_overlay()
+
+    assert result is not None
+    assert result.name == "t3-teatree"
+    assert result.project_path == project
+
+
 def test_discover_active_overlay_single_installed(
     config_file: Path,
     elsewhere: Path,
