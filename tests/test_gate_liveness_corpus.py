@@ -389,6 +389,34 @@ def _quote_slack_allow(ctx: GateContext) -> dict:
     return _slack_send("mcp__claude_ai_Slack__slack_send_message", "Routine status update.")
 
 
+# self-DM gate (mcp__*slack* send/react): a write to a configured bot↔user DM
+# channel denies (renders as user-authored under the personal token); a write to
+# a colleague channel allows. The arrange step declares the DM channel id under
+# an overlay table so the gate can resolve it.
+
+_SELF_DM_CHANNEL = "D0BLIVEDM001"
+
+
+def _arrange_self_dm_gate(ctx: GateContext) -> None:
+    ctx.write_teatree_toml(f'[overlays.t3-acme]\nslack_dm_channel_id = "{_SELF_DM_CHANNEL}"\n')
+
+
+def _self_dm_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_input": {"channel": _SELF_DM_CHANNEL, "text": "Full-day review report"},
+    }
+
+
+def _self_dm_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Phantom because no Agent
 # matcher is wired in hooks.json (the Agent tool itself DOES reach PreToolUse —
@@ -664,6 +692,15 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_quote_slack_deny,
         allow_input=_quote_slack_allow,
         arrange=_arrange_mcp_privacy_gate,
+    ),
+    GateRow(
+        gate_id="block-self-dm-via-mcp",
+        handler=router.handle_block_self_dm_via_mcp,
+        event="PreToolUse",
+        matched="mcp__claude_ai_Slack__slack_send_message",
+        deny_input=_self_dm_deny,
+        allow_input=_self_dm_allow,
+        arrange=_arrange_self_dm_gate,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",
