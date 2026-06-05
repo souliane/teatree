@@ -1468,7 +1468,11 @@ Usage: t3 eval all [OPTIONS]
  subscription-produced transcripts when present; with none on disk it emits the
  subscription manifest plus the in-session recipe and NEVER silently shells the
  metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
- (CI's path). A SKIP never fails the run; only a real FAIL exits non-zero.
+ (CI's path). ``--free-only`` drops the AI lane entirely — the deterministic,
+ token-free, spec-discovery-free gate the pre-push hook runs. ``--docker`` runs
+ the same gate inside the exact CI image for environment parity (host-run is
+ the
+ default). A SKIP never fails the run; only a real FAIL exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
@@ -1478,6 +1482,11 @@ Usage: t3 eval all [OPTIONS]
 │                               [default: subscription]                        │
 │ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
 │                               transcripts for the AI lane (default: cwd).    │
+│ --free-only                   Run only the free deterministic lanes (drop    │
+│                               the AI lane) — the fast pre-push gate.         │
+│ --docker                      Run inside the exact CI image                  │
+│                               (dev/Dockerfile.test) for parity; host-run is  │
+│                               the default.                                   │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

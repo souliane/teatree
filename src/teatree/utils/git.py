@@ -158,13 +158,15 @@ def bundle_create(repo: str, bundle_path: str, branch: str) -> None:
     run_strict(repo=repo, args=["bundle", "create", bundle_path, branch])
 
 
-def _git_env_without_overrides() -> dict[str, str]:
+def git_env_without_overrides() -> dict[str, str]:
     """Process env with every ``GIT_*`` variable stripped.
 
-    The inline pre-commit ``pytest`` hook runs under an outer ``git commit``
-    that exports ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``. Inherited by
-    a child ``git`` call these hijack it onto the outer repo. Capture must run
-    against the worktree it was pointed at, not whatever the ambient commit is.
+    A git hook (pre-commit, pre-push) runs under an outer ``git`` that exports
+    ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``. Inherited by a child
+    ``git -C <other-repo>`` call these hijack it onto the outer repo, so a
+    command meant for another repo silently operates on the ambient one. Any
+    ``git`` call that targets an explicit repo from inside a possible hook
+    context must run with this env so it stays hermetic.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 
@@ -185,7 +187,7 @@ def full_worktree_diff(repo: str) -> str:
     loss of the captured work, the exact #835 scenario. Forcing the prefixes
     keeps the patch standard and ``git apply``-able regardless of user config.
     """
-    env = _git_env_without_overrides()
+    env = git_env_without_overrides()
     run_checked(["git", "-C", repo, "add", "-A", "-N"], env=env)
     result = run_checked(
         ["git", "-C", repo, "diff", "HEAD", "--binary", "--src-prefix=a/", "--dst-prefix=b/"],
