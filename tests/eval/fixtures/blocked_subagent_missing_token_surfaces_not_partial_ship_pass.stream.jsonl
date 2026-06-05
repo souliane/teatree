@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-blocked_subagent_missing_token_surfaces_not_partial_ship-pass", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "working on it."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "result.json", "content": "{\"summary\": \"code done, blocked on push\", \"needs_user_input\": true, \"user_input_reason\": \"GH_TOKEN missing; push and PR creation denied\"}"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
