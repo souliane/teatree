@@ -114,22 +114,24 @@ def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, confi
 
     A work-item URL naming the repo (``host/<org>/<repo>/-/issues/N``) is the
     repo's own identity, not a foreign leak. Fires ONLY for a ``git commit``
-    (never a ``gh``/``glab`` post), ONLY when ``term`` is a ``private_repos``
-    allowlist entry (a foreign customer term is not, and stays blocked), and
-    ONLY when :func:`commit_branch_downgrades` clears the WHOLE command -- the
-    landing repo AND every chained segment (a resolvable PUBLIC repo, or any
-    chained non-publish-inert segment such as ``&& gh issue create --repo
-    <PUBLIC>``, keeps the block). This runs the SAME per-segment chain proof as
-    the primary commit path, so an own-slug term never relaxes a chained public
-    post: ``is_git_commit_command`` matches the FIRST segment only and the
-    scanner reports the FIRST matched term, so checking the term and the body
-    repo alone would let a chained foreign-term public post slip through.
+    (never a ``gh``/``glab`` post), ONLY when ``term`` is (a token-run of) a
+    ``private_repos`` allowlist entry -- the whole org/repo slug OR its org
+    prefix, since the scanner reports the prefix token tokenized out of a
+    work-item URL (#1958); a foreign customer term is neither and stays blocked.
 
-    It exists because a bare commit resolves its repo from the harness cwd,
-    which can miss the worktree the commit lands in; keying the downgrade on the
-    term being the repo's own identifier makes an own-org URL a non-leak
-    regardless of which cwd the resolution saw, while the chain proof keeps every
-    other surface blocked.
+    The landing repo must still clear :func:`commit_branch_downgrades` -- be
+    PROVABLY private (allowlist or probe) or a genuinely-unresolvable LOCAL
+    commit -- so a resolvable PUBLIC/UNKNOWN landing keeps the hard block (the
+    commit could genuinely land in a public repo; never a leak). The SAME
+    per-segment chain proof runs, so an own-slug term never relaxes a chained
+    PUBLIC post: ``is_git_commit_command`` matches the FIRST segment only and
+    the scanner reports the FIRST matched term, so a chained ``&& gh issue
+    create --repo <PUBLIC>`` still defeats the downgrade.
+
+    The over-block this closes (#1958): the org PREFIX of a multi-token private
+    slug now qualifies as the repo's own identity, so an own-org work-item URL
+    whose scanner-reported token is the prefix downgrades on the repo's OWN
+    private commit exactly as the whole-slug spelling already did.
     """
     from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
 
