@@ -27,6 +27,7 @@ from tests.teatree_core.management_commands._overlays import (
     PRE_RUN_OVERLAY,
     SETTINGS,
     _patch_overlays,
+    env_safe_mock_overlay,
 )
 
 pytestmark = pytest.mark.filterwarnings(
@@ -343,13 +344,11 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            mock_overlay = MagicMock()
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
-            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_reset_passwords_command.return_value = ""
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -391,13 +390,11 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            mock_overlay = MagicMock()
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_envrc_lines.return_value = []
-            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_reset_passwords_command.return_value = ""
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -429,12 +426,10 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            mock_overlay = MagicMock()
-            mock_overlay.get_db_import_strategy.return_value = None
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_reset_passwords_command.return_value = ""
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.get_envrc_lines.return_value = []
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
@@ -547,12 +542,10 @@ class TestLifecycleStart(TestCase):
                 state=Worktree.State.PROVISIONED,
             )
 
-            mock_overlay = MagicMock()
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
             mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.get_envrc_lines.return_value = []
-            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_health_checks.return_value = []
@@ -597,12 +590,10 @@ class TestLifecycleStart(TestCase):
                 state=Worktree.State.PROVISIONED,
             )
 
-            mock_overlay = MagicMock()
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_run_commands.return_value = {}
             mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.get_envrc_lines.return_value = []
-            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_health_checks.return_value = []
@@ -643,12 +634,10 @@ class TestLifecycleStart(TestCase):
                 state=Worktree.State.PROVISIONED,
             )
 
-            mock_overlay = MagicMock()
+            mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
             mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_env_extra.return_value = {}
             mock_overlay.get_envrc_lines.return_value = []
-            mock_overlay.get_db_import_strategy.return_value = None
             mock_overlay.get_provision_steps.return_value = []
             mock_overlay.get_post_db_steps.return_value = []
             mock_overlay.get_health_checks.return_value = []
@@ -711,12 +700,10 @@ class TestImagePreflight(TestCase):
             state=Worktree.State.PROVISIONED,
         )
 
-        mock_overlay = MagicMock()
+        mock_overlay = env_safe_mock_overlay()
         mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
         mock_overlay.get_pre_run_steps.return_value = []
-        mock_overlay.get_env_extra.return_value = {}
         mock_overlay.get_envrc_lines.return_value = []
-        mock_overlay.get_db_import_strategy.return_value = None
         mock_overlay.get_provision_steps.return_value = []
         mock_overlay.get_post_db_steps.return_value = []
         mock_overlay.get_health_checks.return_value = []

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.utils.postgres_secret import PASS_KEY_ENV, postgres_pass_key
 
 if TYPE_CHECKING:
@@ -108,11 +108,18 @@ def _check_overlay_does_not_collide_with_core(overlay: "OverlayBase") -> None:
         raise RuntimeError(msg)
 
 
-def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
+def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
     """Render the env cache content for *worktree* without touching disk.
 
     Returns ``None`` when the worktree has no ``worktree_path`` yet (not
     provisioned).  Used by drift detection and ``t3 env show``.
+
+    The overlay is resolved from the worktree's own ``overlay`` field
+    (``get_overlay_for_worktree``) so this works on a multi-overlay host
+    where a bare ``get_overlay()`` would raise ``Multiple overlays found``
+    (souliane/teatree#1975). Callers that already hold the resolved
+    instance — the provision/start runners — pass it via *overlay* to skip
+    re-resolution.
     """
     extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
     wt_path_str = extra.get("worktree_path")
@@ -120,7 +127,8 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
         return None
     ticket_dir = Path(wt_path_str).parent
 
-    overlay = get_overlay()
+    if overlay is None:
+        overlay = get_overlay_for_worktree(worktree)
     pairs = dict(_core_env_pairs(worktree))
 
     db_strategy = overlay.get_db_import_strategy(worktree)
@@ -146,7 +154,7 @@ def render_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     return EnvCacheSpec(path=cache_path, keys=ordered_keys, content=_HEADER + body)
 
 
-def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
+def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> EnvCacheSpec | None:
     """Write the env cache and copy it into the repo worktree.
 
     Idempotent.  Writes the file ``chmod 444``.  Callers that modify the
@@ -160,7 +168,7 @@ def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     canonical file under ``.t3-cache/`` against a fresh DB render, so
     the worktree-local copy is just a consumer-facing convenience.
     """
-    spec = render_env_cache(worktree)
+    spec = render_env_cache(worktree, overlay=overlay)
     if spec is None:
         return None
 
@@ -182,13 +190,13 @@ def write_env_cache(worktree: Worktree) -> EnvCacheSpec | None:
     return spec
 
 
-def detect_drift(worktree: Worktree) -> tuple[bool, Path | None]:
+def detect_drift(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> tuple[bool, Path | None]:
     """Return ``(is_drifted, cache_path)``.
 
     Drift = file on disk differs from a fresh DB render, OR file is
     missing.  Returns ``(False, None)`` for unprovisioned worktrees.
     """
-    spec = render_env_cache(worktree)
+    spec = render_env_cache(worktree, overlay=overlay)
     if spec is None:
         return False, None
     if not spec.path.is_file():

@@ -51,6 +51,21 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     raise ImproperlyConfigured(msg)
 
 
+def _canonical_overlay_name(name: str) -> str | None:
+    """Fold a stored overlay name onto its canonical registered name, or ``None``.
+
+    A blank name is the ambient single-overlay default (``None`` → the
+    caller lets ``get_overlay(None)`` resolve it). A non-blank name is
+    canonicalized through the same :func:`resolve_overlay_name` rule the
+    config loader uses, so a stored legacy alias (``teatree`` → ``t3-teatree``)
+    resolves instead of raising ``Overlay not found``. An unresolvable name
+    is returned unchanged so ``get_overlay`` raises a precise ``not found``.
+    """
+    if not name:
+        return None
+    return resolve_overlay_name(name) or name
+
+
 def get_overlay_for_ticket(ticket: "Ticket") -> "OverlayBase":
     """Resolve the overlay a ticket belongs to.
 
@@ -59,9 +74,10 @@ def get_overlay_for_ticket(ticket: "Ticket") -> "OverlayBase":
     ``Multiple overlays found`` (souliane/teatree#1814). The ticket records
     its own overlay, so resolution is unambiguous regardless of how many
     overlays are installed; an empty value falls through to the ambient
-    single-overlay default.
+    single-overlay default. A stored legacy alias is folded onto its
+    canonical registered name (souliane/teatree#1975).
     """
-    return get_overlay(ticket.overlay or None)
+    return get_overlay(_canonical_overlay_name(ticket.overlay))
 
 
 def get_overlay_for_worktree(worktree: "Worktree") -> "OverlayBase":
@@ -72,7 +88,7 @@ def get_overlay_for_worktree(worktree: "Worktree") -> "OverlayBase":
     before the field was populated (souliane/teatree#1814).
     """
     if worktree.overlay:
-        return get_overlay(worktree.overlay)
+        return get_overlay(_canonical_overlay_name(worktree.overlay))
     return get_overlay_for_ticket(worktree.ticket)
 
 

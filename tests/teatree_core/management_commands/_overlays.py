@@ -4,7 +4,7 @@ Extracted verbatim from the former monolithic ``test_new_management_commands`` m
 """
 
 import shutil
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.utils.module_loading import import_string
@@ -48,6 +48,25 @@ def _patch_overlays(overlay_class_path: str):
     _fake_discover.cache_clear = lambda: None
 
     return patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover)
+
+
+def env_safe_mock_overlay() -> MagicMock:
+    """A ``MagicMock`` overlay safe to feed through the env-cache renderer.
+
+    The provision/start runners now thread their resolved overlay straight
+    into ``write_env_cache`` (souliane/teatree#1975), so a bare ``MagicMock``
+    whose ``declared_env_keys`` / ``get_base_images`` return un-iterable
+    mocks crashes the renderer. This double pins those to empty collections
+    so the env-cache path no-ops cleanly while the test keeps full control
+    over the behaviour it actually asserts.
+    """
+    overlay = MagicMock()
+    overlay.get_env_extra.return_value = {}
+    overlay.declared_env_keys.return_value = set()
+    overlay.declared_secret_env_keys.return_value = set()
+    overlay.get_base_images.return_value = []
+    overlay.get_db_import_strategy.return_value = None
+    return overlay
 
 
 class FullMetadata(OverlayMetadata):
