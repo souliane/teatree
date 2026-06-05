@@ -128,7 +128,9 @@ All workspace operations go through the `t3` CLI. Run `t3 <overlay> --help` for 
 
 ## Cleanup Patterns
 
-`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It prunes merged worktrees, drops orphaned databases, classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), drops orphaned stashes, removes empty workspace dirs, and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+`t3 <overlay> workspace clean-all` is the entry point for all cleanup. It tears down **Worktree rows whose branch is squash-merged** (any FSM state, via the forge merged-PR signal — not just `CREATED` rows), prunes merged worktrees, drops orphaned databases, reaps per-worktree docker images/containers for compose projects with no live worktree, classifies and removes stale local branches (gone-remote, fully-merged, **squash-merged via subject match**), drops orphaned stashes, recursively removes empty workspace/ticket dirs (including multi-repo ticket dirs left holding only empty repo subdirs), and prunes old DSLR snapshots. The squash-merge classifier handles `(#NNN)` suffixes and `relax:` → `feat(scope):` prefix rewrites, so squash-merged branches don't appear as "unsynced".
+
+Branch names matching a `clean_ignore` glob in `~/.teatree.toml` (`[teatree] clean_ignore = ["spike/*", "dev-override"]`, per-overlay overridable) are never reaped — for never-merge dev overrides and long-lived spikes. When the squash signal is uncertain (no merged PR, non-empty diff, forge CLI absent) the worktree is **kept with a warning**, never deleted — the data-loss guards (#706/#835/#1506) are never bypassed.
 
 ### Single-repo cleanup
 
