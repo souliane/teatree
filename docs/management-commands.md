@@ -19,6 +19,7 @@ Manages worktree state transitions.
 | `smoke-test` | -- | dict | Quick health check: overlay loads, CLI responds, imports OK, database accessible |
 | `visit-phase` | `ticket_id`, `phase` | string | Marks a phase as visited on the ticket's latest session |
 | `record-review-skill-run` | `ticket_id`, `skill` | string | Stamps `review_skill_run` evidence (skill + UTC ISO timestamp) so the reviewing-phase gate (#1539) accepts the attestation |
+| `record-anti-vacuity` | `ticket_id`, `--head-sha`, `--ac-coverage`, `--proven-test`, `--no-new-tests` | string | Stamps the SHA-bound `anti_vacuity_attestation` so the review-request/merge anti-vacuity gate (#1829) accepts the transition |
 | `diagram` | `model` (`worktree`/`ticket`/`task`), `--ticket` | string | Prints a Mermaid state diagram for the given model or ticket lifecycle |
 
 ## `workspace`
