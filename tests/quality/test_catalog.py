@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.transcript_conformance import DEFERRED_INVARIANTS, INVARIANT_REGISTRY
+from teatree.eval.transcript_conformance import INVARIANT_REGISTRY
 from teatree.quality.catalog import AntiPatternEntry, CatalogError, catalog_path, load_catalog
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +21,7 @@ _HOOKS_DIR = _REPO_ROOT / "scripts" / "hooks"
 # External tools (not scripts/hooks/*.py) that legitimately mechanize an entry.
 _EXTERNAL_LINTERS = frozenset({"tach", "gate-liveness"})
 
-_KNOWN_INVARIANT_IDS = frozenset(inv.id for inv in (*INVARIANT_REGISTRY, *DEFERRED_INVARIANTS))
+_KNOWN_INVARIANT_IDS = frozenset(inv.id for inv in INVARIANT_REGISTRY)
 
 
 @pytest.fixture(scope="module")

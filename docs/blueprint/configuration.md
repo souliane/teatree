@@ -219,7 +219,7 @@ Overlay-specific configuration lives on `overlay.config` (an `OverlayConfig` dat
 | `known_variants` | `list[str]` | `[]` | Known tenant identifiers for `detect_variant()` |
 | `frontend_repos` | `list[str]` | `[]` | Repos whose changes trigger frontend-flavored CI gates |
 | `dev_env_url` | `str` | `""` | Dev/staging environment URL (used in PR descriptions) |
-| `plan_gate` | `bool` | `False` | Opt this overlay into the PreToolUse plan-gate ([#1133](https://github.com/souliane/teatree/issues/1133)): when ANY overlay has `plan_gate = true` in `~/.teatree.toml`, `hook_router.handle_enforce_plan_gate` denies `Edit`/`Write` on files under `$T3_WORKSPACE_DIR` unless the session has invoked `/plan` (recorded in `<session>.plan-invocations`) or already `Read` the touched file (recorded in `<session>.workspace-reads`). Outside the workspace (e.g. `~/.zshrc`, `~/.claude/`, agent memory) the gate passes through silently. Default OFF — the gate is silent until at least one overlay opts in. |
+| `plan_gate` | `bool` | `False` | Retired — the wall-clock PreToolUse plan-gate was replaced by the `PLANNED` FSM state. This field is kept for migration compatibility only; no handler reads it. Plan enforcement now lives in the Ticket state graph (STARTED → PLANNED → CODED via `PlanArtifact`). |
 
 ### 10.3 Logging
 

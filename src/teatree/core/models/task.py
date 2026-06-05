@@ -247,6 +247,7 @@ class Task(models.Model):
             Ticket.State.NOT_STARTED,
             Ticket.State.SCOPED,
             Ticket.State.STARTED,
+            Ticket.State.PLANNED,
             Ticket.State.CODED,
             Ticket.State.TESTED,
             Ticket.State.REVIEWED,
@@ -262,7 +263,10 @@ class Task(models.Model):
             elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:
                 ticket.start()
                 ticket.save()
-            elif phase == "coding" and ticket.state == Ticket.State.STARTED:
+            elif phase == "planning" and ticket.state == Ticket.State.STARTED:
+                ticket.plan()
+                ticket.save()
+            elif phase == "coding" and ticket.state == Ticket.State.PLANNED:
                 ticket.code()
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:

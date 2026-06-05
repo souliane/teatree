@@ -34,7 +34,7 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
-def _run_router(event: str, payload: dict) -> subprocess.CompletedProcess[str]:
+def _run_router(event: str, payload: dict, *, config: str | None = None) -> subprocess.CompletedProcess[str]:
     """Run hook_router.py as a subprocess; return (returncode, stdout, stderr).
 
     Runs with ``HOME`` pointed at a clean temp dir so the
@@ -42,8 +42,14 @@ def _run_router(event: str, payload: dict) -> subprocess.CompletedProcess[str]:
     (enabled) — isolating these deny/allow assertions from the
     developer's real config (which may set the #115 failsafe to disable
     the gate). ``Path.home()`` honours ``HOME`` on POSIX.
+
+    ``config`` seeds ``~/.teatree.toml`` in that temp HOME — used to
+    enable a default-OFF gate (e.g. the #1442 foreground-Agent deny)
+    whose deny path this contract test must exercise.
     """
     with tempfile.TemporaryDirectory() as home:
+        if config is not None:
+            (Path(home) / ".teatree.toml").write_text(config, encoding="utf-8")
         env = {**os.environ, "HOME": home, "USERPROFILE": home}
         return subprocess.run(
             [sys.executable, str(HOOK_ROUTER), "--event", event],
@@ -93,9 +99,15 @@ class TestDenyExitsCodeTwo:
         assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_main_agent_foreground_agent_denied_exits_2(self) -> None:
+        # The #1442 foreground-Agent deny ships default-OFF (lockout risk on
+        # the orchestrator's own hot path), so the deny path must be enabled
+        # via config to exercise the deny-exits-2 contract on the Agent arm.
         payload = {"tool_name": "Agent", "tool_input": {"description": "x", "run_in_background": False}}
-        result = _run_router("PreToolUse", payload)
-        assert result.returncode == 2
+        config = "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n"
+        result = _run_router("PreToolUse", payload, config=config)
+        assert result.returncode == 2, f"deny must exit 2 (got {result.returncode}); stdout={result.stdout!r}"
+        out = json.loads(result.stdout)
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 # ── Test 2: allow / no-op ⇒ exit code 0 ───────────────────────────────

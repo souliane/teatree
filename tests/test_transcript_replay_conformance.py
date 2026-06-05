@@ -17,10 +17,6 @@ guard asserts every live invariant has a RED fixture; a tier guard asserts
 only ``deterministic`` invariants ship live; a privacy test asserts the report
 leaks no fixture payload and clears the publication scanner; and a
 mirrored-constants lockstep test runs against ``hooks.scripts.hook_router``.
-
-The deferred plan-conformance invariant (``DEFERRED_INVARIANTS``, #1640) is NOT
-in the live registry, so the live eval never evaluates it; a dedicated test
-keeps its predicate exercised against its own RED fixture.
 """
 
 import re
@@ -33,14 +29,7 @@ import hooks.scripts.hook_router as router
 from teatree.core.privacy_gate import scan_for_publication
 from teatree.eval import transcript_conformance as tc
 from teatree.eval.session_transcript import parse_session_jsonl
-from teatree.eval.transcript_conformance import (
-    DEFERRED_INVARIANTS,
-    INVARIANT_REGISTRY,
-    Invariant,
-    render_report,
-    render_report_json,
-    replay,
-)
+from teatree.eval.transcript_conformance import INVARIANT_REGISTRY, Invariant, render_report, render_report_json, replay
 
 _FIXTURES: Final[Path] = Path(__file__).parent / "fixtures" / "transcripts"
 _PASS_FIXTURE: Final[Path] = _FIXTURES / "all_pass.session.jsonl"
@@ -108,31 +97,6 @@ def test_only_deterministic_invariants_ship() -> None:
     assert not non_green, f"non-deterministic invariants must not ship in the live registry: {non_green}"
 
 
-# ── deferred plan-conformance invariant (#1640, not live) ─────────────────────
-
-
-def test_plan_invariant_is_deferred_not_live() -> None:
-    """The plan-conformance invariant ships deferred — never in the live registry.
-
-    ``teatree-plan`` is the interactive board-prioritization skill, the wrong
-    signal for "this implementation change was planned" (#1640); evaluating it
-    live would emit false violations. The default ``replay`` must never run it.
-    """
-    assert any(inv.id == "plan_gate_fired_or_skipped" for inv in DEFERRED_INVARIANTS)
-    assert all(inv.id != "plan_gate_fired_or_skipped" for inv in INVARIANT_REGISTRY)
-
-
-def test_deferred_plan_invariant_predicate_still_works() -> None:
-    """The deferred predicate stays exercised: RED on its own fixture, GREEN on the clean one."""
-    (plan_invariant,) = (inv for inv in DEFERRED_INVARIANTS if inv.id == "plan_gate_fired_or_skipped")
-    fixture = _FIXTURES / f"{plan_invariant.id}_violation.session.jsonl"
-    assert fixture.is_file(), f"missing RED fixture for the deferred invariant: {fixture}"
-    red = _result_for(plan_invariant, fixture)
-    assert not red.ok, "deferred plan invariant stayed GREEN on its own violation fixture (vacuous)"
-    assert red.offending_index is not None
-    assert _result_for(plan_invariant, _PASS_FIXTURE).ok
-
-
 # ── privacy ──────────────────────────────────────────────────────────────────
 
 
@@ -193,32 +157,16 @@ def test_fixtures_contain_no_redact_anchor() -> None:
 
 
 def test_mirrored_constants_match_hook_router() -> None:
-    """The command-shape regexes and plan-skill predicate stay in lockstep.
+    """The command-shape regexes stay in lockstep with hook_router.
 
     #169 MIRRORS (does not import) the hook_router gate shapes to stay
     independent of the concurrently-evolving router and the tach module-edge
     rules. This test imports the router values read-only (tests are tach-exempt)
     and asserts equality, so a drift in either side trips the build.
     """
-    assert tc._SKIP_PLAN_GATE_RE.pattern == router._SKIP_PLAN_GATE_RE.pattern
     assert tc._OUT_OF_BAND_MERGE_RE.pattern == router._OUT_OF_BAND_MERGE_RE.pattern
     assert tc._MERGE_ENDPOINT_RE.pattern == router._MERGE_ENDPOINT_RE.pattern
     assert tc._REVIEW_POST_ENDPOINT_RE.pattern == router._REVIEW_POST_ENDPOINT_RE.pattern
     assert tc._REVIEW_POST_METHOD_RE.pattern == router._REVIEW_POST_METHOD_RE.pattern
     assert tc._REVIEW_POST_BODY_FLAG_RE.pattern == router._REVIEW_POST_BODY_FLAG_RE.pattern
     assert tc._GLAB_GH_API_RE.pattern == router._GLAB_GH_API_RE.pattern
-
-
-def test_plan_skill_final_segment_matches_router_recognition() -> None:
-    """The mirrored plan-skill predicate recognises exactly what the router records.
-
-    The router records a plan invocation iff the skill's final segment is the
-    real plan skill; the #167 bug was a ``startswith('plan')`` test that never
-    matched ``teatree-plan``. This asserts the eval uses the final-segment
-    semantics and recognises the real invocation form ``t3:teatree-plan``.
-    """
-    assert tc._is_plan_skill("t3:teatree-plan")
-    assert tc._is_plan_skill("teatree-plan")
-    assert tc._is_plan_skill("skills/teatree-plan/SKILL.md".replace("/SKILL.md", ""))
-    assert not tc._is_plan_skill("t3:teatree-batch")
-    assert not tc._is_plan_skill("plan")

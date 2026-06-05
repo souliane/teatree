@@ -930,7 +930,7 @@ class TestTasksCompleteCommand(TestCase):
     """
 
     def _claimed_task(self) -> Task:
-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, overlay="test")
         task = Task.objects.create(
             ticket=ticket,

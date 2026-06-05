@@ -11,6 +11,7 @@ from django.test import TestCase
 
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from tests.teatree_core.models._shared import (
+    _advance_started_to_planned,
     _advance_ticket_to_tested,
     _attach_shippable_worktree,
     _complete_phase_task,
@@ -167,6 +168,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _advance_started_to_planned(ticket)
         ticket.code()
         ticket.save()
         ticket.test()
@@ -248,6 +250,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _advance_started_to_planned(ticket)
         ticket.code()
         ticket.save()
         ticket.test(passed=True)
@@ -283,6 +286,7 @@ class TestTicketTransitions(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _advance_started_to_planned(ticket)
         ticket.code()
         ticket.save()
 

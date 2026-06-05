@@ -8,9 +8,14 @@ from teatree.core.selectors import build_ticket_lifecycle_mermaid
 
 
 def _advance_ticket_to_tested(ticket: Ticket) -> None:
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
     ticket.scope(issue_url="https://example.com/issues/99", variant="acme", repos=["repo"])
     ticket.save()
     ticket.start()
+    ticket.save()
+    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    ticket.plan()
     ticket.save()
     ticket.code()
     ticket.save()
@@ -40,7 +45,8 @@ class TestTicketTransitionAudit(TestCase):
         assert states == [
             ("not_started", "scoped"),
             ("scoped", "started"),
-            ("started", "coded"),
+            ("started", "planned"),
+            ("planned", "coded"),
             ("coded", "tested"),
         ]
 
@@ -107,7 +113,8 @@ class TestTicketLifecycleMermaid(TestCase):
         assert "stateDiagram-v2" in mermaid
         assert "not_started --> scoped: scope()" in mermaid
         assert "scoped --> started: start()" in mermaid
-        assert "started --> coded: code()" in mermaid
+        assert "started --> planned: plan()" in mermaid
+        assert "planned --> coded: code()" in mermaid
         assert "coded --> tested: test()" in mermaid
 
     def test_mermaid_includes_session_id(self) -> None:
