@@ -87,7 +87,7 @@ class WorktreeStartRunner(RunnerBase):
         commands = overlay.get_run_commands(worktree)
         ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
 
-        write_env_cache(worktree)
+        write_env_cache(worktree, overlay=overlay)
 
         compose_file = overlay.get_compose_file(worktree)
         if not compose_file:

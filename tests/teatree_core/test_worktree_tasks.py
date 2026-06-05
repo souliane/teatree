@@ -1,5 +1,6 @@
 """Per-worktree FSM task workers — state guard, runner dispatch, result shape."""
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -13,6 +14,7 @@ from teatree.core.worktree_tasks import (
     execute_worktree_teardown,
     execute_worktree_verify,
 )
+from tests.teatree_core.conftest import CommandOverlay
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +24,14 @@ def _no_op_signals() -> None:
 
 
 class _WorktreeTaskTest(TestCase):
+    @pytest.fixture(autouse=True)
+    def _register_test_overlay(self) -> Iterator[None]:
+        # The provision worker poison-guards on overlay resolvability
+        # (souliane/teatree#1975); register ``test`` so the dispatch path
+        # is exercised rather than short-circuited as an unknown overlay.
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={"test": CommandOverlay()}):
+            yield
+
     def _ticket(self) -> Ticket:
         return Ticket.objects.create(overlay="test", issue_url="https://example.com/1")
 

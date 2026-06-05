@@ -250,8 +250,9 @@ class WorktreeProvisionRunnerContractTests(TestCase):
         self._tmp.cleanup()
 
     def _run(self, overlay: FullStackOverlay) -> object:
-        with patch("teatree.core.worktree_env.get_overlay", return_value=overlay):
-            return WorktreeProvisionRunner(self.worktree, overlay=overlay).run()
+        # The runner threads its resolved overlay straight into the env-cache
+        # writer (souliane/teatree#1975), so no overlay-loader patch is needed.
+        return WorktreeProvisionRunner(self.worktree, overlay=overlay).run()
 
     # Provision steps run before per-service pre-run steps, in declared
     # order — the env cache and overlay schema must exist before anything
@@ -298,10 +299,7 @@ class WorktreeStartRunnerContractTests(TestCase):
 
     def test_prepare_all_runs_before_compose_phase(self) -> None:
         overlay = FullStackOverlay(self.order_file)
-        with (
-            patch("teatree.core.runners.worktree_start.docker_compose_down") as down,
-            patch("teatree.core.worktree_env.get_overlay", return_value=overlay),
-        ):
+        with patch("teatree.core.runners.worktree_start.docker_compose_down") as down:
             result = WorktreeStartRunner(self.worktree, overlay=overlay).run()
         down.assert_called_once()
         ran = sorted(self.order_file.read_text().splitlines())
