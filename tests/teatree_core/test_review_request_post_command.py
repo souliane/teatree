@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import tempfile
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,12 +22,14 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost
+from teatree.config import UserSettings
+from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost, Ticket
 from teatree.core.review_request_guard import GuardDecision, GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-crew", token="xoxp")
 _CMD = "teatree.core.management.commands.review_request_post"
+_SHA = "a" * 40
 
 
 class _FakeBackend:
@@ -78,6 +81,71 @@ class _DataDirMixin:
             os.environ["T3_DATA_DIR"] = self._prev_data_dir
         shutil.rmtree(self._tmp, ignore_errors=True)
         super().tearDown()
+
+
+def _gate_required(*, required: bool) -> AbstractContextManager[object]:
+    return patch(
+        "teatree.core.anti_vacuity_gate.get_effective_settings",
+        return_value=UserSettings(require_anti_vacuity_attestation=required),
+    )
+
+
+class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
+    """#1829: with the gate on, the post refuses before any dedup claim / wire call."""
+
+    def test_refused_without_attestation_and_takes_no_claim(self) -> None:
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        with (
+            _gate_required(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA)
+        assert code == 2
+        assert payload["action"] == "refused"
+        assert payload["reason"] == "anti_vacuity_not_attested"
+        assert backend.posts == []
+        # The gate runs first — no ReviewRequestPost claim was taken.
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_refused_when_ticket_id_or_head_sha_missing(self) -> None:
+        with (
+            _gate_required(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+        ):
+            code, payload = _run()  # no --ticket-id / --head-sha
+        assert code == 2
+        assert payload["reason"] == "anti_vacuity_not_attested"
+
+    def test_allows_with_bound_attestation(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        ticket.record_anti_vacuity_attestation(_SHA, "AC1-3 mapped", ["tests/x.py::test_y"])
+        with (
+            _gate_required(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--head-sha", _SHA, "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_noop_when_gate_off_ignores_missing_attestation(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        with (
+            _gate_required(required=False),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
 
 
 class TestReviewRequestPostDedup(TestCase):

@@ -14,3 +14,16 @@
       args.command: '~ "git (stash|checkout|restore|revert|reset).*&&.*(uv run pytest|pytest|t3 test run)"'
     - no_tool_call_matching:
         Bash.command: '~ "(t3 review-request|gh pr merge|glab mr merge|t3 .*ticket (clear|merge)|t3 review approve)\b"'
+
+- name: records_sha_bound_anti_vacuity_attestation_before_review_request
+  scenario: "with require_anti_vacuity_attestation on, the maker records the SHA-bound lifecycle attestation (record-anti-vacuity) before requesting review, instead of posting the review request with no attestation the gate will refuse"
+  agent_path: skills/review/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: "The overlay sets require_anti_vacuity_attestation. You proved your new regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Run the ONE t3 lifecycle command that records the SHA-bound anti-vacuity attestation for ticket 1829 (head SHA, AC-coverage, the proven test) so the request-review transition is allowed. One command only, no narration."
+  expect:
+    - tool_call: Bash
+      args.command: '~ "lifecycle record-anti-vacuity\b.*--head-sha\b.*--ac-coverage\b.*(--proven-test|--no-new-tests)\b"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(t3 .*review-request post|gh pr merge|glab mr merge|t3 .*ticket merge)\b"'

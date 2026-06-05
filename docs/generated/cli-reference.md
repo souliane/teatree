@@ -4740,6 +4740,8 @@ Usage: t3 teatree lifecycle [OPTIONS] COMMAND [ARGS]...
 │                          (reviewing-phase gate).                             │
 │ record-review-context    Record referenced-context retrieval before          │
 │                          reviewing (deep-retrieval gate).                    │
+│ record-anti-vacuity      Record the SHA-bound anti-vacuity attestation       │
+│                          before review-request/merge.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4850,6 +4852,44 @@ Usage: t3 teatree lifecycle record-review-context [OPTIONS] TICKET_ID
 │ --analysis         TEXT  How the implementation was analyzed against the     │
 │                          specified requirements + rules.                     │
 │ --help                   Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree lifecycle record-anti-vacuity`
+
+```
+Usage: t3 teatree lifecycle record-anti-vacuity [OPTIONS] TICKET_ID
+
+ Record the SHA-bound anti-vacuity attestation backing review-request/merge
+ (#1829).
+
+ Stamps ``ticket.extra['anti_vacuity_attestation']`` so the anti-vacuity
+ gate (``teatree.core.anti_vacuity_gate``) can attest, before the
+ ``request review`` / merge transition, that the diff was mapped to the
+ acceptance criteria AND every new regression test was proven
+ anti-vacuous (revert the production fix -> the test goes RED). The
+ attestation binds to ``--head-sha``; the gate drops it when the live
+ head moves. A record missing the head SHA, AC-coverage, or (a proven
+ test OR ``--no-new-tests``) does not satisfy the gate.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      TEXT  [required]                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --head-sha                             TEXT  Full 40-char head SHA the       │
+│                                              attestation binds to (re-attest │
+│                                              when it moves).                 │
+│ --ac-coverage                          TEXT  How the diff was mapped against │
+│                                              the ticket/spec acceptance      │
+│                                              criteria.                       │
+│ --proven-test                          TEXT  A new regression test proven    │
+│                                              anti-vacuous (revert fix ->     │
+│                                              RED). Repeatable.               │
+│ --no-new-tests    --no-no-new-tests          The diff genuinely adds no new  │
+│                                              regression test (so             │
+│                                              --proven-test is empty).        │
+│                                              [default: no-no-new-tests]      │
+│ --help                                       Show this message and exit.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

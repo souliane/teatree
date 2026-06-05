@@ -333,6 +333,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_after_merge_count": int,
     "review_skill": str,
     "require_review_context": bool,
+    "require_anti_vacuity_attestation": bool,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
     "scanning_news_cadence_hours": int,
@@ -576,6 +577,9 @@ class UserSettings:
     # Opt-in deep-retrieval gate on ``-> reviewing`` (``review_context_gate``);
     # default false = NO-OP. Per-overlay overridable.
     require_review_context: bool = False
+    # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
+    # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
+    require_anti_vacuity_attestation: bool = False
     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
     # loop fires a `scanning_news` task daily so the news-scan workflow
@@ -854,6 +858,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
         review_skill=str(teatree.get("review_skill", "")),
         require_review_context=bool(teatree.get("require_review_context", False)),
+        require_anti_vacuity_attestation=bool(teatree.get("require_anti_vacuity_attestation", False)),
         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
