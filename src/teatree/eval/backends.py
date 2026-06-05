@@ -15,18 +15,21 @@ Agent-SDK spend is the accepted, budgeted CI cost (capped per-invocation by
 ``SubscriptionTranscriptRunner`` (``backend="subscription"``) is the LOCAL /
 manual path that stays on the subscription. A standalone ``t3 eval run``
 process has no in-session ``Agent`` tool, so it cannot itself drive a
-subscription-covered model turn (see the note below). Instead the operator
-runs each scenario prompt via an in-session sub-agent (subscription-covered)
-with ``--output-format stream-json``, saves the transcript, and this backend
-ingests it through the SAME stream-json extractors the SDK path uses — so
-grading is identical.
+subscription-covered model turn (see the note below). Instead the
+``/t3:running-evals`` skill dispatches an in-session ``Agent`` sub-agent per
+scenario; Claude Code writes that sub-agent's trajectory to
+``~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl``, and
+``t3 eval capture-subagent`` copies it to the path this backend reads. The
+backend auto-detects the transcript shape and grades it through the SAME
+extractors the SDK path feeds the grader — so grading is identical.
 
 Why no fully-automatic local-subscription backend: subscription coverage is a
 property of an interactive Claude Code session driving an ``Agent`` sub-agent.
 The eval CLI is a plain Python process; for it to spend subscription tokens it
-would have to BE an in-session sub-agent. The interactive ``transcript``
-ingest is the clean seam — the operator (or an in-session ``/loop`` driver)
-produces the transcript on the subscription, the harness grades it offline.
+would have to BE an in-session sub-agent. The captured sub-agent transcript is
+the clean seam — the in-session ``/t3:running-evals`` driver produces it on the
+subscription, the harness grades it offline. Both capture and grade read
+on-disk files only, so the subscription lane never meters.
 """
 
 from pathlib import Path

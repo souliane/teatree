@@ -1360,7 +1360,7 @@ Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
 │   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --transcript-dir        PATH  Where the operator will save each              │
+│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
 │                               <scenario>.jsonl transcript (default: cwd).    │
 │ --format                TEXT  Manifest format: text or json. [default: text] │
 │ --help                        Show this message and exit.                    │

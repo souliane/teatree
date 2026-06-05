@@ -376,7 +376,7 @@ def prepare_subscription(
     transcript_dir: Path | None = typer.Option(
         None,
         "--transcript-dir",
-        help="Where the operator will save each <scenario>.jsonl transcript (default: cwd).",
+        help="Where `t3 eval capture-subagent` writes each <scenario>.jsonl transcript (default: cwd).",
     ),
     output_format: str = typer.Option("text", "--format", help="Manifest format: text or json."),
 ) -> None:
