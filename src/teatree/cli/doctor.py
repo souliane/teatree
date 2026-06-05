@@ -339,8 +339,10 @@ class DoctorService:
         if not contribute and teatree_is_editable:
             problems.append(
                 "teatree is editable but contribute=false in ~/.teatree.toml. "
-                "You risk accidentally modifying framework code. "
-                "Fix: set contribute=true or run `uv pip install teatree`.",
+                "If you are contributing to teatree, set contribute=true. "
+                "If not, run "
+                "`uv tool install --from git+https://github.com/souliane/teatree.git teatree` "
+                "to drop the editable install.",
             )
 
         return problems

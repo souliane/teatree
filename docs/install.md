@@ -10,12 +10,13 @@
 
 ### Use only (no source code)
 
-Install teatree, or an overlay (which pulls teatree as a dependency):
+Teatree is not on PyPI. Install the `t3` CLI straight from the repo — no clone
+needed:
 
 ```sh
-git clone https://github.com/souliane/teatree && cd teatree
-uv tool install --editable .     # global `t3` binary
-t3 setup                         # links plugin, syncs skills
+uv tool install --from git+https://github.com/souliane/teatree.git teatree   # global `t3` binary
+apm install -g souliane/teatree   # skills + companion deps
+t3 setup                          # links plugin, syncs skills, migrates self-DB
 ```
 
 ### Work locally on an overlay
