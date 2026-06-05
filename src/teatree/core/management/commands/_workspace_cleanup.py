@@ -6,10 +6,14 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
 import re
+from contextlib import suppress
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from teatree.config import load_config
 from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
+from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
@@ -155,6 +159,82 @@ def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
         git.run(repo=repo, args=["worktree", "prune"])
     git.branch_delete(repo, name)
     return f"Pruned squash-merged branch: {name}"
+
+
+def _branch_is_clean_ignored(branch: str, patterns: list[str]) -> bool:
+    return any(fnmatch(branch, pattern) for pattern in patterns)
+
+
+class WorktreeReaper:
+    """Workspace-scoped clean-all reaping: squash-merged rows + empty dirs.
+
+    Groups the two passes that operate on the whole ``workspace`` (rather than a
+    single repo like the branch/stash helpers): tear down Worktree rows whose
+    branch shipped, then prune the now-empty ticket dirs they leave behind.
+    """
+
+    def __init__(self, workspace: Path) -> None:
+        self.workspace = workspace
+
+    def reap_squash_merged_worktrees(self, *, interactive: bool) -> list[str]:
+        """Tear down Worktree rows whose branch is squash-merged.
+
+        ``clean-all`` only reaped ``CREATED``-state rows; a PROVISIONED/READY row
+        whose branch shipped under a retitled squash subject survived forever (its
+        dir, compose project, and ticket dir all leaking). This pass reaps those.
+
+        The squash signal reuses :func:`is_squash_merged` — the same forge-primary,
+        empty-diff-fallback classifier the branch-prune pass uses (no duplicated
+        subject-match logic). It is fail-safe to *not merged*: a missing forge CLI,
+        a non-empty diff, or any uncertain outcome reads as keep, so an uncertain
+        row is reported with a SKIPPED warning and never deleted (warn-not-fail).
+
+        The teardown goes through :func:`cleanup_worktree` with the default
+        ``strict_hygiene=True`` / ``force=False``, so the #706/#835/#1506 data-loss
+        guards still refuse a branch with commits on no remote — a positive squash
+        signal narrows the candidate set, it never bypasses the guards. Branches
+        matching ``clean_ignore`` are skipped before any classification.
+        """
+        clean_ignore = load_config().user.clean_ignore
+        cleaned: list[str] = []
+        for worktree in Worktree.objects.exclude(state=Worktree.State.CREATED).select_related("ticket"):
+            if _branch_is_clean_ignored(worktree.branch, clean_ignore):
+                cleaned.append(f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
+                continue
+            repo = resolve_clone_path(self.workspace, worktree)
+            if repo is None or not repo.is_dir():
+                continue
+            default = git.default_branch(str(repo))
+            if not is_squash_merged(str(repo), worktree.branch, default):
+                continue
+            try:
+                cleaned.append(str(cleanup_worktree(worktree)))
+            except RuntimeError as exc:
+                cleaned.append(resolve_unsynced_worktree(worktree, exc, interactive=interactive))
+        return cleaned
+
+    def remove_empty_ticket_dirs(self) -> list[str]:
+        """Remove ticket dirs that are empty or hold only empty repo subdirs.
+
+        A multi-repo ticket dir (``ac/1234/`` with empty ``backend/`` +
+        ``frontend/`` left behind after the worktrees are reaped) is not empty
+        itself, so the single-level ``not any(iterdir())`` check kept it. This
+        prunes empty leaf subdirs first, then the ticket dir if it is now empty.
+        A subdir holding any real file or nested content is left untouched.
+        """
+        removed: list[str] = []
+        for entry in self.workspace.iterdir():
+            if not entry.is_dir():
+                continue
+            for child in list(entry.iterdir()):
+                if child.is_dir() and not any(child.iterdir()):
+                    with suppress(OSError):
+                        child.rmdir()
+            if not any(entry.iterdir()):
+                with suppress(OSError):
+                    entry.rmdir()
+                    removed.append(f"Removed empty dir: {entry.name}")
+        return removed
 
 
 def _origin_ref_exists(repo: str, branch: str) -> bool:
