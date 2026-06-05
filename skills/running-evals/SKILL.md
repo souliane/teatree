@@ -1,6 +1,6 @@
 ---
 name: running-evals
-description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (trigger-qa, regression) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 test run` (deterministic tests).
+description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (trigger-qa, regression) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
 compatibility: any
 metadata:
   version: 0.0.1
@@ -17,10 +17,10 @@ Running the full eval picture by hand takes several easy-to-forget commands, and
 
 | term | what it is | command | determinism |
 |------|-----------|---------|-------------|
-| **test** | unit / integration code test | `t3 test run` | deterministic, free |
+| **test** | unit / integration code test | `t3 teatree run tests` | deterministic, free |
 | **eval** | AI / trajectory eval (agent behaviour) | `t3 eval run` | non-deterministic (model) |
 
-The CLI mirror is **noun-first**: deterministic tests are `t3 test run`, AI evals are `t3 eval run`. There is intentionally NO `t3 run evals` group — `t3 eval run` is canonical. When in doubt: "eval" grades what the agent *did* on a prompt; "test" asserts what a function *returns*.
+The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t3 teatree run tests` (a future top-level "t3 test run" form is owned by the separate CLI-simplification audit), AI evals are `t3 eval run`. There is intentionally no "t3 run evals" group — `t3 eval run` is canonical. When in doubt: "eval" grades what the agent *did* on a prompt; "test" asserts what a function *returns*.
 
 ## Cost split (never silently meter)
 
@@ -81,5 +81,5 @@ t3 eval all
 
 - BLUEPRINT.md — Behavioral eval harness (`src/teatree/eval/`), subscription-default backend, all-skipped guard.
 - `src/teatree/eval/README.md` — eval schema, failure-class index, CLI reference.
-- `/t3:test` — the deterministic `t3 test run` side of the test-vs-eval coin.
+- `/t3:test` — the deterministic `t3 teatree run tests` side of the test-vs-eval coin.
 - `/t3:rules` § "Verification Before Completion" — evals are the behavioural half of that proof.
