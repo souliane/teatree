@@ -333,6 +333,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "architectural_review_after_merge_count": int,
     "review_skill": str,
     "require_review_context": bool,
+    "e2e_mandatory_gate_enabled": bool,
     "require_anti_vacuity_attestation": bool,
     "scanning_news_disabled": bool,
     "scanning_news_skill": str,
@@ -737,6 +738,16 @@ class UserSettings:
     # ``_orchestrator_bash_gate_enabled`` so a `t3 update` that reinstalls
     # the gate stays off until the user flips it back).
     orchestrator_bash_gate_enabled: bool = True
+    # Mandatory-E2E FSM gate for customer-display-impacting changes (#1967).
+    # When enabled (default), `pr create` and the §17.4 `ticket clear` refuse a
+    # change the active overlay classifies as customer-display-impacting unless
+    # recorded green E2E evidence exists at the reviewed tree OR a single-use
+    # user-recorded `E2EBypassApproval` exists. Its OWN kill-switch — never a
+    # reuse of another gate's switch: `[teatree] e2e_mandatory_gate_enabled =
+    # false` (per-overlay overridable via `[overlays.<name>]`) disables it
+    # entirely. The bypass is satisfiable per-tree only by the human user; a
+    # maker/coding-agent/loop approver id is refused (maker≠checker).
+    e2e_mandatory_gate_enabled: bool = True
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
     # gh/glab network call (#1540). A non-matching title is rejected with the
     # pattern printed verbatim; the description is independently required to
@@ -900,6 +911,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
         review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
         orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
+        e2e_mandatory_gate_enabled=bool(teatree.get("e2e_mandatory_gate_enabled", True)),
         mr_title_regex=str(teatree.get("mr_title_regex", DEFAULT_MR_TITLE_REGEX)),
         issue_implementer_enabled=bool(teatree.get("issue_implementer_enabled", False)),
         issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
