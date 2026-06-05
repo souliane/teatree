@@ -142,7 +142,8 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
     plan_text = result.get("plan_text")
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
         return
-    PlanArtifact.record(ticket=task.ticket, plan_text=plan_text, recorded_by=task.session.agent_id or "")
+    recorded_by = (task.session.agent_id or "").strip() or "planning"
+    PlanArtifact.record(ticket=task.ticket, plan_text=plan_text, recorded_by=recorded_by)
 
 
 def _record_failure(task: Task, *, error: str) -> TaskAttempt:

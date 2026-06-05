@@ -232,6 +232,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         the plan gate; no prose rule or wall-clock check is needed.
         """
         self._consume_pending_phase_tasks("planning")
+        self.schedule_coding()
 
     @transition(field=state, source=State.PLANNED, target=State.CODED)
     def code(self) -> None:

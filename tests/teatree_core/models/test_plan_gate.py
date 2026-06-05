@@ -11,7 +11,7 @@ All tests follow the symmetric must-pass / must-fail pattern from
 dod_gate.py so a future regression is caught in both directions.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -22,6 +22,8 @@ from teatree.agents.result_schema import check_evidence
 from teatree.core import tasks as tasks_mod
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.plan_artifact import NoPlanArtifactError, PlanArtifact
+from teatree.core.runners import WorktreeProvisioner
+from teatree.core.runners.base import RunnerResult
 
 
 def _started_ticket() -> Ticket:
@@ -33,7 +35,7 @@ def _started_ticket() -> Ticket:
 
 def _planned_ticket() -> Ticket:
     t = _started_ticket()
-    PlanArtifact.record(ticket=t, plan_text="Implement X by doing Y")
+    PlanArtifact.record(ticket=t, plan_text="Implement X by doing Y", recorded_by="t3:planner")
     t.plan()
     t.save()
     return t
@@ -65,7 +67,7 @@ class TestPlanTransitionRequiresPlanArtifact(TestCase):
 
     def test_plan_with_artifact_advances_to_planned(self) -> None:
         ticket = _started_ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="Implement X by doing Y")
+        PlanArtifact.record(ticket=ticket, plan_text="Implement X by doing Y", recorded_by="t3:planner")
         ticket.plan()
         ticket.save()
         assert ticket.state == Ticket.State.PLANNED
@@ -98,30 +100,40 @@ class TestPlanArtifactModel(TestCase):
 
     def test_record_creates_artifact(self) -> None:
         ticket = _started_ticket()
-        artifact = PlanArtifact.record(ticket=ticket, plan_text="Do X")
+        artifact = PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="t3:planner")
         assert PlanArtifact.objects.filter(ticket=ticket).count() == 1
         assert artifact.plan_text == "Do X"
 
     def test_record_requires_non_empty_plan_text(self) -> None:
         ticket = _started_ticket()
         with pytest.raises(ValueError, match="plan_text"):
-            PlanArtifact.record(ticket=ticket, plan_text="")
+            PlanArtifact.record(ticket=ticket, plan_text="", recorded_by="t3:planner")
 
     def test_record_requires_non_whitespace_plan_text(self) -> None:
         ticket = _started_ticket()
         with pytest.raises(ValueError, match="plan_text"):
-            PlanArtifact.record(ticket=ticket, plan_text="   ")
+            PlanArtifact.record(ticket=ticket, plan_text="   ", recorded_by="t3:planner")
+
+    def test_record_requires_non_empty_recorded_by(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="recorded_by"):
+            PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="")
+
+    def test_record_requires_non_whitespace_recorded_by(self) -> None:
+        ticket = _started_ticket()
+        with pytest.raises(ValueError, match="recorded_by"):
+            PlanArtifact.record(ticket=ticket, plan_text="Do X", recorded_by="   ")
 
     def test_multiple_artifacts_allowed_newest_governs(self) -> None:
         ticket = _started_ticket()
-        PlanArtifact.record(ticket=ticket, plan_text="Plan v1")
-        PlanArtifact.record(ticket=ticket, plan_text="Plan v2")
+        PlanArtifact.record(ticket=ticket, plan_text="Plan v1", recorded_by="t3:planner")
+        PlanArtifact.record(ticket=ticket, plan_text="Plan v2", recorded_by="t3:planner")
         assert PlanArtifact.objects.filter(ticket=ticket).count() == 2
 
     def test_artifact_for_wrong_ticket_does_not_unlock_plan(self) -> None:
         ticket_a = _started_ticket()
         ticket_b = _started_ticket()
-        PlanArtifact.record(ticket=ticket_a, plan_text="Plan for A")
+        PlanArtifact.record(ticket=ticket_a, plan_text="Plan for A", recorded_by="t3:planner")
         with pytest.raises(NoPlanArtifactError):
             ticket_b.plan()
 
@@ -144,11 +156,29 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
         task = self._make_planning_task()
         result = {"summary": "Plan done", "plan_text": "Step 1: do X. Step 2: do Y."}
         record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
-        assert PlanArtifact.objects.filter(ticket=task.ticket).exists()
+        artifact = PlanArtifact.objects.filter(ticket=task.ticket).first()
+        assert artifact is not None
+        assert artifact.recorded_by == "t3:planner"
+
+    def test_auto_record_falls_back_to_planning_identity_when_agent_id_empty(self) -> None:
+        ticket = _started_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="planning",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="test",
+        )
+        result = {"summary": "Plan done", "plan_text": "Step 1: do X."}
+        record_result_envelope(task, result, phase="planning", usage=AttemptUsage())
+        artifact = PlanArtifact.objects.filter(ticket=ticket).first()
+        assert artifact is not None
+        assert artifact.recorded_by == "planning"
 
     def test_planning_without_plan_text_does_not_record_artifact(self) -> None:
         task = self._make_planning_task()
-        PlanArtifact.record(ticket=task.ticket, plan_text="pre-existing")
+        PlanArtifact.record(ticket=task.ticket, plan_text="pre-existing", recorded_by="t3:planner")
         old_count = PlanArtifact.objects.filter(ticket=task.ticket).count()
         result_no_text = {"summary": "Plan done", "plan_text": ""}
         assert check_evidence(result_no_text, "planning")  # fails evidence check (returns error msg)
@@ -178,25 +208,17 @@ class TestAttemptRecorderRecordsPlanArtifact(TestCase):
 
 
 class TestStartSchedulesPlanning(TestCase):
-    """After ticket.start(), the scheduled task is a planning task (not coding)."""
+    """The real execute_provision schedules a planning task (not coding)."""
 
     def test_start_schedules_planning_task(self) -> None:
         ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR)
         ticket.scope(issue_url="https://example.com/1", variant="acme", repos=["backend"])
         ticket.save()
+        ticket.start()
+        ticket.save()
 
-        def fake_enqueue(ticket_id: int) -> None:
-            target = Ticket.objects.get(pk=ticket_id)
-            if target.state == Ticket.State.STARTED:
-                target.schedule_planning()
-
-        fake_task = MagicMock()
-        fake_task.enqueue.side_effect = fake_enqueue
-        with (
-            patch.object(tasks_mod, "execute_provision", fake_task),
-            self.captureOnCommitCallbacks(execute=True),
-        ):
-            ticket.start()
-            ticket.save()
+        with patch.object(WorktreeProvisioner, "run", return_value=RunnerResult(ok=True, detail="provisioned")):
+            tasks_mod.execute_provision.call(ticket.pk)
 
         assert Task.objects.filter(ticket=ticket, phase="planning").exists()
+        assert not Task.objects.filter(ticket=ticket, phase="coding").exists()

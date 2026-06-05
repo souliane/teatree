@@ -51,18 +51,26 @@ class PlanArtifact(models.Model):
         *,
         ticket: "models.Model",
         plan_text: str,
-        recorded_by: str = "",
+        recorded_by: str,
     ) -> "PlanArtifact":
         """Guarded factory — the single path for creating a plan artifact.
 
-        Validates that plan_text is non-empty before writing any row.
-        Raises ValueError on a blank/whitespace-only plan_text so the
-        call site gets a precise error rather than a vacuous artifact.
-        Construction is atomic so a rejected artifact leaves no partial row.
+        Validates that both plan_text and recorded_by are non-empty before
+        writing any row. recorded_by is the author identity (the planning
+        agent for auto-records, the human authorizer for an audited bypass);
+        an anonymous artifact cannot advance the FSM. Raises ValueError on a
+        blank/whitespace-only value so the call site gets a precise error
+        rather than a vacuous or unattributable artifact. Construction is
+        atomic so a rejected artifact leaves no partial row.
         """
         cleaned = plan_text.strip() if plan_text else ""
         if not cleaned:
             msg = "plan_text is required and must be non-empty"
+            raise ValueError(msg)
+
+        cleaned_author = recorded_by.strip() if recorded_by else ""
+        if not cleaned_author:
+            msg = "recorded_by is required and must be non-empty"
             raise ValueError(msg)
 
         def _create() -> "PlanArtifact":
@@ -70,7 +78,7 @@ class PlanArtifact(models.Model):
                 return cls.objects.create(
                     ticket=ticket,
                     plan_text=cleaned,
-                    recorded_by=recorded_by.strip(),
+                    recorded_by=cleaned_author,
                 )
 
         return retry_on_locked(_create)
