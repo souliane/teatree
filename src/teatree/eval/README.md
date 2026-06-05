@@ -488,12 +488,7 @@ It complements the gate-liveness corpus (`tests/test_gate_liveness_corpus.py`,
 **did** hold (or weren't needed) in real runs. Four GREEN-tier
 (`confidence="deterministic"`, low false-positive) invariants ship live —
 `no_edit_in_main_clone`, `no_raw_out_of_band_merge`, `no_raw_review_post`,
-`no_raw_slack_overlay_post`. The plan-conformance invariant
-(`plan_gate_fired_or_skipped`) ships **deferred**, not live: it keys on the
-`teatree-plan` skill, which is the interactive backlog-prioritization skill —
-the wrong signal for "this implementation change was planned"
-([#1640](https://github.com/souliane/teatree/issues/1640)). Its predicate stays
-(trivially re-enabled) but the live eval never evaluates it.
+`no_raw_slack_overlay_post`.
 
 ```bash
 t3 eval transcript-replay                       # newest session for this project

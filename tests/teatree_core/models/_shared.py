@@ -15,10 +15,10 @@ from teatree.core.models import Task, Ticket, Worktree
 
 
 def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
-    """Drive ``ticket.start()`` and let the worker schedule the coding task.
+    """Drive ``ticket.start()`` and let the worker schedule the planning task.
 
     Stage 3 of #140 made provisioning a worker side effect; tests that need
-    the coding task materialised swap the worker for an inline stub so the
+    the planning task materialised swap the worker for an inline stub so the
     side effect runs synchronously without touching real git.
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
@@ -28,7 +28,7 @@ def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
     def fake_enqueue(ticket_id: int) -> None:
         target = Ticket.objects.get(pk=ticket_id)
         if target.state == Ticket.State.STARTED:
-            target.schedule_coding()
+            target.schedule_planning()
 
     fake_task = MagicMock()
     fake_task.enqueue.side_effect = fake_enqueue
@@ -54,9 +54,19 @@ def _advance_ticket_to_tested(ticket: Ticket, test_case: TestCase | None = None)
     else:
         ticket.start()
         ticket.save()
+    _advance_started_to_planned(ticket)
     ticket.code()
     ticket.save()
     ticket.test(passed=True)
+    ticket.save()
+
+
+def _advance_started_to_planned(ticket: Ticket) -> None:
+    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    ticket.plan()
     ticket.save()
 
 

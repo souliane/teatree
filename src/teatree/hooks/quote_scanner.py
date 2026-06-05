@@ -424,8 +424,7 @@ def has_quote_ok_override(tool_name: str, tool_input: ToolInput) -> bool:
 # publish-side ``--quote-ok`` flag / ``QUOTE_OK=1`` env (shell/env concepts
 # that have no analogue inside an Agent/Task prompt body), the dispatch gate
 # opt-out is an in-prompt token mirroring the existing
-# ``[skip-plan-gate: <reason>]`` / ``[skip-skill-gate: <reason>]`` convention
-# in ``hook_router``. The reason is MANDATORY — an empty reason does not
+# ``[skip-skill-gate: <reason>]`` convention in ``hook_router``. The reason is MANDATORY — an empty reason does not
 # bypass — so an audit can read WHY a quote-shaped dispatch was sanctioned.
 _DISPATCH_QUOTE_OK_RE: Final[re.Pattern[str]] = re.compile(r"\[quote-ok:\s*(\S[^\]]*?)\s*\]")
 

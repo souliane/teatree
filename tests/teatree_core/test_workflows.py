@@ -104,6 +104,15 @@ _MOCK_OVERLAY = {"test": WorkflowOverlay()}
 WORKFLOW_SETTINGS: dict[str, object] = {}
 
 
+def _plan_ticket(ticket: Ticket) -> None:
+    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+
+    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    ticket.plan()
+    ticket.save()
+
+
 def _patch_overlay():
     return patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY)
 
@@ -380,6 +389,7 @@ class TestTaskWorkflow(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _plan_ticket(ticket)
         ticket.code()
         ticket.save()
         assert ticket.state == Ticket.State.CODED
@@ -440,6 +450,7 @@ class TestTaskWorkflow(TestCase):
         ticket.save()
         ticket.start()
         ticket.save()
+        _plan_ticket(ticket)
         ticket.code()
         ticket.save()
 

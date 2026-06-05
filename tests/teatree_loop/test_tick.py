@@ -901,7 +901,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         """#883: a tick recovers a ticket left half-advanced by a crash.
 
         A coding task COMPLETED but the FSM ``code()`` transition was
-        lost to a mid-transition crash, so the ticket is still STARTED.
+        lost to a mid-transition crash, so the ticket is still PLANNED.
         The task is COMPLETED (not CLAIMED) — the claim sweeps cannot see
         it. A fresh tick must run ``replay_orphaned_transitions`` from
         the same boot/tick recovery hook and advance the ticket so the
@@ -911,7 +911,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
 
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id="agent")
         Task.objects.create(
             ticket=ticket,
@@ -961,7 +961,7 @@ class TestTickReplaysOrphanedTransitions(django.test.TestCase):
         )
 
         # Healthy ticket: half-advanced coding task that replay should recover.
-        healthy_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
+        healthy_ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
         healthy_session = Session.objects.create(ticket=healthy_ticket, agent_id="code-agent")
         Task.objects.create(
             ticket=healthy_ticket,
