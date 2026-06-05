@@ -1,15 +1,24 @@
 """Self-DM-token gate: refuse claude.ai Slack MCP writes to a bot↔user DM channel.
 
-The claude.ai Slack MCP write tools (``mcp__claude_ai_Slack__slack_send_message``,
-``mcp__claude_ai_Slack__slack_add_reaction``) publish under the USER's OAuth token.
-A post/react to the operator's own bot↔user DM channel renders as user-authored
-and lets the loop's scanners react to the agent's own message. The on-behalf
-egress class governs colleague surfaces but never sees an MCP tool call.
+The claude.ai Slack MCP write tools (``slack_send_message``,
+``slack_add_reaction``, ``slack_schedule_message``, ``slack_send_message_draft``)
+publish under the USER's OAuth token. A post/react to the operator's own bot↔user
+DM renders as user-authored and lets the loop's scanners react to the agent's own
+message. The on-behalf egress class governs colleague surfaces but never sees an
+MCP tool call.
 
-This gate denies an MCP write whose destination is a configured DM channel id
-and points the caller at the bot-token path (``t3 teatree notify send -``).
-Posts to any other channel pass through untouched. The fail direction is
-ALLOW+warn: an unreadable/unresolvable config must not lock the user out of Slack.
+The self-DM destination has two forms, mirroring the canonical
+``SlackBotBackend._is_self_dm``: the configured ``D…`` DM channel id AND the
+``U…`` user id (Slack accepts a user id as a ``chat.postMessage`` target that
+opens the self-IM). Both are collected from config (per-overlay
+``slack_dm_channel_id`` + ``slack_user_id``, and the global ``[teatree]
+slack_user_id``) — never hardcoded.
+
+This gate denies an MCP write whose destination is one of those ids and points
+the caller at the bot-token path (``t3 teatree notify send -``). Posts to any
+other channel pass through untouched. The fail direction is ALLOW+warn: an
+unreadable/unresolvable config must not lock the user out of Slack. The
+``[teatree] self_dm_gate_enabled`` kill-switch disables the gate without a code edit.
 """
 
 import json
@@ -52,11 +61,23 @@ mode = "auto"
 
 [overlays.t3-acme]
 messaging_backend = "slack"
-slack_user_id = "U0AAAAAAAAA"
 """
+
+# No overlay table at all — only the global [teatree] slack_user_id. The U-form
+# must still deny via the global fallback (mirrors notify._resolve_user_id).
+_CONFIG_GLOBAL_USER_ONLY = """
+[teatree]
+mode = "auto"
+slack_user_id = "U0GLOBALUSER"
+"""
+
+_USER_ID = "U0AAAAAAAAA"
+_DM_CHANNEL = "D0BFIRSTDM01"
 
 _SEND = "mcp__claude_ai_Slack__slack_send_message"
 _REACT = "mcp__claude_ai_Slack__slack_add_reaction"
+_SCHEDULE = "mcp__claude_ai_Slack__slack_schedule_message"
+_DRAFT = "mcp__claude_ai_Slack__slack_send_message_draft"
 
 
 def _patch_home(home: Path, body: str | None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,11 +104,21 @@ class TestDeniesSelfDmWrites:
     @pytest.mark.parametrize(
         ("tool_name", "tool_input"),
         [
+            # ── D… DM channel id form ──
             (_SEND, {"channel": "D0BFIRSTDM01", "text": "Full-day review report"}),
             (_SEND, {"channel": "D0BSECONDDM2", "text": "status"}),
             (_REACT, {"channel": "D0BFIRSTDM01", "name": "eyes", "timestamp": "1.2"}),
             # Defensive: some MCP shapes use ``channel_id`` for the destination.
             (_SEND, {"channel_id": "D0BSECONDDM2", "text": "status"}),
+            # SCOPE ADD: scheduled + draft writes reproduce the incident too.
+            (_SCHEDULE, {"channel": "D0BFIRSTDM01", "text": "delayed report", "post_at": "1"}),
+            (_DRAFT, {"channel": "D0BSECONDDM2", "text": "draft body"}),
+            # ── U… user id form (Slack opens the self-IM) — the BLOCKER ──
+            (_SEND, {"channel": _USER_ID, "text": "Full-day review report"}),
+            (_SEND, {"channel_id": _USER_ID, "text": "status"}),
+            (_REACT, {"channel": _USER_ID, "name": "eyes", "timestamp": "1.2"}),
+            (_SCHEDULE, {"channel": _USER_ID, "text": "delayed report", "post_at": "1"}),
+            (_DRAFT, {"channel": _USER_ID, "text": "draft body"}),
         ],
     )
     def test_self_dm_write_is_denied(
@@ -98,6 +129,20 @@ class TestDeniesSelfDmWrites:
         deny = _parse_deny(capsys)
         assert deny is not None
         assert deny["permissionDecision"] == "deny"
+        assert "notify send" in deny["permissionDecisionReason"]
+
+    def test_global_user_id_fallback_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # No overlay table — only the global [teatree] slack_user_id. The U-form
+        # must still deny (mirrors notify._resolve_user_id overlay→global order).
+        _patch_home(tmp_path / "home2", _CONFIG_GLOBAL_USER_ONLY, monkeypatch)
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": "U0GLOBALUSER", "text": "report"}, session_id="s1g")
+        )
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
         assert "notify send" in deny["permissionDecisionReason"]
 
 
@@ -152,13 +197,21 @@ class TestFailsOpenOnUnresolvableConfig:
         assert captured.out.strip() == ""
         assert "self-DM" in captured.err
 
-    @pytest.mark.parametrize("body", [_CONFIG_NO_DM_CHANNELS, '[teatree]\nmode = "auto"\n'])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            _CONFIG_NO_DM_CHANNELS,
+            '[teatree]\nmode = "auto"\n',
+            # A non-table overlay value (overlays.name = "string") is skipped, not crashed.
+            '[teatree]\nmode = "auto"\n[overlays]\nbroken = "not-a-table"\n',
+        ],
+    )
     def test_config_without_dm_channels_allows_silently(
         self, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # Readable config but no DM channel ids to match (an overlay without the
-        # key, OR no overlays table at all) → ALLOW, no warn (genuinely-empty,
-        # not the can't-read case).
+        # key, no overlays table, OR a malformed non-table overlay) → ALLOW, no
+        # warn (genuinely-empty, not the can't-read case).
         _patch_home(tmp_path / "home", body, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s5")
@@ -194,6 +247,30 @@ class TestMalformedToolInputPassesThrough:
         )
         assert verdict is False
         assert capsys.readouterr().out.strip() == ""
+
+
+class TestKillSwitch:
+    def test_disabled_setting_allows_a_self_dm_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        body = _CONFIG_WITH_DM_CHANNELS.replace('mode = "auto"', 'mode = "auto"\nself_dm_gate_enabled = false')
+        _patch_home(tmp_path / "home", body, monkeypatch)
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="sk1")
+        )
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_enabled_default_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # No explicit flag → default ON → still denies (kill-switch is opt-out).
+        _patch_home(tmp_path / "home", _CONFIG_WITH_DM_CHANNELS, monkeypatch)
+        verdict = router.handle_block_self_dm_via_mcp(
+            _event(_SEND, {"channel": _DM_CHANNEL, "text": "report"}, session_id="sk2")
+        )
+        assert verdict is True
+        assert _parse_deny(capsys) is not None
 
 
 class TestRegisteredInPreToolUseChain:

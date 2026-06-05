@@ -2720,7 +2720,14 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
 
 # ── PreToolUse: refuse self-DM via the user-token MCP tools (#1464) ──
 
-_SELF_DM_MCP_WRITE_TOOLS: frozenset[str] = frozenset({"slack_send_message", "slack_add_reaction"})
+_SELF_DM_MCP_WRITE_TOOLS: frozenset[str] = frozenset(
+    {
+        "slack_send_message",
+        "slack_add_reaction",
+        "slack_schedule_message",
+        "slack_send_message_draft",
+    }
+)
 _SELF_DM_CHANNEL_FIELDS: tuple[str, ...] = ("channel", "channel_id")
 
 
@@ -2728,11 +2735,33 @@ def _slack_tool_suffix(tool_name: str) -> str:
     return tool_name.rsplit("__", 1)[-1]
 
 
-@dataclasses.dataclass(frozen=True)
-class _SelfDmChannels:
-    """Resolved set of configured bot↔user DM channel ids, with a read-success flag.
+def _self_dm_gate_enabled() -> bool:
+    import tomllib  # noqa: PLC0415
 
-    ``resolved`` distinguishes a genuinely-empty configuration (no DM channels
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    teatree = config.get("teatree") if isinstance(config, dict) else None
+    if not isinstance(teatree, dict):
+        return True
+    return teatree.get("self_dm_gate_enabled") is not False
+
+
+@dataclasses.dataclass(frozen=True)
+class _SelfDmDestinations:
+    """Resolved set of self-DM destination ids, with a read-success flag.
+
+    The set mirrors the canonical ``SlackBotBackend._is_self_dm``: each
+    overlay's ``slack_dm_channel_id`` (the ``D…`` self-IM id) AND each
+    ``slack_user_id`` plus the global ``[teatree] slack_user_id`` (the
+    ``U…`` id Slack accepts as a target that opens the self-IM).
+
+    ``resolved`` distinguishes a genuinely-empty configuration (nothing
     declared → ALLOW silently) from an unreadable/unparsable one (→ ALLOW+warn).
     """
 
@@ -2740,26 +2769,31 @@ class _SelfDmChannels:
     resolved: bool
 
 
-def _self_dm_channel_ids() -> _SelfDmChannels:
+def _self_dm_destination_ids() -> _SelfDmDestinations:
     import tomllib  # noqa: PLC0415
 
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return _SelfDmChannels(frozenset(), resolved=False)
+        return _SelfDmDestinations(frozenset(), resolved=False)
     try:
         with config_path.open("rb") as f:
             config = tomllib.load(f)
     except Exception:  # noqa: BLE001
-        return _SelfDmChannels(frozenset(), resolved=False)
-    overlays = config.get("overlays") if isinstance(config, dict) else None
-    if not isinstance(overlays, dict):
-        return _SelfDmChannels(frozenset(), resolved=True)
-    ids = frozenset(
-        cfg["slack_dm_channel_id"]
-        for cfg in overlays.values()
-        if isinstance(cfg, dict) and isinstance(cfg.get("slack_dm_channel_id"), str)
-    )
-    return _SelfDmChannels(ids, resolved=True)
+        return _SelfDmDestinations(frozenset(), resolved=False)
+    ids: set[str] = set()
+    overlays = config.get("overlays")
+    if isinstance(overlays, dict):
+        for cfg in overlays.values():
+            if not isinstance(cfg, dict):
+                continue
+            for key in ("slack_dm_channel_id", "slack_user_id"):
+                value = cfg.get(key)
+                if isinstance(value, str) and value:
+                    ids.add(value)
+    teatree = config.get("teatree")
+    if isinstance(teatree, dict) and isinstance(teatree.get("slack_user_id"), str) and teatree["slack_user_id"]:
+        ids.add(teatree["slack_user_id"])
+    return _SelfDmDestinations(frozenset(ids), resolved=True)
 
 
 def _self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
@@ -2771,27 +2805,34 @@ def _self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
 
 
 def handle_block_self_dm_via_mcp(data: dict) -> bool:
-    """Refuse a claude.ai Slack MCP write to the operator's own bot↔user DM channel.
+    """Refuse a claude.ai Slack MCP write to the operator's own bot↔user DM.
 
     The ``mcp__claude_ai_Slack__slack_*`` write tools publish under the USER's
-    OAuth token, so a post/react to the operator's own DM channel renders as
+    OAuth token, so a post/react to the operator's own self-IM renders as
     user-authored and the loop's scanners then react to the agent's own message.
     teatree's egress chokepoints (the slack_voice_classifier, the on-behalf
     egress class) never see an MCP tool call, so this PreToolUse deny is the only
     place the write can be stopped.
 
-    DENY scope: the two MCP write tools whose destination resolves to one of the
-    configured ``[overlays.*].slack_dm_channel_id`` values. The reason points the
-    caller at the bot-token path (``t3 teatree notify send -``). Posts to any
-    other channel (colleague surfaces, governed by the on-behalf gate) pass
-    through untouched.
+    DENY scope: the MCP write tools (``slack_send_message``,
+    ``slack_add_reaction``, ``slack_schedule_message``,
+    ``slack_send_message_draft``) whose destination resolves to a self-DM id.
+    Mirroring the canonical ``SlackBotBackend._is_self_dm``, a self-DM id is
+    either a configured ``[overlays.*].slack_dm_channel_id`` (``D…``) OR a
+    configured ``slack_user_id`` / global ``[teatree] slack_user_id`` (``U…``,
+    which Slack opens as the self-IM). The reason points the caller at the
+    bot-token path (``t3 teatree notify send -``). Posts to any other channel
+    (colleague surfaces, governed by the on-behalf gate) pass through untouched.
 
-    Fail direction: ALLOW+warn when the DM channel ids cannot be resolved
+    Fail direction: ALLOW+warn when the destination ids cannot be resolved
     (missing/unreadable config) — this is a UX-correctness gate, not a security
     gate, and a config hiccup must not lock the operator out of Slack. A
-    genuinely-empty configuration (config readable, no DM channels declared)
-    allows silently.
+    genuinely-empty configuration (config readable, nothing declared) allows
+    silently. The ``[teatree] self_dm_gate_enabled`` setting (default ``True``)
+    is the one-line kill-switch.
     """
+    if not _self_dm_gate_enabled():
+        return False
     tool_name = data.get("tool_name", "")
     if _slack_tool_suffix(tool_name) not in _SELF_DM_MCP_WRITE_TOOLS:
         return False
@@ -2799,21 +2840,21 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
     if not isinstance(tool_input, dict):
         return False
 
-    dm_channels = _self_dm_channel_ids()
-    if not dm_channels.resolved:
+    destinations = _self_dm_destination_ids()
+    if not destinations.resolved:
         sys.stderr.write(
             "WARNING: self-DM gate (#1464) — could not resolve the bot↔user DM "
-            "channel ids from ~/.teatree.toml; allowing the Slack MCP write.\n"
+            "destination ids from ~/.teatree.toml; allowing the Slack MCP write.\n"
         )
         return False
 
-    destination = _self_dm_destination(tool_input, dm_channels.ids)
+    destination = _self_dm_destination(tool_input, destinations.ids)
     if not destination:
         return False
 
     return emit_pretooluse_deny(
         f"SELF-DM REFUSED: this claude.ai Slack MCP write targets the operator's own "
-        f"bot↔user DM channel ({destination}) under the USER's OAuth token, so it renders "
+        f"bot↔user DM ({destination}) under the USER's OAuth token, so it renders "
         f"as user-authored and the loop's scanners will react to the agent's own message. "
         f"Use the bot-token path instead: `t3 teatree notify send -` (reads the body from "
         f"stdin). Posts to colleague channels are unaffected by this gate."
