@@ -340,7 +340,8 @@ class DoctorService:
             problems.append(
                 "teatree is editable but contribute=false in ~/.teatree.toml. "
                 "If you are contributing to teatree, set contribute=true. "
-                "If not, run `uv tool install git+https://github.com/souliane/teatree` "
+                "If not, run "
+                "`uv tool install --from git+https://github.com/souliane/teatree.git teatree` "
                 "to drop the editable install.",
             )
 

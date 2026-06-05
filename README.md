@@ -357,9 +357,9 @@ skills carry the rest.
 Teatree is not on PyPI. Install the `t3` CLI straight from the repo:
 
 ```bash
-uv tool install git+https://github.com/souliane/teatree   # installs `t3` globally
-apm install -g souliane/teatree                            # installs skills + companion dependencies
-t3 setup                                                   # links plugin, syncs skills, migrates self-DB
+uv tool install --from git+https://github.com/souliane/teatree.git teatree   # installs `t3` globally
+apm install -g souliane/teatree   # installs skills + companion dependencies
+t3 setup                          # links plugin, syncs skills, migrates self-DB
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
