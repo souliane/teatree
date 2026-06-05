@@ -167,8 +167,22 @@ class Command(TyperCommand):
                     exit_code=0,
                     result={"complete_note": note},
                 )
-            task.complete()
+            # Decouple the completion bookkeeping from the FSM auto-advance
+            # (#1977): a deliberate gate refusal (no PlanArtifact, dirty
+            # worktree, missing shipping attestation) must complete the task —
+            # the out-of-band-done write the operator asked for — and SURFACE
+            # the refusal loudly, never crash rc=1 and wedge the task claimed.
+            ticket_id = task.ticket_id
+            advance_failure = task.complete_surfacing_advance_failure()
+
         self.stdout.write(f"Task {task_id} completed.")
+        if advance_failure:
+            self.stderr.write(
+                f"WARNING: task {task_id} completed but the ticket FSM did NOT advance: {advance_failure}\n"
+                f"  The completion stands; record the missing plan ("
+                f'`t3 <overlay> ticket plan {ticket_id} "<text>"` or `ticket plan-bypass`) '
+                f"and the replay sweep advances the ticket. The task is NOT wedged claimed.",
+            )
 
     @command(name="record-attempt")
     def record_attempt(
