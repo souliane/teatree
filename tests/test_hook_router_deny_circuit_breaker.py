@@ -88,14 +88,29 @@ def _seed_pending(env: dict[str, str], session_id: str, skills: list[str]) -> No
     (_state_dir(env) / f"{session_id}.pending").write_text("\n".join(skills) + "\n", encoding="utf-8")
 
 
-def _skill_deny(session_id: str) -> dict:
+def _skill_deny(env: dict[str, str], session_id: str) -> dict:
     """An Edit of a Python file that trips ONLY the skill-loading (UX) gate when pending is seeded.
 
     The skill-loading gate is scoped to genuine code work, so the call must
     touch a ``.py`` file; an ``Edit`` keeps it clear of the Bash-only
     orchestrator-boundary safety gate the other helpers exercise.
+
+    The ``.py`` path lives under the per-test ``tmp_path`` (the STATE_DIR's
+    parent), i.e. OUTSIDE any teatree-managed git repo. A path inside the
+    teatree checkout would, whenever the suite runs on a checkout sitting on
+    ``main`` (the push-to-main CI ``test`` job has ``cwd`` on ``main``), trip
+    the higher-priority ``handle_protect_default_branch`` SAFETY gate first —
+    its escalating deny then preempts the skill-loading UX deny this test
+    drives, so the 3rd call keeps denying instead of failing open. Anchoring
+    the path in ``tmp_path`` keeps the deny the skill-loading gate's,
+    independent of the runner's branch.
     """
-    return {"session_id": session_id, "tool_name": "Edit", "tool_input": {"file_path": "src/teatree/core/probe.py"}}
+    tmp_root = _state_dir(env).parent
+    return {
+        "session_id": session_id,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(tmp_root / "work" / "probe.py")},
+    }
 
 
 def _safety_deny(session_id: str) -> dict:
@@ -125,13 +140,13 @@ class TestUxGateTripsOpenAtThreshold:
     def test_third_consecutive_identical_skill_deny_fails_open_with_signal(self, env: dict[str, str]) -> None:
         _seed_pending(env, "ux", ["ac-reviewing-codebase"])
 
-        rc1, payload1, _ = _run(env, _skill_deny("ux"))
-        rc2, payload2, _ = _run(env, _skill_deny("ux"))
+        rc1, payload1, _ = _run(env, _skill_deny(env, "ux"))
+        rc2, payload2, _ = _run(env, _skill_deny(env, "ux"))
         _assert_denied(rc1, payload1)
         _assert_denied(rc2, payload2)
         _assert_streak_count(env, "ux", 2)
 
-        rc3, payload3, stderr3 = _run(env, _skill_deny("ux"))
+        rc3, payload3, stderr3 = _run(env, _skill_deny(env, "ux"))
         assert rc3 == 0, "3rd identical UX denial must FAIL OPEN (allow) to break the loop"
         assert payload3 is None, "no deny payload on the auto-relaxed call"
         assert "CIRCUIT BREAKER" in stderr3
@@ -142,7 +157,7 @@ class TestUxGateTripsOpenAtThreshold:
 
     def test_auto_relax_resets_the_streak(self, env: dict[str, str]) -> None:
         _seed_pending(env, "ux2", ["ac-reviewing-codebase"])
-        rcs = [_run(env, _skill_deny("ux2"))[0] for _ in range(3)]
+        rcs = [_run(env, _skill_deny(env, "ux2"))[0] for _ in range(3)]
         assert rcs == [2, 2, 0], "first two deny, the third fails open"
         assert _streak(env, "ux2") is None, "the breaker resets the streak after relaxing the UX gate"
 
@@ -184,11 +199,11 @@ class TestAllowResetsStreak:
             "tool_input": {"command": "git status # [skill-load-ok: genuine progress]"},
         }
 
-        rc1, _, _ = _run(env, _skill_deny("reset"))
-        rc2, _, _ = _run(env, _skill_deny("reset"))
+        rc1, _, _ = _run(env, _skill_deny(env, "reset"))
+        rc2, _, _ = _run(env, _skill_deny(env, "reset"))
         rc_allow, payload_allow, _ = _run(env, allowed)
-        rc3, _, _ = _run(env, _skill_deny("reset"))
-        rc4, _, _ = _run(env, _skill_deny("reset"))
+        rc3, _, _ = _run(env, _skill_deny(env, "reset"))
+        rc4, _, _ = _run(env, _skill_deny(env, "reset"))
 
         assert [rc1, rc2] == [2, 2]
         assert rc_allow == 0, "the escaped call is allowed (genuine progress)"
