@@ -16,6 +16,7 @@ from teatree.cli.eval_all import (
     run_ai_lane,
     trigger_lane,
 )
+from teatree.cli.eval_capture_subagent import capture_subagent
 from teatree.cli.eval_negative_control import negative_control
 from teatree.cli.eval_run_modes import (
     build_subscription_manifest,
@@ -47,6 +48,7 @@ from teatree.eval.trigger_qa import run_trigger_qa
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
+eval_app.command("capture-subagent")(capture_subagent)
 
 _VALID_FORMATS = ("text", "json")
 
@@ -383,9 +385,10 @@ def prepare_subscription(
     The eval CLI is a plain process with no in-session ``Agent`` tool, so it
     cannot itself drive a subscription-covered turn. This command prints, per
     scenario, the agent definition, prompt, and the transcript path the
-    ``subscription`` backend will read — so an operator (or an in-session
-    ``/loop`` driver) runs each prompt via an in-session sub-agent with
-    ``--output-format stream-json``, saves it to that path, then grades with
+    ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+    in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
+    prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
+    sub-agent's JSONL to that path, and finally grades with
     ``t3 eval run --backend subscription``.
     """
     _bootstrap_django()
