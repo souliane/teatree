@@ -429,15 +429,23 @@ jobs:
     #
     #   * PR path — on the FIRST pull request opened that ISO week
     #     (`first_pr_of_week.py --mode first-of-week`, order-independent,
-    #     re-run safe). Covers any week that opened a PR.
-    #   * Cron path — on the daily `schedule` (the shared `17 6 * * *` cron),
-    #     but only when NO PR was opened this ISO week
-    #     (`first_pr_of_week.py --mode no-pr-week`). Closes the gap where a
-    #     PR-less week ran no eval at all. The two paths share one marker —
-    #     the week's PR list — so a week the PR path already covered is never
-    #     re-run on the cron (no double-run). The cron is further pinned to
-    #     the ISO week's Monday so a multi-day PR-less week fires once, not
-    #     every day.
+    #     re-run safe). This is the PRIMARY path; it covers any week that
+    #     opened a PR.
+    #   * Cron path — a genuine last-resort backstop for a PR-LESS week,
+    #     pinned to the ISO week's LAST day (Sunday, `date -u +%u` == 7) on
+    #     the shared daily `17 6 * * *` cron, and only when NO PR was opened
+    #     this ISO week (`first_pr_of_week.py --mode no-pr-week`). Closes the
+    #     gap where a PR-less week ran no eval at all.
+    #
+    # Ordering / double-run: the two paths share one marker — the week's PR
+    # list — and the cron fires only at end-of-week. By Sunday a week with no
+    # PR has almost certainly produced none, so the backstop runs ~once for
+    # that week and the PR path never fired (it had no PR to fire on). The
+    # ONLY residual overlap is a PR opened on Sunday AFTER the 06:17 UTC cron
+    # already ran: that PR is then the first-of-week and its PR-path run is a
+    # second run for that ISO week. This is an accepted, sub-day sliver for a
+    # last-resort backstop; the zero-run direction (PR-less week → no eval at
+    # all) is the bug this closes and is fully eliminated.
     #
     # Manual on-demand runs bypass CI: the user runs `t3 eval run` /
     # `t3 eval trigger-qa` locally (also wired as the periodic local-eval
@@ -474,10 +482,11 @@ jobs:
           gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
             --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
           if [ "$EVENT_NAME" = "schedule" ]; then
-            # Cron path: run only in a PR-less ISO week (the PR path covers the
-            # rest), and only on the ISO week's Monday so a multi-day PR-less
-            # week fires the eval exactly once instead of every daily cron tick.
-            if [ "$(date -u +%u)" != "1" ]; then
+            # Cron path: last-resort backstop for a PR-less ISO week. Pinned to
+            # the week's LAST day (Sunday, %u == 7) so it cannot preempt the
+            # PR path mid-week (which would let a later first-PR run double-fire)
+            # and so it fires at most once per PR-less week, not every daily tick.
+            if [ "$(date -u +%u)" != "7" ]; then
               echo "run_eval=false" >> "$GITHUB_OUTPUT"
             elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --mode no-pr-week --skip-code 1; then
               echo "run_eval=true" >> "$GITHUB_OUTPUT"

@@ -28,11 +28,14 @@ always reachable regardless of how the platform ordered or paginated them.
 
 A second mode (``--mode no-pr-week``) backs the scheduled (cron) eval path:
 the first-PR gate runs the eval only on a week that opened a PR, so a week with
-NO PR would never run an eval at all. The cron fires that uncovered case.
-``week_has_no_pr`` is the double-run guard the two paths share: it exits 0 (run)
-only when no PR was opened this ISO week, so a week the first-PR path already
-covered is never re-run on the cron. The shared marker is the PR list itself —
-neither path consumes state, so both stay order-independent and re-run safe.
+NO PR would never run an eval at all. The cron fires that uncovered case as a
+last-resort backstop. ``week_has_no_pr`` exits 0 (run) only when no PR was
+opened this ISO week; the CI cron additionally pins this mode to the week's LAST
+day (Sunday) so it cannot preempt the PR path mid-week. The shared marker is
+the PR list itself — neither path consumes state, so both stay order-independent
+and re-run safe. The end-of-week pin makes a double-run a sub-day Sunday-only
+sliver (a PR opened after the cron run), not a multi-day window; the zero-run
+direction (a PR-less week never runs an eval) is fully eliminated.
 """
 
 import argparse
@@ -120,13 +123,16 @@ def week_has_no_pr(
 ) -> bool:
     """True iff NO MR/PR was opened in the current ISO week.
 
-    The scheduled (cron) eval path uses this as the double-run guard
-    shared with the first-of-week path. The two paths share one marker —
-    the week's PR list. A week with at least one PR is already covered by
-    the first-PR path (it ran, or will run, the eval), so the cron must
-    skip it; a week with NO PR is uncovered, so the cron runs the eval.
-    The PR list is the same source both paths query, so neither can run
-    twice for the same week.
+    The scheduled (cron) eval path uses this so it fires ONLY for a PR-less
+    week — the last-resort backstop. The two paths share one marker, the
+    week's PR list: a week with at least one PR is covered by the first-PR
+    path, so the cron skips it; a week with NO PR is uncovered, so the cron
+    runs. The CI cron additionally pins this mode to the week's LAST day
+    (Sunday) — without that pin, a mid-week cron run followed by a later
+    first PR the SAME week would double-fire (the PR list this function
+    reads changes after the cron reads it). The end-of-week pin shrinks
+    that to a Sunday-only sub-day sliver; the zero-run direction (a PR-less
+    week never runs) is fully eliminated.
     """
     now = (now or dt.datetime.now(dt.UTC)).astimezone(dt.UTC)
     target_week = _iso_week(now)
