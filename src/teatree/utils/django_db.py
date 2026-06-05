@@ -18,9 +18,11 @@ import enum
 import logging
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import TextIO
 
 from teatree.utils import bad_artifacts
@@ -29,6 +31,13 @@ from teatree.utils.django_db_dslr import prune_dslr_snapshots
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
+
+#: Overlay-supplied dockerized migrate runner. Given the ``manage.py`` args and
+#: the resolved subprocess env, it runs the migrate inside the repo-canonical
+#: docker image (every dependency baked in) and returns the result. Core calls
+#: it only as a fallback when the host runner fails with an import/config error
+#: — the signature of an unverified, dep-incomplete host venv (#1977).
+DockerizedMigrate = Callable[[list[str], dict[str, str]], CompletedProcess[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +69,19 @@ def _is_pipenv_repo(repo: Path) -> bool:
         return "[[package]]" not in lock.read_text(encoding="utf-8")
     except OSError:
         return True
+
+
+_CONFIG_ERROR_MARKERS = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
+
+
+def _is_config_error(combined: str) -> bool:
+    """True iff *combined* migrate output looks like an import/config failure.
+
+    These markers signal the interpreter could not import the app's
+    dependencies or settings — the unverified-venv signature that gates the
+    dockerized fallback and the unfakeable-migration skip.
+    """
+    return any(m in combined for m in _CONFIG_ERROR_MARKERS)
 
 
 def _migrate_runner_prefix(repo: Path) -> list[str]:
@@ -142,6 +164,7 @@ class DjangoDbImportConfig:
     dump_timeout: int = 1800
     dslr_snapshot: str = ""
     dump_path: str = ""
+    dockerized_migrate: DockerizedMigrate | None = None
 
 
 _MAX_MIGRATE_RETRIES = 20
@@ -190,6 +213,7 @@ class DjangoDbImporter:
         self.pg_user = pg_user
         self.pg_env = pg_env
         self._remote_dump_failed = False
+        self._migrate_via_docker = False
 
     # ------- low-level template copy / migration --------------------------
 
@@ -253,10 +277,8 @@ class DjangoDbImporter:
         run_env = {**inherited_env, "DATABASE_URL": ref_db_url, "DISABLE_DATABASE_SSL": "True", **cfg.migrate_env_extra}
 
         self.stdout.write(f"  Migrating reference DB ({cfg.ref_db_name}) using main repo...\n")
-        runner = _migrate_runner_prefix(Path(cfg.main_repo_path))
-        migrate_cmd = [*runner, "manage.py", "migrate", "--no-input"]
         for _attempt in range(_MAX_MIGRATE_RETRIES):
-            result = run_allowed_to_fail(migrate_cmd, cwd=cfg.main_repo_path, env=run_env, expected_codes=None)
+            result = self._run_migrate(["manage.py", "migrate", "--no-input"], run_env)
             if result.returncode == 0:
                 if "No migrations to apply" in result.stdout:
                     self.stdout.write("  Reference DB already up to date (no migrations applied).\n")
@@ -265,6 +287,18 @@ class DjangoDbImporter:
                 return _MigrateResult.APPLIED
 
             combined = f"{result.stdout}\n{result.stderr}"
+            # souliane/teatree#1977: a host config/import error means the
+            # selected interpreter's venv is unverified and dep-incomplete (a
+            # stale uv-built in-project ``.venv`` django may leak through but
+            # celery does not). Don't trust it — retry the whole migrate inside
+            # the repo-canonical docker image, where every dependency is baked
+            # in, then re-classify. This switch happens once; the --fake step
+            # then runs in docker too.
+            if _is_config_error(combined) and not self._migrate_via_docker and cfg.dockerized_migrate is not None:
+                self.stdout.write("  Host migrate failed to import deps; retrying inside the docker image...\n")
+                self._migrate_via_docker = True
+                continue
+
             failure_reason = self._try_fake_failing_migration(combined, result.stdout, run_env)
             if failure_reason:
                 # souliane/teatree#959: surface the real subprocess output on
@@ -281,10 +315,23 @@ class DjangoDbImporter:
         self.stdout.write("  WARNING: Reference DB migration exhausted retries, skipping.\n")
         return _MigrateResult.FAILED
 
+    def _run_migrate(self, manage_args: list[str], run_env: dict[str, str]) -> CompletedProcess[str]:
+        """Run one ``manage.py`` invocation via the selected runner.
+
+        Dispatches to the overlay's dockerized runner once core has switched to
+        it (#1977); otherwise runs on the host with the dependency-manager-aware
+        prefix (#1973).
+        """
+        if self._migrate_via_docker and self.cfg.dockerized_migrate is not None:
+            return self.cfg.dockerized_migrate(manage_args, run_env)
+        runner = _migrate_runner_prefix(Path(self.cfg.main_repo_path))
+        return run_allowed_to_fail(
+            [*runner, *manage_args], cwd=self.cfg.main_repo_path, env=run_env, expected_codes=None
+        )
+
     def _try_fake_failing_migration(self, combined: str, stdout: str, run_env: dict[str, str]) -> str:
         """Try to fake a failing migration. Returns empty string on success, error message on failure."""
-        config_markers = ("ModuleNotFoundError", "ImproperlyConfigured", "DJANGO_SETTINGS_MODULE", "No module named")
-        if any(m in combined for m in config_markers):
+        if _is_config_error(combined):
             return "Cannot migrate reference DB (config error), skipping."
 
         if "already exists" not in combined and "does not exist" not in combined:
@@ -297,13 +344,7 @@ class DjangoDbImporter:
         app_label, migration_name = failing.split(".", 1)
         reason = "schema already exists" if "already exists" in combined else "table absent from dump"
         self.stdout.write(f"  Faking {failing} on reference DB ({reason})...\n")
-        runner = _migrate_runner_prefix(Path(self.cfg.main_repo_path))
-        run_allowed_to_fail(
-            [*runner, "manage.py", "migrate", app_label, migration_name, "--fake"],
-            cwd=self.cfg.main_repo_path,
-            env=run_env,
-            expected_codes=None,
-        )
+        self._run_migrate(["manage.py", "migrate", app_label, migration_name, "--fake"], run_env)
         return ""
 
     # ------- restore + clone pipeline -------------------------------------
