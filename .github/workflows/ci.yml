@@ -9,6 +9,19 @@ on:
     # cannot see a brand name already committed; this catches a pre-existing
     # leak even when no new diff touches it.
     - cron: "17 6 * * *"
+  workflow_dispatch:
+    # On-demand manual run of the weekly behavioral-eval gate. The weekly
+    # cadence (first PR of the ISO week or the Sunday cron) means a maintainer
+    # who wants the suite at an arbitrary time has no CI path otherwise. A
+    # dispatch forces the eval to run unconditionally (see the eval-weekly gate
+    # step). The backend input picks the AI-lane runner: sdk (metered claude -p,
+    # the CI default) requires ANTHROPIC_API_KEY.
+    inputs:
+      backend:
+        description: "AI-lane backend for the manual run (sdk = metered claude -p)."
+        required: false
+        default: sdk
+        type: string
 
 jobs:
   preflight:
@@ -482,11 +495,15 @@ jobs:
     # last-resort backstop; the zero-run direction (PR-less week → no eval at
     # all) is the bug this closes and is fully eliminated.
     #
-    # Manual on-demand runs bypass CI: the user runs `t3 eval run` /
-    # `t3 eval trigger-qa` locally (also wired as the periodic local-eval
-    # loop job — `EvalLocalScanner`). The GitLab mirror carries the PR-path
-    # rule in `.gitlab-ci.yml` (no scheduled-pipeline equivalent there).
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule'
+    # On-demand: a `workflow_dispatch` event runs the suite unconditionally
+    # (the gate step below forces run_eval=true for it). Local runs still work
+    # via `t3 eval run` / `t3 eval trigger-qa` (also the periodic local-eval
+    # loop job — `EvalLocalScanner`). The GitLab mirror carries the PR-path rule
+    # and a `when: manual` eval job in `.gitlab-ci.yml`.
+    if: >
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -516,7 +533,10 @@ jobs:
           # newest window as a second line of defence regardless of ordering.
           gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
             --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
-          if [ "$EVENT_NAME" = "schedule" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # Manual on-demand run: always run, no first-of-week gating.
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
             # Cron path: last-resort backstop for a PR-less ISO week. Pinned to
             # the week's LAST day (Sunday, %u == 7) so it cannot preempt the
             # PR path mid-week (which would let a later first-PR run double-fire)
@@ -562,10 +582,10 @@ jobs:
             echo "require_executed=" >> "$GITHUB_OUTPUT"
           fi
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
-      # explicitly. LOCAL `t3 eval run` defaults to the subscription backend (no API
-      # spend); CI is the budgeted exception. (`--trials` already forces the sdk
-      # runner, so the flag is the explicit, debuggable statement of that intent.)
+      # `--backend` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path explicitly
+      # (sdk default). A workflow_dispatch run may override it via the backend input; the
+      # empty PR/schedule input falls back to sdk. LOCAL `t3 eval run` defaults to the
+      # subscription backend (no API spend); CI is the budgeted exception.
       # `--require-executed` (armed only when a key is configured) fails the job
       # if the suite collected scenarios but executed none — no silent decorative pass.
       - name: Behavioral eval suite (pass@k; --require-executed armed when a key is set)
@@ -573,8 +593,9 @@ jobs:
         uses: nick-fields/retry@v4
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
         with:
           timeout_minutes: 30
           max_attempts: 3
           retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any --backend sdk ${{ steps.eval_exec.outputs.require_executed }}
+          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" ${{ steps.eval_exec.outputs.require_executed }}
