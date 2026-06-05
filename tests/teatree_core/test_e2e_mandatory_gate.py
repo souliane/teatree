@@ -165,3 +165,20 @@ class TestNonConsumingPeek(TestCase):
         # Peek must NOT have consumed it.
         assert E2EBypassApproval.has_unconsumed(self.ticket, _SHA) is True
         assert E2EBypassAudit.objects.filter(ticket=self.ticket).count() == 0
+
+    def test_peek_returns_empty_when_gate_would_pass(self) -> None:
+        # A non-impacting change passes via the cheap short-circuit, so the peek
+        # reports "" without reaching the bypass lookup at all.
+        from teatree.core.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
+
+        message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_NON_IMPACTING_DIFF, display_impacting=False))
+        assert message == ""
+
+
+class TestClearWithoutTicket(TestCase):
+    """An out-of-FSM CLEAR (no resolved ticket) is not gated — nothing to bind to."""
+
+    def test_clear_with_no_ticket_returns_empty(self) -> None:
+        from teatree.core.e2e_mandatory_gate import check_clear_e2e_mandatory  # noqa: PLC0415
+
+        assert check_clear_e2e_mandatory(None, _SHA, _IMPACTING_DIFF) == ""

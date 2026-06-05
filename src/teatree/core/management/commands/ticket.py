@@ -1,7 +1,7 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
 import logging
-from typing import Annotated, TypedDict
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 import click
 import typer
@@ -15,6 +15,9 @@ from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
+
+if TYPE_CHECKING:
+    from teatree.core.models.types import TicketExtra
 
 
 class CompletionResult(TypedDict, total=False):
@@ -149,21 +152,27 @@ def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
 
 
 def _resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
-    """Resolve the ticket worktree's diff for the #1967 CLEAR-side E2E gate.
+    """Resolve the INVOKING worktree's diff for the #1967 CLEAR-side E2E gate.
 
     Lives in the command layer (not the domain gate) so the integration-layer
-    git-diff helper is reached from a layer allowed to depend on it. Returns the
-    ``origin/main...HEAD`` changed-file list for the ticket's worktree, or an
-    empty list when no worktree / no resolvable diff (the gate treats an empty
-    diff as fail-closed impacting for a customer-facing overlay).
+    git-diff helper is reached from a layer allowed to depend on it. Shares the
+    canonical :func:`resolve_ship_worktree` (#776) so the CLEAR side classifies
+    the same tree the ship side does — the branch the CLEAR acts on, recorded on
+    ``extra['ship_invoking_branch']`` — not the ticket's earliest (often
+    already-merged) worktree row a reused multi-workstream ticket carries.
+    Returns the ``origin/main...HEAD`` changed-file list, or an empty list when
+    no worktree / no resolvable diff (the gate treats an empty diff as
+    fail-closed impacting for a customer-facing overlay).
     """
     if ticket is None:
         return []
 
     from teatree import visual_qa  # noqa: PLC0415
+    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415
     from teatree.utils.run import CommandFailedError  # noqa: PLC0415
 
-    worktree = ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
+    extra = cast("TicketExtra", ticket.extra or {})
+    worktree = resolve_ship_worktree(ticket, extra)
     repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
     try:
         return visual_qa.changed_files(repo=repo_path)
