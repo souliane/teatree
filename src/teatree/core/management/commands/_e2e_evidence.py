@@ -12,9 +12,12 @@ exits non-zero. None of these functions know about Typer or the CLI.
 The evidence comment is posted on the **ticket** (work item / bug), never
 on an MR — the deployed-environment proof belongs to the issue the work
 closes, and stays attached even after the MR merges. Idempotency is keyed
-on a hidden HTML-comment marker carrying ``(env, commit)`` so a re-run on
-the same environment + commit edits the existing comment in place instead
-of appending a new one.
+on a hidden HTML-comment marker carrying the **environment** alone, so a
+ticket carries **one** evidence comment per environment: a re-run on the
+same environment — for any commit — edits that comment in place instead of
+appending a new one. When the commit moves, the updated body opens with a
+terse ``old -> new`` delta line so the reader sees what changed without a
+wall of duplicate per-commit comments.
 """
 
 import hashlib
@@ -40,11 +43,15 @@ from teatree.utils.run import CommandFailedError
 
 _ON_BEHALF_ACTION = "post_e2e_evidence"
 
-# Mirror of ``backends/gitlab_sync_prs.py`` ``_E2E_EVIDENCE_RE`` in spirit:
-# a single source-of-truth regex matching the hidden idempotency marker
-# embedded at the top of every evidence comment. Named groups expose the
-# env + commit so the idempotency lookup is a pure regex parse.
-_E2E_MARKER_RE = re.compile(r"<!--\s*t3-e2e-evidence\s+env=(?P<env>\S+)\s+commit=(?P<commit>\S+)\s*-->")
+# The single source-of-truth regex matching the hidden idempotency marker
+# embedded at the top of every evidence comment. The marker keys on env
+# alone (one comment per ticket+env); the named group exposes it so the
+# idempotency lookup is a pure regex parse.
+_E2E_MARKER_RE = re.compile(r"<!--\s*t3-e2e-evidence\s+env=(?P<env>\S+)\s*-->")
+
+# The body line carrying the commit under test; parsed back to render the
+# old -> new delta when a later commit updates the same env's comment.
+_COMMIT_LINE_RE = re.compile(r"Commit tested:\s*`(?P<commit>[0-9a-fA-F]+)`")
 
 
 class EvidenceEnv(StrEnum):
@@ -181,39 +188,52 @@ def resolve_and_validate_commit(*, commit: str, repo: str) -> str:
     return resolved
 
 
-def evidence_marker(*, env: EvidenceEnv, commit: str) -> str:
-    """The hidden HTML-comment idempotency marker for ``(env, commit)``.
+def evidence_marker(*, env: EvidenceEnv) -> str:
+    """The hidden HTML-comment idempotency marker for a ticket's env.
 
     Renders invisibly in GitLab/GitHub markdown; matched by
-    :data:`_E2E_MARKER_RE` to find a prior evidence comment to update.
+    :data:`_E2E_MARKER_RE` to find the env's existing evidence comment to
+    update. Keyed on env alone so one comment per ticket+env is maintained.
     """
-    return f"<!-- t3-e2e-evidence env={env.value} commit={commit} -->"
+    return f"<!-- t3-e2e-evidence env={env.value} -->"
 
 
-def find_matching_comment(
-    comments: list[RawAPIDict],
-    *,
-    env: EvidenceEnv,
-    commit: str,
-) -> int | None:
-    """Return the id of an existing evidence comment matching THIS (env, commit).
+@dataclass(frozen=True, slots=True)
+class ExistingComment:
+    """THIS ticket's prior evidence comment for an env: its id + recorded commit."""
 
-    A comment whose marker carries a *different* env or commit is left alone
-    (the caller posts a new comment). Returns the first matching comment's
-    integer id, or ``None`` when none match.
+    comment_id: int
+    prior_commit: str
+
+
+def find_matching_comment(comments: list[RawAPIDict], *, env: EvidenceEnv) -> ExistingComment | None:
+    """Return THIS ticket's existing evidence comment for ``env``, or ``None``.
+
+    A comment whose marker carries a *different* env is left alone (the
+    caller posts a new comment for the new env). The single scan backs both
+    the create/update decision (``comment_id``) and the delta line
+    (``prior_commit``, parsed from the body's ``Commit tested:`` line) so the
+    two stay consistent.
     """
     for comment in comments:
         body = str(comment.get("body", ""))
         match = _E2E_MARKER_RE.search(body)
-        if match is None:
+        if match is None or match.group("env") != env.value:
             continue
-        if match.group("env") == env.value and match.group("commit") == commit:
-            raw_id = comment.get("id")
-            if isinstance(raw_id, int):
-                return raw_id
-            if isinstance(raw_id, str) and raw_id.isdigit():
-                return int(raw_id)
+        comment_id = _comment_id(comment)
+        if comment_id:
+            return ExistingComment(comment_id=comment_id, prior_commit=_prior_commit_from_body(body))
     return None
+
+
+def _prior_commit_from_body(body: str) -> str:
+    """Parse the commit a prior evidence comment recorded, or ``""``.
+
+    Used to render the ``old -> new`` delta when a later commit updates the
+    same env's comment in place.
+    """
+    match = _COMMIT_LINE_RE.search(body)
+    return match.group("commit") if match else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,25 +251,33 @@ class EvidenceComment:
     after_md: str
     assertion: str
     video_md: str = ""
+    prior_commit: str = ""
 
 
 def build_evidence_body(comment: EvidenceComment) -> str:
     """Render the evidence comment body.
 
-    Order: hidden marker, environment banner, commit tested, the
-    Before/After table (plus a Video row when a video embed is given),
-    then the feature-claim assertion text.
+    Order: hidden marker, environment banner, the ``old -> new`` commit
+    delta (only when a prior commit is given and it differs from the
+    current one), commit tested, the Before/After table (plus a Video row
+    when a video embed is given), then the feature-claim assertion text.
     """
     lines = [
-        evidence_marker(env=comment.env, commit=comment.commit),
+        evidence_marker(env=comment.env),
         f"## E2E Evidence — environment: **{comment.env.value.upper()}**",
         "",
-        f"Commit tested: `{comment.commit}`",
-        "",
-        "| Before | After |",
-        "|---|---|",
-        f"| {comment.before_md} | {comment.after_md} |",
     ]
+    if comment.prior_commit and comment.prior_commit != comment.commit:
+        lines.extend([f"Re-verified: `{comment.prior_commit[:8]}` -> `{comment.commit[:8]}`", ""])
+    lines.extend(
+        [
+            f"Commit tested: `{comment.commit}`",
+            "",
+            "| Before | After |",
+            "|---|---|",
+            f"| {comment.before_md} | {comment.after_md} |",
+        ]
+    )
     if comment.video_md:
         lines.append(f"| Video | {comment.video_md} |")
     lines.extend(["", comment.assertion])
@@ -260,8 +288,8 @@ class PostEvidenceResult(TypedDict):
     """Return shape of ``e2e post-evidence`` — the posted evidence comment.
 
     ``action`` is ``"created"`` when a new comment was posted and
-    ``"updated"`` when an existing comment matching the same ``(env, commit)``
-    marker was edited in place.
+    ``"updated"`` when the env's existing comment (matched on the ``env``
+    marker) was edited in place.
     """
 
     issue_url: str
@@ -404,13 +432,16 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
     non-zero exit rather than publishing unattended. The non-consuming peek
     raises *before* any artifact upload; the consume then happens atomically
     with the comment post (#1879), so a failed post burns no approval and
-    writes no lying audit. Idempotency is keyed on the hidden ``(env, commit)``
-    marker: a matching prior comment is edited in place (``action="updated"``);
-    otherwise a new comment is created.
+    writes no lying audit. Idempotency is keyed on the hidden ``env`` marker:
+    the env's existing comment (if any) is edited in place
+    (``action="updated"``) with an ``old -> new`` commit delta; otherwise a
+    new comment is created.
     """
     blocked = on_behalf_block_message(post.issue_url, _ON_BEHALF_ACTION)
     if blocked:
         raise OnBehalfPostBlockedError(post.issue_url, _ON_BEHALF_ACTION)
+
+    existing = find_matching_comment(host.list_issue_comments(issue_url=post.issue_url), env=post.env)
 
     before_md = _upload_artifact(host, repo=post.repo, filepath=str(post.before_path), label="before")
     after_md = _upload_artifact(host, repo=post.repo, filepath=str(post.after_path), label="after")
@@ -424,14 +455,11 @@ def post_evidence_comment(host: CodeHostBackend, post: EvidencePost) -> PostEvid
             after_md=after_md,
             assertion=post.assertion,
             video_md=video_md,
+            prior_commit=existing.prior_commit if existing else "",
         ),
     )
 
-    match_id = find_matching_comment(
-        host.list_issue_comments(issue_url=post.issue_url),
-        env=post.env,
-        commit=post.commit,
-    )
+    match_id = existing.comment_id if existing else None
     if match_id is not None:
         result = require_on_behalf_approval(
             target=post.issue_url,

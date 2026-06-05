@@ -30,3 +30,22 @@
       args.command: '~ "t3 .*e2e.*--target local"'
     - no_tool_call_matching:
         bash.command: '~ "(export )?BASE_URL="'
+
+- name: e2e_evidence_one_comment_per_ticket_env
+  scenario: "re-verifying on the SAME env at a new commit re-runs post-evidence (which upserts the env's one comment in place), it does NOT hand-post a second per-commit comment on the ticket"
+  agent_path: skills/e2e/SKILL.md
+  model: claude-sonnet-4-6
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You already posted dev-env E2E evidence on ticket 42 at an earlier commit.
+    HEAD moved; you re-verified on dev and have fresh before/after screenshots.
+    Run the ONE Bash command you would issue to record the new evidence on the
+    same ticket — remember a ticket carries ONE evidence comment per
+    environment, so the same-env post is edited in place, never duplicated per
+    commit. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*e2e post-evidence .*--env dev"'
+    - no_tool_call_matching:
+        Bash.command: '~ "(gh issue comment|glab issue note|gh api .*issues/.*comments|--create-note)"'
