@@ -80,3 +80,24 @@ eval-weekly:
     - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
     - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
   allow_failure: false
+
+# On-demand manual run, the GitLab mirror of the GitHub `workflow_dispatch`
+# trigger. `when: manual` adds a play button on merge-request pipelines so a
+# maintainer can run the full suite at an arbitrary time without waiting for the
+# first-of-week gate. It is allow_failure so a manual run never blocks the MR.
+eval-manual:
+  stage: eval
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
+      allow_failure: true
+  image: python:3.13-slim
+  before_script:
+    - pip install --no-cache-dir uv
+    - uv sync
+  script:
+    - uv run t3 eval trigger-qa
+    - uv run python -m teatree migrate --no-input
+    - uv run t3 eval regression
+    - REQUIRE_EXECUTED=""; if [ -n "$ANTHROPIC_API_KEY" ]; then REQUIRE_EXECUTED="--require-executed"; fi
+    - uv run t3 eval run --trials 3 --require any --backend sdk $REQUIRE_EXECUTED
