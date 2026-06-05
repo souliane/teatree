@@ -5782,17 +5782,17 @@ Usage: t3 teatree notify post [OPTIONS]
  (exit 0 on ``ok``).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --channel        TEXT  Destination: the user's own DM (→bot) or a         │
-│                           colleague/channel (→xoxp).                         │
-│                           [required]                                         │
-│ *  --text           TEXT  Slack mrkdwn body. Use ``-`` to read the body from │
-│                           stdin.                                             │
-│                           [required]                                         │
-│    --thread         TEXT  Thread ``ts`` to reply into (omit to post a new    │
-│                           top-level message).                                │
-│    --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay      │
-│                           credentials).                                      │
-│    --help                 Show this message and exit.                        │
+│ *  --channel          TEXT  Destination: the user's own DM (→bot) or a       │
+│                             colleague/channel (→xoxp).                       │
+│                             [required]                                       │
+│ *  --text             TEXT  Slack mrkdwn body. Use ``-`` to read the body    │
+│                             from stdin.                                      │
+│                             [required]                                       │
+│    --thread-ts        TEXT  Thread ``ts`` to reply into (omit to post a new  │
+│                             top-level message).                              │
+│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
+│                             credentials).                                    │
+│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -1,6 +1,5 @@
 import tempfile
 from pathlib import Path
-from subprocess import CompletedProcess
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +17,27 @@ from tests.teatree_core.conftest import CommandOverlay
 COMMAND_SETTINGS: dict[str, object] = {}
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
+
+
+def _popen_capturing(commands: list[tuple[object, dict[str, object]]], *, returncode: int = 0) -> MagicMock:
+    """A ``Popen`` mock that records ``(cmd, kwargs)`` and tees empty stderr.
+
+    Mirrors ``run_streamed``'s context-manager usage (iterate ``proc.stderr``
+    then ``proc.wait()``) while letting the test inspect every invocation's
+    command list and env, as the old ``subprocess.run`` ``side_effect`` did.
+    """
+
+    def factory(*args: object, **kwargs: object) -> MagicMock:
+        commands.append((args[0], kwargs))
+        proc = MagicMock()
+        proc.stderr = iter(())
+        proc.wait.return_value = returncode
+        ctx = MagicMock()
+        ctx.__enter__.return_value = proc
+        ctx.__exit__.return_value = False
+        return ctx
+
+    return MagicMock(side_effect=factory)
 
 
 class TestRunCommand(TestCase):
@@ -173,14 +193,10 @@ class TestRunCommand(TestCase):
 
             commands: list[tuple[object, dict[str, object]]] = []
 
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                commands.append((args[0], kwargs))
-                return CompletedProcess(args[0], 0, "", "")
-
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(run_mod, "get_overlay", return_value=mock_overlay),
-                patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(utils_run_mod, "Popen", _popen_capturing(commands)),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 result = cast("str", call_command("run", "backend", path=wt_path))
@@ -215,12 +231,7 @@ class TestE2eExternalCommand(TestCase):
                 db_name="wt_80_acme",
             )
 
-            captured_envs: list[dict[str, str]] = []
-
-            def fake_run(*args: object, **kwargs: object) -> CompletedProcess[str]:
-                if "env" in kwargs:
-                    captured_envs.append(cast("dict[str, str]", kwargs["env"]))
-                return CompletedProcess(args[0], 0, "", "")
+            commands: list[tuple[object, dict[str, object]]] = []
 
             with (
                 patch.dict(
@@ -232,10 +243,11 @@ class TestE2eExternalCommand(TestCase):
                 ),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=4299),
-                patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
+                patch.object(utils_run_mod, "Popen", _popen_capturing(commands)),
             ):
                 result = cast("str", call_command("e2e", "external"))
 
+            captured_envs = [cast("dict[str, str]", kwargs["env"]) for _cmd, kwargs in commands if "env" in kwargs]
             assert result == "E2E passed."
             assert captured_envs
             assert captured_envs[-1]["BASE_URL"] == "http://localhost:4299"
@@ -281,16 +293,16 @@ class TestE2eExternalCommand(TestCase):
 
 
 class TestCliOverlay:
-    @patch.object(utils_run_mod.subprocess, "run")
-    def test_managepy_calls_uv(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    def test_managepy_calls_uv(self, tmp_path: Path) -> None:
         from teatree.cli.overlay import managepy  # noqa: PLC0415
 
-        mock_run.return_value = MagicMock(returncode=0)
+        commands: list[tuple[object, dict[str, object]]] = []
         (tmp_path / "manage.py").write_text("# stub", encoding="utf-8")
-        managepy(tmp_path, "migrate", "--no-input")
+        with patch.object(utils_run_mod, "Popen", _popen_capturing(commands)):
+            managepy(tmp_path, "migrate", "--no-input")
 
-        assert mock_run.call_count == 1
-        cmd = mock_run.call_args[0][0]
+        assert len(commands) == 1
+        cmd = cast("list[str]", commands[0][0])
         assert Path(cmd[0]).name == "uv"
         assert cmd[1:3] == ["--directory", str(tmp_path)]
         assert cmd[-2:] == ["migrate", "--no-input"]

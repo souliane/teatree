@@ -168,9 +168,9 @@ class Command(TyperCommand):
             str,
             typer.Option("--text", help="Slack mrkdwn body. Use ``-`` to read the body from stdin."),
         ],
-        thread: Annotated[
+        thread_ts: Annotated[
             str,
-            typer.Option("--thread", help="Thread ``ts`` to reply into (omit to post a new top-level message)."),
+            typer.Option("--thread-ts", help="Thread ``ts`` to reply into (omit to post a new top-level message)."),
         ] = "",
         overlay: Annotated[
             str,
@@ -191,7 +191,7 @@ class Command(TyperCommand):
                     text=body,
                     target=channel,
                     action="cli_notify_post",
-                    thread_ts=thread,
+                    thread_ts=thread_ts,
                     destination=channel,
                     summary=body,
                 )

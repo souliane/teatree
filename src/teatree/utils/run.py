@@ -19,10 +19,11 @@ Three entry points:
 
 import re
 import subprocess
+import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, TimeoutExpired
-from typing import IO
+from typing import IO, cast
 
 __all__ = [
     "DEVNULL",
@@ -135,23 +136,34 @@ def run_streamed(
     cwd: str | Path | None = None,
     check: bool = True,
 ) -> int:
-    """Run a command with stdin/stdout/stderr inherited from the parent.
+    """Run a command, inheriting stdin/stdout, teeing stderr live + captured.
 
     Use for interactive commands where the user needs live output (Django
     management commands, ``uvicorn``, ``tail -f``).  Returns the exit code.
-    When ``check`` is True (default), non-zero exits raise
-    :class:`CommandFailedError` with no captured output (streams went to the
-    terminal, not to buffers).
+    stdout stays inherited so live output and interactive prompts work; stderr
+    is teed — each chunk is forwarded to the parent's ``stderr`` *and*
+    captured — so that when ``check`` is True a non-zero exit raises
+    :class:`CommandFailedError` carrying the subcommand's stderr. Without the
+    capture, a wrapped failure surfaces as a bare ``command failed (rc=1)``
+    with no clue *why* (the #1750 ``--thread-ts`` breakage was invisible for
+    exactly this reason).
     """
-    proc = subprocess.run(
+    captured: list[str] = []
+    with Popen(
         list(cmd),
         env=env,
         cwd=str(cwd) if cwd is not None else None,
-        check=False,
-    )
-    if check and proc.returncode != 0:
-        raise CommandFailedError(cmd, proc.returncode, "", "")
-    return proc.returncode
+        stderr=PIPE,
+        text=True,
+    ) as proc:
+        for line in cast("IO[str]", proc.stderr):
+            sys.stderr.write(line)
+            captured.append(line)
+        sys.stderr.flush()
+        returncode = proc.wait()
+    if check and returncode != 0:
+        raise CommandFailedError(cmd, returncode, "", "".join(captured))
+    return returncode
 
 
 def spawn(
