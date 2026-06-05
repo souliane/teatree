@@ -1290,9 +1290,29 @@ class TestOwnSlugTermDowngrades:
             is True
         )
 
+    # A chained PURE PRIVATE gh post preserves the downgrade: the chained
+    # segment posts to a known-private repo, so it cannot leak the own-slug term.
+    def test_own_slug_commit_chained_to_private_gh_post_downgrades(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "acmecorp-engineering ref" '
+                "&& gh issue create --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is True
+        )
+
 
 class TestTermIsOwnRepoSlug:
-    """``_repo_visibility.term_is_own_repo_slug`` token-equality contract."""
+    """``_repo_visibility.term_is_own_repo_slug`` token-containment contract."""
 
     def test_exact_allowlist_entry_is_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
@@ -1303,9 +1323,27 @@ class TestTermIsOwnRepoSlug:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         assert _repo_visibility.term_is_own_repo_slug("acmecorp_engineering", cfg) is True
 
+    # #1958: the org PREFIX token of a multi-token slug is the repo's own
+    # identity -- the scanner reports that token tokenized out of a work-item URL.
+    def test_org_prefix_token_of_entry_is_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp", cfg) is True
+
+    # A non-leading token-run within the entry also qualifies (it is still the
+    # repo's own identity, never a foreign term).
+    def test_inner_token_of_entry_is_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("engineering", cfg) is True
+
     def test_foreign_term_is_not_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         assert _repo_visibility.term_is_own_repo_slug("someforeignbank", cfg) is False
+
+    # A token that is NOT part of any entry's token run stays foreign even when
+    # it shares a leading character run with an entry token (no false prefix).
+    def test_unrelated_partial_token_is_not_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acme", cfg) is False
 
     def test_superset_term_is_not_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
