@@ -9,7 +9,9 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
+from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
+from teatree.eval.report import ScenarioResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 
 
@@ -824,3 +826,40 @@ class TestEvalRegression:
         assert payload["ok"] is True
         assert payload["checks"][0]["failure_class"] == "synthetic"
         assert payload["checks"][0]["origin"].startswith("https://")
+
+
+class TestEvalNegativeControl:
+    def test_exits_zero_when_harness_catches_the_planted_violation(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "negative-control"])
+        assert result.exit_code == 0
+        assert "worktree_first" in result.output
+        assert "Edit" in result.output
+
+    def test_exits_nonzero_when_harness_fails_to_catch(self) -> None:
+        outcome = NegativeControlOutcome(
+            scenario_name="worktree_first",
+            result=ScenarioResult(
+                spec=_spec("worktree_first"),
+                run=_run("worktree_first"),
+                matcher_results=(),
+                skipped=False,
+            ),
+            offending_tool_call=None,
+        )
+        with patch("teatree.cli.eval_negative_control.run_negative_control", return_value=outcome):
+            result = CliRunner().invoke(app, ["eval", "negative-control"])
+        assert result.exit_code == 1
+
+    def test_json_format_reports_caught_and_offending_call(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "negative-control", "--format", "json"])
+        assert result.exit_code == 0
+        output = result.output
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert payload["caught"] is True
+        assert payload["scenario"] == "worktree_first"
+        assert payload["offending_tool_call"]["name"] == "Edit"
+
+    def test_unknown_format_exits_with_code_2(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "negative-control", "--format", "yaml"])
+        assert result.exit_code == 2
+        assert "unknown --format" in result.output

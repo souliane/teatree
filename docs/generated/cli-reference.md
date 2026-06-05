@@ -1166,6 +1166,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ negative-control      Self-test the harness: plant a known violation and     │
+│                       assert it is caught (token-free).                      │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1182,6 +1184,20 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       summary table.                                         │
 │ transcript-replay     Replay a real session transcript against teatree       │
 │                       behavioural invariants.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval negative-control`
+
+```
+Usage: t3 eval negative-control [OPTIONS]
+
+ Self-test the harness: plant a known violation and assert it is caught
+ (token-free).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format        TEXT  Report format: text or json. [default: text]           │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

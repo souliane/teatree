@@ -235,6 +235,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
+      - id: eval-agent-behavior
+        name: Eval harness self-test (token-free negative control; on demand)
+        language: system
+        entry: uv run python -m teatree.eval.negative_control
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
 
   # Phase 7b - Quality gate guard
   - repo: local
