@@ -76,7 +76,7 @@ class WorktreeProvisionRunner(RunnerBase):
         worktree = self.worktree
         overlay = self.overlay
 
-        spec = write_env_cache(worktree)
+        spec = write_env_cache(worktree, overlay=overlay)
         if spec:
             logger.info("Wrote env cache: %s", spec.path)
 

@@ -50,9 +50,19 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
     At-least-once delivery is safe: every step is idempotent (env cache
     rewrites cleanly, ``db_import`` no-ops when the DB exists, overlay
     steps are expected to be re-runnable).
+
+    Poison-pill guard (souliane/teatree#1975, mirroring #1959/#1969): a
+    worktree whose effective overlay (its own field, falling back to the
+    ticket's) names a non-empty overlay that no longer resolves can never
+    provision — ``get_overlay_for_worktree`` raises ``Overlay not found``
+    every re-fire. Fail it permanently with a recorded result instead of
+    raising forever. A blank overlay is the ambient single-overlay default
+    and stays dispatchable.
     """
+    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+
     with transaction.atomic():
-        worktree = Worktree.objects.select_for_update().get(pk=worktree_id)
+        worktree = Worktree.objects.select_for_update().select_related("ticket").get(pk=worktree_id)
         if worktree.state != Worktree.State.PROVISIONED:
             logger.info(
                 "execute_worktree_provision skipped for worktree %s: state=%s (not PROVISIONED)",
@@ -60,6 +70,12 @@ def execute_worktree_provision(worktree_id: int) -> WorktreeTransitionResult:
                 worktree.state,
             )
             return {"worktree_id": worktree_id, "skipped": True, "state": str(worktree.state)}
+
+        effective_overlay = worktree.overlay or worktree.ticket.overlay
+        if effective_overlay and resolve_overlay_name(effective_overlay) is None:
+            reason = f"unknown overlay {effective_overlay!r}: worktree {worktree_id} cannot be provisioned"
+            logger.warning("execute_worktree_provision: %s", reason)
+            return {"worktree_id": worktree_id, "ok": False, "detail": reason}
 
         result = WorktreeProvisionRunner(worktree).run()
         if not result.ok:
