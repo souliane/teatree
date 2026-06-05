@@ -30,21 +30,27 @@ metadata:
 ## Command Reference
 
 ```bash
-# Record a candidate behind the ask-gate (idempotent by URL hash) — #1391
-python -c "from teatree.core.models import PendingArticleSuggestion as P; P.record_candidate(url='<article URL>', title='<title>', summary='<why>', overlay='t3-teatree')"
+# Record a candidate behind the ask-gate (idempotent by URL hash) — #1391.
+# record_candidate is a Django ORM classmethod, so it must run through the
+# Django entrypoint (manage.py shell -c) — a bare `python -c` raises
+# ImproperlyConfigured because settings are not configured.
+uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; P.record_candidate(url='<article URL>', title='<title>', summary='<why>', overlay='t3-teatree')"
 
 # Issue creation — only after the user approves the candidate
 gh --repo souliane/teatree issue create --title "<title>" --body "<body>" --label "from-news-scan"
 
 # Stamp the approval/rejection on the candidate row
-python -c "from teatree.core.models import PendingArticleSuggestion as P; r=P.objects.get(pk=<id>); r.approve(issue_url='<issue URL>')"
-python -c "from teatree.core.models import PendingArticleSuggestion as P; P.objects.get(pk=<id>).reject()"
+uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; r=P.objects.get(pk=<id>); r.approve(issue_url='<issue URL>')"
+uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; P.objects.get(pk=<id>).reject()"
 
 # Dedupe check
 gh --repo souliane/teatree issue list --label from-news-scan --state all --search "<article URL>"
 
-# Slack DM via overlay router (teatree bot)
-python -c "from teatree.messaging import messaging_from_overlay; m = messaging_from_overlay(overlay_name='teatree'); m.dm_owner('<text>')"
+# Slack DM to the user (teatree bot, self-DM → bot token).
+# Body via stdin (`-`) avoids shell-quoting a multi-line message; the
+# --idempotency-key is required (the helper enforces it). The DM to the
+# user themselves is sanctioned and not gated by on_behalf_post_mode.
+echo '<message>' | t3 teatree notify send - --idempotency-key "scanning-news:<YYYY-MM-DD>" --kind info
 ```
 
 ## Workflow
@@ -102,7 +108,7 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
 1. For each surviving candidate (after the dedupe check), record one `PendingArticleSuggestion` row — `record_candidate` is idempotent by source-URL hash, so a re-scan never enqueues a duplicate:
 
    ```bash
-   python -c "from teatree.core.models import PendingArticleSuggestion as P; P.record_candidate(url='<article URL>', title='<title>', summary='<why interesting>', overlay='t3-teatree')"
+   uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; P.record_candidate(url='<article URL>', title='<title>', summary='<why interesting>', overlay='t3-teatree')"
    ```
 
 2. Surface the batch to the user (the Slack DM in step 8, or `AskUserQuestion` for a small batch). One line per candidate: title + why-interesting + URL.
@@ -112,9 +118,9 @@ The dispatched task's `execution_reason` carries the gate directive (the `ASK-GA
    ```bash
    # On approval — file the issue, then stamp the row:
    gh --repo souliane/teatree issue create --title "<title>" --body "<body>" --label "from-news-scan"
-   python -c "from teatree.core.models import PendingArticleSuggestion as P; r=P.objects.get(pk=<id>); r.approve(issue_url='<issue URL>')"
+   uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; r=P.objects.get(pk=<id>); r.approve(issue_url='<issue URL>')"
    # On rejection — no issue, just stamp:
-   python -c "from teatree.core.models import PendingArticleSuggestion as P; P.objects.get(pk=<id>).reject()"
+   uv run python manage.py shell -c "from teatree.core.models import PendingArticleSuggestion as P; P.objects.get(pk=<id>).reject()"
    ```
 
 Use the body template in `references/ticket-template.md` for approved issues. One issue per *idea*, not per article — three articles inspiring one idea collapse to one issue citing all three URLs.
