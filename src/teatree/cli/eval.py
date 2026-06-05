@@ -6,7 +6,16 @@ import sys
 from pathlib import Path
 
 import typer
+from rich.console import Console
 
+from teatree.cli.eval_all import (
+    build_scenarios_table,
+    build_summary_table,
+    hint_missing_transcripts,
+    regression_lane,
+    run_ai_lane,
+    trigger_lane,
+)
 from teatree.cli.eval_run_modes import (
     build_subscription_manifest,
     gate_run_regressions,
@@ -60,14 +69,13 @@ def _bootstrap_django() -> None:
 
 @eval_app.command("list")
 def list_scenarios() -> None:
-    """List discovered eval scenarios."""
+    """List discovered eval scenarios as a table (Name, Scenario, Agent, File, Asserts)."""
     _bootstrap_django()
     specs = discover_specs()
     if not specs:
         typer.echo("(no scenarios discovered)")
         return
-    for spec in specs:
-        typer.echo(f"{spec.name}\t{spec.scenario}")
+    Console().print(build_scenarios_table(specs))
 
 
 @eval_app.command("run")
@@ -213,7 +221,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     results = [evaluate(spec, runner.run(spec), judge=grader) for spec in specs]
     typer.echo(render_json(results) if output_format == "json" else render_text(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
-        _hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
+        hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
     regressed = False
     if persist:
@@ -463,30 +471,40 @@ def regression(
         sys.exit(1)
 
 
-def _hint_missing_transcripts(runner: SubscriptionTranscriptRunner, missing: list[EvalSpec]) -> None:
-    """Print a clear next-step hint for each scenario the subscription backend could not grade.
+@eval_app.command("all")
+def all_lanes(
+    backend: str = typer.Option(
+        SUBSCRIPTION_BACKEND,
+        "--backend",
+        help=(
+            "AI-lane backend: 'subscription' (default — grade in-session transcripts, no API spend) "
+            "or 'sdk' (metered claude -p, the explicit CI opt-in with ANTHROPIC_API_KEY)."
+        ),
+    ),
+    transcript_dir: Path | None = typer.Option(
+        None,
+        "--transcript-dir",
+        help="Directory of <scenario>.jsonl subscription transcripts for the AI lane (default: cwd).",
+    ),
+) -> None:
+    """Run every eval lane in sequence and render one unified summary table.
 
-    With ``subscription`` the default, a bare ``t3 eval run`` before any
-    transcript exists would otherwise read as a silent skip. Name each missing
-    scenario, the exact transcript path the backend expects, and the
-    ``prepare-subscription`` command that emits the prompt to produce it.
+    Free deterministic lanes (trigger-qa, regression) always run. The AI lane
+    grades subscription-produced transcripts when present; with none on disk it
+    emits the subscription manifest plus the in-session recipe and NEVER silently
+    shells the metered ``claude -p`` runner. ``--backend sdk`` is the explicit
+    metered opt-in (CI's path).
     """
-    if not missing:
-        return
-    typer.echo(
-        f"\n{len(missing)} scenario(s) skipped — no subscription transcript on disk.",
-        err=True,
-    )
-    for spec in missing:
-        typer.echo(f"  - {spec.name}: expected transcript at {runner.transcript_path(spec)}", err=True)
-    names = " ".join(spec.name for spec in missing)
-    typer.echo(
-        "Produce them with the subscription (no API spend): run "
-        f"`t3 eval prepare-subscription {names}` for each scenario's prompt + path, drive each prompt "
-        "via an in-session sub-agent (`--output-format stream-json`), save to the path above, then "
-        "re-run `t3 eval run --backend subscription`.",
-        err=True,
-    )
+    _bootstrap_django()
+    target_dir = transcript_dir or Path.cwd()
+    lanes = [
+        trigger_lane(run_trigger_qa()),
+        regression_lane(run_regression_corpus()),
+        run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir),
+    ]
+    Console().print(build_summary_table(lanes))
+    if any(not lane.passed and not lane.skipped for lane in lanes):
+        sys.exit(1)
 
 
 def _require_spec(name: str) -> EvalSpec:

@@ -69,6 +69,10 @@
       "summary": "Cross-cutting agent safety rules \u2014 clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills"
     },
     {
+      "name": "running-evals",
+      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 free deterministic lanes (trigger-qa, regression) plus the subscription AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
+    },
+    {
       "name": "scanning-news",
       "summary": "Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary"
     },
