@@ -83,6 +83,21 @@ class TestGatherRecoverReport(TestCase):
 
         assert report.requeue_candidates == []
 
+    def test_unknown_overlay_failed_task_is_not_a_candidate(self) -> None:
+        ticket = Ticket.objects.create(
+            role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="ghost-overlay", issue_url="https://x/i/8"
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="coding")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+        task.claim(claimed_by="loop")
+        TaskAttempt.objects.create(task=task, execution_target=task.execution_target, error="boom")
+        task.fail()
+
+        with _mocked_probes():
+            report = gather_recover_report()
+
+        assert report.requeue_candidates == []
+
     def test_empty_report_has_no_findings(self) -> None:
         with _mocked_probes():
             report = gather_recover_report()

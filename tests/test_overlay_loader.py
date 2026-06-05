@@ -9,7 +9,12 @@ from unittest.mock import patch
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import _discover_toml_overlays, get_overlay_for_repo, infer_overlay_for_url
+from teatree.core.overlay_loader import (
+    _discover_toml_overlays,
+    get_overlay_for_repo,
+    infer_overlay_for_url,
+    resolve_overlay_name,
+)
 
 _GIT = shutil.which("git") or "git"
 
@@ -243,6 +248,45 @@ class TestGetOverlayForRepo:
         with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
             assert get_overlay_for_repo(str(repo)) is overlays["a"]
         assert "failed during repo resolution" in caplog.text
+
+
+class TestResolveOverlayName:
+    """``resolve_overlay_name`` folds a name onto its registered canonical form (#1959)."""
+
+    def test_registered_name_resolves_to_itself(self):
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlay_names",
+            return_value=["t3-teatree", "t3-beta"],
+        ):
+            assert resolve_overlay_name("t3-teatree") == "t3-teatree"
+
+    def test_legacy_short_alias_folds_onto_entry_point(self):
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlay_names",
+            return_value=["t3-teatree", "t3-beta"],
+        ):
+            assert resolve_overlay_name("teatree") == "t3-teatree"
+            assert resolve_overlay_name("beta") == "t3-beta"
+
+    def test_unknown_name_resolves_to_none(self):
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlay_names",
+            return_value=["t3-teatree", "t3-beta"],
+        ):
+            assert resolve_overlay_name("removed-overlay") is None
+            assert resolve_overlay_name("synthetic-tag") is None
+            assert resolve_overlay_name("a-multi-segment-stale-name") is None
+
+    def test_empty_name_resolves_to_none(self):
+        assert resolve_overlay_name("") is None
+
+    def test_dispatchable_check_via_resolution(self):
+        with patch(
+            "teatree.core.overlay_loader.get_all_overlay_names",
+            return_value=["t3-teatree", "t3-beta"],
+        ):
+            assert resolve_overlay_name("teatree") is not None
+            assert resolve_overlay_name("removed-overlay") is None
 
 
 # ── Test helpers ─────────────────────────────────────────────────────

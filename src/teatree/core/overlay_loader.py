@@ -138,6 +138,32 @@ def get_all_overlay_names() -> list[str]:
     return sorted(names)
 
 
+def resolve_overlay_name(name: str) -> str | None:
+    """Return the canonical registered overlay name for *name*, or ``None``.
+
+    The single source of truth for "is this overlay name dispatchable, and
+    under what canonical name". A name that is already a registered overlay
+    returns unchanged; a legacy short alias folds onto its registered
+    entry-point via the same ``_match_canonical_ep`` rule the config loader
+    uses (``teatree`` → ``t3-teatree``). A name that matches nothing — a
+    removed overlay, a synthetic scanner tag, a typo — returns ``None`` so
+    callers can fail it permanently instead of crashing on every retry
+    (souliane/teatree#1959 poison-pill).
+
+    Callers asking only "is this dispatchable?" test ``resolve_overlay_name(x)
+    is not None``; an empty/blank ``name`` is the ambient single-overlay default
+    and is the caller's responsibility to special-case (it returns ``None``).
+    """
+    from teatree.config import _match_canonical_ep  # noqa: PLC0415
+
+    if not name:
+        return None
+    known = set(get_all_overlay_names())
+    if name in known:
+        return name
+    return _match_canonical_ep(name, known)
+
+
 def infer_overlay_for_url(url: str) -> str:
     """Return the overlay whose workspace repos own ``url``, or ``""``.
 

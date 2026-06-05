@@ -66,7 +66,7 @@ _BUDGET_TOP_LEVEL_BYTES = 87_000
 # Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
 # gate that closes the ultracode fan-out bypass) is the same class of
 # load-bearing safety fact, and the corpus was again at capacity.
-# Reviewed bump (#1500): the `gate_fail_open` master NEVER-LOCKOUT switch
+# Reviewed bump (#1500): the `danger_gate_fail_open` master NEVER-LOCKOUT switch
 # (the parent fail-open mechanism the gate-2 self-rescue invariant rides on)
 # is the same class of load-bearing safety fact, corpus again at capacity.
 # Reviewed bump (#1539): the reviewing-phase review-skill evidence gate

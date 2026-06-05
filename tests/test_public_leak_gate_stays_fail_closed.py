@@ -1,15 +1,15 @@
 """HARD INVARIANT: the PUBLIC-egress leak gate stays fail-CLOSED always.
 
-The master ``gate_fail_open`` switch (NEVER-LOCKOUT) flips the OVER-DENY
+The master ``danger_gate_fail_open`` switch (NEVER-LOCKOUT) flips the OVER-DENY
 gates (skill-loading, protect-default-branch, validate-mr broken-env,
 block-uncovered-diff, agent-plan-gate) to fail-open. It must NEVER relax
 the PUBLIC-egress leak gate — the quote-scanner / banned-terms deny on a
 PUBLIC surface and the ``publish_surface`` carve-out. Relaxing a public
 leak block is a privacy regression, not a lockout rescue.
 
-These regression tests assert that with ``gate_fail_open = true`` recorded
-in ``~/.teatree.toml``, a public-surface quote/banned match STILL denies
-— proving the leak path never consults the master switch.
+These regression tests assert that with ``danger_gate_fail_open = true``
+recorded in ``~/.teatree.toml``, a public-surface quote/banned match STILL
+denies — proving the leak path never consults the master switch.
 """
 
 import json
@@ -23,7 +23,7 @@ from hooks.scripts.hook_router import handle_banned_terms_pretool, handle_quote_
 
 @pytest.fixture
 def fail_open_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Record ``gate_fail_open = true`` in a temp ``~/.teatree.toml``.
+    """Record ``danger_gate_fail_open = true`` in a temp ``~/.teatree.toml``.
 
     Also pins the quote-scanner ledger root under ``tmp_path`` so the gate
     decision does not touch real state.
@@ -34,7 +34,7 @@ def fail_open_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
     (home / ".teatree.toml").write_text(
-        '[teatree]\ngate_fail_open = true\nbanned_terms = ["acmecorp"]\n',
+        '[teatree]\ndanger_gate_fail_open = true\nbanned_terms = ["acmecorp"]\n',
         encoding="utf-8",
     )
     return home
@@ -53,7 +53,7 @@ class TestQuoteScannerLeakGateIgnoresFailOpen:
         # leak gate must DENY.
         data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
         blocked = handle_quote_scanner_pretool(data)
-        assert blocked is True, "PUBLIC quote leak must stay fail-closed even with gate_fail_open=true"
+        assert blocked is True, "PUBLIC quote leak must stay fail-closed even with danger_gate_fail_open=true"
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
         assert "quote-scanner" in decision["permissionDecisionReason"]
@@ -67,7 +67,7 @@ class TestBannedTermsLeakGateIgnoresFailOpen:
         # overlay/customer term. The leak gate must DENY despite fail-open.
         data = _bash('gh issue create --title t --body "rolling out acmecorp integration"')
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True, "PUBLIC banned-term leak must stay fail-closed even with gate_fail_open=true"
+        assert blocked is True, "PUBLIC banned-term leak must stay fail-closed even with danger_gate_fail_open=true"
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
         assert "banned-terms" in decision["permissionDecisionReason"]
@@ -77,8 +77,8 @@ class TestLeakGateNeverReadsFailOpen:
     """The leak handlers must not even CALL the master-switch resolver.
 
     A stricter guard than the behavioural tests above: the public-egress
-    handlers run to a deny without ``_gate_fail_open_enabled`` ever being
-    consulted. If a future refactor routes the leak path through the
+    handlers run to a deny without ``_danger_gate_fail_open_enabled`` ever
+    being consulted. If a future refactor routes the leak path through the
     shared ``_fail_open_or_deny`` (which reads the switch), this trips.
     """
 
@@ -86,28 +86,28 @@ class TestLeakGateNeverReadsFailOpen:
         self, fail_open_on: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         calls: list[int] = []
-        real = router._gate_fail_open_enabled
+        real = router._danger_gate_fail_open_enabled
 
         def _spy() -> bool:
             calls.append(1)
             return real()
 
-        monkeypatch.setattr(router, "_gate_fail_open_enabled", _spy)
+        monkeypatch.setattr(router, "_danger_gate_fail_open_enabled", _spy)
         handle_quote_scanner_pretool(_bash('gh pr create --title t --body "## User mandate\nship"'))
         capsys.readouterr()
-        assert calls == [], "the PUBLIC leak gate must NEVER read gate_fail_open"
+        assert calls == [], "the PUBLIC leak gate must NEVER read danger_gate_fail_open"
 
     def test_banned_handler_does_not_consult_the_master_switch(
         self, fail_open_on: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         calls: list[int] = []
-        real = router._gate_fail_open_enabled
+        real = router._danger_gate_fail_open_enabled
 
         def _spy() -> bool:
             calls.append(1)
             return real()
 
-        monkeypatch.setattr(router, "_gate_fail_open_enabled", _spy)
+        monkeypatch.setattr(router, "_danger_gate_fail_open_enabled", _spy)
         handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship acmecorp now"'))
         capsys.readouterr()
-        assert calls == [], "the PUBLIC leak gate must NEVER read gate_fail_open"
+        assert calls == [], "the PUBLIC leak gate must NEVER read danger_gate_fail_open"

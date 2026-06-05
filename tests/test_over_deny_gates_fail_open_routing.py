@@ -2,7 +2,7 @@
 
 Each gate that can wedge the factory on a detection misfire routes its
 deny through ``_fail_open_or_deny``. This file asserts the SHARED escape
-applies to each gate end-to-end: with ``[teatree] gate_fail_open = true``
+applies to each gate end-to-end: with ``[teatree] danger_gate_fail_open = true``
 recorded, the gate that would normally deny instead passes through.
 
 The PUBLIC-egress leak gate is deliberately NOT covered here — it stays
@@ -32,7 +32,7 @@ def _capture(handler, data: dict) -> tuple[bool, dict | None]:
 def _write_fail_open(home: Path, *, on: bool) -> None:
     home.mkdir(parents=True, exist_ok=True)
     (home / ".teatree.toml").write_text(
-        f"[teatree]\ngate_fail_open = {'true' if on else 'false'}\n",
+        f"[teatree]\ndanger_gate_fail_open = {'true' if on else 'false'}\n",
         encoding="utf-8",
     )
 
