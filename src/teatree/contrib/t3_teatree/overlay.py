@@ -17,6 +17,12 @@ from teatree.utils.run import run_checked
 from teatree.visual_qa import matches_triggers
 
 _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
+_DEFAULT_FOLLOWUP_REPOS = ["souliane/teatree"]
+
+
+def _is_github_slug(value: str) -> bool:
+    owner, sep, name = value.partition("/")
+    return bool(sep) and bool(owner) and bool(name) and "/" not in name
 
 
 def _repo_root() -> Path:
@@ -57,9 +63,13 @@ def _discover_workspace_repos() -> list[str]:
 class TeatreeMetadata(OverlayMetadata):
     """Metadata for the bundled teatree overlay."""
 
+    def __init__(self, config: OverlayConfig) -> None:
+        self._config = config
+
     @override
     def get_followup_repos(self) -> list[str]:
-        return ["souliane/teatree"]
+        slugs = [repo for repo in self._config.workspace_repos if _is_github_slug(repo)]
+        return slugs or list(_DEFAULT_FOLLOWUP_REPOS)
 
     @override
     def get_skill_metadata(self) -> SkillMetadata:
@@ -75,7 +85,7 @@ class TeatreeOverlay(OverlayBase):
 
     django_app: str | None = "teatree.contrib.t3_teatree"
     config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="t3-teatree")
-    metadata = TeatreeMetadata()
+    metadata = TeatreeMetadata(config)
 
     @override
     def get_repos(self) -> list[str]:

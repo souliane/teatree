@@ -150,8 +150,37 @@ class TestGetWorkspaceRepos:
 
 
 class TestGetFollowupRepos:
-    def test_returns_github_project(self) -> None:
+    def test_falls_back_to_default_when_no_slug_workspace_repos(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        isolated_config: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
+
         overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = []
+        assert overlay.metadata.get_followup_repos() == ["souliane/teatree"]
+
+    def test_governs_every_configured_workspace_repo(self) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = [
+            "souliane/teatree",
+            "acme/sibling-overlay",
+            "acme/sibling-overlay-e2e",
+        ]
+        assert overlay.metadata.get_followup_repos() == [
+            "souliane/teatree",
+            "acme/sibling-overlay",
+            "acme/sibling-overlay-e2e",
+        ]
+
+    def test_excludes_non_slug_workspace_entries(self) -> None:
+        overlay = TeatreeOverlay()
+        overlay.config.workspace_repos = ["teatree", "souliane/teatree", "owner/name/extra"]
         assert overlay.metadata.get_followup_repos() == ["souliane/teatree"]
 
 
