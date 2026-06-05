@@ -48,6 +48,7 @@ When the active overlay has `require_ticket = True`, refuse to commit or push wi
 - **Before committing to a branch you did not create this session, check its PR isn't already merged/closed.** A squash-merge leaves the local and remote branch present, so the "refuse commits on a merged-PR branch" pre-commit guard does not fire (it only catches a *deleted* remote). Committing onto a long-lived branch from a prior session then pushes an orphan commit that rides no open PR and never reaches the default branch. `gh pr list --head <branch> --state all` (or `glab mr list --source-branch <branch>`) before staging; if the PR is merged, branch off the freshly-fetched default branch for the follow-up work and open a new PR.
 - **Check for pre-existing changes before staging.** If the diff includes changes you did not make in this session, **warn the user** — either stage only your hunks or ask how to proceed.
 - Format commit message following the project's commit format reference.
+- **Carry an `Open questions & assumptions` section in the commit message body** (one bullet per item, status `decided-by-user` / `assumed` / `open`; `- none` when there is nothing to flag). Same content also goes in the PR description — see § 5 "Open Questions & Assumptions" for the canonical rule.
 - **Link commits to issues** via the ticket-URL parenthetical in the subject line (`type(scope): description (TICKET_URL)`) **when the active overlay has `require_ticket = True`** (see § 0). Overlays with the default `require_ticket = False` (teatree itself) do NOT need the URL — a plain `type(scope): description` subject is correct and the overlay's `validate_pr` (the base-class no-op for teatree) will not reject it. With `mr_close_ticket = True` the ship path keeps a `Closes/Fixes #<number>` body keyword by default (the issue auto-closes on merge); set `Ticket.extra['more_prs_coming']` to suppress that for a declared partial or an umbrella with remaining scope (`should_close_ticket` then emits `Relates to #N`).
 - Read `TICKET_URL` from `.t3-env.cache` (the per-worktree symlink to `.t3-cache/.t3-env.cache`) — never construct it from the branch name.
 - **No commit-type bypass for the quality gates.** The teatree `quality-gates` and `module-health` hooks have no `relax:` escape hatch (souliane/teatree#525). When the gate fires, fix the architecture: split the file by concern, refactor module-level functions onto a class, replace `dict[str, object]` with a typed dataclass, or delegate the suppressed import/call to a module the hook already exempts (`tests/`, `scripts/hooks/`, `e2e/`, `skills/`, `docs/`). The legitimate house pattern around `subprocess` (`# noqa: S404` on the import, `# noqa: S603` on each call) belongs in a CLI helper module that already lives under one of those exempt paths — not in newly suppressed source files.
@@ -259,6 +260,27 @@ This gate exists because the overlay's own CI MR-title validator (the validating
 - **Always assign to the user.** The `t3 <overlay> pr create` command handles the correct flags automatically.
 
 > **PreToolUse hook:** The unified hook router intercepts `glab mr create/update` (and the MCP equivalents) and validates title + description against the active overlay's rules **by default** via `t3 tool validate-mr` — no env-var opt-in — **blocking** non-compliant calls before the push with a clear error. The verdict is the same one `t3 <overlay> pr create` enforces. Fix the reported issues and retry — no manual validation needed.
+
+#### Open Questions & Assumptions (Non-Negotiable)
+
+Any open question (solved or not) and any assumption that is not 100% explicit from the spec itself MUST be listed in **both** the git commit message body **and** the PR/MR description, under an `Open questions & assumptions` section. This is the single source of truth for the requirement — the commit-format reference and `code/SKILL.md` point here.
+
+Format: one bullet per item, each tagged with a status:
+
+- `decided-by-user` — was an open question; the user made the call. State the decision.
+- `assumed` — an assumption the implementer made because the spec was silent. State what was assumed and why.
+- `open` — still unresolved. State the question and the chosen default (if any).
+
+```text
+Open questions & assumptions:
+- decided-by-user: warn-only on the PR side, no hard-fail (matches the "gate without a reliable heuristic warns" rule).
+- assumed: the commit-msg warn is out of scope unless a commit-msg hook chokepoint already exists.
+- open: should the heading wording be enforced verbatim? Defaulted to accepting common heading variants.
+```
+
+When there is genuinely nothing to surface, the section carries a single `- none` bullet — the section is never silently omitted, so a reviewer can tell "nothing to flag" apart from "the author forgot".
+
+`t3 <overlay> pr create` WARNS (exit 0, never blocks) when the PR body has no `Open questions` heading, with a hint to add the section. The warn is the prompt, not a gate — a reliable bad/legit separation is impossible (the section can be worded many ways), so it warns per the "gate without a reliable heuristic warns" rule. The detector + warn live in `teatree.core.open_questions_gate` and fire from both PR-creation chokepoints (`ShipExecutor._build_pr_spec` and the orphan-branch `create_or_defer_pr`).
 
 ### 5b. Multi-Phase PRs Must Name Every Phase in the Title (Non-Negotiable)
 
