@@ -86,7 +86,7 @@ def _candidate_paths(path: str) -> list[str]:
     return candidates
 
 
-def _match_worktree_by_path(path: str) -> Worktree | None:
+def match_worktree_by_path(path: str) -> Worktree | None:
     """Find a Worktree whose ``extra["worktree_path"]`` matches or contains *path*.
 
     First tries an exact DB-level JSON lookup, then falls back to a prefix
@@ -162,7 +162,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
     through to creating a new ``auto:<branch>`` ticket. This prevents duplicate
     ticket rows when a real-ticket worktree exists but its
     ``extra["worktree_path"]`` is missing or stale (which would make
-    ``_match_worktree_by_path`` miss it).
+    ``match_worktree_by_path`` miss it).
 
     Ticket attribution for a manually-added worktree resolves in order:
     an explicit *ticket_hint* (the ``--ticket`` flag), the branch-encoded
@@ -225,7 +225,7 @@ def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
     ``.resolve()``-d, so a symlinked workspace root (macOS ``/tmp`` →
     ``/private/tmp``) would otherwise miss. Comparison goes through
     ``_candidate_paths`` — the same symlink-variant set
-    ``_match_worktree_by_path`` uses. Relies on the one-ticket-per-
+    ``match_worktree_by_path`` uses. Relies on the one-ticket-per-
     workspace-dir invariant; if violated the first match wins.
     """
     workspace_candidates = set(_candidate_paths(str(cwd_path.parent)))
@@ -336,12 +336,12 @@ def resolve_worktree(path: str = "", ticket_hint: Ticket | None = None) -> Workt
         env = _parse_env_file(envfile)
         ticket_dir = env.get("TICKET_DIR", "")
         if ticket_dir:
-            wt = _match_worktree_by_path(ticket_dir)
+            wt = match_worktree_by_path(ticket_dir)
             if wt is not None:  # pragma: no branch
                 return _finalize_matched(wt, cwd, ticket_hint)
 
     # 2. Match CWD directly against stored worktree paths
-    wt = _match_worktree_by_path(cwd)
+    wt = match_worktree_by_path(cwd)
     if wt is not None:
         return _finalize_matched(wt, cwd, ticket_hint)
 

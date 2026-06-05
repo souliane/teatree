@@ -12,12 +12,12 @@ from teatree.core.resolve import (
     WorktreeNotFoundError,
     _auto_register_from_git,
     _find_env_cache,
-    _match_worktree_by_path,
     _parse_env_file,
     _ticket_number_from_branch,
     _ticket_owning_branch,
     _warn_cwd_mismatch,
     _workspace_owner_ticket,
+    match_worktree_by_path,
     resolve_worktree,
 )
 
@@ -117,7 +117,7 @@ class TestMatchWorktreeByPath(TestCase):
             extra={"worktree_path": "/workspace/ac-backend-42/backend"},
         )
 
-        result = _match_worktree_by_path("/workspace/ac-backend-42/backend")
+        result = match_worktree_by_path("/workspace/ac-backend-42/backend")
 
         assert result is not None
         assert result.pk == wt.pk
@@ -131,7 +131,7 @@ class TestMatchWorktreeByPath(TestCase):
             extra={"worktree_path": "/workspace/ac-backend-42"},
         )
 
-        result = _match_worktree_by_path("/workspace/ac-backend-42/backend/src")
+        result = match_worktree_by_path("/workspace/ac-backend-42/backend/src")
 
         assert result is not None
         assert result.pk == wt.pk
@@ -145,7 +145,7 @@ class TestMatchWorktreeByPath(TestCase):
             extra={"worktree_path": "/workspace/ac-backend-42"},
         )
 
-        result = _match_worktree_by_path("/totally/different/path")
+        result = match_worktree_by_path("/totally/different/path")
 
         assert result is None
 
@@ -153,7 +153,7 @@ class TestMatchWorktreeByPath(TestCase):
         ticket = Ticket.objects.create()
         Worktree.objects.create(ticket=ticket, repo_path="backend", branch="feature", extra={})
 
-        result = _match_worktree_by_path("/some/path")
+        result = match_worktree_by_path("/some/path")
 
         assert result is None
 
@@ -425,7 +425,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         Bug: ``workspace ticket <real_url>`` provisions a Worktree row keyed
         to a real issue URL. Running ``t3`` from inside that worktree dropped
         through to ``_auto_register_from_git`` whenever
-        ``_match_worktree_by_path`` failed (e.g., the stored ``worktree_path``
+        ``match_worktree_by_path`` failed (e.g., the stored ``worktree_path``
         was missing or differed by a trailing slash), creating a duplicate
         ``auto:<branch>`` ticket. The fix: look up the Worktree by branch+repo
         first, and only fall through to ticket creation when nothing exists.
@@ -435,7 +435,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
             ticket=ticket,
             repo_path="my-repo",
             branch="feat/branch",
-            extra={},  # worktree_path was never recorded — that's why _match_worktree_by_path missed it
+            extra={},  # worktree_path was never recorded — that's why match_worktree_by_path missed it
         )
         wt_dir = self._make_git_worktree("my-repo")
 
@@ -451,7 +451,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
     def test_backfills_missing_worktree_path_on_reuse(self) -> None:
         """Reusing a Worktree should backfill ``extra.worktree_path``.
 
-        After this fix, future calls to ``_match_worktree_by_path`` will
+        After this fix, future calls to ``match_worktree_by_path`` will
         match the same Worktree directly (step 2 of resolution) without
         needing to fall through to auto-register again.
         """

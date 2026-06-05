@@ -1806,12 +1806,37 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     return emit_task_create_deny(reason)
 
 
-def _ticket_state_for_cwd(cwd: str) -> str | None:
-    """Return the ticket's FSM state for the worktree at *cwd*, or ``None`` on any failure.
+def _resolve_worktree_state(toplevel: str) -> str | None:
+    """Return the ticket FSM state for the worktree at on-disk *toplevel*.
 
-    Resolves the cwd → git toplevel → Worktree DB row → Ticket.state. Fail-open
-    on every exception so the hook never wedges an agent when teatree is
-    unavailable or the cwd is not a managed worktree.
+    Delegates the path → ``Worktree`` row resolution to the canonical
+    :func:`teatree.core.resolve.match_worktree_by_path` (the single source of
+    truth for matching an on-disk path against ``extra['worktree_path']``,
+    incl. the macOS ``/var`` ↔ ``/private/var`` symlink variants and the
+    subdirectory walk) rather than a hand-rolled query — a hand-rolled
+    ``Worktree.objects.filter(path=…)`` is exactly the #1957 dead-gate bug:
+    ``Worktree`` has no ``path`` field (the on-disk path lives in
+    ``extra['worktree_path']``), so every call raised ``FieldError``. Raises on
+    a programming error so the caller can log it loudly rather than swallow it
+    into a silent fail-open.
+    """
+    from teatree.core.resolve import match_worktree_by_path  # noqa: PLC0415
+
+    worktree = match_worktree_by_path(toplevel)
+    if worktree is None or worktree.ticket is None:
+        return None
+    return str(worktree.ticket.state)
+
+
+def _ticket_state_for_cwd(cwd: str) -> str | None:
+    """Return the ticket's FSM state for the worktree at *cwd*, or ``None``.
+
+    Resolves the cwd → git toplevel → Worktree DB row → Ticket.state. Fails
+    open (returns ``None``) on an OPERATIONAL failure — teatree unavailable,
+    cwd not a managed worktree, git/subprocess error — so the hook never wedges
+    an agent. A PROGRAMMING error (wrong field name, bad import — the #1957
+    class) is NOT swallowed silently: it emits a loud stderr NOTE before the
+    fail-open so a dead gate is diagnosable instead of invisible.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -1820,10 +1845,10 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
             sys.path.insert(0, str(src_dir))
             added = True
         import django  # noqa: PLC0415
+        from django.core.exceptions import FieldError  # noqa: PLC0415
 
         os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
         django.setup()
-        from teatree.core.models import Worktree  # noqa: PLC0415
 
         try:
             toplevel = subprocess.check_output(  # noqa: S603
@@ -1832,12 +1857,15 @@ def _ticket_state_for_cwd(cwd: str) -> str | None:
                 timeout=3,
                 stderr=subprocess.DEVNULL,
             ).strip()
-        except Exception:  # noqa: BLE001
+        except (subprocess.SubprocessError, OSError):
             return None
-        worktree = Worktree.objects.filter(path=toplevel).select_related("ticket").first()
-        if worktree is None or worktree.ticket is None:
+        try:
+            return _resolve_worktree_state(toplevel)
+        except (FieldError, TypeError, AttributeError, ImportError) as exc:
+            # Programming-error class (the #1957 dead-gate root cause): stay
+            # crash-proof (return None) but make it LOUD, never a silent ALLOW.
+            sys.stderr.write(f"NOTE: plan-gate edit-block resolver hit a programming error ({exc!r}); failing open.\n")
             return None
-        return str(worktree.ticket.state)
     except Exception:  # noqa: BLE001
         return None
     finally:
