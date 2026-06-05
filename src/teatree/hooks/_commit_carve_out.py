@@ -116,11 +116,20 @@ def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, confi
     repo's own identity, not a foreign leak. Fires ONLY for a ``git commit``
     (never a ``gh``/``glab`` post), ONLY when ``term`` is a ``private_repos``
     allowlist entry (a foreign customer term is not, and stays blocked), and
-    ONLY when :func:`commit_target_downgrades` clears the landing repo (a
-    resolvable PUBLIC repo stays blocked). It exists because a bare commit
-    resolves its repo from the harness cwd, which can miss the worktree the
-    commit lands in; keying on the term being the repo's own identifier makes an
-    own-org URL a non-leak regardless of which cwd the resolution saw.
+    ONLY when :func:`commit_branch_downgrades` clears the WHOLE command -- the
+    landing repo AND every chained segment (a resolvable PUBLIC repo, or any
+    chained non-publish-inert segment such as ``&& gh issue create --repo
+    <PUBLIC>``, keeps the block). This runs the SAME per-segment chain proof as
+    the primary commit path, so an own-slug term never relaxes a chained public
+    post: ``is_git_commit_command`` matches the FIRST segment only and the
+    scanner reports the FIRST matched term, so checking the term and the body
+    repo alone would let a chained foreign-term public post slip through.
+
+    It exists because a bare commit resolves its repo from the harness cwd,
+    which can miss the worktree the commit lands in; keying the downgrade on the
+    term being the repo's own identifier makes an own-org URL a non-leak
+    regardless of which cwd the resolution saw, while the chain proof keeps every
+    other surface blocked.
     """
     from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
 
@@ -128,4 +137,4 @@ def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, confi
         return False
     if not _repo_visibility.term_is_own_repo_slug(term, config_path):
         return False
-    return commit_target_downgrades(command, cwd, config_path=config_path)
+    return commit_branch_downgrades(command, cwd, config_path=config_path)

@@ -1226,6 +1226,70 @@ class TestOwnSlugTermDowngrades:
             is True
         )
 
+    # BLOCKER (security): a private commit on the OWN slug term chained to a
+    # PUBLIC gh post must NOT downgrade. is_git_commit_command matches the FIRST
+    # segment and the scanner reports the FIRST matched term, so without the
+    # per-segment chain proof an own-slug commit would WARN and the chained
+    # `gh issue create --repo <PUBLIC>` (carrying a foreign customer term in its
+    # body) would publish to a public repo. The chain proof must defeat it.
+    def test_own_slug_commit_chained_to_public_gh_post_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # No probe tool -> the public --repo slug is unknown -> NOT private.
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "acmecorp-engineering ref" '
+                '&& gh issue create --repo souliane/teatree --title x --body "someforeignbank"',
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # A chained segment carrying a forge tool inside a quoted shell string
+    # (`sh -c "gh ... PUBLIC"`) is NOT publish-inert -> stays blocked.
+    def test_own_slug_commit_chained_to_shell_wrapped_forge_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "acmecorp-engineering" '
+                '&& sh -c "gh issue create --repo souliane/teatree --body x"',
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is False
+        )
+
+    # A chained PUBLISH-INERT segment (git push, echo) preserves the downgrade:
+    # the own-slug commit still warns because nothing in the chain can publish.
+    def test_own_slug_commit_chained_to_inert_segment_downgrades(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "acmecorp-engineering ref" && git push origin HEAD',
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is True
+        )
+
 
 class TestTermIsOwnRepoSlug:
     """``_repo_visibility.term_is_own_repo_slug`` token-equality contract."""
