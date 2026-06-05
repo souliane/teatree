@@ -3003,6 +3003,12 @@ def _emit_banned_term_deny(
             "downgraded to warn (#126). The repo's own domain words are expected on its commits.\n"
         )
         return False
+    if tool_name == "Bash" and publish_surface.own_slug_term_downgrades(command, term, cwd_repo):
+        sys.stderr.write(
+            f"WARNING: banned-terms gate (#1415) — term '{term}' is this private repo's own slug "
+            "on its own commit; downgraded to warn (#126). A work-item URL naming the repo is not a leak.\n"
+        )
+        return False
     unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
     if unknown_slug:
         sys.stderr.write(
