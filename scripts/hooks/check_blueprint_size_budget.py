@@ -55,14 +55,7 @@ _APPENDIX_DIR = "docs/blueprint"
 # moved from BLUEPRINT.md to docs/dependency-graph.md. The live top-level
 # corpus drops to ~82 KB; lowered to 87,000 B to keep the budget meaningful
 # while preserving >=4 KB headroom.
-# TEMPORARY headroom-restore bump (revert to 87,000 when #1956 lands): the
-# open-questions warn note (#1933/#1943) took the live file over the 4 KB
-# `TestRealCorpusFitsWithHeadroom` guard ALREADY on origin/main, before this
-# branch. The project doctrine is trims-not-raises (#1956 trims BLUEPRINT to
-# restore headroom); this raise is the stop-gap so the eval-cadence change is
-# not blocked by a pre-existing red. Once #1956 merges, merge origin/main and
-# revert this constant to 87,000 (and the total below to 203,000).
-_BUDGET_TOP_LEVEL_BYTES = 88_000
+_BUDGET_TOP_LEVEL_BYTES = 87_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -202,14 +195,7 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # (~4 KB) from BLUEPRINT.md to docs/dependency-graph.md shrinks the top-level
 # corpus to ~82 KB; total drops correspondingly. Lowered to 203,000. Coupling
 # invariant holds: 203,000 - 87,000 = 116,000 <= 116,000.
-# TEMPORARY headroom-restore bump (revert to 203,000 when #1956 lands): paired
-# with the top-level bump above. The eval-cadence docs (loop-topology +
-# configuration rows) plus the pre-existing pressure took the merged corpus over
-# the 4 KB headroom guard. #1956 trims BLUEPRINT (trims-not-raises doctrine);
-# once it merges, merge origin/main and revert this to 203,000. Coupling
-# invariant holds at both values: 204,000 - 88,000 = 116,000 <= 116,000 (and the
-# reverted 203,000 - 87,000 = 116,000 <= 116,000).
-_BUDGET_TOTAL_BYTES = 204_000
+_BUDGET_TOTAL_BYTES = 203_000
 
 
 def _repo_root() -> pathlib.Path:
