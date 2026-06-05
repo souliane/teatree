@@ -13,7 +13,7 @@ emit a deny — i.e. that reaches the deny writer
 call graph — must EITHER route its deny through
 :func:`hook_router._fail_open_or_deny` (which gives it the always-allowed
 self-rescue commands like ``t3 <overlay> gate disable`` and the master
-``[teatree] gate_fail_open`` kill-switch for free) OR be named in the explicit,
+``[teatree] danger_gate_fail_open`` kill-switch for free) OR be named in the explicit,
 documented :data:`_NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS` allowlist, each entry
 carrying a one-line rationale.
 
@@ -65,7 +65,7 @@ _FAIL_OPEN_ROUTER: Final[str] = "_fail_open_or_deny"
 #   1. PUBLIC-EGRESS LEAK PATH (hard safety, intentionally fail-closed) — the
 #      quote / banned-terms scanners. Relaxing a public leak is
 #      a privacy regression, NOT a lockout rescue; they MUST NEVER read
-#      ``gate_fail_open`` (the HARD INVARIANT in hook_router). They carry their
+#      ``danger_gate_fail_open`` (the HARD INVARIANT in hook_router). They carry their
 #      own per-call ``[quote-ok:]`` / ``[banned-ok:]`` / ``--quote-ok`` escapes.
 #   2. NARROW TARGETED-COMMAND gates — deny only a specific dangerous command
 #      (a bypass of the t3 CLI, a raw merge, a raw review-post), never arbitrary
@@ -201,7 +201,7 @@ def test_every_pretooluse_deny_handler_is_never_lockout() -> None:
         "are not on the documented never-lockout allowlist.\n"
         f"  offenders: {sorted(offenders)}\n"
         f"Fix: route the deny through {_FAIL_OPEN_ROUTER}(data, reason) (gets the "
-        "self-rescue commands + gate_fail_open kill-switch), OR add a deliberate "
+        "self-rescue commands + danger_gate_fail_open kill-switch), OR add a deliberate "
         "entry to _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS with a one-line rationale."
     )
 
@@ -214,7 +214,7 @@ def test_loop_registration_gate_routes_through_fail_open() -> None:
     assert _DENY_WRITER in reachable, "loop-registration gate must still be able to deny"
     assert _FAIL_OPEN_ROUTER in reachable, (
         "handle_enforce_loop_registration must route its deny through "
-        f"{_FAIL_OPEN_ROUTER} so the self-rescue + gate_fail_open escapes apply"
+        f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
     )
     assert "handle_enforce_loop_registration" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
         "the loop-registration gate is FIXED (fail-open-routed); it must not be on the exemption allowlist"

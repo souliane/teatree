@@ -21,7 +21,7 @@ Deferred increments (each its own follow-up PR):
             (one authorize, N live posts) — needs the TDD-1 model.
 * TDD-9  — Slack-phrase control of the master switch.
 
-TDD-6 (``gate_fail_open`` master switch + self-rescue allow-list) has
+TDD-6 (``danger_gate_fail_open`` master switch + self-rescue allow-list) has
 LANDED — its eval below is now a live guard, no longer xfail.
 """
 
@@ -56,7 +56,7 @@ class TestDeferredRedesignBehaviors:
         )
         assert result.exit_code == 0, result.output
 
-    def test_gate_fail_open_status_command_exists(self) -> None:
+    def test_danger_gate_fail_open_status_command_exists(self) -> None:
         # TDD-6 landed (NEVER-LOCKOUT): the master fail-open switch is now a
         # live ``t3 review gate fail-open status`` command — this flipped from
         # an xfail deferral marker to a live guard.

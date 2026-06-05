@@ -7,7 +7,7 @@ quote/banned downgrade) all route their deny through one helper:
 - a self-rescue command (``t3 <overlay> gate disable``, ``db migrate``,
     ``t3 review gate fail-open enable``) is ALWAYS allowed — no gate may
     deny the very commands that rescue a lockout;
-- with the master ``gate_fail_open`` switch ON, every over-deny gate
+- with the master ``danger_gate_fail_open`` switch ON, every over-deny gate
     flips to fail-open (allow);
 - otherwise the gate denies normally.
 
@@ -66,13 +66,13 @@ class TestDeniesByDefault:
 
 class TestFailOpenSwitch:
     def test_allows_everything_when_fail_open_enabled(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("[teatree]\ngate_fail_open = true\n", encoding="utf-8")
+        (home / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = true\n", encoding="utf-8")
         blocked, payload = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is False
         assert payload is None
 
     def test_denies_when_fail_open_explicitly_false(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("[teatree]\ngate_fail_open = false\n", encoding="utf-8")
+        (home / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = false\n", encoding="utf-8")
         blocked, _ = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is True
 
@@ -110,7 +110,7 @@ class TestFailsClosedOnResolutionError:
             msg = "resolver blew up"
             raise RuntimeError(msg)
 
-        with patch.object(router, "_gate_fail_open_enabled", _boom):
+        with patch.object(router, "_danger_gate_fail_open_enabled", _boom):
             blocked, payload = _capture(_bash("git push origin main"), "BLOCKED: nope")
         assert blocked is True
         assert payload is not None
