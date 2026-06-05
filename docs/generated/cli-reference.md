@@ -3979,8 +3979,9 @@ Usage: t3 teatree e2e post-evidence [OPTIONS]
 
  Validation-gated (env ∈ {dev, local}, before ≠ after anti-fake,
  commit known + tree clean, ticket resolvable) and idempotent on the
- hidden ``(env, commit)`` marker — a re-run on the same env + commit
- edits in place, a different env/commit posts anew. ``--ticket`` and
+ hidden ``env`` marker — one comment per ticket+env: a re-run on the
+ same env edits that comment in place (any commit) with an
+ ``old -> new`` delta, a different env posts anew. ``--ticket`` and
  ``--commit`` auto-detect from the worktree. See
  :mod:`._e2e_evidence` for the validators and the SKILL for usage.
 
