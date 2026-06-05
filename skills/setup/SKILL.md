@@ -155,9 +155,9 @@ every runtime dir teatree detected along with the count of managed symlinks.
 
 ## Step 4: Claude Code Plugin Hooks
 
-Teatree ships a `hooks.json` that Claude Code loads automatically via the plugin symlink at `~/.claude/plugins/t3`. All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
+Teatree ships a `hooks.json` that Claude Code loads automatically. `t3 setup` registers the plugin in `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the main clone (no symlink, always live). All hooks route through `hook_router.py`, a unified Python router that handles event dispatch.
 
-Verify the symlink exists: `ls -la ~/.claude/plugins/t3`.
+Verify the registration: `t3 doctor check` (it reports the registered plugin and its `installPath`).
 
 The hooks cover these events:
 

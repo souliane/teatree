@@ -16,7 +16,7 @@ from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
-from teatree.self_update import current_editable_source
+from teatree.self_update import current_editable_source, ensure_self_db_migrated
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -599,6 +599,8 @@ def run(
         config_path=Path.home() / ".teatree.toml",
         echo=typer.echo,
     )
+
+    ensure_self_db_migrated(quiet=True)
 
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see

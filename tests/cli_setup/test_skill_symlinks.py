@@ -295,6 +295,7 @@ class TestSetupSyncsCodexWhenDirExists:
             patch.object(setup_module, "_find_main_clone", return_value=repo),
             patch.object(setup_module, "_run_apm_install", return_value=True),
             patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
             patch.object(setup_module, "DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
@@ -338,6 +339,7 @@ class TestSetupSyncsCodexWhenDirExists:
             patch.object(setup_module, "_find_main_clone", return_value=repo),
             patch.object(setup_module, "_run_apm_install", return_value=True),
             patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
             patch.object(setup_module, "DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
@@ -374,6 +376,7 @@ class TestSetupSyncsCodexWhenDirExists:
             patch.object(setup_module, "_find_main_clone", return_value=repo),
             patch.object(setup_module, "_run_apm_install", return_value=True),
             patch.object(setup_module, "_install_claude_plugin", return_value=True),
+            patch.object(setup_module, "ensure_self_db_migrated", return_value=False),
             patch.object(setup_module, "DoctorService") as mock_svc,
             patch("teatree.config.load_config") as mock_load,
         ):
