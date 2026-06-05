@@ -103,14 +103,16 @@ class WorktreeProvisionRunner(RunnerBase):
         return RunnerResult(ok=True, detail=f"{len(report.steps)} step(s) ok")
 
     def _run_db_import(self) -> None:
+        from teatree.core.worktree_env import worktree_pg_connection  # noqa: PLC0415
         from teatree.utils.db import db_exists  # noqa: PLC0415
 
         worktree = self.worktree
         overlay = self.overlay
 
         if worktree.db_name:
+            user, host, env = worktree_pg_connection(worktree, overlay=overlay)
             try:
-                if db_exists(worktree.db_name):
+                if db_exists(worktree.db_name, user=user, host=host, env=env or None):
                     logger.info("DB exists: %s — skipping import", worktree.db_name)
                     return
             except FileNotFoundError:
