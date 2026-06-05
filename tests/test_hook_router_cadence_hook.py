@@ -22,6 +22,16 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _tick_meta_stale, handle_enforce_loop_on_prompt, handle_enforce_loop_registration
 
 
+@pytest.fixture(autouse=True)
+def _teatree_engaged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the teatree opt-in marker active for the cadence-mechanism tests.
+
+    These exercise the loop-registration nudge / cron-minutes mechanism, not the
+    per-session opt-in gate (covered by ``test_teatree_opt_in.py``).
+    """
+    monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
+
+
 def test_loop_cadence_seconds_honors_toml_when_env_unset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # #1036: with no T3_LOOP_CADENCE env, the hook cadence must fall back
     # to ~/.teatree.toml loop_cadence_seconds, not the hardcoded 720.

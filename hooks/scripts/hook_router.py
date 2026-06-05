@@ -716,6 +716,41 @@ def _state_file(session_id: str, suffix: str) -> Path:
     return STATE_DIR / f"{session_id}.{suffix}"
 
 
+def _teatree_active(session_id: str) -> bool:
+    if not session_id:
+        return False
+    return _state_file(session_id, "teatree-active").is_file()
+
+
+def _is_teatree_skill(name: str) -> bool:
+    normalized = normalize_skill_name(name)
+    return normalized in {"t3:teatree", "teatree"}
+
+
+def _bare_skill_segment(name: str) -> str:
+    """The trigger index's key form: the bare segment after a namespace prefix.
+
+    ``build_trigger_index`` keys every entry (and its ``requires:`` members)
+    by the bare skill-directory name, so a qualified Skill-tool token like
+    ``t3:teatree-dogfood`` must be mapped DOWN to ``teatree-dogfood`` to match
+    an index entry and resolve its ``requires:`` closure.
+    """
+    return name.rstrip("/").removesuffix("/SKILL.md").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _skill_load_activates_teatree(skills: list[str]) -> bool:
+    """Does loading *skills* opt the session into teatree (directly or via requires:)?
+
+    Resolves the ``requires:`` closure against a bare-mapped copy of the input
+    so a qualified Skill-tool token (``t3:teatree-dogfood``) expands the same as
+    its bare InstructionsLoaded spelling — the trigger index is bare-keyed. The
+    bare mapping is scoped to this detection only; the recorded ``.skills``
+    closure keeps its own resolution + canonicalization contract.
+    """
+    bare = [_bare_skill_segment(s) for s in skills]
+    return any(_is_teatree_skill(s) for s in _resolve_skill_closure(bare))
+
+
 def _read_lines(path: Path) -> list[str]:
     if not path.is_file():
         return []
@@ -881,6 +916,30 @@ def handle_record_presence(data: dict) -> None:
 # ── UserPromptSubmit + PreToolUse: enforce-loop-registration ──────────
 
 _LOOP_CADENCE_DEFAULT = 720
+
+
+def _loops_toml_enabled() -> bool:
+    """Whether ``[loops] enabled`` is true in ``~/.teatree.toml`` (default True).
+
+    Fails open (True) on a missing or broken config — only an explicit
+    ``false`` suppresses loop behavior.
+    """
+    import tomllib  # noqa: PLC0415
+
+    config_path = Path.home() / ".teatree.toml"
+    if not config_path.is_file():
+        return True
+    try:
+        with config_path.open("rb") as f:
+            config = tomllib.load(f)
+    except Exception:  # noqa: BLE001
+        return True
+    loops = config.get("loops") if isinstance(config, dict) else None
+    if not isinstance(loops, dict):
+        return True
+    return loops.get("enabled") is not False
+
+
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -948,6 +1007,40 @@ def _cleanup_stale_pending(session_id: str) -> None:
                 f.unlink(missing_ok=True)
 
 
+def _claim_loop_ownership(session_id: str) -> None:
+    """Atomically claim the tick-owner record for *session_id* if unclaimed.
+
+    Risk-6 fix: when teatree is loaded mid-session (after SessionStart was
+    gated out), the ownership-claim logic in
+    :func:`handle_session_start_bootstrap` never ran.  The first
+    UserPromptSubmit after the marker is set calls this to fill the gap.
+    No-ops if a live foreign owner already holds the record, or if any of
+    the loop kill-switches are engaged: ``[loops] enabled = false`` in
+    ``~/.teatree.toml``, ``T3_LOOPS_DISABLED=all``, or ``T3_LOOP_DISOWN``
+    truthy.  Re-arming a paused loop here would resurrect the very
+    machinery the pause surface exists to silence.
+    """
+    if not _loops_toml_enabled():
+        return
+    if _all_loops_disabled():
+        return
+    if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
+        return
+    current_pid = os.getppid()
+    with _loop_registry_txn() as box:
+        registry = _prune_dead_owner(box[0])
+        owner = registry.get(_OWNER_LOOP)
+        if owner is not None and owner.get("session_id") != session_id:
+            box[0] = registry
+            return
+        if owner is None:
+            db_live = _db_live_foreign_owner(session_id, current_pid=current_pid)
+            if db_live:
+                box[0] = registry
+                return
+        box[0] = _tick_owner_record(session_id, "")
+
+
 def handle_enforce_loop_on_prompt(data: dict) -> None:
     """On first prompt, check if the fat loop needs registration.
 
@@ -959,6 +1052,9 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
+    if not _teatree_active(session_id):
+        return
+    _claim_loop_ownership(session_id)
     _ensure_state_dir()
     _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
@@ -1043,6 +1139,8 @@ def _loop_registration_exempt(data: dict) -> bool:
         live owner, the next eligible session — see ``_session_drives_loop``)
         still gets nagged, so the loop is never left unregistered.
     """
+    if not _teatree_active(data.get("session_id", "")):
+        return True
     if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
         return True
     if _call_is_from_subagent(data):
@@ -4024,15 +4122,17 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
                 sys.path.remove(extra)
 
 
-def _record_skills(skills_file: Path, existing: set[str], skills: list[str]) -> None:
-    """Append the resolved closure of *skills* as canonical names, deduped.
+def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) -> None:
+    """Append the already-resolved *closure* as canonical names, deduped.
 
     Each name is normalized UP to its fully-qualified form
     (:func:`normalize_skill_name`) before dedup so the persisted ``.skills``
     set stays canonical regardless of whether the source was the
-    Skill-tool (already namespaced) or InstructionsLoaded (bare).
+    Skill-tool (already namespaced) or InstructionsLoaded (bare). The caller
+    passes the pre-resolved closure (rather than re-resolving inside) so the
+    recorded-set resolution happens exactly once per event.
     """
-    for resolved in _resolve_skill_closure(skills):
+    for resolved in closure:
         name = normalize_skill_name(resolved)
         if name and name not in existing:
             existing.add(name)
@@ -4059,7 +4159,9 @@ def handle_track_skill_usage(data: dict) -> None:
     # PostToolUse: single skill from tool_input
     skill_name = data.get("tool_input", {}).get("skill", "")
     if skill_name:
-        _record_skills(skills_file, existing, [skill_name])
+        _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
+        if _skill_load_activates_teatree([skill_name]):
+            _state_file(session_id, "teatree-active").touch()
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
@@ -4073,7 +4175,9 @@ def handle_track_skill_usage(data: dict) -> None:
             continue
         if name:
             loaded.append(name)
-    _record_skills(skills_file, existing, loaded)
+    _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
+    if _skill_load_activates_teatree(loaded):
+        _state_file(session_id, "teatree-active").touch()
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -5248,6 +5352,8 @@ def handle_session_start_bootstrap(data: dict) -> None:
     """
     session_id = data.get("session_id", "")
     if not session_id:
+        return
+    if not _teatree_active(session_id):
         return
     agent_id = data.get("agent_id", "")
 
