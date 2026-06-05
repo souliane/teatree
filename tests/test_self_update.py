@@ -296,6 +296,31 @@ class TestSelfDbMigrate:
         assert not [c for c in calls if c[-2:] == ["migrate", "--no-input"]]
         assert "already migrated" in capsys.readouterr().out
 
+    def test_ensure_quiet_emits_nothing_when_clean(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(self_update_mod, "run_allowed_to_fail", lambda *a, **k: _Proc(0, "", ""))
+
+        failed = ensure_self_db_migrated(quiet=True)
+
+        assert failed is False
+        assert capsys.readouterr().out == ""
+
+    def test_ensure_quiet_still_reports_when_migrating(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def _run(cmd: list[str], **_kw: object) -> _Proc:
+            if "--check" in cmd:
+                return _Proc(1, "", "")  # pending
+            return _Proc(0, "Applying ...", "")
+
+        monkeypatch.setattr(self_update_mod, "run_allowed_to_fail", _run)
+
+        failed = ensure_self_db_migrated(quiet=True)
+
+        assert failed is False
+        assert "migrations applied" in capsys.readouterr().out
+
     def test_ensure_returns_failed_when_migration_fails_closed(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
