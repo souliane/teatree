@@ -17,6 +17,7 @@ _SPEC.loader.exec_module(_MOD)
 
 is_first_mr_of_week = _MOD.is_first_mr_of_week
 select_gate_records = _MOD.select_gate_records
+week_has_no_pr = _MOD.week_has_no_pr
 main = _MOD.main
 
 NOW = dt.datetime(2026, 6, 3, 12, 0, tzinfo=dt.UTC)  # Wednesday, ISO week 23
@@ -132,6 +133,41 @@ class TestSelectGateRecords:
         assert is_first_mr_of_week(selected, current_iid=1701, now=NOW) is True
 
 
+class TestWeekHasNoPr:
+    """The scheduled (cron) eval path runs only in a PR-less ISO week.
+
+    The first-PR path already runs the eval for any week that opened a PR,
+    so the shared marker between the two paths is the week's PR list: a
+    week with at least one PR is covered by the first-PR path → the cron
+    must skip; a week with NO PR is uncovered → the cron runs.
+    """
+
+    def test_true_when_no_pr_opened_this_week(self) -> None:
+        prs = [{"number": 9, "created_at": "2026-05-28T09:00:00Z"}]  # week 22, prior week
+        assert week_has_no_pr(prs, now=NOW) is True
+
+    def test_false_when_a_pr_opened_this_week(self) -> None:
+        prs = [{"number": 10, "created_at": "2026-06-01T09:00:00Z"}]  # Monday, week 23
+        assert week_has_no_pr(prs, now=NOW) is False
+
+    def test_true_for_empty_list(self) -> None:
+        assert week_has_no_pr([], now=NOW) is True
+
+    def test_ignores_malformed_and_out_of_week_records(self) -> None:
+        prs = [
+            {"number": None, "created_at": "2026-06-01T09:00:00Z"},
+            {"number": 11, "created_at": "not-a-date"},
+            {"number": 12, "created_at": "2026-05-20T09:00:00Z"},  # week 21
+        ]
+        assert week_has_no_pr(prs, now=NOW) is True
+
+    def test_complements_first_pr_path_for_a_pr_week(self) -> None:
+        """When a PR exists this week, the first-PR gate covers it and cron skips."""
+        prs = [{"number": 10, "created_at": "2026-06-02T09:00:00Z"}]  # Tuesday, week 23
+        assert is_first_mr_of_week(prs, current_iid=10, now=NOW) is True
+        assert week_has_no_pr(prs, now=NOW) is False
+
+
 class TestMain:
     def test_exit_zero_when_first(self, tmp_path: Path) -> None:
         mrs_file = tmp_path / "mrs.json"
@@ -159,3 +195,18 @@ class TestMain:
         mrs_file.write_text(json.dumps({"not": "a list"}), encoding="utf-8")
         code = main(["--mrs-file", str(mrs_file), "--current-iid", "1"])
         assert code == 2
+
+    def test_no_pr_week_mode_exit_zero_when_no_pr_this_week(self, tmp_path: Path) -> None:
+        """The cron path: ``--mode no-pr-week`` runs the eval in a PR-less week."""
+        mrs_file = tmp_path / "prs.json"
+        mrs_file.write_text(json.dumps([{"number": 9, "created_at": "2026-05-28T09:00:00Z"}]), encoding="utf-8")
+        code = main(["--mrs-file", str(mrs_file), "--mode", "no-pr-week", "--now", "2026-06-03T12:00:00Z"])
+        assert code == 0
+
+    def test_no_pr_week_mode_exit_skip_when_a_pr_opened_this_week(self, tmp_path: Path) -> None:
+        """The cron path skips when the first-PR path already covered this week."""
+        mrs_file = tmp_path / "prs.json"
+        mrs_file.write_text(json.dumps([{"number": 10, "created_at": "2026-06-01T09:00:00Z"}]), encoding="utf-8")
+        argv = ["--mrs-file", str(mrs_file), "--mode", "no-pr-week", "--now", "2026-06-03T12:00:00Z"]
+        code = main([*argv, "--skip-code", "1"])
+        assert code == 1
