@@ -690,7 +690,7 @@ class TestLoopRegistrationGateNeverLockout:
         unrecoverable lockout that killed every spawned coder/reviewer;
     2. the durable ``loop_registration_gate_enabled = false`` kill-switch;
     3. ``_fail_open_or_deny`` routing — a self-rescue command is never denied;
-    4. ``_fail_open_or_deny`` routing — the master ``gate_fail_open`` switch
+    4. ``_fail_open_or_deny`` routing — the master ``danger_gate_fail_open`` switch
         relaxes the deny.
 
     The must-DENY anchor (main session, gate on, no escape → blocked) is the
@@ -747,10 +747,10 @@ class TestLoopRegistrationGateNeverLockout:
         )
 
     def test_must_allow_when_master_fail_open_enabled(self) -> None:
-        (Path.home() / ".teatree.toml").write_text("[teatree]\ngate_fail_open = true\n", encoding="utf-8")
+        (Path.home() / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = true\n", encoding="utf-8")
         self._pending("failopen")
         assert handle_enforce_loop_registration(self._event("failopen")) is False, (
-            "LOCKOUT regression (escape 4) — the master gate_fail_open switch no longer relaxes the "
+            "LOCKOUT regression (escape 4) — the master danger_gate_fail_open switch no longer relaxes the "
             "loop-registration deny via _fail_open_or_deny."
         )
 

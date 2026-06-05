@@ -17,9 +17,9 @@ maintenance action, not a last-resort escape hatch.
 
 Budget (bytes):
 
-- Top-level ``BLUEPRINT.md``:     87 000  (~85 KB)
+- Top-level ``BLUEPRINT.md``:     88 000  (~86 KB)
 - ``docs/blueprint/`` corpus:    116 000  (~113 KB)
-- Combined corpus total:         203 000  (~198 KB)
+- Combined corpus total:         204 000  (~199 KB)
 
 BLUEPRINT.md is a SINGLE file by user decision — never split, never
 consolidate-by-splitting. The top-level budget sits comfortably above
@@ -70,7 +70,7 @@ _BUDGET_TOP_LEVEL_BYTES = 88_000
 # Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
 # gate that closes the ultracode fan-out bypass) is the same class of
 # load-bearing safety fact, and the corpus was again at capacity.
-# Reviewed bump (#1500): the `gate_fail_open` master NEVER-LOCKOUT switch
+# Reviewed bump (#1500): the `danger_gate_fail_open` master NEVER-LOCKOUT switch
 # (the parent fail-open mechanism the gate-2 self-rescue invariant rides on)
 # is the same class of load-bearing safety fact, corpus again at capacity.
 # Reviewed bump (#1539): the reviewing-phase review-skill evidence gate

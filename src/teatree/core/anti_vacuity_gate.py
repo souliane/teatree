@@ -51,7 +51,7 @@ class AntiVacuityAttestationError(RuntimeError):
 
 
 def anti_vacuity_required() -> bool:
-    """Whether the anti-vacuity gate is in force (env -> overlay -> global)."""
+    """Whether the anti-vacuity gate is in force (overlay -> global)."""
     return get_effective_settings().require_anti_vacuity_attestation
 
 
