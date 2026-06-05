@@ -81,6 +81,31 @@ before any transcript exists prints, per skipped scenario, the exact expected
 path plus the `t3 eval prepare-subscription` + re-run recipe (on stderr) and
 exits cleanly — not a silent no-op.
 
+#### subscription backend — two accepted transcript shapes
+
+`SubscriptionTranscriptRunner` auto-detects, per file, which of two shapes a
+`<scenario>.jsonl` is and grades both identically — on matchers, no API spend:
+
+- **`claude -p` stream-json** (`transcript.py`) — terminus is the top-level
+  `result` event.
+- **in-session sub-agent JSONL** (`subagent_transcript.py`) — the session
+  schema Claude Code writes under
+  `~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl`. This is the
+  ONLY transcript a subscription-covered turn produces (spending subscription
+  tokens requires an in-session `Agent`). It shares the stream-json
+  `message.content[]` block shape (so tool/text extraction is reused verbatim)
+  but carries NO `result` event — completion is the final assistant message's
+  `stop_reason`, which on disk is frequently `null` (a clean finish, not an
+  abort). Feeding it to the stream-json reader returned `("aborted", True)`, so
+  a genuinely-produced transcript spurious-failed; the session-aware terminus in
+  `subagent_transcript.py` fixes that.
+
+`t3 eval capture-subagent <scenario> --since <epoch>` (`subagent_capture.py`)
+locates the freshest sub-agent JSONL (validated by `is_subagent_transcript`) and
+copies it to the grader's path. Capture and grade read on-disk files only — the
+subscription lane never meters. The `/t3:running-evals` skill drives the full
+chain: prepare → dispatch sub-agent → capture-subagent → grade.
+
 #### sdk backend (`claude -p`)
 
 Each scenario invocation shells out to `claude -p` in `--output-format

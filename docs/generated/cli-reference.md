@@ -1168,6 +1168,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ negative-control      Self-test the harness: plant a known violation and     │
 │                       assert it is caught (token-free).                      │
+│ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
+│                       scenario's transcript path.                            │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1198,6 +1200,36 @@ Usage: t3 eval negative-control [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --format        TEXT  Report format: text or json. [default: text]           │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval capture-subagent`
+
+```
+Usage: t3 eval capture-subagent [OPTIONS] NAME
+
+ Copy the freshest in-session sub-agent JSONL to a scenario's transcript path.
+
+ After the ``/t3:running-evals`` skill dispatches an ``Agent`` sub-agent for a
+ scenario, Claude Code writes that sub-agent's trajectory under
+ ``~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl``. This
+ command finds the newest such file (optionally one written at/after
+ ``--since``), validates it is a sub-agent transcript, and copies it to
+ ``<transcript_dir>/<scenario>.jsonl`` so ``t3 eval run --backend
+ subscription`` grades it — no ``claude -p`` spend. Record an epoch BEFORE each
+ dispatch and pass it as ``--since`` so back-to-back scenarios never grab a
+ prior sub-agent's file.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Scenario name whose transcript to capture. [required]   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --transcript-dir        PATH   Where to write <scenario>.jsonl (default:     │
+│                                cwd) — must match `prepare-subscription`.     │
+│ --since                 FLOAT  Only consider sub-agent JSONLs modified       │
+│                                at/after this epoch (disambiguates sequential │
+│                                dispatches).                                  │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1318,16 +1350,17 @@ Usage: t3 eval prepare-subscription [OPTIONS] [NAME]
  The eval CLI is a plain process with no in-session ``Agent`` tool, so it
  cannot itself drive a subscription-covered turn. This command prints, per
  scenario, the agent definition, prompt, and the transcript path the
- ``subscription`` backend will read — so an operator (or an in-session
- ``/loop`` driver) runs each prompt via an in-session sub-agent with
- ``--output-format stream-json``, saves it to that path, then grades with
+ ``subscription`` backend will read. The ``/t3:running-evals`` skill is the
+ in-session driver: for each entry it dispatches an ``Agent`` sub-agent on the
+ prompt, then runs ``t3 eval capture-subagent <scenario>`` to copy the
+ sub-agent's JSONL to that path, and finally grades with
  ``t3 eval run --backend subscription``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to prepare (omit to prepare all).          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --transcript-dir        PATH  Where the operator will save each              │
+│ --transcript-dir        PATH  Where `t3 eval capture-subagent` writes each   │
 │                               <scenario>.jsonl transcript (default: cwd).    │
 │ --format                TEXT  Manifest format: text or json. [default: text] │
 │ --help                        Show this message and exit.                    │

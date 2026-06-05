@@ -17,7 +17,12 @@ from teatree.eval.runner import ClaudePRunner
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def _spec(tmp_path: Path, *, name: str = "worktree_first") -> EvalSpec:
+def _spec(
+    tmp_path: Path,
+    *,
+    name: str = "worktree_first",
+    match_value: str = "git",
+) -> EvalSpec:
     agent = tmp_path / "agent.md"
     agent.write_text("# fake skill\n", encoding="utf-8")
     return EvalSpec(
@@ -25,7 +30,7 @@ def _spec(tmp_path: Path, *, name: str = "worktree_first") -> EvalSpec:
         scenario="s",
         agent_path=str(agent),
         prompt="Fix README typo.",
-        matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git"),),
+        matchers=(Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value=match_value),),
         source_path=tmp_path / "spec.yaml",
     )
 
@@ -66,3 +71,55 @@ class TestSubscriptionTranscriptRunner:
         spec = _spec(tmp_path, name="my_scenario")
         path = SubscriptionTranscriptRunner(transcript_dir=tmp_path).transcript_path(spec)
         assert path == tmp_path / "my_scenario.jsonl"
+
+
+class TestSubscriptionRunnerGradesSessionSchemaSubagent:
+    """A genuinely-produced in-session sub-agent JSONL grades on its matchers.
+
+    The real subscription transcript Claude Code writes under
+    ``~/.claude/projects/<slug>/<session>/subagents/agent-<id>.jsonl`` carries the
+    session envelope (``isSidechain`` / ``agentId``), has NO top-level ``result``
+    event, and ends on the final assistant message's ``stop_reason`` (often
+    ``null`` on disk). The pre-fix backend parsed it with the ``claude -p``
+    stream-json extractors, whose ``extract_terminal_reason`` returns
+    ``("aborted", True)`` when no ``result`` event is present — so every honest
+    transcript spurious-failed as an errored run instead of grading on matchers.
+    """
+
+    def test_session_schema_subagent_grades_on_matchers_not_aborted(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path, match_value="git worktree add")
+        transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
+        (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
+
+        run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
+
+        # The defect (RED on current main): no result event -> ("aborted", True).
+        assert run.terminal_reason != "aborted"
+        assert run.is_error is False
+        assert any("git worktree add" in call.input.get("command", "") for call in run.tool_calls)
+
+    def test_session_schema_subagent_grades_to_real_pass(self, tmp_path: Path) -> None:
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path, match_value="git worktree add")
+        transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
+        (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
+
+        result = evaluate(spec, SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec))
+
+        assert not result.skipped
+        assert result.passed
+
+    def test_session_schema_subagent_grades_to_real_fail_when_behavior_absent(self, tmp_path: Path) -> None:
+        from teatree.eval.report import evaluate  # noqa: PLC0415
+
+        spec = _spec(tmp_path, match_value="this command never appears in the transcript")
+        transcript = (FIXTURES / "worktree_first_subagent.session.jsonl").read_text(encoding="utf-8")
+        (tmp_path / f"{spec.name}.jsonl").write_text(transcript, encoding="utf-8")
+
+        result = evaluate(spec, SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec))
+
+        # Not a spurious error-fail: it's a real matcher fail, not skipped, not is_error.
+        assert not result.skipped
+        assert not result.run.is_error
+        assert not result.passed
