@@ -47,6 +47,16 @@ def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Pat
 
     The ``UNRESOLVABLE_REPO_DIR`` sentinel (a ``-C`` value carrying a
     substitution marker) hard-blocks rather than fail-opens.
+
+    Body-file landing recovery (#1958): for a BARE ``git commit`` (no
+    ``cd``/``-C``/``--git-dir``) whose ambient cwd resolved to a repo that is
+    NOT provably-public, an ABSOLUTE ``-F`` body file inside a PROVABLY-PRIVATE
+    repo lifts the verdict to downgrade. The commit message is written into the
+    repo the commit lands in, so the body file's enclosing repo recovers the
+    landing repo when the cold-hook cwd reset away from the worktree. A landing
+    repo that PROVES PUBLIC keeps the block regardless of the body-file location,
+    so a deliberate ``git commit -F <private-file>`` from a public clone never
+    relaxes (never a leak).
     """
     from teatree.hooks.publish_surface import commit_targets_private_repo  # noqa: PLC0415
 
@@ -59,7 +69,49 @@ def commit_target_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     repo_root = _commit_repo_dir.git_root_for_dir(commit_target)
     if repo_root is None:
         return True
-    return commit_targets_private_repo(repo_root, config_path=config_path)
+    if commit_targets_private_repo(repo_root, config_path=config_path):
+        return True
+    if repo_dir is None and not _slug_probes_public(_repo_visibility.slug_for_cwd(repo_root), config_path=config_path):
+        return _body_file_repo_is_private(command, config_path=config_path)
+    return False
+
+
+def _slug_probes_public(slug: str, *, config_path: Path | None) -> bool:
+    """Return True iff ``slug`` resolves to a definite PUBLIC visibility verdict.
+
+    Allowlisted-private slugs are never public; an UNKNOWN probe verdict (tool
+    absent in-hook, auth differs, unresolvable slug) is NOT known-public, so the
+    body-file landing recovery may still fire on it. Only an explicit ``PUBLIC``
+    probe verdict blocks the recovery -- a commit PROVABLY landing in a public
+    repo must keep the hard block.
+    """
+    if not slug or _repo_visibility.slug_is_allowlisted_private(slug, config_path):
+        return False
+    return _repo_visibility.probe_visibility(slug) == "PUBLIC"
+
+
+def _body_file_repo_is_private(command: str, *, config_path: Path | None) -> bool:
+    """Return True iff a ``git commit -F`` ABSOLUTE body file sits in a private repo.
+
+    The cwd-independent landing signal for a bare ``git commit -F <abs path>``
+    (#1958): the commit message is written into the worktree the commit lands
+    in, so its enclosing repo identifies that worktree even when the harness cwd
+    reset away from it. Only ABSOLUTE body-file paths are considered (a relative
+    path is meaningless without the worktree this recovery exists because the
+    cwd could not pin down) and only a PROVABLY-PRIVATE enclosing repo qualifies,
+    so a missing / public / unknown body-file repo never relaxes the block.
+    """
+    from teatree.hooks import _body_file_resolution  # noqa: PLC0415
+    from teatree.hooks.publish_surface import commit_targets_private_repo  # noqa: PLC0415
+
+    for raw in _body_file_resolution.commit_body_file_paths(command):
+        path = Path(raw)
+        if not path.is_absolute():
+            continue
+        repo_root = _commit_repo_dir.git_root_for_dir(path.parent)
+        if repo_root is not None and commit_targets_private_repo(repo_root, config_path=config_path):
+            return True
+    return False
 
 
 def commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
@@ -72,14 +124,26 @@ def commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     hard-block stands -- the unresolvable-body fail-open never relaxes a chained
     public post.
     """
+    if not commit_target_downgrades(command, cwd, config_path=config_path):
+        return False
+    return _chained_segments_provably_inert(command, cwd, config_path=config_path)
+
+
+def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
+    r"""Return True iff every NON-commit segment is publish-inert or a pure private post.
+
+    The per-segment chain proof shared by the strict commit path and the
+    own-slug downgrade (#1958), so an own-slug term never relaxes a chained
+    PUBLIC post: ``is_git_commit_command`` matches the FIRST segment only and
+    the scanner reports the FIRST matched term, so any chained
+    non-publish-inert / non-pure-private segment must still defeat the downgrade.
+    """
     from teatree.hooks.publish_surface import (  # noqa: PLC0415
         is_git_commit_command,
         segment_target_is_private,
         strip_cd_prefix,
     )
 
-    if not commit_target_downgrades(command, cwd, config_path=config_path):
-        return False
     for words in _gh_glab_hiding.command_segments(command):
         if is_git_commit_command(" ".join(words)):
             continue
@@ -114,22 +178,24 @@ def own_slug_term_downgrades(command: str, term: str, cwd: Path | None, *, confi
 
     A work-item URL naming the repo (``host/<org>/<repo>/-/issues/N``) is the
     repo's own identity, not a foreign leak. Fires ONLY for a ``git commit``
-    (never a ``gh``/``glab`` post), ONLY when ``term`` is a ``private_repos``
-    allowlist entry (a foreign customer term is not, and stays blocked), and
-    ONLY when :func:`commit_branch_downgrades` clears the WHOLE command -- the
-    landing repo AND every chained segment (a resolvable PUBLIC repo, or any
-    chained non-publish-inert segment such as ``&& gh issue create --repo
-    <PUBLIC>``, keeps the block). This runs the SAME per-segment chain proof as
-    the primary commit path, so an own-slug term never relaxes a chained public
-    post: ``is_git_commit_command`` matches the FIRST segment only and the
-    scanner reports the FIRST matched term, so checking the term and the body
-    repo alone would let a chained foreign-term public post slip through.
+    (never a ``gh``/``glab`` post), ONLY when ``term`` is (a token-run of) a
+    ``private_repos`` allowlist entry -- the whole org/repo slug OR its org
+    prefix, since the scanner reports the prefix token tokenized out of a
+    work-item URL (#1958); a foreign customer term is neither and stays blocked.
 
-    It exists because a bare commit resolves its repo from the harness cwd,
-    which can miss the worktree the commit lands in; keying the downgrade on the
-    term being the repo's own identifier makes an own-org URL a non-leak
-    regardless of which cwd the resolution saw, while the chain proof keeps every
-    other surface blocked.
+    The landing repo must still clear :func:`commit_branch_downgrades` -- be
+    PROVABLY private (allowlist or probe) or a genuinely-unresolvable LOCAL
+    commit -- so a resolvable PUBLIC/UNKNOWN landing keeps the hard block (the
+    commit could genuinely land in a public repo; never a leak). The SAME
+    per-segment chain proof runs, so an own-slug term never relaxes a chained
+    PUBLIC post: ``is_git_commit_command`` matches the FIRST segment only and
+    the scanner reports the FIRST matched term, so a chained ``&& gh issue
+    create --repo <PUBLIC>`` still defeats the downgrade.
+
+    The over-block this closes (#1958): the org PREFIX of a multi-token private
+    slug now qualifies as the repo's own identity, so an own-org work-item URL
+    whose scanner-reported token is the prefix downgrades on the repo's OWN
+    private commit exactly as the whole-slug spelling already did.
     """
     from teatree.hooks.publish_surface import is_git_commit_command  # noqa: PLC0415
 

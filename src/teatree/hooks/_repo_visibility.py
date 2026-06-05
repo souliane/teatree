@@ -280,21 +280,30 @@ def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
-    """Return True iff ``term`` is a ``[teatree] private_repos`` allowlist entry.
+    """Return True iff ``term`` is (a token-run of) a ``[teatree] private_repos`` entry.
 
     A configured ``private_repos`` entry is, by definition, a private repo's
     OWN org/repo slug substring (a neutral example: ``acme-engineering``). When
     such an entry is the banned term a commit message tripped on, the match is
     the repo naming ITSELF -- the work-item URL ``host/<org>/<repo>/...`` -- not
     a foreign customer leak, so it is downgrade-eligible on that repo's own
-    commits. Token-equality (the term tokenizes to the same tokens as an
-    allowlist entry) is used, so a term equal to the entry matches while a
-    foreign term that merely contains an allowlist substring (a longer slug
-    that happens to start with the entry) does not falsely qualify.
+    commits.
+
+    The match is token-CONTAINMENT: the term's tokens must appear as a
+    CONTIGUOUS run within an allowlist entry's tokens. A term equal to the entry
+    qualifies (``acme-engineering``), AND so does a token-run of it -- the org
+    prefix ``acme`` of ``acme-engineering`` (#1958). A work-item URL
+    ``host/acme-engineering/.../-/issues/N`` tokenizes that prefix out of the
+    repo's OWN identity, so the banned-terms scanner reports the prefix token,
+    not the whole slug; the prefix is still the repo naming itself, not a foreign
+    leak. A FOREIGN term is not a run of any entry, and a SUPERSET term (a longer
+    slug that merely starts with the entry, e.g. ``acme-engineering-services``)
+    is longer than the entry's token run and so is NOT contained -- both stay
+    blocked.
     """
-    from teatree.hooks.term_match import tokens  # noqa: PLC0415
+    from teatree.hooks.term_match import _contains_run, tokens  # noqa: PLC0415
 
     term_tokens = tokens(term)
     if not term_tokens:
         return False
-    return any(tokens(entry) == term_tokens for entry in _private_repo_allowlist(config_path))
+    return any(_contains_run(tokens(entry), term_tokens) for entry in _private_repo_allowlist(config_path))

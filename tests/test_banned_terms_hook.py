@@ -271,3 +271,108 @@ def test_live_hook_allows_customer_term_on_git_c_commit_to_private_worktree(
 
     assert blocked is False
     assert captured.out == ""  # no deny JSON
+
+
+# A banned term that is a SUBSTRING TOKEN of the own private-repo slug (the org
+# prefix of ``acmecorp-engineering``), so the work-item URL ``host/acmecorp-
+# engineering/.../-/issues/N`` tokenizes ``acmecorp`` out of it. The own-slug
+# downgrade (#1951) keys on the term being the WHOLE slug, so it does not fire
+# for this substring; the landing-repo-private signal must carry the downgrade.
+_SUBSTRING_TERM_CONFIG = '[teatree]\nbanned_terms = ["acmecorp"]\nprivate_repos = ["acmecorp-engineering"]\n'
+
+
+def _private_worktree(tmp_path: Path, name: str = "wt") -> Path:
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "remote", "add", "origin", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+    return repo
+
+
+def _commit_msg_file(repo: Path) -> Path:
+    msg = repo / "COMMIT_MSG.txt"
+    msg.write_text(
+        "feat: deadline work\n\nSee https://gitlab.com/acmecorp-engineering/acmecorp-client-workspace/-/issues/8223\n",
+        encoding="utf-8",
+    )
+    return msg
+
+
+def test_live_hook_allows_substring_term_on_bare_commit_with_body_file_in_private_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # REGRESSION (#1958): a BARE ``git commit -F <abs body file under the private
+    # worktree>`` whose harness cwd reset to an unrelated PUBLIC repo. The body
+    # carries the repo's own work-item URL; the tripped term is a substring token
+    # of the own slug, so the #1951 own-slug downgrade does not fire and the cwd
+    # missed the worktree -- yet the body file lives inside the private worktree,
+    # so the landing repo is private and the commit must WARN, not hard-block.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = _private_worktree(tmp_path)
+    msg = _commit_msg_file(worktree)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"git commit -F {msg}"},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_live_hook_blocks_substring_term_on_bare_commit_with_body_file_in_public_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # SAFETY (#1958): the SAME bare ``git commit -F <abs body file>`` shape where
+    # the body file lives inside a PUBLIC repo must STAY hard-blocked. The
+    # landing-repo signal only downgrades a PROVABLY-private enclosing repo.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    public_repo = _public_clone(tmp_path)
+    msg = _commit_msg_file(public_repo)
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": f"git commit -F {msg}"},
+        "cwd": str(public_repo),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
+def test_live_hook_blocks_private_commit_chained_to_public_post_with_body_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # SAFETY (#1958, chain-proof): a private commit on the substring term, with
+    # its body file inside the private worktree, chained to a PUBLIC ``gh issue
+    # create`` must NOT downgrade. ``is_git_commit_command`` matches the FIRST
+    # segment only, so the body-file landing-repo signal must still run the same
+    # per-segment chain proof -- the chained public post defeats the downgrade.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+
+    worktree = _private_worktree(tmp_path)
+    msg = _commit_msg_file(worktree)
+    chained = f'git commit -F {msg} && gh issue create --repo souliane/teatree --title x --body "acmecorp leak"'
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": chained},
+        "cwd": str(worktree),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"

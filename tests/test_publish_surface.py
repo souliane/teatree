@@ -36,7 +36,7 @@ from typing import NamedTuple
 
 import pytest
 
-from teatree.hooks import _gh_glab_hiding, _repo_visibility, publish_surface
+from teatree.hooks import _body_file_resolution, _commit_carve_out, _gh_glab_hiding, _repo_visibility, publish_surface
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL
 
 
@@ -1100,6 +1100,135 @@ class TestCarveOutApplies:
         )
 
 
+class TestCommitBodyFilePaths:
+    """``_body_file_resolution.commit_body_file_paths`` extracts git ``-F`` paths."""
+
+    def test_short_f_space_form(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("git commit -F /abs/msg.txt") == ["/abs/msg.txt"]
+
+    def test_short_f_attached_form(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("git commit -F/abs/msg.txt") == ["/abs/msg.txt"]
+
+    def test_long_file_form(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("git commit --file /abs/msg.txt") == ["/abs/msg.txt"]
+
+    def test_long_file_equals_form(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("git commit --file=/abs/msg.txt") == ["/abs/msg.txt"]
+
+    def test_git_segment_behind_cd_prefix(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("cd /x && git commit -F /abs/msg.txt") == ["/abs/msg.txt"]
+
+    def test_no_body_file_is_empty(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths('git commit -m "inline"') == []
+
+    def test_non_git_command_is_empty(self) -> None:
+        assert _body_file_resolution.commit_body_file_paths("gh issue create --body-file /abs/x") == []
+
+
+class TestCommitBodyFileLandingRecovery:
+    """A bare ``git commit -F <abs path>`` recovers the landing repo from the body file (#1958).
+
+    A bare commit resolves its landing repo from the harness cwd, which the cold
+    hook often resets away from the worktree. An absolute ``-F`` body file lives
+    inside the worktree the commit lands in, so its enclosing repo recovers the
+    landing repo when the cwd is unknown -- while a PROVABLY-PUBLIC cwd keeps the
+    block.
+    """
+
+    @pytest.fixture
+    def cfg(self, tmp_path: Path) -> Path:
+        return _config(tmp_path, ["acmecorp-engineering"])
+
+    def test_bare_commit_body_file_in_private_repo_unknown_cwd_downgrades(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        # Ambient cwd is an unrelated repo whose visibility is UNKNOWN in-hook.
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        msg = private_worktree / "COMMIT_MSG.txt"
+        msg.write_text("acmecorp ref\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert _commit_carve_out.commit_target_downgrades(f"git commit -F {msg}", ambient_cwd, config_path=cfg) is True
+
+    # SAFETY: a body file inside a PUBLIC repo never relaxes the block -- the
+    # recovery only fires for a PROVABLY-PRIVATE enclosing repo.
+    def test_bare_commit_body_file_in_public_repo_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        public_repo = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        msg = public_repo / "COMMIT_MSG.txt"
+        msg.write_text("acmecorp ref\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert _commit_carve_out.commit_target_downgrades(f"git commit -F {msg}", ambient_cwd, config_path=cfg) is False
+
+    # SAFETY: a RELATIVE body file is not used for the recovery (it is meaningless
+    # without the worktree the recovery exists because the cwd could not pin down).
+    def test_relative_body_file_does_not_recover(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _repo_with_remote(tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git")
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            _commit_carve_out.commit_target_downgrades("git commit -F wt/COMMIT_MSG.txt", ambient_cwd, config_path=cfg)
+            is False
+        )
+
+    # SAFETY: a known-PUBLIC landing cwd keeps the block even with a private body
+    # file -- the commit lands in the public repo there (the deliberate-leak shape).
+    def test_known_public_cwd_with_private_body_file_stays_blocked(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        public_cwd = _repo_with_remote(tmp_path / "pub", "git@github.com:some/open-repo.git")
+        msg = private_worktree / "COMMIT_MSG.txt"
+        msg.write_text("acmecorp ref\n", encoding="utf-8")
+        # Probe resolves the cwd slug PUBLIC -> recovery must not fire.
+        monkeypatch.setattr(
+            _repo_visibility, "probe_visibility", lambda slug: "PUBLIC" if "open-repo" in slug else None
+        )
+        assert _commit_carve_out.commit_target_downgrades(f"git commit -F {msg}", public_cwd, config_path=cfg) is False
+
+    # The body-file recovery is bare-commit only: a ``-C``-named commit already
+    # resolves its landing repo from the command, so the body file is not consulted.
+    def test_dash_c_named_public_landing_ignores_private_body_file(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        public_landing = _repo_with_remote(tmp_path / "pub", "git@github.com:souliane/teatree.git")
+        ambient_cwd = _repo_with_remote(tmp_path / "ambient", "git@github.com:some/unrelated-repo.git")
+        msg = private_worktree / "COMMIT_MSG.txt"
+        msg.write_text("acmecorp ref\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            _commit_carve_out.commit_target_downgrades(
+                f"git -C {public_landing} commit -F {msg}", ambient_cwd, config_path=cfg
+            )
+            is False
+        )
+
+    def test_empty_slug_is_not_known_public(self, cfg: Path) -> None:
+        assert _commit_carve_out._slug_probes_public("", config_path=cfg) is False
+
+    def test_allowlisted_private_slug_is_not_known_public(self, cfg: Path) -> None:
+        assert _commit_carve_out._slug_probes_public("gitlab.com/acmecorp-engineering/x", config_path=cfg) is False
+
+    def test_probe_public_verdict_is_known_public(self, cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert _commit_carve_out._slug_probes_public("github.com/some/open-repo", config_path=cfg) is True
+
+    def test_probe_unknown_verdict_is_not_known_public(self, cfg: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        assert _commit_carve_out._slug_probes_public("github.com/some/unknown-repo", config_path=cfg) is False
+
+
 class TestOwnSlugTermDowngrades:
     """A commit tripping on its OWN repo-slug term (#126 follow-up).
 
@@ -1290,9 +1419,29 @@ class TestOwnSlugTermDowngrades:
             is True
         )
 
+    # A chained PURE PRIVATE gh post preserves the downgrade: the chained
+    # segment posts to a known-private repo, so it cannot leak the own-slug term.
+    def test_own_slug_commit_chained_to_private_gh_post_downgrades(
+        self, tmp_path: Path, cfg: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private_worktree = _repo_with_remote(
+            tmp_path / "wt", "git@gitlab.com:acmecorp-engineering/acmecorp-product.git"
+        )
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert (
+            publish_surface.own_slug_term_downgrades(
+                f'git -C {private_worktree} commit -m "acmecorp-engineering ref" '
+                "&& gh issue create --repo acmecorp-engineering/acmecorp-product --title x",
+                "acmecorp-engineering",
+                private_worktree,
+                config_path=cfg,
+            )
+            is True
+        )
+
 
 class TestTermIsOwnRepoSlug:
-    """``_repo_visibility.term_is_own_repo_slug`` token-equality contract."""
+    """``_repo_visibility.term_is_own_repo_slug`` token-containment contract."""
 
     def test_exact_allowlist_entry_is_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
@@ -1303,9 +1452,27 @@ class TestTermIsOwnRepoSlug:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         assert _repo_visibility.term_is_own_repo_slug("acmecorp_engineering", cfg) is True
 
+    # #1958: the org PREFIX token of a multi-token slug is the repo's own
+    # identity -- the scanner reports that token tokenized out of a work-item URL.
+    def test_org_prefix_token_of_entry_is_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acmecorp", cfg) is True
+
+    # A non-leading token-run within the entry also qualifies (it is still the
+    # repo's own identity, never a foreign term).
+    def test_inner_token_of_entry_is_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("engineering", cfg) is True
+
     def test_foreign_term_is_not_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         assert _repo_visibility.term_is_own_repo_slug("someforeignbank", cfg) is False
+
+    # A token that is NOT part of any entry's token run stays foreign even when
+    # it shares a leading character run with an entry token (no false prefix).
+    def test_unrelated_partial_token_is_not_own_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.term_is_own_repo_slug("acme", cfg) is False
 
     def test_superset_term_is_not_own_slug(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
