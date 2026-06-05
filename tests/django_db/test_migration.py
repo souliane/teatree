@@ -276,6 +276,87 @@ class TestMigrateRunnerSelection:
         assert calls[1][:4] == ["env", f"PIPENV_PIPFILE={tmp_path / 'Pipfile'}", "pipenv", "run"], calls[1]
 
 
+class TestMigrateDockerizedFallback:
+    """An unverified host venv must not be trusted; fall back to the dockerized runner.
+
+    Regression: souliane/teatree#1977 — #1976 routed a Pipfile-based main clone
+    through ``pipenv run``, but ``PIPENV_PIPFILE`` pinned to the clone's own
+    Pipfile resolves a stale, uv-built in-project ``.venv`` that is missing the
+    repo's deps (django may leak in, ``celery`` does not). The host migrate then
+    fails with an import error and the ticket DB is never created. When a
+    ``dockerized_migrate`` runner is configured, core must attempt+classify: on
+    a host config/import error it retries the migrate inside the repo-canonical
+    docker image (every dep baked in), so host venv state stops mattering.
+    """
+
+    @staticmethod
+    def _import_error_run(args, **_kw):
+        return CompletedProcess(args, 1, "", "ModuleNotFoundError: No module named 'celery'")
+
+    def test_falls_back_to_docker_on_host_import_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", self._import_error_run)
+
+        docker_calls: list[list[str]] = []
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            docker_calls.append(list(manage_args))
+            return CompletedProcess(manage_args, 0, "Applying myapp.0001_initial... OK\n", "")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.APPLIED
+        assert docker_calls == [["manage.py", "migrate", "--no-input"]], docker_calls
+
+    def test_docker_already_migrated_when_no_migrations(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", self._import_error_run)
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            return CompletedProcess(manage_args, 0, "No migrations to apply.\n", "")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.ALREADY_MIGRATED
+
+    def test_no_docker_fallback_keeps_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without a dockerized runner configured, #1976 behaviour is unchanged."""
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        (tmp_path / "Pipfile").write_text("[packages]\ndjango = '*'\n", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", self._import_error_run)
+        importer = _make_importer(tmp_path)
+        assert importer._migrate_reference_db() is _MigrateResult.FAILED
+
+    def test_docker_fallback_also_fails_returns_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", self._import_error_run)
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            return CompletedProcess(manage_args, 1, "", "django.db.utils.OperationalError: connection refused")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.FAILED
+
+    def test_docker_fake_step_uses_docker(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Once switched to docker, the selective --fake step also runs in docker."""
+        (tmp_path / "manage.py").write_text("", encoding="utf-8")
+        monkeypatch.setattr(run_mod.subprocess, "run", self._import_error_run)
+        docker_calls: list[list[str]] = []
+        call_count = 0
+
+        def dockerized_migrate(manage_args: list[str], _run_env: dict[str, str]) -> CompletedProcess:
+            nonlocal call_count
+            docker_calls.append(list(manage_args))
+            call_count += 1
+            if call_count == 1:
+                return CompletedProcess(manage_args, 1, "Applying myapp.0005_add_field...\n", "already exists")
+            return CompletedProcess(manage_args, 0, "", "")
+
+        importer = _make_importer(tmp_path, dockerized_migrate=dockerized_migrate)
+        assert importer._migrate_reference_db() is _MigrateResult.APPLIED
+        assert docker_calls[0] == ["manage.py", "migrate", "--no-input"], docker_calls
+        assert "--fake" in docker_calls[1], docker_calls
+
+
 class CanonicalizeTeatreeOverlayMigrationTest(TransactionTestCase):
     """0027 collapses the legacy ``teatree`` overlay value to ``t3-teatree``.
 
