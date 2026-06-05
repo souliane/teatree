@@ -147,16 +147,11 @@ class OverlayConfig:
     # cross-group reassigns stay visible because they cross human boundaries.
     identity_aliases: list[list[str]]
     dev_env_url: str = ""
-    # When True the PreToolUse plan-gate denies ``Edit``/``Write`` on any file
-    # under ``$T3_WORKSPACE_DIR`` unless either ``/plan`` has been invoked or
-    # the touched file was ``Read`` earlier in the session (see
-    # ``hooks/scripts/hook_router.py::handle_enforce_plan_gate``). The gate is
-    # opt-in per overlay — default ``False`` means agents working on this
-    # overlay's repos are not subject to the gate until the user flips it in
-    # ``[overlays.<name>] plan_gate = true``. The gate consults ALL overlays'
-    # ``plan_gate`` values: if any overlay opts in, the gate is active for
-    # workspace-scoped edits on this machine. Outside ``$T3_WORKSPACE_DIR``
-    # (e.g. ``~/.zshrc``, ``~/.claude/``, agent memory) the gate is silent.
+    # Retired (#plan-gate-fsm): the wall-clock ``handle_enforce_plan_gate``
+    # PreToolUse gate (opt-in per overlay) was replaced by the ``PLANNED`` FSM
+    # state. The field is kept for migration compatibility but no handler reads
+    # it anymore; the enforcement now lives in the Ticket state graph
+    # (STARTED → PLANNED → CODED) via ``PlanArtifact``.
     plan_gate: bool = False
     # #1295 capability J: privacy-redaction patterns scanned by the
     # pre-publish privacy gate before every public-repo write. Lists are

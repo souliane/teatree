@@ -18,6 +18,12 @@ from teatree.utils.run import CommandFailedError
 logger = logging.getLogger(__name__)
 
 
+def _check_plan_artifact(ticket: object) -> bool:
+    from teatree.core.plan_gate import check_plan_artifact  # noqa: PLC0415
+
+    return check_plan_artifact(ticket)  # type: ignore[arg-type]
+
+
 def _auto_ship_enabled() -> bool:
     if os.environ.get("T3_AUTO_SHIP", "").lower() == "true":
         return True
@@ -36,6 +42,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         NOT_STARTED = "not_started", "Not started"
         SCOPED = "scoped", "Scoped"
         STARTED = "started", "Started"
+        PLANNED = "planned", "Planned"
         CODED = "coded", "Coded"
         TESTED = "tested", "Tested"
         REVIEWED = "reviewed", "Reviewed"
@@ -74,6 +81,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         State.NOT_STARTED,
         State.SCOPED,
         State.STARTED,
+        State.PLANNED,
         State.CODED,
         State.TESTED,
         State.REVIEWED,
@@ -91,6 +99,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         State.NOT_STARTED,
         State.SCOPED,
         State.STARTED,
+        State.PLANNED,
         State.CODED,
         State.TESTED,
         State.REVIEWED,
@@ -191,10 +200,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=[State.SCOPED, State.STARTED], target=State.STARTED)
     def start(self) -> None:
-        """Schedule worktree provisioning + coding task.
+        """Schedule worktree provisioning + planning task.
 
         The worker creates per-repo git worktrees, then calls
-        ``schedule_coding()`` once the layout exists. FSM invariant (BLUEPRINT
+        ``schedule_planning()`` once the layout exists. FSM invariant (BLUEPRINT
         §4): transition bodies stay pure — long I/O is offloaded to an
         ``@task`` worker, enqueued after commit so the state change and the
         queued work land atomically.
@@ -209,7 +218,23 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         ticket_pk = int(self.pk)
         transaction.on_commit(lambda: execute_provision.enqueue(ticket_pk))
 
-    @transition(field=state, source=State.STARTED, target=State.CODED)
+    @transition(
+        field=state,
+        source=State.STARTED,
+        target=State.PLANNED,
+        conditions=[_check_plan_artifact],
+    )
+    def plan(self) -> None:
+        """Advance STARTED → PLANNED after a PlanArtifact record exists.
+
+        Guarded by check_plan_artifact() — requires at least one PlanArtifact
+        row for this ticket.  The condition is the single source of truth for
+        the plan gate; no prose rule or wall-clock check is needed.
+        """
+        self._consume_pending_phase_tasks("planning")
+        self.schedule_coding()
+
+    @transition(field=state, source=State.PLANNED, target=State.CODED)
     def code(self) -> None:
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
@@ -380,8 +405,26 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         worktree_model = apps.get_model("core", "Worktree")
         return any(_worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
 
+    def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
+        """Create a fresh headless planning task after provisioning completes."""
+        from teatree.core.models.session import Session  # noqa: PLC0415
+        from teatree.core.models.task import Task  # noqa: PLC0415
+
+        if self.role != self.Role.AUTHOR:
+            msg = f"schedule_planning requires role=author (got role={self.role!r})"
+            raise InvalidTransitionError(msg)
+        session = Session.objects.create(ticket=self, agent_id="planning")
+        return Task.objects.create(
+            ticket=self,
+            session=session,
+            phase="planning",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Auto-scheduled planning — produce a plan before coding",
+            parent_task=parent_task,
+        )
+
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless coding task after scoping completes."""
+        """Create a fresh headless coding task after planning completes."""
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
@@ -478,6 +521,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.NOT_STARTED,
             State.SCOPED,
             State.STARTED,
+            State.PLANNED,
             State.CODED,
             State.TESTED,
             State.REVIEWED,
@@ -513,6 +557,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.NOT_STARTED,
             State.SCOPED,
             State.STARTED,
+            State.PLANNED,
             State.CODED,
             State.TESTED,
             State.REVIEWED,
@@ -711,6 +756,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             State.NOT_STARTED,
             State.SCOPED,
             State.STARTED,
+            State.PLANNED,
             State.CODED,
             State.TESTED,
             State.REVIEWED,

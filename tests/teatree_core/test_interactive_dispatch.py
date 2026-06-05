@@ -96,7 +96,7 @@ class TestPhaseTaskDefaultsInteractive(TestCase):
 
 class TestRecordAttemptCommand(TestCase):
     def _claimed_task(self, *, phase: str = "coding") -> Task:
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED)
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
         session = Session.objects.create(ticket=ticket, agent_id=phase)
         task = Task.objects.create(ticket=ticket, session=session, phase=phase)
         task.claim(claimed_by="loop-slot")
@@ -126,7 +126,7 @@ class TestRecordAttemptCommand(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
-        assert task.ticket.state == Ticket.State.STARTED
+        assert task.ticket.state == Ticket.State.PLANNED
         assert task.attempts.latest("pk").error.startswith("outage_death:")
 
     def test_missing_phase_evidence_fails_task(self) -> None:

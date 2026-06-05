@@ -12,6 +12,14 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import QualityGateError, Session, Task, Ticket, Worktree
+from teatree.core.models.plan_artifact import PlanArtifact
+
+
+def _plan(ticket: Ticket) -> None:
+    """Record a PlanArtifact and drive STARTED → PLANNED so code() can run."""
+    PlanArtifact.record(ticket=ticket, plan_text="Plan: implement the ticket", recorded_by="t3:planner")
+    ticket.plan()
+    ticket.save()
 
 
 def _make_repo_with_diff(repo_dir: Path, *, branch: str) -> None:
@@ -52,6 +60,7 @@ class TestTicketLifecycle(TestCase):
         assert wt.state == "provisioned"
         assert wt.db_name
 
+        _plan(ticket)
         ticket.code()
         ticket.test(passed=True)
         ticket.save()
@@ -69,6 +78,8 @@ class TestTicketLifecycle(TestCase):
         ticket = Ticket.objects.create()
         ticket.scope(issue_url="https://gitlab.com/org/repo/-/issues/42", variant="test", repos=["backend"])
         ticket.start()
+        ticket.save()
+        _plan(ticket)
         ticket.code()
         ticket.test(passed=True)
         ticket.save()
@@ -114,6 +125,8 @@ class TestReworkCycle(TestCase):
         ticket = Ticket.objects.create()
         ticket.scope(issue_url="https://gitlab.com/org/repo/-/issues/99", variant="", repos=["repo"])
         ticket.start()
+        ticket.save()
+        _plan(ticket)
         ticket.code()
         ticket.test(passed=True)
         ticket.save()
