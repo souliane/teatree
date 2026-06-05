@@ -277,3 +277,24 @@ def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
     """Return True iff ``slug`` matches the offline allowlist."""
     lowered = slug.lower()
     return any(entry in lowered for entry in _private_repo_allowlist(config_path))
+
+
+def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
+    """Return True iff ``term`` is a ``[teatree] private_repos`` allowlist entry.
+
+    A configured ``private_repos`` entry is, by definition, a private repo's
+    OWN org/repo slug substring (a neutral example: ``acme-engineering``). When
+    such an entry is the banned term a commit message tripped on, the match is
+    the repo naming ITSELF -- the work-item URL ``host/<org>/<repo>/...`` -- not
+    a foreign customer leak, so it is downgrade-eligible on that repo's own
+    commits. Token-equality (the term tokenizes to the same tokens as an
+    allowlist entry) is used, so a term equal to the entry matches while a
+    foreign term that merely contains an allowlist substring (a longer slug
+    that happens to start with the entry) does not falsely qualify.
+    """
+    from teatree.hooks.term_match import tokens  # noqa: PLC0415
+
+    term_tokens = tokens(term)
+    if not term_tokens:
+        return False
+    return any(tokens(entry) == term_tokens for entry in _private_repo_allowlist(config_path))

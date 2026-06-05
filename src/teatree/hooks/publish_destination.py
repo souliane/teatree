@@ -335,7 +335,7 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
         public-leak scan without maintaining a second allowlist;
     - the day-cached ``gh``/``glab`` live-visibility probe
         (:func:`_repo_visibility.slug_is_private`), the same fallback the
-        commit / pure-post carve-out (:func:`publish_surface._segment_target_is_private`)
+        commit / pure-post carve-out (:func:`publish_surface.segment_target_is_private`)
         already applies to its command-resolved target. Resolving visibility
         from the COMMAND's target slug (the ``--repo``/``-R`` flag, the
         ``api`` URL path, or the cwd remote) rather than the harness cwd is
