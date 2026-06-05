@@ -69,57 +69,6 @@ def commit_body_file_base(command: str) -> Path | None:
     return _commit_repo_dir.git_root_for_dir(Path(repo_dir))
 
 
-def commit_body_file_paths(command: str) -> list[str]:
-    """Return the ``-F``/``--file``/``--body-file`` path TOKENS of the git segment.
-
-    For ``git`` the short ``-F`` is ALWAYS the commit-message file (never an
-    ``api`` field), so both ``-F <path>`` / ``-F<path>`` and the long
-    ``--file``/``--body-file``/``--description-file`` forms are collected. The
-    git segment may sit behind a leading ``cd``/``pushd`` prefix, so the first
-    segment whose command word is ``git`` is scanned. The returned tokens are
-    raw (unexpanded) path strings -- a caller that needs the on-disk file or its
-    enclosing repo resolves them.
-
-    This is the path-extraction half of the #1958 landing-repo recovery: an
-    absolute ``-F`` body file lives inside the worktree the commit lands in, so
-    its enclosing repo identifies that worktree even when the harness cwd has
-    reset away from it.
-    """
-    from teatree.hooks._gh_glab_hiding import command_segments  # noqa: PLC0415
-
-    git_words: list[str] = []
-    for words in command_segments(command):
-        if words and words[0] == "git":
-            git_words = words
-            break
-    paths: list[str] = []
-    i = 0
-    n = len(git_words)
-    while i < n:
-        word = git_words[i]
-        if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            paths.append(git_words[i + 1])
-            i += 2
-            continue
-        long_attached = next(
-            (v for flag in _BODY_FILE_FLAG_NAMES if (v := attached_value(word, flag + "=")) is not None),
-            None,
-        )
-        if long_attached is not None:
-            paths.append(long_attached)
-            i += 1
-            continue
-        if word == "-F" and i + 1 < n:
-            paths.append(git_words[i + 1])
-            i += 2
-            continue
-        short_attached = attached_value(word, "-F")
-        if short_attached is not None:
-            paths.append(short_attached)
-        i += 1
-    return paths
-
-
 @dataclass(frozen=True)
 class _ShortFileFlag:
     """Resolved value of a short ``-F`` body-file reference, with its token span.
