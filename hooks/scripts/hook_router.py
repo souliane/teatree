@@ -2762,7 +2762,9 @@ class _SelfDmDestinations:
     ``U…`` id Slack accepts as a target that opens the self-IM).
 
     ``resolved`` distinguishes a genuinely-empty configuration (nothing
-    declared → ALLOW silently) from an unreadable/unparsable one (→ ALLOW+warn).
+    declared → ALLOW silently) from an unreadable/unparsable one
+    (→ DENY fail-closed: the hook cannot self-identify the author without the
+    config, so a can't-read config must not let a self-DM through).
     """
 
     ids: frozenset[str]
@@ -2824,12 +2826,14 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
     bot-token path (``t3 teatree notify send -``). Posts to any other channel
     (colleague surfaces, governed by the on-behalf gate) pass through untouched.
 
-    Fail direction: ALLOW+warn when the destination ids cannot be resolved
-    (missing/unreadable config) — this is a UX-correctness gate, not a security
-    gate, and a config hiccup must not lock the operator out of Slack. A
-    genuinely-empty configuration (config readable, nothing declared) allows
-    silently. The ``[teatree] self_dm_gate_enabled`` setting (default ``True``)
-    is the one-line kill-switch.
+    Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify
+    the author without the config (no MCP token or network in the hook
+    subprocess, and the tool-schema text is not part of the hook input), so a
+    missing/unreadable/unparsable config DENIES with an error naming the toml
+    problem and the fix. A genuinely-empty configuration (config readable,
+    nothing declared) is a real state, not an error, so it allows silently. The
+    ``[teatree] self_dm_gate_enabled = false`` setting is the sanctioned
+    explicit escape hatch (never a silent one).
     """
     if not _self_dm_gate_enabled():
         return False
@@ -2842,11 +2846,15 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
 
     destinations = _self_dm_destination_ids()
     if not destinations.resolved:
-        sys.stderr.write(
-            "WARNING: self-DM gate (#1464) — could not resolve the bot↔user DM "
-            "destination ids from ~/.teatree.toml; allowing the Slack MCP write.\n"
+        return emit_pretooluse_deny(
+            "SELF-DM REFUSED (fail-closed): could not read the bot↔user DM destination ids "
+            "from ~/.teatree.toml (the file is missing or not valid TOML), so this gate "
+            "cannot confirm the Slack MCP write is not a self-DM under the USER's OAuth "
+            "token. Fix the ~/.teatree.toml so it parses (with the per-overlay "
+            "slack_dm_channel_id / slack_user_id keys), or set [teatree] "
+            "self_dm_gate_enabled = false to disable this gate explicitly. To DM the user "
+            "now, use the bot-token path: `t3 teatree notify send -` (reads the body from stdin)."
         )
-        return False
 
     destination = _self_dm_destination(tool_input, destinations.ids)
     if not destination:

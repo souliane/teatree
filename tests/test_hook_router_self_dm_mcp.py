@@ -16,9 +16,14 @@ slack_user_id``) — never hardcoded.
 
 This gate denies an MCP write whose destination is one of those ids and points
 the caller at the bot-token path (``t3 teatree notify send -``). Posts to any
-other channel pass through untouched. The fail direction is ALLOW+warn: an
-unreadable/unresolvable config must not lock the user out of Slack. The
-``[teatree] self_dm_gate_enabled`` kill-switch disables the gate without a code edit.
+other channel pass through untouched.
+
+Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify the
+author config-free (no token/network, schema text not in the input), so an
+unreadable/missing/malformed config DENIES with an error naming the toml
+problem and the fix. A readable config with no ids stays ALLOW (genuinely-empty
+is a real state, not an error). The ``[teatree] self_dm_gate_enabled`` kill-switch
+is the sanctioned explicit disable.
 """
 
 import json
@@ -184,18 +189,23 @@ class TestPassesThroughColleagueAndUnrelated:
         assert capsys.readouterr().out.strip() == ""
 
 
-class TestFailsOpenOnUnresolvableConfig:
-    def test_missing_config_allows_and_warns(
+class TestFailsClosedOnUnresolvableConfig:
+    # User decision: config-free self-identification isn't reliably available
+    # inside the PreToolUse hook (no token/network, schema text not in the input),
+    # so an unreadable/missing/malformed config DENIES — the kill-switch
+    # [teatree] self_dm_gate_enabled=false is the sanctioned escape hatch.
+
+    def test_missing_config_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         _patch_home(tmp_path / "home", None, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s4")
         )
-        assert verdict is False
-        captured = capsys.readouterr()
-        assert captured.out.strip() == ""
-        assert "self-DM" in captured.err
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
 
     @pytest.mark.parametrize(
         "body",
@@ -206,12 +216,12 @@ class TestFailsOpenOnUnresolvableConfig:
             '[teatree]\nmode = "auto"\n[overlays]\nbroken = "not-a-table"\n',
         ],
     )
-    def test_config_without_dm_channels_allows_silently(
+    def test_readable_config_without_ids_allows_silently(
         self, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # Readable config but no DM channel ids to match (an overlay without the
-        # key, no overlays table, OR a malformed non-table overlay) → ALLOW, no
-        # warn (genuinely-empty, not the can't-read case).
+        # Readable config but no self-DM ids to match (an overlay without the
+        # keys, no overlays table, OR a malformed non-table overlay) → ALLOW, no
+        # warn. Genuinely-empty is a real state, NOT an error → not fail-closed.
         _patch_home(tmp_path / "home", body, monkeypatch)
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s5")
@@ -219,7 +229,7 @@ class TestFailsOpenOnUnresolvableConfig:
         assert verdict is False
         assert capsys.readouterr().out.strip() == ""
 
-    def test_unreadable_config_allows_and_warns(
+    def test_unreadable_config_is_denied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         home = tmp_path / "home"
@@ -229,10 +239,10 @@ class TestFailsOpenOnUnresolvableConfig:
         verdict = router.handle_block_self_dm_via_mcp(
             _event(_SEND, {"channel": "D0BFIRSTDM01", "text": "report"}, session_id="s6")
         )
-        assert verdict is False
-        captured = capsys.readouterr()
-        assert captured.out.strip() == ""
-        assert "self-DM" in captured.err
+        assert verdict is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "self_dm_gate_enabled" in deny["permissionDecisionReason"]
 
 
 class TestMalformedToolInputPassesThrough:
