@@ -86,6 +86,10 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
     "handle_block_out_of_band_merge": "denies only raw `gh pr merge` / `glab mr merge` on managed repos",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",
+    "handle_block_self_dm_via_mcp": (
+        "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
+        "own self_dm_gate_enabled kill-switch"
+    ),
     "handle_validate_mr_metadata": "denies only `glab mr create/update` with missing metadata; broken-env escape",
     # Routing conversion, not a content/enforcement deny.
     "handle_route_away_mode_question": "converts AskUserQuestion to DeferredQuestion (away-mode); not a Bash deny",
