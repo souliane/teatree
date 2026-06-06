@@ -65,11 +65,8 @@ _ALLOWLIST: frozenset[str] = frozenset(
         # Real commands not surfaced by the in-process introspection used here
         # (DJANGO_GROUPS management subcommands without an overlay proxy leaf, or
         # commands on a sibling surface). They exist — see overlay.py
-        # contract_check / the loop/config management commands — but cannot be
-        # resolved against the proxied tree, so they are exempted explicitly.
-        "t3 loop review",
-        "t3 config write-skill-metadata",
-        "t3 config check-updates",
+        # contract_check — but cannot be resolved against the proxied tree, so
+        # they are exempted explicitly.
         "t3 overlay contract-check",
         # Illustrative per-overlay form in a publish-detection parser comment.
         # The real command is the top-level ``t3 review post-comment``; the
