@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.eval_docker import DockerUnavailableError
+from teatree.eval.coverage import CoverageReport, SkillCoverage
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
@@ -739,19 +740,27 @@ def _matcher_result(*, passed: bool) -> MatcherResult:
     )
 
 
+def _coverage(*, gaps: tuple[str, ...] = ()) -> CoverageReport:
+    rows = [SkillCoverage(skill="ship", covered=True, scenario_count=2, exempt=False, exempt_reason=None)]
+    rows += [SkillCoverage(skill=g, covered=False, scenario_count=0, exempt=False, exempt_reason=None) for g in gaps]
+    return CoverageReport(rows=tuple(rows))
+
+
 @contextmanager
-def _patch_all_lanes(
+def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the `eval all` run patches; the list IS the lane set.
     specs: list[EvalSpec],
     *,
     trigger: TriggerQAReport | None = None,
     regression_ok: bool = True,
     negative_caught: bool = True,
     replay_results: list[InvariantResult] | None = None,
+    coverage_gaps: tuple[str, ...] = (),
 ) -> "Iterator[None]":
     """Patch every free-lane input `eval all` resolves so the run is deterministic."""
     with (
         patch("teatree.cli.eval.discover_specs", return_value=specs),
         patch("teatree.cli.eval.run_trigger_qa", return_value=trigger or _good_trigger()),
+        patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
         patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=regression_ok)),
         patch("teatree.cli.eval.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
         patch("teatree.cli.eval.replay_transcript_for_all", return_value=replay_results),
@@ -768,18 +777,24 @@ class TestEvalAll:
         assert "trigger-qa" in result.output
         assert "regression" in result.output
 
-    def test_table_lists_all_five_lanes(self, tmp_path: Path) -> None:
+    def test_table_lists_all_lanes_including_coverage(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
-        for lane in ("trigger-qa", "regression", "negative-control", "transcript-replay", "ai-eval"):
+        for lane in ("trigger-qa", "skill-coverage", "regression", "negative-control", "transcript-replay", "ai-eval"):
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
+
+    def test_coverage_gap_is_warn_first_exit_zero(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], coverage_gaps=("loops",)):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "skill-coverage" in result.output
 
     def test_free_only_drops_the_ai_lane(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
-        for lane in ("trigger-qa", "regression", "negative-control", "transcript-replay"):
+        for lane in ("trigger-qa", "skill-coverage", "regression", "negative-control", "transcript-replay"):
             assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
         assert "ai-eval" not in result.output, result.output
 
@@ -968,5 +983,45 @@ class TestEvalNegativeControl:
 
     def test_unknown_format_exits_with_code_2(self) -> None:
         result = CliRunner().invoke(app, ["eval", "negative-control", "--format", "yaml"])
+        assert result.exit_code == 2
+        assert "unknown --format" in result.output
+
+
+class TestEvalCoverage:
+    def test_clean_corpus_exits_zero_and_renders_table(self) -> None:
+        report = _coverage()
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=report):
+            result = CliRunner().invoke(app, ["eval", "coverage"])
+        assert result.exit_code == 0, result.output
+        assert "ship" in result.output
+        assert "0 gap(s)" in result.output
+
+    def test_gap_is_warn_first_exit_zero_by_default(self) -> None:
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+            result = CliRunner().invoke(app, ["eval", "coverage"])
+        assert result.exit_code == 0, result.output
+        assert "loops" in result.output
+        assert "1 gap(s)" in result.output
+
+    def test_fail_on_gap_exits_nonzero(self) -> None:
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+            result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
+        assert result.exit_code == 1, result.output
+
+    def test_fail_on_gap_with_clean_corpus_exits_zero(self) -> None:
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage()):
+            result = CliRunner().invoke(app, ["eval", "coverage", "--fail-on-gap"])
+        assert result.exit_code == 0, result.output
+
+    def test_json_format_lists_gaps(self) -> None:
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage(gaps=("loops",))):
+            result = CliRunner().invoke(app, ["eval", "coverage", "--format", "json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
+        assert payload["gaps"] == ["loops"]
+
+    def test_unknown_format_exits_with_code_2(self) -> None:
+        with patch("teatree.cli.eval.skill_eval_coverage", return_value=_coverage()):
+            result = CliRunner().invoke(app, ["eval", "coverage", "--format", "yaml"])
         assert result.exit_code == 2
         assert "unknown --format" in result.output

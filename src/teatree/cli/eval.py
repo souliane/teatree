@@ -11,6 +11,7 @@ from teatree.cli._format_opts import require_valid_format
 from teatree.cli.eval_all import (
     build_scenarios_table,
     build_summary_table,
+    coverage_lane,
     hint_missing_transcripts,
     negative_control_lane,
     regression_lane,
@@ -32,6 +33,9 @@ from teatree.cli.eval_run_modes import (
 )
 from teatree.cli.eval_transcript_replay import replay_transcript_for_all, transcript_replay
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.coverage import render_json as render_coverage_json
+from teatree.eval.coverage import render_text as render_coverage_text
+from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import run_negative_control
@@ -296,6 +300,32 @@ def trigger_qa(
         sys.exit(1)
 
 
+@eval_app.command("coverage")
+def coverage(
+    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    fail_on_gap: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--fail-on-gap",
+        help="Exit non-zero on any coverage gap (Phase B enforcement); default is warn-first (exit 0).",
+    ),
+) -> None:
+    """Report per-skill behavioral-eval coverage: every skill is covered or eval_exempt.
+
+    A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
+    (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
+    frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
+    neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
+    Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
+    Phase-B enforcement that exits non-zero on any gap.
+    """
+    ensure_django()
+    require_valid_format(output_format)
+    report = skill_eval_coverage()
+    typer.echo(render_coverage_json(report) if output_format == "json" else render_coverage_text(report))
+    if fail_on_gap and report.gaps:
+        sys.exit(1)
+
+
 @eval_app.command("regression")
 def regression(
     output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
@@ -344,8 +374,9 @@ def all_lanes(
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
-    The four free deterministic lanes (trigger-qa, regression, negative-control,
-    transcript-replay) always run; transcript-replay SKIPs when no real session
+    The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+    negative-control, transcript-replay) always run; skill-coverage is warn-first
+    (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real session
     transcript is in scope (a missing run is not a violation). The AI lane grades
     subscription-produced transcripts when present; with none on disk it emits the
     subscription manifest plus the in-session recipe and NEVER silently shells the
@@ -370,6 +401,7 @@ def all_lanes(
     target_dir = transcript_dir or Path.cwd()
     lanes = [
         trigger_lane(run_trigger_qa()),
+        coverage_lane(skill_eval_coverage()),
         regression_lane(run_regression_corpus()),
         negative_control_lane(run_negative_control()),
         transcript_replay_lane(replay_transcript_for_all()),

@@ -1198,6 +1198,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       time.                                                  │
 │ trigger-qa            Validate every skill's trigger keywords against the    │
 │                       must-fire/must-not-fire corpus.                        │
+│ coverage              Report per-skill behavioral-eval coverage: every skill │
+│                       is covered or eval_exempt.                             │
 │ regression            Run the deterministic regression corpus over the real  │
 │                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
@@ -1452,6 +1454,29 @@ Usage: t3 eval trigger-qa [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 eval coverage`
+
+```
+Usage: t3 eval coverage [OPTIONS]
+
+ Report per-skill behavioral-eval coverage: every skill is covered or
+ eval_exempt.
+
+ A skill is COVERED when >=1 discovered scenario targets its ``SKILL.md``
+ (flat catalog OR co-located ``skills/<name>/evals.yaml``), or EXEMPT when its
+ frontmatter carries a non-empty ``eval_exempt`` reason. A skill that is
+ neither is a GAP. Deterministic and free — no ``claude -p`` invocation.
+ Warn-first by default (a gap is reported, exit 0); ``--fail-on-gap`` is the
+ Phase-B enforcement that exits non-zero on any gap.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --format             TEXT  Report format: text or json. [default: text]      │
+│ --fail-on-gap              Exit non-zero on any coverage gap (Phase B        │
+│                            enforcement); default is warn-first (exit 0).     │
+│ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 eval regression`
 
 ```
@@ -1478,8 +1503,10 @@ Usage: t3 eval all [OPTIONS]
 
  Run every eval lane in sequence and render one unified summary table.
 
- The four free deterministic lanes (trigger-qa, regression, negative-control,
- transcript-replay) always run; transcript-replay SKIPs when no real session
+ The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+ negative-control, transcript-replay) always run; skill-coverage is warn-first
+ (reports gaps, never FAILs in Phase A); transcript-replay SKIPs when no real
+ session
  transcript is in scope (a missing run is not a violation). The AI lane grades
  subscription-produced transcripts when present; with none on disk it emits the
  subscription manifest plus the in-session recipe and NEVER silently shells the
