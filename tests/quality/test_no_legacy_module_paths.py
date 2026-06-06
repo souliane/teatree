@@ -36,14 +36,12 @@ _SCAN_SUFFIXES = (".py", ".md", ".txt")
 # exclude it so the pin does not flag itself.
 _SELF = Path(__file__).resolve()
 
-# Documented PR7-deletable re-export shims: a registered overlay consumer still
-# imports the old flat path (``teatree.core.merge_guard`` → the canonical
-# ``teatree.core.gates.merge_guard``), so the shim keeps it resolving with no
-# cross-repo lockstep. These files NAME their old path in the module docstring by
-# design; the scan excludes them, but :class:`TestPr7DeletableShims` pins each one
-# to exist + to re-export so the exception is tracked, not silent drift. Delete the
-# entry (and the shim file) once every overlay consumer has repointed.
-_SHIM_FILES = (_REPO_ROOT / "src" / "teatree" / "core" / "merge_guard.py",)
+# PR7-deletable re-export shims: empty — the campaign repointed every consumer
+# (teatree's own importers in PR7a, the last overlay consumer in its own follow-up)
+# and deleted the final shim (``teatree.core.merge_guard`` → the canonical
+# ``teatree.core.gates.merge_guard``) in PR7b. :class:`TestPr7DeletableShims` now
+# pins that none remain, so a regression that resurrects a deletable shim turns red.
+_SHIM_FILES: tuple[Path, ...] = ()
 _SHIM_PATHS = {p.resolve() for p in _SHIM_FILES}
 
 # The 17 relocated gate stems (suffix kept per the PR5 plan §4 decision). Each
@@ -154,21 +152,19 @@ class TestFacadeImportSmoke:
 
 
 class TestPr7DeletableShims:
-    """Pin the documented PR7-deletable re-export shims (the cross-repo seam).
+    """Pin that the PR7 shim-deletion campaign is complete — no deletable shims remain.
 
-    Each shim keeps an old flat path resolving for a registered overlay consumer
-    that has not yet repointed (``teatree.core.merge_guard`` →
-    ``teatree.core.gates.merge_guard``). The shim must (1) exist and (2) re-export
-    the same object the canonical path owns, so a consumer on either path sees one
-    class — and so the exception stays visible (delete the shim + this pin once
-    overlays have repointed).
+    The cross-repo seam (``teatree.core.merge_guard`` →
+    ``teatree.core.gates.merge_guard``) existed so the PR5 god-module split could
+    land without cross-repo lockstep. PR7a repointed teatree's own importers, the
+    overlay repoint removed the last external consumer, and PR7b deleted the final
+    shim. This pin keeps :data:`_SHIM_FILES` empty so a regression that reintroduces
+    a deletable shim turns red instead of slipping in silently — and the flat path is
+    now an ordinary dead path enforced by :class:`TestNoLegacyPaths`.
     """
 
-    def test_shim_files_exist(self) -> None:
-        for shim in _SHIM_FILES:
-            assert shim.is_file(), f"PR7-deletable shim {shim} is gone — repoint consumers before deleting"
-
-    def test_merge_guard_shim_re_exports_the_canonical_class(self) -> None:
-        shim = importlib.import_module("teatree.core.merge_guard")
-        canonical = importlib.import_module("teatree.core.gates.merge_guard")
-        assert shim.MergeGuard is canonical.MergeGuard
+    def test_no_deletable_shims_remain(self) -> None:
+        assert _SHIM_FILES == (), (
+            "PR7 shim-deletion campaign is complete — a new deletable re-export shim "
+            "appeared; repoint its consumers and delete it rather than tracking it here."
+        )
