@@ -9,14 +9,11 @@ from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree_env import write_env_cache
-from teatree.timeouts import TimeoutConfig, load_timeouts
+from teatree.timeouts import DOCKER_COMPOSE_BUILD, DOCKER_COMPOSE_DOWN, DOCKER_COMPOSE_UP, TimeoutConfig, load_timeouts
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
-
-# Build can take minutes on first start — much longer than the 60s default for `up`.
-DOCKER_COMPOSE_BUILD_TIMEOUT = 600
 
 
 def compose_project(worktree: Worktree) -> str:
@@ -82,7 +79,7 @@ class WorktreeStartRunner(RunnerBase):
         overlay = self.overlay
         project = compose_project(worktree)
 
-        docker_compose_down(project, timeout=self.timeouts.get("docker_compose_down"))
+        docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))
 
         commands = overlay.get_run_commands(worktree)
         ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
@@ -131,7 +128,7 @@ class WorktreeStartRunner(RunnerBase):
             "--no-build",
             "--pull=never",
         ]
-        timeout = self.timeouts.get("docker_compose_up")
+        timeout = self.timeouts.get(DOCKER_COMPOSE_UP)
         try:
             result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
         except TimeoutExpired:
@@ -175,7 +172,7 @@ class WorktreeStartRunner(RunnerBase):
             "build",
             *missing,
         ]
-        timeout = self.timeouts.get("docker_compose_build") or DOCKER_COMPOSE_BUILD_TIMEOUT
+        timeout = self.timeouts.get(DOCKER_COMPOSE_BUILD)
         try:
             result = run_allowed_to_fail(cmd, env=env, expected_codes=None, timeout=timeout)
         except TimeoutExpired:
