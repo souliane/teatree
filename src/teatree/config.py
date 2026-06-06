@@ -9,8 +9,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from teatree.config_speak import resolve_speak, speak_from_subtable
 from teatree.paths import DATA_DIR, get_data_dir
-from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakMode, SpeakTarget
+from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
 from teatree.update_check import run_update_check
 
 CONFIG_PATH = Path.home() / ".teatree.toml"
@@ -368,8 +369,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "max_concurrent_local_stacks": int,
     "clean_ignore": _parse_excluded_skills,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
-    "speak_mode": SpeakMode.parse,
-    "speak_target": SpeakTarget.parse,
     "pull_main_clone_disabled": bool,
     "pull_main_clone_cadence_hours": int,
     "review_nag_enabled": bool,
@@ -707,10 +706,9 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
-    # #1791 What is read aloud — see :class:`SpeakMode` + blueprint §10.1.1.
-    speak_mode: SpeakMode = SpeakMode.OFF
-    # #1791 Where spoken audio lands — see :class:`SpeakTarget` + §10.1.1.
-    speak_target: SpeakTarget = SpeakTarget.LOCAL
+    # #1791/#2050 The resolved [teatree.speak] sub-table — local/slack_audio
+    # bools + scope. See :class:`SpeakConfig` + blueprint §10.1.1.
+    speak: SpeakConfig = field(default_factory=SpeakConfig)
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these
     # patterns and the body carries a ``Closes|Fixes|Resolves`` trailer,
@@ -911,8 +909,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
         clean_ignore=_parse_excluded_skills(teatree.get("clean_ignore", [])),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
-        speak_mode=_resolve_speak_mode(teatree),
-        speak_target=_resolve_speak_target(teatree),
+        speak=resolve_speak(teatree),
         ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
         pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
         pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
@@ -957,30 +954,6 @@ def _resolve_slack_voice_classifier_mode(teatree: dict[str, Any]) -> SlackVoiceC
         if scoped is not None:
             return SlackVoiceClassifierMode.parse(scoped)
     return SlackVoiceClassifierMode.WARN
-
-
-def _resolve_speak_mode(teatree: dict[str, Any]) -> SpeakMode:
-    """Resolve ``speak_mode`` from a flat ``[teatree] speak_mode`` key (#1791).
-
-    Absent → :attr:`SpeakMode.OFF` (the feature ships disabled). A typo
-    surfaces a clean ``ValueError`` from :meth:`SpeakMode.parse` rather
-    than silently mis-resolving. This is the CONFIGURED value only; the
-    binary-presence gate that forces ``off`` when ``say`` is absent lives
-    in :func:`teatree.core.speak.resolve_mode` so the prerequisite check
-    is applied at the single egress seam, not duplicated in the loader.
-    """
-    raw = teatree.get("speak_mode")
-    return SpeakMode.parse(raw) if raw is not None else SpeakMode.OFF
-
-
-def _resolve_speak_target(teatree: dict[str, Any]) -> SpeakTarget:
-    """Resolve ``speak_target`` from a flat ``[teatree] speak_target`` key (#1791).
-
-    Absent → :attr:`SpeakTarget.LOCAL` (the zero-dependency macOS default).
-    A typo surfaces a clean ``ValueError`` from :meth:`SpeakTarget.parse`.
-    """
-    raw = teatree.get("speak_target")
-    return SpeakTarget.parse(raw) if raw is not None else SpeakTarget.LOCAL
 
 
 def _resolve_autonomy(teatree: dict[str, Any]) -> Autonomy:
@@ -1088,33 +1061,57 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
 
     ``overlay_name`` resolves a SPECIFIC named overlay instead of the active
     one — the loop's scanner-builders fan out over every registered overlay,
-    not just the session's. In that mode the env layer is NOT applied (``T3_*``
-    vars target the active session's overlay, not an arbitrary named one); the
+    not just the session's. In that mode the env layer is NOT applied; the
     per-overlay ``[overlays.<name>]`` overrides and the autonomy collapse run
-    identically. This is the single resolver both paths share, so the loop's
-    auto-merge / codex consumers see the SAME ``autonomy`` posture the active
-    path exposes.
+    identically. This is the single resolver both paths share.
 
     To make an additional setting overridable, add it to
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or
-    ``ENV_SETTING_OVERRIDES`` (env). The resolver picks it up generically
-    via ``dataclasses.replace`` — no per-setting getter glue required.
-    Callers read the effective value with ``get_effective_settings().X``.
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` (per-overlay) or ``ENV_SETTING_OVERRIDES``
+    (env); the resolver picks it up generically via ``dataclasses.replace``.
+    The one non-generic override is ``speak``: its ``[overlays.<name>.speak]``
+    sub-table MERGES onto the base (see :func:`_overlay_speak_override`) rather
+    than flat-replacing, so a partial table overrides only the keys it sets.
 
-    As a final step, the single ``autonomy`` switch is applied: when
-    the effective autonomy resolves to :attr:`Autonomy.FULL` or
-    :attr:`Autonomy.NOTIFY`, the three user-in-the-loop approval gates
-    collapse to their autonomous value and ``mode`` is pinned to ``auto`` —
-    unless the user pinned a gate explicitly (an explicit per-gate value
-    always wins). The ``notify`` tier additionally derives
-    ``notify_on_behalf = True`` (forces the after-receipt DM on). See
-    :func:`_apply_autonomy`.
+    As a final step the single ``autonomy`` switch is applied: under
+    :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates
+    collapse to their autonomous value and ``mode`` is pinned to ``auto``
+    (unless the user pinned a gate explicitly). See :func:`_apply_autonomy`.
     """
     config = load_config()
     base = config.user
     overrides = _overlay_overrides_by_name(overlay_name) if overlay_name is not None else _active_overlay_overrides()
     settings = base if not overrides else replace(base, **overrides)
+    speak_override = _overlay_speak_override(config, overlay_name, base.speak)
+    if speak_override is not None:
+        settings = replace(settings, speak=speak_override)
+        overrides = {**overrides, "speak": speak_override}
     return _apply_autonomy(settings, hard_pinned=set(overrides), global_pinned=_global_pinned_fields(config))
+
+
+def _overlay_speak_override(
+    config: "TeaTreeConfig",
+    overlay_name: str | None,
+    base: SpeakConfig,
+) -> SpeakConfig | None:
+    """Merge a per-overlay ``[overlays.<name>.speak]`` sub-table onto ``base`` (#2050).
+
+    The single non-generic override (see :func:`get_effective_settings`):
+    merges only the keys the overlay table sets. ``None`` → base stands.
+    """
+    name = overlay_name if overlay_name is not None else os.environ.get("T3_OVERLAY_NAME", "")
+    if not name:
+        return None
+    overlays = config.raw.get("overlays") or {}
+    canonical = OverlayEntry.canonical_overlay_name(name)
+    for table_name, overlay_cfg in overlays.items():
+        if not isinstance(overlay_cfg, dict):
+            continue
+        if table_name != name and OverlayEntry.canonical_overlay_name(table_name) != canonical:
+            continue
+        subtable = overlay_cfg.get("speak")
+        if isinstance(subtable, dict):
+            return speak_from_subtable(subtable, base=base)
+    return None
 
 
 def _active_overlay_overrides() -> dict[str, Any]:

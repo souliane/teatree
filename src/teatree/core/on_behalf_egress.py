@@ -7,14 +7,13 @@ public method runs the identical fixed sequence in one place:
 
 1.  classify the destination self-vs-colleague via the backend's #1750
     ``route_token`` classifier;
-2.  a *self* destination (the user's own DM) → call the raw routed
-    primitive directly and return — ungated and unaudited, because a
-    bot→user / self-ack is never an on-behalf post. ``post`` additionally
-    reads a successful self-DM aloud through the shared
-    :func:`teatree.core.notify._maybe_speak` IM-egress seam (a bot→user DM
-    is exactly the IM/DM egress ``speak_mode`` covers), so the
-    ``notify post`` user-DM path speaks via the same primitive
-    ``notify_user`` already does;
+2.  a *self* destination (the user's own DM) → deliver via the shared
+    :func:`teatree.core.speak.deliver_user_dm` chokepoint and return —
+    ungated and unaudited, because a bot→user / self-ack is never an
+    on-behalf post. ``deliver_user_dm`` attaches spoken audio to the DM
+    when ``slack_audio`` is on and plays it locally when ``local`` is on
+    (#2050), so the ``notify post`` user-DM path runs the same DM+speak
+    chokepoint :func:`teatree.core.notify.notify_user` does;
 3.  a *colleague/channel* destination → :func:`require_on_behalf_approval`
     *before* the wire call (a BLOCK verdict with no recorded approval
     raises :class:`OnBehalfPostBlockedError` and nothing posts), then the
@@ -127,26 +126,23 @@ class OnBehalfSlackEgress:
     ) -> RawAPIDict:
         """Post to *channel*, gated+audited on a colleague surface.
 
-        Self-DM: post raw via ``post_routed`` (ungated, unaudited) and, on a
-        successful publish, read the text aloud through the shared
-        :func:`teatree.core.notify._maybe_speak` IM-egress chokepoint — a
-        bot→user DM is the IM/DM egress ``speak_mode = im-only`` / ``all``
-        covers, the same seam :func:`teatree.core.notify.notify_user` uses,
-        so the ``notify post`` and ``notify send`` user-DM paths share one
-        dispatch primitive. Colleague/channel: gate first (raises
-        :class:`OnBehalfPostBlockedError` on BLOCK with no recorded
-        approval, before any wire call), post, then DM the after-receipt
-        notice only on a successful publish (``ok`` truthy) — a colleague
-        surface is never read aloud. Returns the raw Slack body so callers
-        keep inspecting ``ok`` / ``error`` / ``ts``.
+        Self-DM: deliver via the shared :func:`teatree.core.speak.deliver_user_dm`
+        chokepoint (ungated, unaudited) — a bot→user DM is exactly the
+        "text DM to the user" #2050 targets, so the user's own DM both
+        attaches spoken audio when ``slack_audio`` is on AND plays locally
+        when ``local`` is on, driven by the SAME chokepoint
+        :func:`teatree.core.notify.notify_user` uses (one place owns the
+        speak logic for both DM egress points). Colleague/channel: gate
+        first (raises :class:`OnBehalfPostBlockedError` on BLOCK with no
+        recorded approval, before any wire call), post, then DM the
+        after-receipt notice only on a successful publish (``ok`` truthy) —
+        a colleague surface is never read aloud. Returns the raw Slack body
+        so callers keep inspecting ``ok`` / ``error`` / ``ts``.
         """
         if self._is_self_dm(channel):
-            from teatree.core.notify import _maybe_speak  # noqa: PLC0415
+            from teatree.core.speak import deliver_user_dm  # noqa: PLC0415
 
-            response = self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
-            if response.get("ok"):
-                _maybe_speak(text)
-            return response
+            return deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
         response = require_on_behalf_approval(
             target=target,
             action=action,
