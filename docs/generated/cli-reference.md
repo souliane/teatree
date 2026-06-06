@@ -22,6 +22,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 (no-op when off).                                            │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
+│ ui              Browse and run every t3 command in an interactive terminal   │
+│                 UI.                                                          │
 │ config          Configuration and autoloading.                               │
 │ banned-terms    Banned-terms backstop scans.                                 │
 │ ci              CI pipeline helpers.                                         │
@@ -173,6 +175,20 @@ Usage: t3 speak [OPTIONS] TEXT
 Usage: t3 info [OPTIONS]
 
  Show t3 installation, teatree/overlay sources, and editable status.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 ui`
+
+```
+Usage: t3 ui [OPTIONS]
+
+ Browse and run every t3 command in an interactive terminal UI.
+
+ Requires the ``ui`` dependency group: ``uv sync --group ui``
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
