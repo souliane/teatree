@@ -37,6 +37,7 @@ class TestAnswerCommandAtomicity:
         call_command("questions", "answer", row.pk, "yes", "--resolver", "test-user")
         row.refresh_from_db()
         assert row.answered_at is not None
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
         assert DeferredQuestionAudit.objects.filter(question=row, action="answered").count() == 1
 
     def test_answer_audit_failure_rolls_back_resolution(self) -> None:
@@ -72,6 +73,7 @@ class TestDismissCommandAtomicity:
         call_command("questions", "dismiss", row.pk, "--reason", "stale")
         row.refresh_from_db()
         assert row.dismissed_at is not None
+        assert row.resolved_via == DeferredQuestion.ResolvedVia.LOCAL
         assert DeferredQuestionAudit.objects.filter(question=row, action="dismissed").count() == 1
 
     def test_dismiss_audit_failure_rolls_back_resolution(self) -> None:

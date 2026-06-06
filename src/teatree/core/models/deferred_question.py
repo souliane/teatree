@@ -28,6 +28,7 @@ question) as the same primitive.
 from typing import ClassVar
 
 from django.db import models, transaction
+from django.db.models import Max
 from django.utils import timezone
 
 
@@ -51,6 +52,12 @@ class DeferredQuestion(models.Model):
     STATUS_ANSWERED = "answered"
     STATUS_DISMISSED = "dismissed"
 
+    class ResolvedVia(models.TextChoices):
+        UNRESOLVED = "", "Unresolved"
+        SLACK = "slack", "Slack reply"
+        LOCAL = "local", "Local CLI"
+        STALE = "stale", "Stale"
+
     question = models.TextField()
     options_json = models.TextField(blank=True, default="")
     session_id = models.CharField(max_length=255, blank=True, default="")
@@ -60,6 +67,18 @@ class DeferredQuestion(models.Model):
     answer_text = models.TextField(blank=True, default="")
     dismissed_at = models.DateTimeField(null=True, blank=True)
     dismissed_reason = models.TextField(blank=True, default="")
+    slack_ts = models.CharField(max_length=64, blank=True, default="")
+    slack_channel = models.CharField(max_length=64, blank=True, default="")
+    options_hash = models.CharField(max_length=64, blank=True, default="")
+    generation = models.PositiveIntegerField(default=0)
+    run_id = models.CharField(max_length=255, blank=True, default="")
+    resolved_via = models.CharField(
+        max_length=8,
+        blank=True,
+        default="",
+        choices=ResolvedVia.choices,
+    )
+    applied_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "teatree_deferred_question"
@@ -81,20 +100,28 @@ class DeferredQuestion(models.Model):
         return self.answered_at is None and self.dismissed_at is None
 
     @classmethod
-    def record(
+    def record(  # noqa: PLR0913 — guarded factory: each kwarg is a documented column, kwargs-only.
         cls,
         question: str,
         *,
         options_json: str = "",
         session_id: str = "",
         tool_use_id: str = "",
+        slack_ts: str = "",
+        slack_channel: str = "",
+        options_hash: str = "",
+        generation: int = 0,
+        run_id: str = "",
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
 
         Enforces the contract before any row is written and raises
         :class:`DeferredQuestionError` with a precise reason on the first
         violation: non-empty ``question`` after stripping. Construction is
-        atomic so a rejected record leaves no partial row.
+        atomic so a rejected record leaves no partial row. The mirror
+        kwargs (``slack_ts`` / ``slack_channel`` / ``options_hash`` /
+        ``generation`` / ``run_id``) link the row to its Slack DM so a
+        later Slack reply can resolve exactly the live generation (#1174).
         """
         clean_question = question.strip()
         if not clean_question:
@@ -107,7 +134,120 @@ class DeferredQuestion(models.Model):
                 options_json=options_json or "",
                 session_id=session_id or "",
                 tool_use_id=tool_use_id or "",
+                slack_ts=slack_ts or "",
+                slack_channel=slack_channel or "",
+                options_hash=options_hash or "",
+                generation=generation,
+                run_id=run_id or "",
             )
+
+    @classmethod
+    def next_generation(cls, *, session_id: str, run_id: str) -> int:
+        """The next per-(session, run) question cursor — ``max(generation) + 1``.
+
+        A Slack reply resolves only the current generation, so each new
+        captured question for a (session, run) scope claims a strictly
+        higher cursor. Atomic max-then-increment under the row lock the
+        caller already holds when superseding the prior generation.
+        """
+        current = cls.objects.filter(session_id=session_id, run_id=run_id).aggregate(top=Max("generation"))["top"]
+        return (current or 0) + 1
+
+    @classmethod
+    def live_for_reply(cls, *, channel: str, after_ts: str) -> "DeferredQuestion | None":
+        """The single currently-live question a Slack reply can resolve.
+
+        Returns the highest-generation pending row mirrored to *channel*
+        whose mirror ``slack_ts`` is strictly before *after_ts* (the
+        reply's ts) — so a reply can never bind a question posted after it
+        (the ``after_ts`` guard). ``None`` when no such live row exists,
+        which the caller treats as a stale reply (ordinary DM context).
+        """
+        if not channel or not after_ts:
+            return None
+        return (
+            cls.objects.filter(
+                slack_channel=channel,
+                slack_ts__lt=after_ts,
+                slack_ts__gt="",
+                answered_at__isnull=True,
+                dismissed_at__isnull=True,
+            )
+            .order_by("-generation", "-created_at")
+            .first()
+        )
+
+    def mark_stale(self, reason: str) -> None:
+        """Stamp ``dismissed_at`` + ``resolved_via='stale'`` + audit, single-use.
+
+        Used at capture-time supersession (a newer-generation question
+        arrived) and as the terminal state for a reply that found no live
+        row. A no-op on an already-resolved row.
+        """
+        with transaction.atomic():
+            row = (
+                type(self)
+                .objects.select_for_update()
+                .filter(pk=self.pk, answered_at__isnull=True, dismissed_at__isnull=True)
+                .first()
+            )
+            if row is None:
+                return
+            row.dismissed_at = timezone.now()
+            row.dismissed_reason = reason
+            row.resolved_via = self.ResolvedVia.STALE
+            row.save(update_fields=["dismissed_at", "dismissed_reason", "resolved_via"])
+            DeferredQuestionAudit.objects.create(
+                question=row,
+                action="dismissed",
+                dismissed_reason=reason,
+            )
+            self.dismissed_at = row.dismissed_at
+            self.dismissed_reason = row.dismissed_reason
+            self.resolved_via = row.resolved_via
+
+    def apply_answer(self, answer: str, *, resolved_via: str) -> "DeferredQuestion | None":
+        """Resolve this pending row with *answer*, stamping ``resolved_via``.
+
+        Wraps :meth:`consume` (the single-use CAS that stamps
+        ``answered_at`` + ``answer_text``) and additionally records
+        ``resolved_via``. Returns the consumed row, or ``None`` when the
+        row was already resolved (a concurrent answer won). ``applied_at``
+        is stamped separately by the UserPromptSubmit drain — this marks
+        the answer *recorded*, not yet *delivered* back to a session.
+        """
+        with transaction.atomic():
+            row = type(self).consume(self.pk, answer=answer)
+            if row is None:
+                return None
+            row.resolved_via = resolved_via
+            row.save(update_fields=["resolved_via"])
+            return row
+
+    @classmethod
+    def answered_not_applied(cls, *, session_id: str = "") -> models.QuerySet["DeferredQuestion"]:
+        """Rows answered but whose answer has not yet been delivered to a session.
+
+        The UserPromptSubmit drain reads these to emit each resolved
+        answer into ``additionalContext`` exactly once. Scoped to
+        *session_id* when given (an empty session matches every row, the
+        v1 single-session path).
+        """
+        qs = cls.objects.filter(answered_at__isnull=False, applied_at__isnull=True).order_by("created_at")
+        if session_id:
+            qs = qs.filter(session_id=session_id)
+        return qs
+
+    @classmethod
+    def mark_applied(cls, question_id: int) -> bool:
+        """Stamp ``applied_at`` single-use; ``True`` on the transition, else ``False``.
+
+        The at-most-once gate for delivering an answer back into a
+        session's ``additionalContext`` (``UPDATE … WHERE applied_at IS
+        NULL``): a concurrent second drain sees 0 rows updated and emits
+        nothing.
+        """
+        return bool(cls.objects.filter(pk=question_id, applied_at__isnull=True).update(applied_at=timezone.now()))
 
     @classmethod
     def pending(cls, *, using: str | None = None) -> models.QuerySet["DeferredQuestion"]:
