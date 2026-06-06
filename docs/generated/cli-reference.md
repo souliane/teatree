@@ -4427,8 +4427,11 @@ Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
  Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
  outcome (merged / posted / shipped / deployed) it must also carry a
  resolvable artifact pointer (URL / SHA / ``!123`` / ``#123`` / note id /
- path), so a phantom "done" claim cannot be recorded without proof. A
- note with no outcome claim — or no note — is untouched.
+ path / Slack ts), so a phantom "done" claim cannot be recorded without
+ proof. A Slack post recorded as ``slack:<channel>:<ts>`` or
+ ``<channel>:<ts>`` is normalized to its archives permalink before the gate
+ and before storage. A note with no outcome claim — or no note — is
+ untouched.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  Task ID (see `task_id` in `tasks list`).          │

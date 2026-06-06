@@ -9,6 +9,7 @@ from teatree.core.completion_evidence import (
     detect_claim_kind,
     evidence_from_note,
     has_resolvable_pointer,
+    normalize_artifact_pointers,
 )
 
 # Internal-progress notes that merely CONTAIN an outcome verb while describing
@@ -245,3 +246,64 @@ class TestCheckCompletionEvidence:
         assert "'shipped'" in message
         assert "URL" in message
         assert "git SHA" in message
+
+
+class TestSlackPointer:
+    """An answerer records its post as a Slack ts; the gate must accept it.
+
+    Two answerer agents hit the gate rejecting a bare Slack ts and hand-built
+    archive permalinks as a workaround. The gate now recognises the
+    ``slack:<channel>:<ts>``, bare ``<channel>:<ts>``, and bare ``<ts>`` forms.
+    """
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "posted slack:C0DEMOCHAN1:1717603200.123456",
+            "posted C0DEMOCHAN1:1717603200.123456",
+            "posted the answer at 1717603200.123456",
+        ],
+    )
+    def test_slack_ts_forms_are_resolvable_pointers(self, note: str) -> None:
+        assert has_resolvable_pointer(note) is True
+
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "posted slack:C0DEMOCHAN1:1717603200.123456",
+            "posted C0DEMOCHAN1:1717603200.123456",
+            "posted the answer at 1717603200.123456",
+        ],
+    )
+    def test_answerer_shaped_completion_passes(self, note: str) -> None:
+        check_completion_evidence(note)  # does not raise
+
+    @pytest.mark.parametrize(
+        ("note", "expected"),
+        [
+            (
+                "posted slack:C0DEMOCHAN1:1717603200.123456",
+                "posted https://slack.com/archives/C0DEMOCHAN1/p1717603200123456",
+            ),
+            (
+                "answer at C0DEMOCHAN1:1717603200.123456",
+                "answer at https://slack.com/archives/C0DEMOCHAN1/p1717603200123456",
+            ),
+        ],
+    )
+    def test_channel_bearing_forms_normalize_to_permalink(self, note: str, expected: str) -> None:
+        assert normalize_artifact_pointers(note) == expected
+
+    def test_bare_ts_is_left_as_is(self) -> None:
+        # No channel to build a permalink from — the bare ts is still a pointer
+        # but cannot be rewritten to an archives URL.
+        note = "posted at 1717603200.123456"
+        assert normalize_artifact_pointers(note) == note
+
+    def test_normalize_leaves_a_real_url_untouched(self) -> None:
+        note = "shipped via https://example.com/mr/77"
+        assert normalize_artifact_pointers(note) == note
+
+    def test_a_plain_decimal_is_not_a_slack_ts(self) -> None:
+        # A short or non-Slack-shaped decimal must not masquerade as a ts pointer.
+        assert has_resolvable_pointer("merged 3.14 release") is False

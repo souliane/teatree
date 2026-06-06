@@ -107,3 +107,19 @@ class TestTasksCompleteEvidenceGate(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
         assert not TaskAttempt.objects.filter(task=task).exists()
+
+    def test_answerer_slack_ts_completion_succeeds_and_stores_permalink(self) -> None:
+        # An answerer records its post as a Slack channel:ts; the gate accepts it
+        # and the stored note carries the normalized archives permalink rather
+        # than the raw ts (no hand-built permalink workaround needed).
+        task = self._claimed_task()
+
+        call_command("tasks", "complete", task.pk, note="posted slack:C0DEMOCHAN1:1717603200.123456")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        attempt = TaskAttempt.objects.filter(task=task).first()
+        assert attempt is not None
+        assert attempt.result == {
+            "complete_note": "posted https://slack.com/archives/C0DEMOCHAN1/p1717603200123456",
+        }
