@@ -1,26 +1,24 @@
-"""Resolution of the ``[teatree.speak]`` config sub-table (#2050).
+"""Resolution of the ``[teatree.speak]`` config sub-table (#2060).
 
 Split out of :mod:`teatree.config` (a god-module): the speak schema —
-the ``local`` / ``slack_audio`` / ``scope`` sub-table — is a cohesive
-concern with a single dependency (:mod:`teatree.types`). The hook-side
-mirror lives in ``hook_router._speak_settings``; a parity test pins the
-two in agreement.
+the ``local`` enum + the ``slack`` bool — is a cohesive concern with a
+single dependency (:mod:`teatree.types`). The hook-side mirror lives in
+``hook_router._speak_settings``; a parity test pins the two in agreement.
 """
 
 from typing import Any
 
-from teatree.types import SpeakConfig, SpeakScope
+from teatree.types import LocalPlayback, SpeakConfig
 
 _DEFAULT_SPEAK = SpeakConfig()
 
 
 def speak_from_subtable(subtable: dict[str, Any], *, base: SpeakConfig = _DEFAULT_SPEAK) -> SpeakConfig:
     """Build a :class:`SpeakConfig` from a ``[teatree.speak]`` sub-table; keys absent fall back to ``base``."""
-    scope = subtable.get("scope")
+    local = subtable.get("local")
     return SpeakConfig(
-        local=bool(subtable.get("local", base.local)),
-        slack_audio=bool(subtable.get("slack_audio", base.slack_audio)),
-        scope=SpeakScope.parse(scope) if scope is not None else base.scope,
+        local=LocalPlayback.parse(local) if local is not None else base.local,
+        slack=bool(subtable.get("slack", base.slack)),
     )
 
 

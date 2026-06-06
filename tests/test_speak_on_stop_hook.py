@@ -1,12 +1,11 @@
-"""The Stop hook that reads the in-client turn aloud, with no-double-speak (#2050/#2021).
+"""The Stop hook that reads the in-client turn aloud (#2060).
 
-The Stop-hook arm fires its detached ``t3 speak`` IFF ``scope == all`` AND
-``local`` AND NOT ``slack_audio`` — so when ``slack_audio`` is on the canonical
-spoken delivery is the DM-with-audio and the Stop hook stands down (exclusivity
-by construction, no DB). It NEVER blocks/denies (returns None), reads the
-``[teatree.speak]`` sub-table (same precedence as the config loader), and is
-crash-proof. Only the toml file, PATH lookup, and the detached subprocess are
-faked.
+The Stop-hook arm fires its detached ``t3 speak`` IFF ``local == all`` — in-client
+turns are never Slack messages, so the ``slack`` attach is irrelevant and the v2
+no-double-speak suppression is gone (``local == all`` speaks the turn regardless
+of ``slack``). It NEVER blocks/denies (returns None), reads the ``[teatree.speak]``
+sub-table (same precedence as the config loader), and is crash-proof. Only the
+toml file, PATH lookup, and the detached subprocess are faked.
 """
 
 import json
@@ -40,32 +39,32 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 class TestSpeakSettings:
     def test_defaults_when_file_missing(self, home: Path) -> None:
-        assert router._speak_settings() == (False, False, "dm")
+        assert router._speak_settings() == ("off", False)
 
     def test_defaults_when_no_teatree_table(self, home: Path) -> None:
         (home / ".teatree.toml").write_text("[other]\nx = 1\n", encoding="utf-8")
-        assert router._speak_settings() == (False, False, "dm")
+        assert router._speak_settings() == ("off", False)
 
     def test_reads_new_table(self, home: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n')
-        assert router._speak_settings() == (True, True, "all")
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\nslack = true\n')
+        assert router._speak_settings() == ("all", True)
 
     def test_partial_table_defaults_the_rest(self, home: Path) -> None:
-        _write_speak_table(home, "[teatree.speak]\nslack_audio = true\n")
-        assert router._speak_settings() == (False, True, "dm")
+        _write_speak_table(home, "[teatree.speak]\nslack = true\n")
+        assert router._speak_settings() == ("off", True)
 
     def test_only_sub_table_read_unknown_keys_ignored(self, home: Path) -> None:
         _write_speak_table(home, '[teatree]\nworkspace_dir = "~/workspace"\n')
-        assert router._speak_settings() == (False, False, "dm")
+        assert router._speak_settings() == ("off", False)
 
     def test_defaults_on_malformed_toml(self, home: Path) -> None:
         (home / ".teatree.toml").write_text("not = [valid toml", encoding="utf-8")
-        assert router._speak_settings() == (False, False, "dm")
+        assert router._speak_settings() == ("off", False)
 
 
 class TestHandleSpeakAllOnStop:
-    def test_fires_when_scope_all_local_and_not_slack_audio(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = false\nscope = "all"\n')
+    def test_fires_when_local_all(self, home: Path, tmp_path: Path) -> None:
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         transcript = _write_transcript(tmp_path, "all green, shipping now")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
@@ -79,18 +78,18 @@ class TestHandleSpeakAllOnStop:
         assert argv[2] == "all green, shipping now"
         assert popen.call_args.kwargs["start_new_session"] is True
 
-    def test_suppressed_when_slack_audio_on(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n')
+    def test_fires_when_local_all_even_with_slack_on(self, home: Path, tmp_path: Path) -> None:
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\nslack = true\n')
         transcript = _write_transcript(tmp_path, "all green")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
             patch.object(router.subprocess, "Popen") as popen,
         ):
             router.handle_speak_all_on_stop({"transcript_path": transcript})
-        popen.assert_not_called()
+        popen.assert_called_once()
 
-    def test_silent_when_scope_dm(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = false\nscope = "dm"\n')
+    def test_silent_when_local_dm(self, home: Path, tmp_path: Path) -> None:
+        _write_speak_table(home, '[teatree.speak]\nlocal = "dm"\n')
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
@@ -100,7 +99,7 @@ class TestHandleSpeakAllOnStop:
         popen.assert_not_called()
 
     def test_silent_when_local_off(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = false\nslack_audio = false\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "off"\nslack = true\n')
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", return_value="/usr/local/bin/t3"),
@@ -110,7 +109,7 @@ class TestHandleSpeakAllOnStop:
         popen.assert_not_called()
 
     def test_appends_overlay_when_set(self, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         monkeypatch.setenv("T3_OVERLAY_NAME", "teatree")
         transcript = _write_transcript(tmp_path, "done")
         with (
@@ -122,7 +121,7 @@ class TestHandleSpeakAllOnStop:
         assert argv[-2:] == ["--overlay", "teatree"]
 
     def test_noop_when_say_absent(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", side_effect=lambda b: None if b == "say" else "/bin/t3"),
@@ -132,7 +131,7 @@ class TestHandleSpeakAllOnStop:
         popen.assert_not_called()
 
     def test_noop_when_t3_absent(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         transcript = _write_transcript(tmp_path, "x")
         with (
             patch.object(router.shutil, "which", side_effect=lambda b: "/usr/bin/say" if b == "say" else None),
@@ -142,7 +141,7 @@ class TestHandleSpeakAllOnStop:
         popen.assert_not_called()
 
     def test_noop_when_no_assistant_text(self, home: Path, tmp_path: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         empty = tmp_path / "empty.jsonl"
         empty.write_text("", encoding="utf-8")
         with (
@@ -153,7 +152,7 @@ class TestHandleSpeakAllOnStop:
         popen.assert_not_called()
 
     def test_crash_proof_returns_none(self, home: Path) -> None:
-        _write_speak_table(home, '[teatree.speak]\nlocal = true\nscope = "all"\n')
+        _write_speak_table(home, '[teatree.speak]\nlocal = "all"\n')
         with (
             patch.object(router.shutil, "which", return_value="/bin/t3"),
             patch.object(router, "_last_assistant_turn", side_effect=RuntimeError("boom")),
