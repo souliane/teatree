@@ -20,6 +20,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli._doctor_checks import (
+    _check_account_switch,
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
@@ -57,6 +58,7 @@ __all__ = (
     "DoctorService",
     "IntrospectionHelpers",
     "PackageNotFoundError",
+    "_check_account_switch",
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
@@ -545,6 +547,12 @@ def check() -> bool:
     from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
+
+    # In-session `/login` account-switch recovery (#1916). Runs after
+    # ``ensure_django`` because it builds messaging backends via the overlay
+    # factory to live-probe connector reachability post cache-invalidation.
+    ok = _check_account_switch() and ok
+
     _check_singletons()
     _check_legacy_overlay_alias()
     report_missing_authorizations(typer.echo)

@@ -33,6 +33,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from teatree.core.account_fingerprint import current_account_fingerprint
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 CLAUDE_HOME_DIR = ".claude"
@@ -71,26 +72,30 @@ class LoopSessionInfo:
 def current_active_account(*, home: Path | None = None) -> AccountState | None:
     """Return the currently-logged-in Claude Code account, or ``None`` if unknown.
 
-    The active account lives in ``~/.claude.json`` under ``oauthAccount``.
-    A missing or malformed file is treated as "no signal" rather than an
-    error so the watchdog can degrade to "any session is good enough".
+    The account fingerprint (``oauthAccount.accountUuid``) comes from the
+    canonical single reader :func:`teatree.core.account_switch.current_account_fingerprint`
+    so the watchdog and the in-session recovery never diverge on which value is
+    "the account". The display ``email`` is read alongside; a missing or
+    malformed file is "no signal" (``None``) so the watchdog degrades to
+    "any session is good enough".
     """
     home = home if home is not None else Path.home()
-    cfg = home / ACTIVE_ACCOUNT_FILE
-    if not cfg.is_file():
+    uuid = current_account_fingerprint(home=home)
+    if not uuid:
         return None
+    email = _read_account_email(home)
+    return AccountState(account_uuid=uuid, email=email)
+
+
+def _read_account_email(home: Path) -> str:
+    cfg = home / ACTIVE_ACCOUNT_FILE
     try:
         data = json.loads(cfg.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return None
+        return ""
     oauth = data.get("oauthAccount") if isinstance(data, dict) else None
-    if not isinstance(oauth, dict):
-        return None
-    uuid = oauth.get("accountUuid")
-    email = oauth.get("emailAddress", "")
-    if not isinstance(uuid, str) or not uuid:
-        return None
-    return AccountState(account_uuid=uuid, email=email if isinstance(email, str) else "")
+    email = oauth.get("emailAddress", "") if isinstance(oauth, dict) else ""
+    return email if isinstance(email, str) else ""
 
 
 # ── session discovery ────────────────────────────────────────────────

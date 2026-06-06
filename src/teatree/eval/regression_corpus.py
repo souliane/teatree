@@ -354,6 +354,57 @@ def _check_migration_graph_single_leaf() -> bool:
     return _count_core_leaves(loader.graph) == 1
 
 
+class _StubBackend:
+    def __init__(self, *, ok: bool) -> None:
+        self._ok = ok
+        self.name = "slack"
+
+    def auth_test(self) -> dict:
+        return {"ok": self._ok} if self._ok else {"ok": False, "error": "invalid_auth"}
+
+
+def _check_account_switch_detect_and_recover() -> bool:
+    """#1916: the full `/login` switch-and-verify cycle, both directions.
+
+    Drives the REAL :class:`AccountSwitchRecovery` under a hermetic home with
+    the cache-reset and backends-provider seams stubbed (no network, no ``pass``).
+    must-detect: active fingerprint B != recorded A → switch reported, cache
+    invalidated, connectors re-probed, new account recorded. must-not-fire:
+    active fingerprint == recorded → no switch, no cache reset. verify: a switch
+    whose connector probes unreachable surfaces ``all_reachable is False``.
+
+    Anti-vacuous: reverting detection (always ``switched=False``) fails the
+    must-detect leg RED; a probe that ignored ``auth_test`` fails the verify leg.
+    """
+    from teatree.core.account_switch import AccountSwitchRecovery, record_fingerprint  # noqa: PLC0415
+
+    reset_calls = {"n": 0}
+
+    def _fake_reset() -> None:
+        reset_calls["n"] += 1
+
+    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [_StubBackend(ok=True)])
+    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [_StubBackend(ok=False)])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        (home / ".claude.json").write_text('{"oauthAccount": {"accountUuid": "uuid-B"}}', encoding="utf-8")
+
+        same = reachable.run(home=home)  # records uuid-B (first run, no switch)
+        if same.switched or reset_calls["n"] != 0:
+            return False
+
+        record_fingerprint("uuid-A", home=home)
+        switched = reachable.run(home=home)
+        if not (switched.switched and reset_calls["n"] == 1 and switched.all_reachable):
+            return False
+
+        record_fingerprint("uuid-A", home=home)
+        unreachable = unreachable_recovery.run(home=home)
+
+    return unreachable.switched and unreachable.all_reachable is False
+
+
 _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="branch-currency §940 (conflict-only, never behind-only)",
@@ -395,6 +446,12 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         invariant="the live core migration graph has exactly one leaf; a forked graph is detectable",
         predicate=_check_migration_graph_single_leaf,
         needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="account-switch detect-invalidate-reprobe (#1916)",
+        origin="https://github.com/souliane/teatree/issues/1916",
+        invariant="a /login switch invalidates the backend cache and re-probes; same account is a no-op",
+        predicate=_check_account_switch_detect_and_recover,
     ),
 )
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import typer
 
+from teatree.cli.account_switch_recover import recover_account_switch
 from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import AGENT_SKILL_RUNTIMES, DoctorService, agent_skill_dirs
 from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
@@ -619,3 +620,4 @@ def run(
 setup_app.command("slack-bot")(slack_bot_setup)
 setup_app.command("slack-user-token")(slack_user_token_setup)
 setup_app.command("slack-provision")(slack_provision)
+setup_app.command("recover-account-switch")(recover_account_switch)
