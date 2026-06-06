@@ -3,9 +3,9 @@
 Two invariants.
 
 Config pin: ``.jscpd.json`` keeps the design thresholds (min-lines 6,
-min-tokens 40, threshold 2 = warn-tolerance while the dedup burst clears) and a
-high max-lines/max-size so jscpd never silently skips a large source file. A
-loosening turns this red.
+min-tokens 40, threshold 1.5 = the blocking duplication ratchet that locks in
+the dedup-burst cleanup — only shrinks) and a high max-lines/max-size so jscpd
+never silently skips a large source file. A loosening turns this red.
 
 Scan coverage: every ``src/teatree/**/*.py`` file large enough to contain a
 ``minLines``-line clone (>= ``minLines`` physical lines, migrations excluded) is
@@ -19,6 +19,7 @@ absent, the same shape as the env-dependent skips elsewhere in the suite.
 """
 
 import json
+import math
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,7 +45,7 @@ class TestConfigPin:
     def test_thresholds_match_design(self, config: dict) -> None:
         assert config["minLines"] == 6
         assert config["minTokens"] == 40
-        assert config["threshold"] == 2
+        assert math.isclose(config["threshold"], 1.5)
 
     def test_python_format_only(self, config: dict) -> None:
         assert config["format"] == ["python"]

@@ -8,7 +8,6 @@ the ticket is ready for ``retrospect()``.
 
 import shutil
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,18 +16,10 @@ from django.test import TestCase
 
 from teatree.core.cleanup import CleanupResult
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import WorktreeTeardown
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
-
-
-@pytest.fixture(autouse=True)
-def _clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}

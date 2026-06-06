@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/jscpd/schema.json",
   "minLines": 6,
   "minTokens": 40,
-  "threshold": 2,
+  "threshold": 1.5,
   "format": [
     "python"
   ],

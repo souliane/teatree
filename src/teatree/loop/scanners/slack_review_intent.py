@@ -30,7 +30,6 @@ The ``:white_check_mark:`` Slack reaction itself is posted by
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import cast
 
@@ -39,17 +38,13 @@ from teatree.core.models import ReviewAssignment, ReviewIntent
 from teatree.loop.review_claim import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
+from teatree.url_classify import first_pr_url
 
 logger = logging.getLogger(__name__)
 
-_PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
-
 
 def _first_mr_url(text: str) -> str:
-    match = _PR_URL_RE.search(text)
-    if not match:
-        return ""
-    return match.group(0).rstrip("/").split("#")[0]
+    return first_pr_url(text)
 
 
 def _event_user(event: RawAPIDict) -> str:

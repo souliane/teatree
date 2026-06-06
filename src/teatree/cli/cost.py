@@ -6,9 +6,9 @@ by it, not a manual ``django.setup()`` in a plain typer command) — so this
 delegates via ``call_command`` exactly like ``t3 loop tick``.
 """
 
-import os
-
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def cost(
@@ -16,10 +16,7 @@ def cost(
     json_output: bool = typer.Option(False, "--json", help="Emit the structured report as JSON."),
 ) -> None:
     """Show cycle-to-date SDK-equivalent spend vs the monthly credit."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 

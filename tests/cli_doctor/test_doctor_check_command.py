@@ -189,7 +189,7 @@ class TestDoctorCheckCommand:
         self-DB schema inspection hit ``ImproperlyConfigured: DJANGO_
         SETTINGS_MODULE not set`` and silently WARNed — masking a real stale
         runtime self-DB that would have locked out the merge path. The check
-        must run the canonical ``_ensure_django`` step (``django.setup`` +
+        must run the canonical ``ensure_django`` step (``django.setup`` +
         ``DJANGO_SETTINGS_MODULE``) before reaching the schema guard, so it
         reports the REAL pending-migration state.
         """
@@ -209,7 +209,7 @@ class TestDoctorCheckCommand:
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
-            patch.object(teatree_cli_doctor, "_ensure_django", side_effect=_record_setup),
+            patch.object(teatree_cli_doctor, "ensure_django", side_effect=_record_setup),
             patch(
                 "teatree.core.schema_guard.doctor_check_self_db_migrations",
                 side_effect=_record_check,
@@ -219,7 +219,7 @@ class TestDoctorCheckCommand:
 
         assert result.exit_code == 0, result.output
         # Django must be configured BEFORE the self-DB schema inspection runs.
-        assert "ensure_django" in order, "doctor check must call _ensure_django (#126)"
+        assert "ensure_django" in order, "doctor check must call ensure_django (#126)"
         assert order.index("ensure_django") < order.index("self_db_check")
         assert "Could not inspect self-DB migrations: ImproperlyConfigured" not in result.output
 

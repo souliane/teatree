@@ -7,7 +7,6 @@ the heavy I/O (push, MR creation) onto a ``@task`` worker. The worker runs
 
 import shutil
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,18 +14,9 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from tests.teatree_core.conftest import CommandOverlay
-
-
-@pytest.fixture(autouse=True)
-def _clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
-
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 

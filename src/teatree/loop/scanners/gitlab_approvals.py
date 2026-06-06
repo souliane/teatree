@@ -29,7 +29,6 @@ Design notes
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
-from urllib.parse import urlparse
 
 import httpx
 
@@ -37,6 +36,7 @@ import teatree.core.overlay_loader as _overlay_loader
 from teatree.backends.protocols import ApprovalState, CodeHostBackend
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload
 from teatree.types import RawAPIDict
+from teatree.url_classify import is_gitlab_mr_url, pr_ref
 
 if TYPE_CHECKING:
     from teatree.core.merge_guard import MergeGuard
@@ -109,10 +109,11 @@ class GitLabApprovalsScanner:
         # silently. Differentiating on the URL host avoids paying the
         # round-trip to discover that.
         url = _str_field(pr, "web_url", "html_url")
-        repo_slug = _gitlab_project_path(url)
+        ref = pr_ref(url) if url else None
+        repo_slug = ref.slug if ref is not None and ref.host_kind == "gitlab" else ""
         iid = _int_field(pr, "iid", "number")
         head_sha = _str_field(pr, "sha", "head_sha")
-        if not url or not _looks_like_gitlab_url(url) or not repo_slug or not iid:
+        if not url or not is_gitlab_mr_url(url) or not repo_slug or not iid:
             return None
 
         approvals = self._fetch_approvals(repo_slug, iid)
@@ -268,32 +269,6 @@ def _int_field(data: RawAPIDict, *names: str) -> int:
         if isinstance(value, int) and not isinstance(value, bool):
             return value
     return 0
-
-
-def _looks_like_gitlab_url(url: str) -> bool:
-    """Return True for URLs that look like GitLab MR pages.
-
-    GitLab MR paths contain ``/-/merge_requests/``; GitHub PR paths use
-    ``/pull/``. The scanner runs on GitLab MRs only; this filter keeps a
-    GitHub-only overlay (or a mixed overlay's GitHub half) from paying a
-    backend round-trip per tick to discover that ``get_mr_approvals``
-    raises ``NotImplementedError``.
-    """
-    return "/-/merge_requests/" in url
-
-
-def _gitlab_project_path(url: str) -> str:
-    """Extract the GitLab project path from an MR URL.
-
-    Returns the path between the host and ``/-/merge_requests/<iid>`` —
-    e.g. ``acme/backend`` for ``https://gitlab.com/acme/backend/-/merge_requests/42``.
-    """
-    parsed = urlparse(url)
-    path = parsed.path
-    marker = "/-/merge_requests/"
-    if marker not in path:
-        return ""
-    return path.split(marker, 1)[0].lstrip("/")
 
 
 def _ticket_model() -> "TicketModel | None":

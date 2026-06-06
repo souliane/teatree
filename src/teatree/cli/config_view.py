@@ -13,7 +13,6 @@ bootstrap-config constraint #628 calls out).
 """
 
 import dataclasses
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from typing import Any
 import teatree.config as config_mod
 from teatree.config import get_effective_settings
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
+from teatree.utils.django_bootstrap import ensure_django
 
 _REGENERABLE_CACHE_FILES: tuple[str, ...] = (
     "update-check.json",
@@ -57,10 +57,7 @@ def _intent() -> dict[str, Any]:
 
 def _ticket_session_counts() -> dict[str, int] | None:
     try:
-        import django  # noqa: PLC0415
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
+        ensure_django()
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 

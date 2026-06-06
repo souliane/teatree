@@ -283,6 +283,11 @@ layer = "platform"
 depends_on = ["teatree.utils"]
 
 [[modules]]
+path = "teatree.url_classify"
+layer = "platform"
+depends_on = ["teatree.utils"]
+
+[[modules]]
 path = "teatree.skill_deps"
 layer = "foundation"
 depends_on = []

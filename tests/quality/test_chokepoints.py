@@ -162,6 +162,20 @@ class TestCheckerBehavior:
         target.write_text("backend.post_message(channel='c', text='t', thread_ts='')\n", encoding="utf-8")
         assert checker.main([str(target)]) == 0
 
+    def test_flags_django_setup_outside_bootstrap(self, src_file: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        src_file.write_text("import django\ndjango.setup()\n", encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
+        err = capsys.readouterr().err
+        assert "django.setup(...)" in err
+        assert "django-setup-bootstrap" in err
+
+    def test_allows_django_setup_inside_bootstrap(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        target = tmp_path / "src" / "teatree" / "utils" / "django_bootstrap.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("import django\ndjango.setup()\n", encoding="utf-8")
+        assert checker.main([str(target)]) == 0
+
     def test_tests_directory_never_scanned(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         target = tmp_path / "tests" / "test_thing.py"

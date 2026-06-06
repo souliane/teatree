@@ -20,9 +20,9 @@ The assembled callable is registered on the parent ``loop_app`` by
 on ``loop_app`` itself.
 """
 
-import os
-
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def claim_next_command(
@@ -31,10 +31,7 @@ def claim_next_command(
     json_output: bool = typer.Option(False, "--json", help="Emit the claimed dispatch as JSON."),
 ) -> None:
     """Atomically claim the oldest pending dispatchable Task, then emit it."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
