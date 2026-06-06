@@ -51,7 +51,7 @@ def _gate(*, required: bool) -> Iterator[None]:
 
 
 def _merge(clear: MergeClear) -> object:
-    with patch("teatree.core.merge_execution._run_gh", side_effect=_GhStub()):
+    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()):
         return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
 

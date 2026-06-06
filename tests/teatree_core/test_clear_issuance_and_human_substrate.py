@@ -110,7 +110,7 @@ class TestClearIssuanceSeam(TestCase):
                 ticket_id=int(ticket.pk),
             ),
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             merged = cast(
                 "dict[str, object]",
                 call_command("ticket", "merge", str(issued["clear_id"]), loop_identity="merge-loop"),
@@ -377,7 +377,7 @@ class TestSubstrateStaysHumanMergeOnly(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
         )
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
             pytest.raises(MergePreconditionError, match="substrate"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -440,7 +440,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -472,7 +472,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast("dict[str, object]", call_command("ticket", "merge", str(clear.pk)))
         ticket.refresh_from_db()
         assert result["escalated"]
@@ -492,7 +492,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -519,7 +519,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.LOGIC,
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -564,7 +564,7 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
         # call_command is exactly what the durable loop / agent invokes for
         # `t3 <overlay> ticket merge`. No human-actor parameter exists; the
         # recorded approver is re-presented, the agent performs the merge.
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
                 "dict[str, object]",
                 call_command(
@@ -624,7 +624,7 @@ def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
 
 
 def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "") -> object:
-    with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
         return assert_merge_preconditions(
             clear=clear,
             executing_loop_identity="merge-loop",
@@ -658,7 +658,7 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
         clear = _substrate_clear(ticket, pr_id=1731)
         with (
             _overlay_autonomy("t3-teatree", "full"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
         ):
             result = cast(
                 "dict[str, object]",
@@ -725,7 +725,7 @@ class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
 
         with (
             _overlay_autonomy("t3-teatree", "full"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=_draft_stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_draft_stub),
             pytest.raises(MergePreconditionError, match="draft"),
         ):
             assert_merge_preconditions(
