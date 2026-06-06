@@ -88,6 +88,7 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.config import discover_overlays
+from teatree.core.backend_protocols import PrMergeState
 from teatree.project import find_project_root
 from teatree.utils import git
 from teatree.utils.run import run_allowed_to_fail
@@ -594,23 +595,6 @@ def _fetch_live_head_sha_gitlab(slug: str, pr_id: int) -> str:
     if not isinstance(data, dict):
         return ""
     return str(data.get("sha") or "")
-
-
-@dataclass(frozen=True, slots=True)
-class PrMergeState:
-    """The PR's merge state from GitHub — used for the §928 reconciliation.
-
-    ``state`` is GitHub's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``);
-    ``merge_commit_oid`` is the resulting squash/merge commit when the PR
-    is already merged (else ``""``).
-    """
-
-    state: str
-    merge_commit_oid: str
-
-    @property
-    def is_merged(self) -> bool:
-        return self.state.upper() == "MERGED"
 
 
 def fetch_pr_merge_state(slug: str, pr_id: int, *, host_kind: str = "github") -> PrMergeState:

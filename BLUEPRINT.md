@@ -206,7 +206,7 @@ Every external API concern is a `@runtime_checkable Protocol` in `teatree.backen
 
 | Protocol | Implementations |
 |---|---|
-| `CodeHostBackend` — PR/issue/comment (incl. `list`/`update_issue_comment`)/upload/review-state | `GitHubCodeHost`, `GitLabCodeHost` |
+| `CodeHostBackend` — PR/issue/comment (incl. `list`/`update_issue_comment`)/upload/review-state + the §17.4.3 merge-RPC surface (`fetch_live_head_sha`, `fetch_pr_merge_state`, `fetch_pr_is_draft`, `fetch_required_checks_rollup`, `merge_pr_squash_bound` — raw forge I/O; `merge_execution` keeps the verdict/error classification) | `GitHubCodeHost`, `GitLabCodeHost` |
 | `CIService` — pipeline cancel/trigger/quality-check | `GitLabCIService` |
 | `MessagingBackend` — mentions/DMs/post/reply/react | `SlackBotBackend`, `NoopMessagingBackend` |
 

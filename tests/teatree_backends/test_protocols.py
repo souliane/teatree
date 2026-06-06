@@ -4,8 +4,10 @@ from teatree.backends.protocols import (
     ApprovalState,
     CIService,
     CodeHostBackend,
+    ForgeMergeResult,
     MessageSpec,
     MessagingBackend,
+    PrMergeState,
     PrOpenState,
     PullRequestSpec,
     ReviewState,
@@ -134,6 +136,26 @@ class _FakeCodeHost:
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         _ = (repo, pr_iid)
         return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        _ = (slug, pr_id)
+        return ""
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        _ = (slug, pr_id)
+        return PrMergeState(state="", merge_commit_oid="")
+
+    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+        _ = (slug, pr_id)
+        return False
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
+        _ = (slug, pr_id)
+        return []
+
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+        _ = (slug, pr_id, expected_head_oid)
+        return ForgeMergeResult(returncode=0, stdout="", stderr="", merged_sha="")
 
 
 class _FakeMessaging:
