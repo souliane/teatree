@@ -101,6 +101,8 @@ class Command(TyperCommand):
                 if row is None:
                     self.stderr.write(f"question #{question_id} not found or already resolved")
                     raise SystemExit(1)
+                row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
+                row.save(update_fields=["resolved_via"])
                 DeferredQuestionAudit.objects.create(
                     question=row,
                     action="answered",
@@ -133,6 +135,8 @@ class Command(TyperCommand):
                 if row is None:
                     self.stderr.write(f"question #{question_id} not found or already resolved")
                     raise SystemExit(1)
+                row.resolved_via = DeferredQuestion.ResolvedVia.LOCAL
+                row.save(update_fields=["resolved_via"])
                 DeferredQuestionAudit.objects.create(
                     question=row,
                     action="dismissed",

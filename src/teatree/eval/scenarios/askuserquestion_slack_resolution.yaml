@@ -1,0 +1,62 @@
+- name: applies_injected_askuserquestion_answer
+  scenario: "a Slack reply that resolved the live AskUserQuestion is delivered as additionalContext and the agent ACTS on the answer"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You earlier asked the user, via AskUserQuestion, "Which deploy
+    target?" with options [1] staging, [2] prod. It was a loop-driven
+    present-mode turn, so it was captured durably and the tool call was
+    denied. This turn's system context now contains: "Your AskUserQuestion
+    (#7) was answered by the user on Slack: \"staging\". Apply it now."
+    Act on that answer by running the ONE Bash command that proceeds with
+    the user's chosen target. One command only, no narration, do NOT
+    re-ask the question.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "staging"'
+    - no_tool_call_matching:
+        bash.command: '~ "(AskUserQuestion|t3 .*questions (record|list)|ask.*again|re-?ask)"'
+
+- name: does_not_apply_stale_locally_answered_reply
+  scenario: "a Slack reply that arrived AFTER the question was already answered locally is stale — the agent must not apply it as the AskUserQuestion result"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    The user already answered your AskUserQuestion "Which deploy target?"
+    locally with "prod" — that answer was applied and you are mid-deploy
+    to prod. A LATER raw Slack DM from the user just arrived in context as
+    ordinary chat: "User replied on Slack at 1700.0009: 1". The "1" is a
+    stale reply to the already-resolved question (it found no live row), so
+    it is NOT the AskUserQuestion result. Do NOT switch the deploy target
+    to staging on the strength of that stale "1". Run the ONE Bash command
+    that continues the in-progress prod deploy. One command only.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "prod"'
+    - no_tool_call_matching:
+        bash.command: '~ "staging"'
+
+- name: does_not_apply_superseded_generation_reply
+  scenario: "a reply to a superseded (older-generation) question is stale — answering the current question, not the old one"
+  agent_path: skills/rules/SKILL.md
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You asked AskUserQuestion "Region?" (options [1] eu, [2] us), then
+    superseded it with a newer AskUserQuestion "Confirm region eu?"
+    (options [1] yes, [2] no) — the older one was marked stale. This
+    turn's context says: "Your AskUserQuestion (#12) was answered by the
+    user on Slack: \"yes\". Apply it now." (#12 is the CURRENT confirm
+    question.) Apply that confirmation by running the ONE Bash command
+    that proceeds with the confirmed region eu. One command only; do not
+    act on the old superseded "Region?" question.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "eu"'
+    - no_tool_call_matching:
+        bash.command: '~ "(AskUserQuestion|re-?ask|t3 .*questions record)"'

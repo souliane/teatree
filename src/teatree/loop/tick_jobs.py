@@ -35,6 +35,7 @@ from teatree.core.models import ImplementedIssueMarker
 from teatree.loop.scanners import (
     ActiveTicketsScanner,
     ArchitecturalReviewScanner,
+    AskUserQuestionReplyScanner,
     AssignedIssuesScanner,
     AutoReviewTaskDispatcher,
     BackendChannelHistoryFetcher,
@@ -1260,6 +1261,7 @@ def _messaging_jobs_for_backend(
     jobs = [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
         _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
+        _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
         _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1130 RED CARD detection — user's structural "fix it upstream"
         # signal. Runs alongside the review-intent scanner because both
@@ -1268,17 +1270,13 @@ def _messaging_jobs_for_backend(
         _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
     ]
     if include_review_nag:
-        jobs.append(
-            _ScannerJob(
-                scanner=ReviewNagScanner(
-                    messaging=messaging,
-                    user_slack_id=_user_slack_id_for_overlay(tag),
-                    host=backend.host,
-                    identities=backend.identities,
-                ),
-                overlay=tag,
-            ),
+        nag = ReviewNagScanner(
+            messaging=messaging,
+            user_slack_id=_user_slack_id_for_overlay(tag),
+            host=backend.host,
+            identities=backend.identities,
         )
+        jobs.append(_ScannerJob(scanner=nag, overlay=tag))
     return jobs
 
 

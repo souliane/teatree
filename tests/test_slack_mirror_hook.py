@@ -9,11 +9,12 @@ post fits inside the hook timeout.
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 import hooks.scripts.hook_router as router
+from teatree.core.models.deferred_question import DeferredQuestion
 
 pytestmark = pytest.mark.django_db
 
@@ -27,6 +28,17 @@ class TestRouterRegistration:
 
 
 class TestMirrorHandler:
+    """The mirror-without-deny dispatch path (the live-user-turn arm).
+
+    These exercise the Slack mirror dispatch mechanics; they run under a
+    live-user-turn so the handler mirrors and returns ``False`` (the
+    loop-driven deny arm has its own class below).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _live_turn(self, monkeypatch) -> None:
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: True)
+
     def _question_payload(self) -> dict:
         return {
             "tool_name": "AskUserQuestion",
@@ -107,6 +119,133 @@ class TestPresentModeMirrorsButDoesNotDeny:
         assert away_verdict is False
         assert mirror_verdict is False
         mock_post.assert_called_once()
+
+
+class TestPresentLoopDrivenTurnDeniesAndCaptures:
+    """Present mode + loop-driven + not-live-turn → deny + capture (#1174).
+
+    The core bug: a loop-driven AskUserQuestion in present mode rendered
+    in-client and blocked the suspended session — a Slack reply could
+    never reach it. The fix denies the tool call (so the agent narrates
+    and proceeds), captures a generation-stamped mirror-linked
+    ``DeferredQuestion``, and stores the posted Slack ts so the matcher
+    can bind a later reply.
+    """
+
+    def _payload(self, **extra: str) -> dict:
+        payload: dict = {
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "Ship it?", "options": [{"label": "Yes"}, {"label": "No"}]}]},
+        }
+        payload.update(extra)
+        return payload
+
+    def test_loop_driven_present_turn_denies_with_row_id(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_is_live_user_turn", return_value=False),
+            patch.object(router, "_session_drives_loop", return_value=True),
+            patch.object(router, "_perform_slack_post", return_value="1700.0001"),
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D-cached"),
+        ):
+            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-loop"))
+        assert verdict is True
+        out = json.loads(capsys.readouterr().out.strip())
+        assert out["permissionDecision"] == "deny"
+        row = DeferredQuestion.objects.latest("created_at")
+        assert f"#{row.pk}" in out["permissionDecisionReason"]
+        assert "additionalContext" in out["permissionDecisionReason"]
+        assert row.slack_ts == "1700.0001"
+        assert row.slack_channel == "D-cached"
+        assert row.generation == 1
+
+    def test_live_user_turn_mirrors_without_deny(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_is_live_user_turn", return_value=True),
+            patch.object(router, "_session_drives_loop", return_value=True),
+            patch.object(router, "_perform_slack_post", return_value="1700.0002") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-live"))
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+        mock_post.assert_called_once()
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_attended_non_owner_turn_mirrors_without_deny(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_is_live_user_turn", return_value=False),
+            patch.object(router, "_session_drives_loop", return_value=False),
+            patch.object(router, "_perform_slack_post", return_value="1700.0003") as mock_post,
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-attended"))
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+        mock_post.assert_called_once()
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_supersession_marks_prior_generation_stale(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_is_live_user_turn", return_value=False),
+            patch.object(router, "_session_drives_loop", return_value=True),
+            patch.object(router, "_perform_slack_post", side_effect=["1700.0001", "1700.0005"]),
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D-cached"),
+        ):
+            router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
+            capsys.readouterr()
+            router.handle_mirror_question_to_slack(self._payload(session_id="s-loop", run_id="r1"))
+        capsys.readouterr()
+        rows = list(DeferredQuestion.objects.order_by("generation"))
+        assert len(rows) == 2
+        assert rows[0].resolved_via == "stale"
+        assert rows[0].is_pending is False
+        assert rows[1].generation == 2
+        assert rows[1].is_pending is True
+
+    def test_teatree_unavailable_fails_open_no_deny(self, capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
+        with (
+            patch.object(router, "_resolved_away_mode", return_value=False),
+            patch.object(router, "_is_live_user_turn", return_value=False),
+            patch.object(router, "_session_drives_loop", return_value=True),
+            patch.object(router, "_capture_and_defer_question", return_value=None),
+            patch.object(router, "_perform_slack_post", return_value="1700.0001"),
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+        ):
+            verdict = router.handle_mirror_question_to_slack(self._payload(session_id="s-loop"))
+        assert verdict is False
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestSlackPostMessageReturnsTs:
+    def test_returns_ts_on_success(self) -> None:
+        resp = MagicMock()
+        resp.read.return_value = json.dumps({"ok": True, "ts": "1700.0001"}).encode()
+        with patch("urllib.request.urlopen", return_value=resp):
+            ts = router._slack_post_message("tok", "D1", "hi", timeout=2.0)
+        assert ts == "1700.0001"
+
+    def test_returns_empty_on_failure(self) -> None:
+        with patch("urllib.request.urlopen", side_effect=RuntimeError("down")):
+            ts = router._slack_post_message("tok", "D1", "hi", timeout=2.0)
+        assert ts == ""
 
 
 class TestDmChannelCache:

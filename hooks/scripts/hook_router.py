@@ -6727,8 +6727,13 @@ def _slack_open_dm(bot_token: str, user_id: str, *, timeout: float) -> str:
     return cid if isinstance(cid, str) else ""
 
 
-def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float, thread_ts: str = "") -> bool:
-    """Post ``text`` to ``channel``. Return True iff Slack acknowledged success."""
+def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: float, thread_ts: str = "") -> str:
+    """Post ``text`` to ``channel``. Return the posted ``ts`` (``""`` on failure).
+
+    The truthiness contract is preserved for callers that branch on the
+    result (a non-empty ts is truthy, ``""`` is falsy), and the ts is the
+    (tool_use_id, slack_ts) link the #1174 reply matcher needs.
+    """
     import urllib.request  # noqa: PLC0415
 
     body: dict[str, str] = {"channel": channel, "text": text}
@@ -6743,8 +6748,11 @@ def _slack_post_message(bot_token: str, channel: str, text: str, *, timeout: flo
     try:
         resp = json.loads(urllib.request.urlopen(req, timeout=timeout).read())  # noqa: S310
     except Exception:  # noqa: BLE001
-        return False
-    return bool(isinstance(resp, dict) and resp.get("ok") is True)
+        return ""
+    if not (isinstance(resp, dict) and resp.get("ok") is True):
+        return ""
+    ts = resp.get("ts")
+    return ts if isinstance(ts, str) else ""
 
 
 def _active_dm_thread_for_channel(channel: str) -> str:
@@ -6765,33 +6773,39 @@ def _active_dm_thread_for_channel(channel: str) -> str:
         return ""
 
 
-def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> None:
+def _slack_post_dm(bot_token: str, user_id: str, text: str, *, timeout: float = 2.0) -> str:
     """Post ``text`` to ``user_id``'s DM. Resolves channel via cache when possible.
 
     Cache hit → single ``chat.postMessage`` call (sub-second on a normal
     connection, fits inside the 3s hook timeout). Cache miss or
     ``channel_not_found`` → open the DM, cache the channel id, retry.
     Threads under the user's active DM conversation when one exists.
+    Returns the posted ``ts`` (``""`` on failure) for the #1174 matcher.
     """
     cached = _read_dm_channel_cache(user_id)
     if cached:
         thread_ts = _active_dm_thread_for_channel(cached)
-        if _slack_post_message(bot_token, cached, text, timeout=timeout, thread_ts=thread_ts):
-            return
+        ts = _slack_post_message(bot_token, cached, text, timeout=timeout, thread_ts=thread_ts)
+        if ts:
+            return ts
     channel = _slack_open_dm(bot_token, user_id, timeout=timeout)
     if not channel:
-        return
+        return ""
     thread_ts = _active_dm_thread_for_channel(channel)
-    if _slack_post_message(bot_token, channel, text, timeout=timeout, thread_ts=thread_ts):
+    ts = _slack_post_message(bot_token, channel, text, timeout=timeout, thread_ts=thread_ts)
+    if ts:
         _write_dm_channel_cache(user_id, channel)
+    return ts
 
 
-def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> None:
+def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> str:
     """Resolve the bot token and post the question — runs synchronously.
 
     Synchronous so the Slack DM lands **before** the AskUserQuestion prompt
     renders in the terminal. The previous fork-and-detach variant caused
-    the message to arrive *after* the user had already answered.
+    the message to arrive *after* the user had already answered. Returns
+    the posted ``ts`` (``""`` on any failure) so the #1174 capture path can
+    link the mirror row to its DM.
     """
     token_ref, user_id = slack_cfg
     result = subprocess.run(  # noqa: S603
@@ -6803,8 +6817,8 @@ def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> No
     )
     bot_token = result.stdout.strip() if result.returncode == 0 else ""
     if not bot_token:
-        return
-    _slack_post_dm(bot_token, user_id, _format_question_text(questions))
+        return ""
+    return _slack_post_dm(bot_token, user_id, _format_question_text(questions))
 
 
 def _post_question_to_slack(data: dict) -> None:
@@ -6818,10 +6832,43 @@ def _post_question_to_slack(data: dict) -> None:
 
 
 def handle_mirror_question_to_slack(data: dict) -> bool:
+    """Mirror a present-mode ``AskUserQuestion`` to Slack; deny a loop-driven one (#1174).
+
+    Runs LAST in the PreToolUse chain (the away handler ran first and
+    already short-circuited an away turn). Three present-mode arms:
+
+    - live user turn (the user typed a prompt seconds ago, in this
+    session) — mirror to Slack and return ``False`` so the question
+    renders in-client. Preserves ``TestPresentModeMirrorsButDoesNotDeny``
+    and the #189 live-turn escape.
+    - attended non-owner turn (a different live session owns the loop; a
+    human is reading the prose) — mirror and return ``False``.
+    - loop-driven / autonomous turn (this session drives the loop, or
+    there is no live owner) — the broken path: rendering in-client
+    suspends the session with no way for a Slack reply to reach it.
+    Instead capture a generation-stamped mirror-linked
+    ``DeferredQuestion``, then deny so the agent narrates the deferral and
+    proceeds; the answer arrives later via ``additionalContext``.
+    """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    _post_question_to_slack(data)
-    return False
+    if _is_live_user_turn(data) or not _session_drives_loop(str(data.get("session_id", ""))):
+        _post_question_to_slack(data)
+        return False
+    if not str(_first_question(data).get("question", "")).strip():
+        _post_question_to_slack(data)
+        return False
+    queue_id = _capture_and_defer_question(data, mode="present")
+    if queue_id is None:
+        # Teatree unavailable — fail open so the in-client modal renders.
+        return False
+    reason = (
+        f"Your question was captured durably as DeferredQuestion #{queue_id} and mirrored to the "
+        "user's Slack DM. A loop-driven AskUserQuestion cannot block here — the suspended session "
+        "has no path to receive a Slack reply. Proceed with any work that does not depend on the "
+        "answer; the user's reply will surface in a future turn's additionalContext."
+    )
+    return emit_pretooluse_deny(reason)
 
 
 _AWAY_MIRROR_SUFFIX = "away-question-mirror"
@@ -6837,34 +6884,41 @@ def _away_mirror_key(question: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def _mirror_away_question_to_slack(question: dict, session_id: str) -> None:
-    """Post the recorded away-mode question to the user's Slack DM, exactly once.
+def _mirror_question_to_slack(question: dict, session_id: str, *, mode: str) -> tuple[str, str]:
+    """Post the single recorded question to the user's Slack DM; return ``(ts, channel)``.
 
-    The away-mode handler runs FIRST and denies, short-circuiting the
-    PreToolUse chain before ``handle_mirror_question_to_slack`` would
-    run — so without this the away-mode question never reaches Slack
-    (the user reads Slack, not ``t3 teatree questions list``). Mirrors only the
-    single recorded question (the one ``_record_deferred_question`` stored
-    and the user can answer), not the full payload — so the DM never shows
-    more rows than are answerable. Idempotent by a stable hash of that
-    question recorded in a session-namespaced STATE_DIR marker file, so a
-    harness retry of the same tool call does not double-post. Fail-open:
-    any Slack/IO error is swallowed so the deny is never blocked and the
-    loop never wedges.
+    Both the away-mode handler and the present-mode deny arm mirror through
+    here (the user reads Slack, not ``t3 teatree questions list``). Mirrors only
+    the single recorded question, not the full payload, so the DM never
+    shows more rows than are answerable. In ``away`` mode an idempotent
+    session-namespaced STATE_DIR marker keyed on a stable hash of the
+    question stops a harness retry of the same tool call double-posting;
+    present mode relies on generation supersession instead. The returned
+    ``ts``/``channel`` link the mirror DM to its :class:`DeferredQuestion`
+    so a later Slack reply can bind the live generation. Fail-open: any
+    Slack/IO error yields ``("", "")`` so the deny is never blocked and
+    the loop never wedges.
     """
     if not question:
-        return
+        return "", ""
     slack_cfg = _slack_config_from_toml()
     if slack_cfg is None:
-        return
-    key = _away_mirror_key(question)
-    marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
-    if key in _read_lines(marker):
-        return
-    _perform_slack_post(slack_cfg, [question])
-    with contextlib.suppress(OSError):
-        _ensure_state_dir()
-        _append_line(marker, key)
+        return "", ""
+    try:
+        if mode == "away":
+            key = _away_mirror_key(question)
+            marker = _state_file(session_id or "no-session", _AWAY_MIRROR_SUFFIX)
+            if key in _read_lines(marker):
+                return "", ""
+            ts = _perform_slack_post(slack_cfg, [question])
+            with contextlib.suppress(OSError):
+                _ensure_state_dir()
+                _append_line(marker, key)
+        else:
+            ts = _perform_slack_post(slack_cfg, [question])
+    except Exception:  # noqa: BLE001 — a Slack failure never blocks the capture/deny.
+        return "", ""
+    return ts, _read_dm_channel_cache(slack_cfg[1])
 
 
 # ── PreToolUse: route-away-mode-question (#58, BLUEPRINT §17.1 invariant 9) ────
@@ -6890,20 +6944,75 @@ def _bootstrap_teatree_django() -> bool:
     return True
 
 
-def _record_deferred_question(question_text: str, options: list[dict], data: dict) -> int | None:
-    """Record one ``DeferredQuestion`` row from the ``AskUserQuestion`` payload."""
+def _run_id(data: dict) -> str:
+    """Harness run id when the payload exposes one; fall back to session id.
+
+    The (session, run) pair scopes the generation cursor so a Slack reply
+    can never cross-apply between two distinct runs sharing a session id.
+    """
+    for key in ("run_id", "agent_run_id", "tool_use_id"):
+        value = str(data.get(key, "")).strip()
+        if value:
+            return value
+    return str(data.get("session_id", ""))
+
+
+def _options_hash(options: list[dict]) -> str:
+    """SHA-256 of canonicalized options — same shape as :func:`_away_mirror_key`."""
+    blob = json.dumps(options, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _first_question(data: dict) -> dict:
+    questions = data.get("tool_input", {}).get("questions", []) or []
+    first = questions[0] if isinstance(questions, list) and questions else {}
+    return first if isinstance(first, dict) else {}
+
+
+def _capture_and_defer_question(data: dict, *, mode: str) -> int | None:
+    """Record one mirror-linked ``DeferredQuestion`` and post it to Slack.
+
+    The single chokepoint both the away-mode handler and the present-mode
+    deny arm call (#1174). It supersedes any pending older-generation row
+    for the same (session, run), posts the question to the user's Slack DM
+    capturing the posted ``ts``, and records the row with its mirror
+    fields so the reply matcher can bind a later Slack reply to exactly
+    this generation. Returns the new row id, or ``None`` when teatree is
+    unavailable (the caller then fails open — the in-client modal renders).
+    """
     if not _bootstrap_teatree_django():
         return None
     try:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return None
+    first = _first_question(data)
+    question_text = str(first.get("question", "")).strip()
+    if not question_text:
+        return None
+    options = first.get("options", []) if isinstance(first.get("options"), list) else []
+    session_id = str(data.get("session_id", ""))
+    run_id = _run_id(data)
+    try:
+        generation = DeferredQuestion.next_generation(session_id=session_id, run_id=run_id)
+        for prior in DeferredQuestion.objects.filter(
+            session_id=session_id, run_id=run_id, answered_at__isnull=True, dismissed_at__isnull=True
+        ):
+            prior.mark_stale("superseded by newer question")
+    except Exception:  # noqa: BLE001
+        return None
+    slack_ts, slack_channel = _mirror_question_to_slack(first, session_id, mode=mode)
     try:
         row = DeferredQuestion.record(
             question_text,
             options_json=json.dumps(options) if options else "",
-            session_id=str(data.get("session_id", "")),
+            session_id=session_id,
             tool_use_id=str(data.get("tool_use_id", "")),
+            slack_ts=slack_ts,
+            slack_channel=slack_channel,
+            options_hash=_options_hash(options),
+            generation=generation,
+            run_id=run_id,
         )
     except Exception:  # noqa: BLE001
         return None
@@ -6979,23 +7088,15 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # flip. An autonomous / loop-driven turn is NOT live, so it still
         # defers below — invariant 9 holds for the loop's own questions.
         return False
-    questions = data.get("tool_input", {}).get("questions", []) or []
-    first = questions[0] if isinstance(questions, list) and questions else {}
-    if not isinstance(first, dict):
-        first = {}
-    question_text = str(first.get("question", "")).strip()
-    if not question_text:
+    if not str(_first_question(data).get("question", "")).strip():
         # No question text — fail open rather than emit a deny that
         # blocks an empty payload the user can debug separately.
         return False
-    options = first.get("options", []) if isinstance(first.get("options"), list) else []
-    queue_id = _record_deferred_question(question_text, options, data)
+    queue_id = _capture_and_defer_question(data, mode="away")
     if queue_id is None:
         # Teatree unavailable — fail open so the user is never blocked
         # by a hook crash. The standard interactive flow then runs.
         return False
-    with contextlib.suppress(Exception):
-        _mirror_away_question_to_slack(first, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
         f"and the user will answer it via `t3 teatree questions answer {queue_id} <text>`. "
@@ -7008,13 +7109,19 @@ def handle_route_away_mode_question(data: dict) -> bool:
 # ── UserPromptSubmit: inject pending-question backlog into context ────────────
 
 
-def handle_inject_pending_questions(_data: dict) -> None:
-    """Append the pending-question backlog to ``additionalContext``.
+def handle_inject_pending_questions(data: dict) -> None:
+    """Inject resolved answers and the still-pending backlog into ``additionalContext``.
 
-    Lets the agent see, on every user turn, which deferred questions
-    are still waiting on a user answer — so it can prioritise work
-    that does NOT depend on those answers and avoid asking the same
-    question again. Fails open: if teatree is unavailable, just skip.
+    Two halves, both fail-open if teatree is unavailable:
+
+    - Apply leg (#1174): every ``DeferredQuestion`` answered (on Slack or
+    via ``t3 teatree questions answer``) but not yet delivered is emitted
+    as a "your AskUserQuestion was answered — apply it now" line and
+    stamped ``applied_at`` (single-use CAS) so it surfaces exactly once.
+    This is the success state that closes the loop, and it also delivers
+    away-mode answers that previously had no injection path.
+    - Backlog leg (#58): the still-pending questions are listed so the
+    agent prioritises work that does NOT depend on those answers.
     """
     if not _bootstrap_teatree_django():
         return
@@ -7023,6 +7130,18 @@ def handle_inject_pending_questions(_data: dict) -> None:
         from teatree.core.models.deferred_question import DeferredQuestion  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return
+    session_id = str(data.get("session_id", ""))
+    try:
+        answered = list(DeferredQuestion.answered_not_applied(session_id=session_id)[:5])
+    except Exception:  # noqa: BLE001
+        answered = []
+    for row in answered:
+        with contextlib.suppress(Exception):
+            if DeferredQuestion.mark_applied(row.pk):
+                print(  # noqa: T201
+                    f"Your AskUserQuestion (#{row.pk}) was answered by the user on Slack: "
+                    f'"{row.answer_text}". Apply it now.'
+                )
     try:
         count = pending_questions_count()
         if count == 0:
