@@ -5,7 +5,7 @@ several stores: uncommitted/unpushed branches (data loss), branches with an open
 PR, captured-but-unrestored recovery snapshots, and tickets whose tasks landed
 FAILED (classified as outage deaths) and stopped advancing the FSM. ``t3 recover``
 gathers all of these into ONE typed report by composing the primitives that
-already exist — the boot sweeps, :mod:`teatree.core.orphan_guard`,
+already exist — the boot sweeps, :mod:`teatree.core.gates.orphan_guard`,
 :mod:`teatree.core.reconcile` — plus a branch -> Worktree -> ticket -> task map.
 
 Default is a DRY-RUN: gathering is pure reads, and the report mutates nothing.
@@ -20,8 +20,8 @@ from typing import TypedDict
 
 from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
+from teatree.core.gates.orphan_guard import BranchStatus, find_orphans_in_workspace
 from teatree.core.models import Task, Worktree
-from teatree.core.orphan_guard import BranchStatus, find_orphans_in_workspace
 from teatree.core.reconcile import reconcile_all
 from teatree.core.recovery_sweeps import BootSweepCounts, run_boot_sweeps
 from teatree.core.worktree_snapshot import capture_worktree_snapshot

@@ -1,7 +1,7 @@
 """Merge-sink chokepoint fitness function (#1985).
 
 The ONLY sanctioned squash-merge primitive is ``execute_bound_merge`` in
-``teatree.core.merge_execution`` (which binds the merge to the reviewed SHA and
+``teatree.core.merge`` (which binds the merge to the reviewed SHA and
 runs ``assert_merge_preconditions``). Its raw forge argv lives in
 ``teatree.backends.forge_merge_rpc``. Any OTHER module that constructs a raw
 unbound squash-merge call (``gh pr merge --squash``) or hits a GitLab

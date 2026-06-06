@@ -714,7 +714,7 @@ class TestTicketCommand(TestCase):
         # #1652: a ship transition whose body raises DodLocalE2EError
         # (an InvalidTransitionError, disjoint from TransitionNotAllowed)
         # returns a refusal error carrying the reason; the FSM stays put.
-        from teatree.core.dod_gate import DodLocalE2EError  # noqa: PLC0415
+        from teatree.core.gates.dod_gate import DodLocalE2EError  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.REVIEWED)
         reason = "UI-visible ticket has no local-stack E2E"

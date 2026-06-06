@@ -18,7 +18,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.core.anti_vacuity_gate import (
+from teatree.core.gates.anti_vacuity_gate import (
     AntiVacuityAttestationError,
     anti_vacuity_required,
     check_anti_vacuity_attestation,
@@ -37,7 +37,7 @@ _OTHER_SHA = "b" * 40
 @contextmanager
 def _gate(*, required: bool) -> Iterator[None]:
     with patch(
-        "teatree.core.anti_vacuity_gate.get_effective_settings",
+        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
         return_value=UserSettings(require_anti_vacuity_attestation=required),
     ):
         yield
@@ -125,7 +125,7 @@ class TestPredicates(TestCase):
 
     def test_anti_vacuity_required_reads_effective_settings(self) -> None:
         with patch(
-            "teatree.core.anti_vacuity_gate.get_effective_settings",
+            "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
             return_value=UserSettings(require_anti_vacuity_attestation=True),
         ):
             assert anti_vacuity_required() is True

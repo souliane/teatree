@@ -395,7 +395,7 @@ class TestDispatcherHandlesScannerError:
         bad = _AuthFailingScanner()
         statusline = tmp_path / "statusline.txt"
 
-        with patch("teatree.loop.tick_jobs.notify_with_fallback") as mock_notify:
+        with patch("teatree.loop.domain_jobs.notify_with_fallback") as mock_notify:
             run_tick(TickRequest(scanners=[bad]), statusline_path=statusline)
             run_tick(TickRequest(scanners=[bad]), statusline_path=statusline)
 

@@ -364,7 +364,8 @@ timeout_seconds = 540
 high_value_modules = [
   "src/teatree/on_behalf_gate.py",
   "src/teatree/core/on_behalf_gate_recorded.py",
-  "src/teatree/core/merge_execution.py",
+  "src/teatree/core/merge/authorization.py",
+  "src/teatree/core/merge/execution.py",
   "src/teatree/core/models/merge_clear.py",
   "src/teatree/core/availability.py",
   "src/teatree/core/loop_lease_manager.py",
@@ -391,7 +392,8 @@ default = [ "tests/" ]
   "tests/test_on_behalf_post_mode.py",
 ]
 "src/teatree/core/on_behalf_gate_recorded.py" = [ "tests/teatree_core/test_on_behalf_gate_recorded.py" ]
-"src/teatree/core/merge_execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/merge/authorization.py" = [ "tests/teatree_core/test_merge_execution.py" ]
+"src/teatree/core/merge/execution.py" = [ "tests/teatree_core/test_merge_execution.py" ]
 "src/teatree/core/models/merge_clear.py" = [ "tests/teatree_core/test_merge_clear_verdict_must_be_merge_safe.py" ]
 "src/teatree/core/availability.py" = [ "tests/teatree_core/test_availability.py" ]
 "src/teatree/core/loop_lease_manager.py" = [ "tests/teatree_core/test_loop_lease.py" ]

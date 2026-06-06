@@ -145,7 +145,7 @@ class TestMergedGroup(CheckingTestBase):
             short_description="ticket work",
         )
         self._merge(ticket, pr_id=7, slug="some-workstream-name", hours_ago=2)
-        with patch("teatree.core.merge_execution._project_repo_slug", return_value=""):
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=""):
             report = gather_checking_report(since=self.since, now=self.now, overlay_name=self.OVERLAY)
         assert report.merged.items[0].url == ticket.issue_url
 

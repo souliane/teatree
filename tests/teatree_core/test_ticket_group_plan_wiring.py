@@ -11,8 +11,8 @@ import pytest
 from django.test import SimpleTestCase, TestCase
 
 from teatree.cli.django_groups import DJANGO_GROUPS
+from teatree.core.gates.plan_gate import check_plan_artifact
 from teatree.core.models import Ticket
-from teatree.core.plan_gate import check_plan_artifact
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",

@@ -531,7 +531,7 @@ def check() -> bool:
     # (#126). Configure Django first so the guard reports the REAL state.
     ensure_django()
 
-    from teatree.core.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
+    from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
 
     ok = doctor_check_self_db_migrations() and ok
 
@@ -544,7 +544,7 @@ def check() -> bool:
     # ``doctor_check_clone_currency`` skips affected repos rather than
     # FAILing (same posture as schema_guard's DB-offline WARN).
     from teatree.cli.update import _collect_repos  # noqa: PLC0415
-    from teatree.core.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
+    from teatree.core.gates.clone_guard import doctor_check_clone_currency  # noqa: PLC0415
 
     ok = doctor_check_clone_currency(_collect_repos()) and ok
     _check_singletons()

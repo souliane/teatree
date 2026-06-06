@@ -401,18 +401,18 @@ class TestNagConsultsDedupGuard(_EnableReviewNagMixin, TestCase):
     def test_nag_skipped_when_guard_reconciles(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+        from teatree.core.gates.review_request_guard import GuardTarget  # noqa: PLC0415
 
         self._due_post()
         slack = FakeSlack()
         target = GuardTarget(channel_id="C0AM3TENTLK", channel_name="rev", token="xoxb")
         with (
             patch(
-                "teatree.core.review_request_guard.resolve_guard_target",
+                "teatree.core.gates.review_request_guard.resolve_guard_target",
                 return_value=target,
             ),
             patch(
-                "teatree.core.review_request_guard.reconcile_out_of_band",
+                "teatree.core.gates.review_request_guard.reconcile_out_of_band",
                 return_value="https://team.slack.com/archives/C/p1",
             ),
         ):
@@ -427,7 +427,7 @@ class TestNagConsultsDedupGuard(_EnableReviewNagMixin, TestCase):
         self._due_post()
         slack = FakeSlack()
         with patch(
-            "teatree.core.review_request_guard.resolve_guard_target",
+            "teatree.core.gates.review_request_guard.resolve_guard_target",
             return_value=None,
         ):
             ReviewNagScanner(messaging=slack, user_slack_id="U_ME").scan()
@@ -436,18 +436,18 @@ class TestNagConsultsDedupGuard(_EnableReviewNagMixin, TestCase):
     def test_nag_proceeds_when_guard_finds_nothing(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+        from teatree.core.gates.review_request_guard import GuardTarget  # noqa: PLC0415
 
         self._due_post()
         slack = FakeSlack()
         target = GuardTarget(channel_id="C0AM3TENTLK", channel_name="rev", token="xoxb")
         with (
             patch(
-                "teatree.core.review_request_guard.resolve_guard_target",
+                "teatree.core.gates.review_request_guard.resolve_guard_target",
                 return_value=target,
             ),
             patch(
-                "teatree.core.review_request_guard.reconcile_out_of_band",
+                "teatree.core.gates.review_request_guard.reconcile_out_of_band",
                 return_value="",
             ),
         ):

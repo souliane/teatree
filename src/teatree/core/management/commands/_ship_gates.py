@@ -14,7 +14,7 @@ from typing import TypedDict, cast
 
 from teatree import visual_qa
 from teatree.core.branch_currency import require_current_branch
-from teatree.core.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
+from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.management.commands._ship_exec import ShippingGateFailure
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.models import Session, Ticket, Worktree
@@ -129,7 +129,7 @@ def run_branch_currency_gate(
     attests the SHA the loop will actually push. On conflict the gate
     refuses cleanly (``git merge --abort`` already restored the tree).
     Fetch failures (offline, auth) are inconclusive — same posture as
-    :mod:`teatree.core.clone_guard`.
+    :mod:`teatree.core.gates.clone_guard`.
     """
     repo = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
     branch = worktree.branch

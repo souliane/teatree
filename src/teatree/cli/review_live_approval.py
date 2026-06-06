@@ -1,7 +1,7 @@
 r"""Authorization CLI for the ``--live`` post-comment gate (#1207, #126).
 
 ``t3 review approve-live-post <mr-url>`` is the satisfier for the
-:class:`~teatree.core.live_post_gate.LivePostBlockedError` gate. The
+:class:`~teatree.core.gates.live_post_gate.LivePostBlockedError` gate. The
 human authorization can arrive through EITHER of two durable channels —
 the gate must not fail-closed against a legitimate one (#126):
 

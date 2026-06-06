@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, SupportsInt, cast
 
 from teatree.backends.gitlab_sync_approvals import detect_approval_dismissal
-from teatree.core.dod_gate import workflow_capped_state
+from teatree.core.gates.dod_gate import workflow_capped_state
 from teatree.core.models import Ticket
 from teatree.types import DiscussionSummary, PREntry, PREntryDict, RawAPIDict, SyncResult
 

@@ -231,7 +231,7 @@ def test_discover_overlays_entry_points(tmp_path: Path) -> None:
 
     with (
         patch("importlib.metadata.entry_points", return_value=[mock_ep]),
-        patch("teatree.config._resolve_ep_project_path", return_value=None),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
@@ -321,7 +321,7 @@ def test_discover_overlays_entry_point_with_project_path(tmp_path: Path) -> None
 
     with (
         patch("importlib.metadata.entry_points", return_value=[mock_ep]),
-        patch("teatree.config._resolve_ep_project_path", return_value=project_root),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=project_root),
     ):
         result = discover_overlays(config_path=config_path)
         assert len(result) == 1
@@ -357,7 +357,7 @@ def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(tmp_path: Path
 
     with (
         patch("importlib.metadata.entry_points", return_value=[other_ep, real_ep]),
-        patch("teatree.config._resolve_ep_project_path", return_value=None),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
         result = discover_overlays(config_path=config_path)
 
@@ -412,7 +412,7 @@ def test_bare_alias_table_still_folds_into_t3_prefixed_entry_point(tmp_path: Pat
 
     with (
         patch("importlib.metadata.entry_points", return_value=[entry_point]),
-        patch("teatree.config._resolve_ep_project_path", return_value=None),
+        patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
         result = discover_overlays(config_path=config_path)
 

@@ -99,7 +99,7 @@ class ReviewSkillRun(TypedDict, total=False):
 
     Recorded by ``Ticket.record_review_skill_run`` when the deep-review
     skill named by ``review_skill`` executes. The reviewing-phase gate
-    (``teatree.core.review_skill_gate``) consumes it: a ``reviewing``
+    (``teatree.core.gates.review_skill_gate``) consumes it: a ``reviewing``
     attestation is refused unless this records a run of the *currently
     configured* skill.
     """
@@ -120,7 +120,7 @@ class ReviewContext(TypedDict, total=False):
     Tilgungsplan schedule, requirement doc), and analyzed them against the
     diff (``analysis``: how the implementation was checked against the
     specified requirements + business rules). The reviewing-phase gate
-    (``teatree.core.review_context_gate``) consumes it: when
+    (``teatree.core.gates.review_context_gate``) consumes it: when
     ``require_review_context`` is on, entering ``reviewing`` is refused
     until this is recorded.
     """
@@ -136,7 +136,7 @@ class AntiVacuityAttestation(TypedDict, total=False):
 
     Recorded by ``Ticket.record_anti_vacuity_attestation`` once the maker has
     run the skilled self-review. The anti-vacuity gate
-    (``teatree.core.anti_vacuity_gate``) consumes it to refuse a request-review
+    (``teatree.core.gates.anti_vacuity_gate``) consumes it to refuse a request-review
     or merge transition when ``require_anti_vacuity_attestation`` is on.
 
     ``head_sha`` is the full 40-char commit the attestation binds to; the gate

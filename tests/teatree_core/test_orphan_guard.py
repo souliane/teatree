@@ -5,14 +5,14 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.cleanup import BranchClassification, BranchCommit
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
-from teatree.core.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from tests.teatree_core.cleanup._shared import _run_git
 
-_patch_classify = patch("teatree.core.orphan_guard.classify_branch_commits")
-_patch_tree_match = patch("teatree.core.orphan_guard._branch_tree_matches_squash")
-_patch_open_pr = patch("teatree.core.orphan_guard.find_open_pr")
-_patch_git = patch("teatree.core.orphan_guard.git")
+_patch_classify = patch("teatree.core.gates.orphan_guard.classify_branch_commits")
+_patch_tree_match = patch("teatree.core.gates.orphan_guard._branch_tree_matches_squash")
+_patch_open_pr = patch("teatree.core.gates.orphan_guard.find_open_pr")
+_patch_git = patch("teatree.core.gates.orphan_guard.git")
 
 
 def _classification(ahead: list[BranchCommit] | None = None) -> BranchClassification:
@@ -114,8 +114,8 @@ class TestFindOrphansInWorkspace(TestCase):
             branch=branch,
         )
 
-    @patch("teatree.core.orphan_guard.load_config")
-    @patch("teatree.core.orphan_guard.classify_branch")
+    @patch("teatree.core.gates.orphan_guard.load_config")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
     def test_returns_only_orphans(
         self,
         mock_classify: MagicMock,
@@ -151,8 +151,8 @@ class TestFindOrphansInWorkspace(TestCase):
         assert "feat-3" in branches
         assert len(orphans) == 2
 
-    @patch("teatree.core.orphan_guard.load_config")
-    @patch("teatree.core.orphan_guard.classify_branch")
+    @patch("teatree.core.gates.orphan_guard.load_config")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
     def test_deduplicates_by_repo_and_branch(
         self,
         mock_classify: MagicMock,
@@ -234,7 +234,7 @@ class TestClassifyBranchRespectsRepoDefaultBranch:
         remote, ``classify_branch`` must still return a valid report rather
         than crashing — falls back to ``origin/main``.
         """
-        from teatree.core import orphan_guard as og  # noqa: PLC0415
+        from teatree.core.gates import orphan_guard as og  # noqa: PLC0415
 
         msg = "could not detect default branch"
 

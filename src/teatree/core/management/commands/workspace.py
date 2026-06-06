@@ -16,7 +16,8 @@ from django_typer.management import TyperCommand, command
 from teatree.config import load_config
 from teatree.core.cleanup import cleanup_worktree
 from teatree.core.dev_repo import resolve_repo_names
-from teatree.core.local_stack_gate import refuse_if_limit_exceeded
+from teatree.core.gates.local_stack_gate import refuse_if_limit_exceeded
+from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
     WorktreeReaper,
@@ -32,7 +33,6 @@ from teatree.core.management.commands._workspace_cleanup import (
 from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket import format_intake_summary
-from teatree.core.orphan_guard import find_orphans_in_workspace
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
 from teatree.core.readiness import run_and_report_probes

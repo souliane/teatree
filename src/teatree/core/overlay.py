@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 
 import httpx
 
+from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
-from teatree.core.merge_guard import MergeGuard
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -573,7 +573,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         """True iff *changed_files* could impact what is displayed to the customer (#1967).
 
-        The mandatory-E2E gate (:mod:`teatree.core.e2e_mandatory_gate`) calls
+        The mandatory-E2E gate (:mod:`teatree.core.gates.e2e_mandatory_gate`) calls
         this to decide whether a change requires green E2E evidence before
         shipping / CLEAR. The default is FAIL-CLOSED — it returns ``True`` for
         every non-empty diff and for the empty diff alike — so an overlay that

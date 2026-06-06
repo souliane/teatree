@@ -275,7 +275,7 @@ class TestWorkspaceTicket(TestCase):
         """Creating a new ticket surfaces orphan branches already in the workspace."""
         from io import StringIO  # noqa: PLC0415
 
-        from teatree.core.orphan_guard import BranchReport, BranchStatus  # noqa: PLC0415
+        from teatree.core.gates.orphan_guard import BranchReport, BranchStatus  # noqa: PLC0415
 
         fake_orphans = [
             BranchReport(repo="/ws/org/repo", branch="feat-old", status=BranchStatus.PUSHED_ORPHAN, ahead_count=3),

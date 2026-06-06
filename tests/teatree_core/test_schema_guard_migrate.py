@@ -20,7 +20,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.db.migrations.recorder import MigrationRecorder
 from django.test import TransactionTestCase
 
-from teatree.core.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
+from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
 
 # A short contiguous tail to roll back so the DB is genuinely stale: the
 # executor only reports a gap when no *descendant* is recorded, so we
@@ -102,7 +102,7 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
         self._make_stale()  # ensure pending != [] so call_command is reached
         with (
             patch(
-                "teatree.core.schema_guard.call_command",
+                "teatree.core.gates.schema_guard.call_command",
                 side_effect=OperationalError("disk I/O error"),
             ),
             pytest.raises(SelfDbMigrationError) as exc,

@@ -20,13 +20,13 @@ from django.db.utils import ConnectionDoesNotExist
 from django.test import TransactionTestCase
 
 from teatree.cli.doctor import check as doctor_check
-from teatree.core.models import MergeClear
-from teatree.core.schema_guard import (
+from teatree.core.gates.schema_guard import (
     SelfDbMigrationError,
     doctor_check_self_db_migrations,
     pending_migrations,
     require_current_schema,
 )
+from teatree.core.models import MergeClear
 
 _MERGE_MIGRATIONS = ("0011_mergeclear_mergeaudit", "0012_mergeclear_human_authorizer")
 
@@ -186,7 +186,7 @@ class DoctorCheckCurrentSchemaTest(TransactionTestCase):
         buffer = io.StringIO()
         with (
             patch(
-                "teatree.core.schema_guard.pending_migrations",
+                "teatree.core.gates.schema_guard.pending_migrations",
                 side_effect=OperationalError("unable to open database file"),
             ),
             redirect_stdout(buffer),
@@ -203,7 +203,7 @@ class DoctorCheckCurrentSchemaTest(TransactionTestCase):
         buffer = io.StringIO()
         with (
             patch(
-                "teatree.core.schema_guard.pending_migrations",
+                "teatree.core.gates.schema_guard.pending_migrations",
                 side_effect=ConnectionDoesNotExist("The connection 'bogus' doesn't exist."),
             ),
             redirect_stdout(buffer),
@@ -218,7 +218,7 @@ class DoctorCheckCurrentSchemaTest(TransactionTestCase):
         buffer = io.StringIO()
         with (
             patch(
-                "teatree.core.schema_guard.pending_migrations",
+                "teatree.core.gates.schema_guard.pending_migrations",
                 side_effect=ProgrammingError("relation does not exist"),
             ),
             redirect_stdout(buffer),

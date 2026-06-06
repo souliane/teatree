@@ -2,7 +2,7 @@
 
 Per-overlay loop, default-OFF behind the ``issue_implementer_enabled``
 triple gate (#1553). Consumes ``Domain.ISSUE_IMPLEMENTER`` through the
-public :func:`teatree.loop.tick_jobs.jobs_for_domain` seam, so the
+public :func:`teatree.loop.domain_jobs.jobs_for_domain` seam, so the
 ``_issue_implementer_scanner_for`` gate stays the single decision point
 for whether any scanner is emitted — with the default-OFF config this
 mini-loop contributes nothing and the registry/legacy parity stays
@@ -20,7 +20,7 @@ from teatree.loops.base import MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
-    from teatree.loop.tick_jobs import _ScannerJob
+    from teatree.loop.job_identity import _ScannerJob
 
 
 def _build_jobs(
@@ -29,7 +29,8 @@ def _build_jobs(
     **_: object,
 ) -> "list[_ScannerJob]":
     """Wire each overlay's ``Domain.ISSUE_IMPLEMENTER`` slice (empty by default)."""
-    from teatree.loop.tick_jobs import Domain, jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain  # noqa: PLC0415
 
     if not backends:
         return []

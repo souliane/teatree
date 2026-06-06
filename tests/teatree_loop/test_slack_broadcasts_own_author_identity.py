@@ -23,9 +23,9 @@ from django.test import TestCase
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.models import ScannedBroadcast
+from teatree.loop.scanner_factories import _slack_broadcasts_scanner_for
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_broadcasts import MrState
-from teatree.loop.tick_jobs import _slack_broadcasts_scanner_for
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
@@ -166,7 +166,7 @@ class OwnAuthorIdentityResolutionTests(TestCase):
     """``_own_author_identity`` mirrors ``ReviewerPrsScanner._resolve_identities``."""
 
     def test_identities_take_precedence(self) -> None:
-        from teatree.loop.tick_jobs import _own_author_identity  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(
             name="acme",
@@ -177,7 +177,7 @@ class OwnAuthorIdentityResolutionTests(TestCase):
         assert _own_author_identity(backend) == OWN_AUTHOR
 
     def test_falls_back_to_first_host_current_user(self) -> None:
-        from teatree.loop.tick_jobs import _own_author_identity  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(
             name="acme",
@@ -188,7 +188,7 @@ class OwnAuthorIdentityResolutionTests(TestCase):
         assert _own_author_identity(backend) == OWN_AUTHOR
 
     def test_empty_when_no_identity_and_no_host_user(self) -> None:
-        from teatree.loop.tick_jobs import _own_author_identity  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _own_author_identity  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", identities=(), hosts=())
 

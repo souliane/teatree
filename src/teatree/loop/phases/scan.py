@@ -9,8 +9,9 @@ those belong to later phases.
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from teatree.loop.domain_jobs import _run_job
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.tick_jobs import _run_job, _ScannerJob
 
 
 @dataclass(slots=True)

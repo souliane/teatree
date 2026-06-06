@@ -69,7 +69,7 @@ class _ClearGateBase(TestCase):
 
 class TestClearBlocks(_ClearGateBase):
     def test_impacting_no_evidence_blocks_clear(self) -> None:
-        with patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
             result = _clear(self.ticket)
         assert result["issued"] is False
         assert "record-e2e-run" in str(result["error"])
@@ -78,7 +78,7 @@ class TestClearBlocks(_ClearGateBase):
 
 class TestClearAllows(_ClearGateBase):
     def test_safe_overlay_allows_clear(self) -> None:
-        with patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()):
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()):
             result = _clear(self.ticket)
         assert result["issued"] is True
 
@@ -90,20 +90,20 @@ class TestClearAllows(_ClearGateBase):
             result="green",
             posted_url="https://example.com/i/40#note_1",
         )
-        with patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
             result = _clear(self.ticket)
         assert result["issued"] is True
 
     def test_green_but_unposted_evidence_blocks_clear(self) -> None:
         E2eMandatoryRun.record(ticket=self.ticket, head_sha=_SHA, spec="x", result="green", posted_url="")
-        with patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
             result = _clear(self.ticket)
         assert result["issued"] is False
         assert "record-e2e-run" in str(result["error"])
 
     def test_recorded_bypass_allows_clear(self) -> None:
         E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id="souliane")
-        with patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
+        with patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()):
             result = _clear(self.ticket)
         assert result["issued"] is True
         assert E2EBypassApproval.has_unconsumed(self.ticket, _SHA) is False

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 from teatree.core.cleanup import cleanup_worktree
-from teatree.core.dod_gate import record_terminal_dod_violation
+from teatree.core.gates.dod_gate import record_terminal_dod_violation
 from teatree.core.models import Ticket, Worktree
 from teatree.types import PREntryDict, RawAPIDict, SyncResult
 

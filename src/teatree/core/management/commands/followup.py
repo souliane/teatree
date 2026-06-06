@@ -108,7 +108,7 @@ class Command(TyperCommand):
         stale DB. Fails open: an unconfigured channel or a slow/failed
         read leaves the MR unannotated rather than wedging discovery.
         """
-        from teatree.core.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
+        from teatree.core.gates.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
 
         url = mr.get("url")
         if not isinstance(url, str) or not url:

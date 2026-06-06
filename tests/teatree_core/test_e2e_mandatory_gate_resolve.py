@@ -12,7 +12,7 @@ from unittest.mock import patch
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
-from teatree.core.e2e_mandatory_gate import resolve_gate_inputs
+from teatree.core.gates.e2e_mandatory_gate import resolve_gate_inputs
 from teatree.core.models import Ticket
 
 _SHA = "1" * 40
@@ -34,8 +34,8 @@ class TestResolveGateInputs(TestCase):
 
     def test_impacting_overlay_marks_inputs_impacting(self) -> None:
         with (
-            patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
-            patch("teatree.core.e2e_mandatory_gate._gate_enabled", return_value=True),
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
+            patch("teatree.core.gates.e2e_mandatory_gate._gate_enabled", return_value=True),
         ):
             inputs = resolve_gate_inputs(self.ticket, changed_files=["app/views.py"], head_sha=_SHA)
         assert inputs.display_impacting is True
@@ -44,16 +44,16 @@ class TestResolveGateInputs(TestCase):
 
     def test_safe_overlay_marks_inputs_non_impacting(self) -> None:
         with (
-            patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()),
-            patch("teatree.core.e2e_mandatory_gate._gate_enabled", return_value=True),
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_SafeOverlay()),
+            patch("teatree.core.gates.e2e_mandatory_gate._gate_enabled", return_value=True),
         ):
             inputs = resolve_gate_inputs(self.ticket, changed_files=["app/views.py"], head_sha=_SHA)
         assert inputs.display_impacting is False
 
     def test_kill_switch_threaded_through(self) -> None:
         with (
-            patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
-            patch("teatree.core.e2e_mandatory_gate._gate_enabled", return_value=False),
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
+            patch("teatree.core.gates.e2e_mandatory_gate._gate_enabled", return_value=False),
         ):
             inputs = resolve_gate_inputs(self.ticket, changed_files=["app/views.py"], head_sha=_SHA)
         assert inputs.gate_enabled is False
@@ -64,8 +64,8 @@ class TestResolveGateInputs(TestCase):
         # misconfigured ticket. The non-impacting diff is irrelevant — resolution
         # fails before classification, so the verdict is the fail-closed default.
         with (
-            patch("teatree.core.e2e_mandatory_gate.get_overlay", side_effect=ImproperlyConfigured("no overlay")),
-            patch("teatree.core.e2e_mandatory_gate._gate_enabled", return_value=True),
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", side_effect=ImproperlyConfigured("no overlay")),
+            patch("teatree.core.gates.e2e_mandatory_gate._gate_enabled", return_value=True),
         ):
             inputs = resolve_gate_inputs(self.ticket, changed_files=["app/tests/test_x.py"], head_sha=_SHA)
         assert inputs.display_impacting is True

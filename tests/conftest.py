@@ -126,7 +126,7 @@ def _unset_review_skill_by_default() -> Iterator[None]:
     """
     from unittest.mock import patch  # noqa: PLC0415
 
-    with patch("teatree.core.review_skill_gate.configured_review_skill", return_value=""):
+    with patch("teatree.core.gates.review_skill_gate.configured_review_skill", return_value=""):
         yield
 
 

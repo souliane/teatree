@@ -40,7 +40,7 @@ class PrRef:
     """A parsed PR/MR web URL: repo slug, PR/MR number, and forge transport kind.
 
     ``host_kind`` is ``"github"`` or ``"gitlab"`` — the same transport switch
-    :func:`teatree.core.merge_execution.fetch_live_head_sha` dispatches on.
+    :func:`teatree.core.merge.ci_rollup.fetch_live_head_sha` dispatches on.
     """
 
     slug: str

@@ -16,7 +16,7 @@ never by importing the registry down into :mod:`teatree.loop`.
 
 import datetime as dt
 
-from teatree.loop.tick_jobs import _ScannerJob
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loops.base import BuildJobsContext
 from teatree.loops.cadence_ledger import MiniLoopMarker
 from teatree.loops.config import LoopsConfig

@@ -8,7 +8,7 @@ patterns, and refuses when any match fires.
 
 import pytest
 
-from teatree.core.privacy_gate import format_refusal, scan_for_publication
+from teatree.core.gates.privacy_gate import format_refusal, scan_for_publication
 
 PUBLIC = "souliane/teatree"
 PRIVATE = "private-org/internal-repo"
@@ -102,7 +102,7 @@ def test_invalid_regex_in_block_patterns_fails_closed(caplog: pytest.LogCaptureF
     """A malformed pattern must fail closed — block the publish and log, never silently pass."""
     import logging  # noqa: PLC0415
 
-    with caplog.at_level(logging.WARNING, logger="teatree.core.privacy_gate"):
+    with caplog.at_level(logging.WARNING, logger="teatree.core.gates.privacy_gate"):
         result = scan_for_publication(
             text="Body content",
             target_repo=PUBLIC,

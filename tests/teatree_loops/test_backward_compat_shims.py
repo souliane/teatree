@@ -4,7 +4,7 @@ The §1434 directory consolidation introduced ``teatree.loops.<domain>``
 subpackages but kept the legacy ``teatree.loop.scanners`` import surface
 untouched (no physical move in this MR — the legacy module stays
 authoritative and the new mini-loops delegate to it via
-``teatree.loop.tick_jobs``). This test pins that contract: every
+``teatree.loop.domain_jobs``). This test pins that contract: every
 existing import path callers rely on must keep resolving.
 """
 

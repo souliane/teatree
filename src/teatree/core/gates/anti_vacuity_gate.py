@@ -30,8 +30,8 @@ unset the gate is a NO-OP — projects that do not require the proof keep
 requesting review / merging unchanged.
 
 The gate is a pure function over durable ``extra`` state plus the live head
-SHA, mirroring ``teatree.core.review_skill_gate`` /
-``teatree.core.review_context_gate``. On a block it raises
+SHA, mirroring ``teatree.core.gates.review_skill_gate`` /
+``teatree.core.gates.review_context_gate``. On a block it raises
 :class:`AntiVacuityAttestationError` with a remediation message naming the
 ``record-anti-vacuity`` command; callers (the merge precondition gate and the
 review-request post command) surface it as a non-zero exit / refusal.
