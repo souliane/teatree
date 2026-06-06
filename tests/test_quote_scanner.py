@@ -199,6 +199,38 @@ class TestQuoteOkOverride:
                 f"override smuggled after {metachar!r} must be rejected"
             )
 
+    def test_flag_on_cd_prefixed_publish_segment_bypasses(self) -> None:
+        cmd = 'cd /tmp/wt && gh pr create --title t --body "the user said: foo" --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is True
+
+    def test_flag_on_second_chained_publish_segment_bypasses(self) -> None:
+        cmd = 'echo prep && gh pr create --title t --body "the user said: foo" --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is True
+
+    def test_decoy_flag_on_unrelated_segment_does_not_vouch_for_chained_publish(self) -> None:
+        cmd = 'echo --quote-ok && gh pr create --title t --body "the user said: foo"'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_decoy_flag_on_trailing_non_publish_segment_does_not_vouch(self) -> None:
+        cmd = 'gh pr create --title t --body "the user said: foo" ; echo --quote-ok'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_inline_env_assignment_on_cd_prefixed_publish_bypasses(self) -> None:
+        cmd = 'cd /tmp/wt && QUOTE_OK=1 gh pr create --title t --body "the user said: foo"'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is True
+
+    def test_inline_env_assignment_on_leading_publish_bypasses(self) -> None:
+        cmd = 'QUOTE_OK=1 gh pr create --title t --body "the user said: foo"'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is True
+
+    def test_decoy_inline_env_assignment_on_unrelated_segment_does_not_vouch(self) -> None:
+        cmd = 'QUOTE_OK=1 echo hi && gh pr create --title t --body "the user said: foo"'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
+    def test_inline_env_assignment_zero_does_not_bypass(self) -> None:
+        cmd = 'QUOTE_OK=0 gh pr create --title t --body "the user said: foo"'
+        assert has_quote_ok_override("Bash", {"command": cmd}) is False
+
 
 class TestBypassClosures:
     """Regression tests for codex-found bypass paths (#1213 review)."""
@@ -977,6 +1009,67 @@ class TestHeredocToFileDashF:
         payload = extract_publish_payload("Bash", {"command": cmd})
         assert payload is not None
         assert "tidy the parser" in payload
+
+
+class TestHeredocBodyPairing:
+    """A file-redirected heredoc is scanned only when its path is posted."""
+
+    def test_unposted_scratch_heredoc_body_is_not_scanned(self) -> None:
+        cmd = (
+            "cat > /tmp/scratch-pair.txt <<EOF1\n"
+            "the user said: this scratch is never posted\n"
+            "EOF1\n"
+            "cat > /tmp/posted-pair.txt <<EOF2\n"
+            "refactor: clean release notes\n"
+            "EOF2\n"
+            "gh pr create --title t --body-file /tmp/posted-pair.txt"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "clean release notes" in payload
+        assert "scratch is never posted" not in payload
+
+    def test_posted_heredoc_path_body_is_scanned(self) -> None:
+        cmd = (
+            "cat > /tmp/posted-pair-2.txt <<EOF\n"
+            "the user said: ship it now\n"
+            "EOF\n"
+            "gh pr create --title t --body-file /tmp/posted-pair-2.txt"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert scan_text(payload).has_high
+
+    def test_posted_heredoc_path_is_not_double_counted(self) -> None:
+        cmd = (
+            "cat > /tmp/dedup-pair.txt <<EOF\n"
+            "UNIQUEPAYLOADTOKEN once\n"
+            "EOF\n"
+            "gh pr create --title t --body-file /tmp/dedup-pair.txt"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert payload.count("UNIQUEPAYLOADTOKEN") == 1
+
+    def test_stdin_heredoc_body_is_still_scanned(self) -> None:
+        cmd = "gh pr create --title t --body-file - <<EOF\nthe user said: ship it now\nEOF"
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert scan_text(payload).has_high
+
+    def test_unposted_scratch_alongside_stdin_post_only_scans_stdin(self) -> None:
+        cmd = (
+            "cat > /tmp/scratch-stdin.txt <<EOF1\n"
+            "the user said: never posted scratch\n"
+            "EOF1\n"
+            "gh pr create --title t --body-file - <<EOF2\n"
+            "refactor: clean body posted to stdin\n"
+            "EOF2"
+        )
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "clean body posted to stdin" in payload
+        assert "never posted scratch" not in payload
 
 
 def _git_init_remote(repo: Path, remote_url: str) -> None:
