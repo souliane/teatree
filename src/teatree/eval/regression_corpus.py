@@ -28,6 +28,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import run_checked
 
 
@@ -65,7 +66,7 @@ class RegressionReport:
 
 def _git(repo: Path, *args: str) -> str:
     env = {
-        **os.environ,
+        **git_env_without_overrides(),
         "GIT_AUTHOR_NAME": "eval",
         "GIT_AUTHOR_EMAIL": "eval@example.com",
         "GIT_COMMITTER_NAME": "eval",
