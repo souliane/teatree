@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
-from urllib.parse import urlparse
 
 from teatree.core.models import NEEDS_TRIAGE_LABEL
 from teatree.hooks import banned_terms_scanner
@@ -37,32 +36,6 @@ from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend
-
-_GITHUB_PR_RE = re.compile(r"^/(?P<repo>[^/]+/[^/]+)/pulls?/(?P<iid>\d+)/?$")
-_GITLAB_MR_RE = re.compile(r"^/(?P<repo>.+?)/-/merge_requests/(?P<iid>\d+)/?$")
-
-
-@dataclass(frozen=True, slots=True)
-class PrRef:
-    """A forge-agnostic ``(repo, iid)`` pair parsed from a PR/MR URL."""
-
-    repo: str
-    iid: int
-
-
-def parse_pr_url(pr_url: str) -> PrRef | None:
-    """Parse a GitHub PR or GitLab MR URL into ``(repo, iid)``, or ``None``.
-
-    GitHub ``.../<owner>/<repo>/pull/<n>`` and GitLab
-    ``.../<group>/<repo>/-/merge_requests/<n>`` are the two recognised shapes;
-    anything else returns ``None`` so the caller can report a clear error.
-    """
-    path = urlparse(pr_url).path
-    match = _GITLAB_MR_RE.match(path) or _GITHUB_PR_RE.match(path)
-    if match is None:
-        return None
-    return PrRef(repo=match["repo"], iid=int(match["iid"]))
-
 
 _FINGERPRINT_MARKER = "retro-finding-fingerprint:"
 """Prefix of the hidden marker line embedded in every filed enforcement issue.

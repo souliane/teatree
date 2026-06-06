@@ -109,7 +109,7 @@ repos:
         pass_filenames: false
         always_run: true
       - id: jscpd
-        name: jscpd (copy/paste duplication in src/teatree — minLines 6 / warn-tolerance 2%)
+        name: jscpd (copy/paste duplication in src/teatree — minLines 6 / blocking ratchet 1.5%)
         entry: jscpd --config .jscpd.json src/teatree
         language: node
         additional_dependencies: ["jscpd@4.2.4"]
@@ -264,6 +264,12 @@ repos:
         name: Chokepoint call-site authorization (registry-driven)
         language: system
         entry: uv run python scripts/hooks/check_chokepoints.py
+        types: [python]
+        files: ^src/teatree/
+      - id: check-url-classify
+        name: PR/MR-URL classification regexes only in teatree.url_classify
+        language: system
+        entry: uv run python scripts/hooks/check_url_classify.py
         types: [python]
         files: ^src/teatree/
       - id: no-silent-skip
