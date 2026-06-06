@@ -17,6 +17,8 @@ the BotPing ledger run for real. The on-behalf pre-gate is set to
 *after*-receipt behaviour.
 """
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +27,31 @@ from django.test import TestCase
 
 import teatree.core.signals as signals_mod
 from teatree.core.models import BotPing, PullRequest, Ticket
+
+
+class _FakeReactionPublisher:
+    def __init__(
+        self,
+        *,
+        transition: Callable[..., int] | None = None,
+        approval: Callable[..., int] | None = None,
+    ):
+        self._transition = transition or (lambda *_a, **_k: 0)
+        self._approval = approval or (lambda *_a, **_k: 0)
+
+    def add_reactions_for_transition(self, ticket: object, transition_name: str) -> int:
+        return self._transition(ticket, transition_name)
+
+    def add_approval_reaction(self, pull_request: object) -> int:
+        return self._approval(pull_request)
+
+
+def _patch_transition_publisher(fn: Callable[..., int]) -> AbstractContextManager[object]:
+    return patch.object(signals_mod, "get_reaction_publisher", lambda: _FakeReactionPublisher(transition=fn))
+
+
+def _patch_approval_publisher(fn: Callable[..., int]) -> AbstractContextManager[object]:
+    return patch.object(signals_mod, "get_reaction_publisher", lambda: _FakeReactionPublisher(approval=fn))
 
 
 def _notify_backend() -> MagicMock:
@@ -67,7 +94,7 @@ class TestSignalsAfterReceiptDm(TestCase):
 
     def test_approval_reaction_emits_after_receipt_dm(self) -> None:
         pr = self._pr()
-        with patch.object(signals_mod, "add_approval_reaction", lambda _p: 1):
+        with _patch_approval_publisher(lambda _p: 1):
             pr.approve()
             pr.save()
 
@@ -78,7 +105,7 @@ class TestSignalsAfterReceiptDm(TestCase):
     def test_approval_reaction_no_dm_when_nothing_reacted(self) -> None:
         """No DM when the helper reacted nothing (no review message to react on)."""
         pr = self._pr()
-        with patch.object(signals_mod, "add_approval_reaction", lambda _p: 0):
+        with _patch_approval_publisher(lambda _p: 0):
             pr.approve()
             pr.save()
 
@@ -93,7 +120,7 @@ class TestSignalsAfterReceiptDm(TestCase):
         react on (helper returns 0) no ``on_behalf_post:`` DM is sent.
         """
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW, extra={"mrs": {}})
-        with patch.object(signals_mod, "add_reactions_for_transition", lambda _t, _n: 0):
+        with _patch_transition_publisher(lambda _t, _n: 0):
             ticket.mark_merged()
             ticket.save()
 
@@ -107,7 +134,7 @@ class TestSignalsAfterReceiptDm(TestCase):
             state=Ticket.State.IN_REVIEW,
             extra={"mrs": {"https://x/1": {"review_permalink": "https://t.slack.com/archives/C1/p1700000000000100"}}},
         )
-        with patch.object(signals_mod, "add_reactions_for_transition", lambda _t, _n: 1):
+        with _patch_transition_publisher(lambda _t, _n: 1):
             ticket.mark_merged()
             ticket.save()
 

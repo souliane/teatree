@@ -227,3 +227,18 @@ def add_approval_reaction(pull_request: "PullRequest") -> int:
         )
         return 0
     return 1 if success else 0
+
+
+class SlackReactionPublisher:
+    """Adapts the module reaction functions to ``core.reaction_dispatch.ReactionPublisher``.
+
+    Registered into the core registry by ``BackendsConfig.ready()`` so
+    ``core.signals`` reaches the Slack reaction publisher without importing
+    ``backends`` (#1922).
+    """
+
+    def add_reactions_for_transition(self, ticket: "Ticket", transition_name: str) -> int:  # noqa: PLR6301
+        return add_reactions_for_transition(ticket, transition_name)
+
+    def add_approval_reaction(self, pull_request: "PullRequest") -> int:  # noqa: PLR6301
+        return add_approval_reaction(pull_request)

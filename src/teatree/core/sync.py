@@ -45,12 +45,11 @@ def sync_followup() -> SyncResult:
     which credentials are configured in the active overlay.  When both
     tokens are present, both syncs run and results are merged.
     """
-    from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
-    from teatree.backends.gitlab_sync import GitLabSyncBackend  # noqa: PLC0415
+    from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     overlay = get_overlay()
-    backends: list[SyncBackend] = [GitHubSyncBackend(), GitLabSyncBackend()]
+    backends: list[SyncBackend] = get_backend_provider().build_sync_backends()
     result = SyncResult()
     ran_any = False
 

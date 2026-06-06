@@ -33,7 +33,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import DailyDigestMessage, DailyDigestThread
 
 logger = logging.getLogger(__name__)

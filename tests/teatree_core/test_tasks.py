@@ -501,7 +501,7 @@ class TestExecuteHeadlessTask(TestCase):
             msg = "headless runtime crashed"
             raise RuntimeError(msg)
 
-        self.monkeypatch.setattr("teatree.agents.headless.run_headless", _raise)
+        self.monkeypatch.setattr("teatree.core.headless_dispatch._runner", _raise)
 
         # ``architectural_review`` has no registered phase agent, so it is NOT
         # loop-dispatched — it rides the auto-enqueue path the executor owns.
@@ -533,7 +533,7 @@ class TestExecuteHeadlessTask(TestCase):
             captured["metadata"] = overlay_skill_metadata
             return MagicMock(pk=1, exit_code=0, result={})
 
-        self.monkeypatch.setattr("teatree.agents.headless.run_headless", _capture)
+        self.monkeypatch.setattr("teatree.core.headless_dispatch._runner", _capture)
 
         beta_overlay = CommandOverlay()
         beta_metadata = beta_overlay.metadata.get_skill_metadata()

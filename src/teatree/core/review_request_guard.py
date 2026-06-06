@@ -46,13 +46,17 @@ independent review).
 import datetime as dt
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
 from django.db import transaction
 from django.utils import timezone
 
-from teatree.backends.slack import SlackReviewSearchRequest, read_recent_review_matches
 from teatree.core.models import PullRequest, ReviewRequestPost
+
+if TYPE_CHECKING:
+    from teatree.core.backend_protocols import MessagingBackend
+    from teatree.core.overlay import OverlayBase
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +147,11 @@ def _live_matches(
     ``ok`` is False on any failed/timed-out/not-ok read so the caller
     fails safe to suppression.
     """
+    from teatree.core.backend_registry import ReviewSearchSpec, get_backend_provider  # noqa: PLC0415
+
     right_now = opts.now or timezone.now()
     oldest = right_now - opts.recency_window
-    request = SlackReviewSearchRequest(
+    spec = ReviewSearchSpec(
         token=target.token,
         channel_id=target.channel_id,
         channel_name=target.channel_name,
@@ -155,7 +161,7 @@ def _live_matches(
         timeout=opts.read_timeout,
     )
     try:
-        read = read_recent_review_matches(request)
+        read = get_backend_provider().read_recent_review_matches(spec)
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
         logger.warning("review_request_guard: live read failed for %s: %s", canonical, exc)
         return False, []
@@ -319,7 +325,6 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     """
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
-    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
@@ -332,11 +337,7 @@ def resolve_guard_target(channel_id: str = "", channel_name: str = "") -> GuardT
     if not channel_id:
         return None
 
-    messaging = messaging_from_overlay()
-    if isinstance(messaging, SlackBotBackend):
-        token = messaging.resolve_channel_token(channel_id)
-    else:
-        token = overlay.config.get_slack_token()
+    token = _channel_token(messaging_from_overlay(), channel_id, overlay)
     if not token:
         return None
     return GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token)
@@ -353,7 +354,6 @@ def resolve_guard_targets() -> list[GuardTarget]:
     """
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
-    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
@@ -369,11 +369,22 @@ def resolve_guard_targets() -> list[GuardTarget]:
     for channel_name, channel_id in channels:
         if not channel_id:
             continue
-        if isinstance(messaging, SlackBotBackend):
-            token = messaging.resolve_channel_token(channel_id)
-        else:
-            token = overlay.config.get_slack_token()
+        token = _channel_token(messaging, channel_id, overlay)
         if not token:
             continue
         targets.append(GuardTarget(channel_id=channel_id, channel_name=channel_name, token=token))
     return targets
+
+
+def _channel_token(messaging: "MessagingBackend | None", channel_id: str, overlay: "OverlayBase") -> str:
+    """Resolve the post token for *channel_id*.
+
+    A Slack bot backend (the one exposing ``resolve_channel_token``) yields a
+    per-channel token (the Slack-Connect ``xoxp`` case); any other backend falls
+    back to the overlay's configured sync token. Duck-typed on the capability so
+    ``core`` does not import the concrete ``SlackBotBackend`` (#1922).
+    """
+    resolver = getattr(messaging, "resolve_channel_token", None)
+    if callable(resolver):
+        return resolver(channel_id)
+    return overlay.config.get_slack_token()

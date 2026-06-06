@@ -402,9 +402,9 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     # ── Issue title resolution ────────────────────────────────────────
 
     def get_issue_title(self, url: str) -> str:
-        from teatree.backends.loader import get_code_host  # noqa: PLC0415
+        from teatree.core.backend_registry import get_backend_provider  # noqa: PLC0415
 
-        host = get_code_host(self)
+        host = get_backend_provider().get_code_host(self)
         if host is None:
             return ""
         try:
