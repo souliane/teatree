@@ -6,7 +6,6 @@ worker. The worker runs ``WorktreeProvisioner`` and on success schedules
 the coding task.
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -15,17 +14,8 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import WorktreeProvisioner
 from tests.teatree_core.conftest import CommandOverlay
-
-
-@pytest.fixture(autouse=True)
-def _clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
-
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 

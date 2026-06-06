@@ -230,15 +230,12 @@ def _collect_stranded_snapshots(report: RecoverReport) -> None:
 
 
 def _collect_requeue_candidates(report: RecoverReport) -> None:
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
-
     for task in Task.objects.filter(status=Task.Status.FAILED).select_related("ticket").order_by("pk"):
         if task.ticket.is_terminal:
             continue
         # An unknown-overlay task can never be dispatched — reopening it would
-        # re-crash on every drain (souliane/teatree#1959 poison pill). A blank
-        # overlay is the ambient single-overlay default and stays eligible.
-        if task.ticket.overlay and resolve_overlay_name(task.ticket.overlay) is None:
+        # re-crash on every drain (souliane/teatree#1959 poison pill).
+        if not task.ticket.has_dispatchable_overlay():
             continue
         last = task.attempts.order_by("-pk").first()
         error = last.error if last else ""

@@ -7,12 +7,11 @@ duplicate-free :class:`_ClassifiedActions` produced by
 :mod:`teatree.loop.rendering_classification`.
 """
 
-import re
-
 from teatree.loop.rendering_classification import _ClassifiedActions, _is_url
 from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
 from teatree.loop.rendering_items import _format_mr_ref, _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
 from teatree.loop.statusline import StatuslineZones, _hyperlink, plain_link
+from teatree.url_classify import Forge, forge_of
 
 _DISPOSITION_LABELS: dict[str, str] = {
     "issue_closed": "closed",
@@ -43,7 +42,6 @@ _MAX_PER_STATE = 5
 # A PR-backed ticket that doesn't appear in the live PR set (action_needed
 # or in_flight) is considered stale — its remote MR has likely been merged
 # or closed but the local FSM never advanced.
-_PR_URL_RE = re.compile(r"/(?:merge_requests|pull|pulls)/\d+/?$")
 
 # Anchor-line state-group rendering order. Actively-shipping work comes
 # first; states not listed here render in their original insertion order
@@ -74,7 +72,7 @@ def _link(text: str, url: object, *, colorize: bool) -> str:
 
 
 def _is_pr_url(url: str) -> bool:
-    return bool(_is_url(url) and _PR_URL_RE.search(url))
+    return _is_url(url) and forge_of(url) is not Forge.UNKNOWN
 
 
 def _render_pr_group(

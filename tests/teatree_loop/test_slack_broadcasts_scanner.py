@@ -27,7 +27,6 @@ from teatree.loop.scanners.slack_broadcasts import (
     GlabGhMrStateClassifier,
     MrState,
     SlackBroadcastsScanner,
-    _parse_gitlab_mr_url,
 )
 from teatree.types import RawAPIDict
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
@@ -474,43 +473,6 @@ class TestNoiseHandling(TestCase):
         assert signals[0].payload["mr_url"] == MR_OPEN
         assert backend.react_calls == []
         assert ScannedBroadcast.objects.count() == 1
-
-
-class TestParseGitlabMrUrl:
-    """``_parse_gitlab_mr_url`` splits a GitLab MR URL into ``(project, iid)``.
-
-    Drives the ``glab -R <project> <iid>`` form the classifier needs to
-    work outside a repo cwd. The scanner runs from the loop process with
-    no git remote, so ``glab mr view <url>`` (URL-only) silently exits
-    non-zero and every broadcast is dropped — the fix is parsing the
-    project path out of the URL and passing it to ``-R``.
-    """
-
-    def test_simple_group_and_project(self) -> None:
-        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/project/-/merge_requests/7446") == (
-            "team/project",
-            "7446",
-        )
-
-    def test_nested_subgroups(self) -> None:
-        # GitLab allows arbitrary subgroup nesting; the project path
-        # everything before ``/-/merge_requests/`` is the project.
-        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/sub/api/-/merge_requests/123") == (
-            "team/sub/api",
-            "123",
-        )
-
-    def test_trailing_slash(self) -> None:
-        assert _parse_gitlab_mr_url("https://gitlab.example.com/team/project/-/merge_requests/1/") == (
-            "team/project",
-            "1",
-        )
-
-    def test_non_gitlab_url_returns_none(self) -> None:
-        assert _parse_gitlab_mr_url("https://github.com/owner/repo/pull/42") is None
-
-    def test_malformed_returns_none(self) -> None:
-        assert _parse_gitlab_mr_url("not-a-url") is None
 
 
 class TestGlabGhMrStateClassifierUsesRepoFlag:

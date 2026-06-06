@@ -16,6 +16,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from teatree.url_classify import is_github_pr_url
+
 
 class _LinkFn(Protocol):
     def __call__(self, text: str, url: object, *, colorize: bool) -> str: ...
@@ -126,11 +128,11 @@ class _OverlayActionRefs:
 def _chip_prefix(url: str) -> str:
     """Return ``#`` for GitHub PR URLs, ``!`` otherwise (#1377).
 
-    GitHub PR URLs contain ``/pull/`` or ``/pulls/``; everything else
-    (GitLab MRs, unknown / blank URLs) gets the ``!`` default so the
-    pre-existing GitLab behaviour is preserved when the URL is missing.
+    Everything that is not a GitHub PR URL (GitLab MRs, unknown / blank URLs)
+    gets the ``!`` default so the pre-existing GitLab behaviour is preserved
+    when the URL is missing.
     """
-    return "#" if "/pull/" in url or "/pulls/" in url else "!"
+    return "#" if is_github_pr_url(url) else "!"
 
 
 def _render_canonical_item(

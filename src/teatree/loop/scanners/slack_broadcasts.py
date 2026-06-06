@@ -65,38 +65,15 @@ from teatree.core.review_candidate import eyes_reacted_by_other
 from teatree.loop.review_claim import filter_review_intent_signals, reaction_already_present, record_reaction_claim
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
+from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
 
 logger = logging.getLogger(__name__)
 
-_PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 # #1295 cap B: a broadcast that @-mentions the user's own Slack id is the
 # auto-pickup trigger. The Slack message format is ``<@U_USER_ID>``; the
 # scanner records the assignment intent so the dispatcher's mechanical
 # action can assign the user as reviewer on the MR.
 _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)>")
-_GITLAB_MR_URL_RE = re.compile(
-    r"^https://[^/]+/(?P<project>[^?#]+?)/-/merge_requests/(?P<iid>\d+)/?$",
-)
-
-
-def _parse_gitlab_mr_url(url: str) -> tuple[str, str] | None:
-    """Split a GitLab MR URL into ``(project_path, iid)`` for ``glab -R <project> <iid>``.
-
-    GitLab MR URLs are ``https://<host>/<group>/<project>/-/merge_requests/<iid>``
-    (the project path can include nested subgroups: ``team/sub/api``). Outside
-    a repo cwd, ``glab mr view <full-url>`` silently early-exits because
-    glab refuses to resolve the host from a URL alone — the scanner
-    process has no git remote to anchor against. Splitting on ``/-/``
-    isolates the project path glab needs for its ``-R`` flag, and the
-    numeric IID is the positional argument that pairs with it. Returns
-    ``None`` when the URL doesn't match the GitLab shape (e.g. a GitHub
-    URL or a malformed link), so the classifier safely falls through to
-    the "couldn't confirm" default.
-    """
-    match = _GITLAB_MR_URL_RE.match(url)
-    if match is None:
-        return None
-    return match.group("project"), match.group("iid")
 
 
 class ConnectChannelBotRestrictedError(RuntimeError):
@@ -164,8 +141,8 @@ class ChannelHistoryFetcher(Protocol):
 def _extract_mr_urls(text: str) -> list[str]:
     """Return every MR/PR URL in *text* in source order, deduplicated."""
     seen: dict[str, None] = {}
-    for match in _PR_URL_RE.finditer(text):
-        url = match.group(0).rstrip("/").split("#")[0]
+    for raw in find_pr_urls(text):
+        url = raw.rstrip("/").split("#")[0]
         seen.setdefault(url, None)
     return list(seen)
 
@@ -536,19 +513,21 @@ class GlabGhMrStateClassifier:
         return [self._classify_one(url) for url in urls]
 
     def _classify_one(self, url: str) -> MrState:
-        if "/merge_requests/" in url:
+        forge = forge_of(url)
+        if forge is Forge.GITLAB:
             return self._classify_gitlab(url)
-        if "/pull/" in url or "/pulls/" in url:
+        if forge is Forge.GITHUB:
             return self._classify_github(url)
         return MrState(url=url, merged=False, approved=False)
 
     def _classify_gitlab(self, url: str) -> MrState:
         from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415
 
-        parsed = _parse_gitlab_mr_url(url)
+        parsed = repo_and_iid(url)
         if parsed is None:
             return MrState(url=url, merged=False, approved=False)
-        project, iid = parsed
+        project, iid_num = parsed
+        iid = str(iid_num)
         glab = shutil.which("glab") or "glab"
         env = {**os.environ, "GITLAB_TOKEN": self.glab_token} if self.glab_token else None
         try:

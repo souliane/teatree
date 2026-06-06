@@ -26,6 +26,7 @@ def main() -> int:
         test_files=collect_test_files(_REPO_ROOT),
         source_files=collect_source_files(_REPO_ROOT),
         config=config,
+        root=_REPO_ROOT,
     )
 
     if not report.has_findings:

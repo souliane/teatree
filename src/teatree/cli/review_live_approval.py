@@ -42,6 +42,8 @@ from typing import TypedDict, cast
 
 import typer
 
+from teatree.utils.django_bootstrap import ensure_django
+
 
 class SlackMessage(TypedDict, total=False):
     """The Slack ``conversations.history`` message shape used by the verifier.
@@ -317,12 +319,7 @@ def register(review_app: typer.Typer) -> None:
         publishes (single-use, consumed by that call); any subsequent
         live post against the same MR requires a fresh approval.
         """
-        import os  # noqa: PLC0415
-
-        import django  # noqa: PLC0415
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
+        ensure_django()
 
         from teatree.core.models.live_post_approval import (  # noqa: PLC0415
             LivePostApproval,

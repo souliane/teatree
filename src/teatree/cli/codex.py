@@ -20,6 +20,8 @@ import sys
 
 import typer
 
+from teatree.utils.django_bootstrap import ensure_django
+
 codex_app = typer.Typer(no_args_is_help=True, help="Auto-dispatch /codex:review surfaces.")
 
 
@@ -51,7 +53,7 @@ def review(  # noqa: PLR0913, PLR0917 — typer command: every param is a CLI fl
     if parsed is None:
         typer.echo(f"error: malformed PR URL: {pr_url!r}", err=True)
         raise typer.Exit(code=2)
-    _ensure_django()
+    ensure_django()
     slug = parsed.group("slug")
     pr_id = int(parsed.group("pr_id"))
     variant = _classify_variant_cli(tuple(changed_paths))
@@ -97,16 +99,6 @@ def _classify_variant_cli(changed_files: tuple[str, ...]) -> str:
         if any(marker in lowered for marker in ADVERSARIAL_PATH_MARKERS):
             return ADVERSARIAL_REVIEW_VARIANT
     return STANDARD_REVIEW_VARIANT
-
-
-def _ensure_django() -> None:
-    """Set up Django before touching ``CodexReviewMarker`` — mirrors sibling CLI modules."""
-    import os  # noqa: PLC0415
-
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
 
 
 __all__ = ["codex_app"]

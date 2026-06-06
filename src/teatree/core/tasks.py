@@ -23,7 +23,7 @@ class TransitionResult(TypedDict, total=False):
 def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     import traceback  # noqa: PLC0415
 
-    from teatree.core.overlay_loader import get_overlay_for_ticket, resolve_overlay_name  # noqa: PLC0415
+    from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
 
     task_obj = Task.objects.get(pk=task_id)
 
@@ -31,9 +31,8 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     # non-empty overlay that no longer resolves crashes ``get_overlay_for_ticket``
     # on every drain. Fail it permanently here — a recorded FAILED attempt the
     # operator can inspect — instead of raising an exception that re-fires next
-    # tick. A blank overlay is the ambient single-overlay default and stays
-    # dispatchable (``get_overlay(None)`` resolves it).
-    if task_obj.ticket.overlay and resolve_overlay_name(task_obj.ticket.overlay) is None:
+    # tick.
+    if not task_obj.ticket.has_dispatchable_overlay():
         reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
         logger.warning("Task %s: %s", task_obj.pk, reason)
         if task_obj.status == Task.Status.PENDING:
@@ -100,7 +99,6 @@ def drain_headless_queue() -> dict[str, list[int]]:
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
     """
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
     from teatree.core.phases import subagent_for_phase  # noqa: PLC0415
 
     pending = (
@@ -116,7 +114,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     for task_obj in pending:
         if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
             continue
-        if task_obj.ticket.overlay and resolve_overlay_name(task_obj.ticket.overlay) is None:
+        if not task_obj.ticket.has_dispatchable_overlay():
             reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
             logger.warning("Drain: failing task %s permanently — %s", task_obj.pk, reason)
             task_obj.claim(claimed_by="unknown-overlay-guard")

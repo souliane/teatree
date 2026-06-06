@@ -22,7 +22,6 @@ from teatree.core.review_findings import (
     find_existing_issue,
     neutralize_bare_references,
     parse_findings,
-    parse_pr_url,
     process_review_findings,
 )
 from teatree.hooks import banned_terms_scanner
@@ -70,23 +69,6 @@ class TestFingerprint:
 
     def test_differs_on_different_body(self) -> None:
         assert _finding(body="one").fingerprint != _finding(body="two").fingerprint
-
-
-class TestParsePrUrl:
-    def test_parses_github_pr(self) -> None:
-        ref = parse_pr_url("https://github.com/souliane/teatree/pull/1573")
-        assert ref is not None
-        assert ref.repo == "souliane/teatree"
-        assert ref.iid == 1573
-
-    def test_parses_gitlab_mr(self) -> None:
-        ref = parse_pr_url("https://gitlab.com/acme/backend/-/merge_requests/42")
-        assert ref is not None
-        assert ref.repo == "acme/backend"
-        assert ref.iid == 42
-
-    def test_returns_none_for_non_pr_url(self) -> None:
-        assert parse_pr_url("https://github.com/souliane/teatree/issues/1573") is None
 
 
 class TestParseFindings:

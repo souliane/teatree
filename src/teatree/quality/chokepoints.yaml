@@ -13,6 +13,21 @@
     - souliane/teatree#128
     - souliane/teatree#390
 
+- id: django-setup-bootstrap
+  name: Django bootstrap (django.setup)
+  concern: >
+    A Typer command body that touches the ORM must bootstrap Django through the
+    single teatree.utils.django_bootstrap.ensure_django helper, never an inline
+    django.setup() — one place owns the DJANGO_SETTINGS_MODULE default and the
+    idempotent setup call.
+  match_kind: module_attr
+  protected_symbol: django
+  protected_attrs: [setup]
+  allowed_modules:
+    - teatree.utils.django_bootstrap
+  refs:
+    - souliane/teatree#1986
+
 - id: on-behalf-routed-egress
   name: Token-routed Slack egress (post_routed / react_routed)
   concern: >

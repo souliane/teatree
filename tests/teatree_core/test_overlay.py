@@ -1,7 +1,6 @@
 import json
 import logging
 import tempfile
-from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -37,13 +36,6 @@ class SuperCallingOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return super().get_provision_steps(worktree)
-
-
-@pytest.fixture(autouse=True)
-def clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
 
 
 class TestGetOverlay(TestCase):

@@ -8,6 +8,7 @@ import typer
 from teatree.backends.slack_receiver import default_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 from teatree.utils.singleton import AlreadyRunningError, read_pid, singleton
 
@@ -127,9 +128,7 @@ def _ack_messages(messages: list[dict[str, str]]) -> None:
     colleague-channel mention now correctly gated) is logged and skipped —
     the fast cron must not break the whole tick on one ack.
     """
-    import django  # noqa: PLC0415
-
-    django.setup()
+    ensure_django()
     for msg in messages:
         overlay = msg.get("overlay", "")
         channel = msg.get("channel", "")
@@ -175,9 +174,7 @@ def react_command(
         ``t3 review approve-on-behalf`` satisfier), OR Slack rejected the
         call (``missing_scope``, ``not_in_channel``, …).
     """
-    import django  # noqa: PLC0415
-
-    django.setup()
+    ensure_django()
     backend = messaging_from_overlay(overlay or None)
     if backend is None:
         typer.echo("ERROR No slack backend resolvable — set --overlay or T3_OVERLAY_NAME.")

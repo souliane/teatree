@@ -37,6 +37,7 @@ from teatree.cli._doctor_plugin_repair import (
     _resolve_main_clone,
 )
 from teatree.cli.recommended_authorizations import authorizations, report_missing_authorizations
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
 doctor_app = typer.Typer(no_args_is_help=True, help="Smoke-test hooks, imports, services.")
@@ -63,7 +64,6 @@ __all__ = (
     "_check_singletons",
     "_check_skills",
     "_do_ensure_plugin_registered",
-    "_ensure_django",
     "_ensure_plugin_registered",
     "_find_host_project_root",
     "_find_teatree_pyproject_from_cwd",
@@ -83,21 +83,6 @@ __all__ = (
 def agent_skill_dirs() -> list[tuple[str, Path]]:
     """Return (runtime_label, skills_dir) pairs, resolved against the current HOME."""
     return [(name, Path.home() / f".{name}" / "skills") for name in AGENT_SKILL_RUNTIMES]
-
-
-def _ensure_django() -> None:
-    """Configure Django so DB-touching doctor checks can inspect the self-DB.
-
-    ``check`` is reached through the Django-free Typer group, so no
-    ``django.setup()`` has run.  The self-DB schema guard reads the ORM
-    connection and would otherwise raise ``ImproperlyConfigured`` (#126).
-    Idempotent — mirrors the canonical ``_ensure_django`` in sibling CLI
-    modules (``cli/tools.py``).
-    """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
 
 
 _DEV_SOURCES_FILE = ".t3-dev-sources"
@@ -542,7 +527,7 @@ def check() -> bool:
     # Without this the inspection hit ``ImproperlyConfigured`` and silently
     # WARNed, masking a stale runtime self-DB that locks out the merge path
     # (#126). Configure Django first so the guard reports the REAL state.
-    _ensure_django()
+    ensure_django()
 
     from teatree.core.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
 

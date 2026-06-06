@@ -7,7 +7,6 @@ common case for frontend-only repos), the runner used to call
 skips ``_run_db_import`` entirely when ``worktree.db_name`` is empty.
 """
 
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -17,7 +16,6 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep
-from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners import WorktreeProvisionRunner
 
 
@@ -48,13 +46,6 @@ class _RecordingOverlay(OverlayBase):
     def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
         self.db_import_calls += 1
         return True
-
-
-@pytest.fixture(autouse=True)
-def _clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
 
 
 class TestRunnerSkipsDbImportWhenNoDbName(TestCase):

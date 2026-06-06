@@ -12,13 +12,13 @@ spawns agents with the standard tool. This keeps unit tests deterministic.
 """
 
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from teatree.config import get_effective_settings
 from teatree.core.phases import normalize_phase, subagent_for_phase
 from teatree.loop.scanners.base import ScanSignal
+from teatree.url_classify import find_pr_urls
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -182,15 +182,12 @@ def _is_statusline_dropped(signal: ScanSignal) -> bool:
     return signal.kind in _STATUSLINE_DROP_KINDS or signal.kind.startswith(_STATUSLINE_DROP_PREFIXES)
 
 
-_PR_URL_RE = re.compile(r"https?://[^\s>|]+/(?:merge_requests|pull|pulls)/\d+")
-
-
 def _first_pr_url(*texts: str) -> str:
     """Return the first PR/MR URL found across *texts*, or ``""``."""
     for text in texts:
-        match = _PR_URL_RE.search(text)
-        if match:
-            return match.group(0)
+        found = find_pr_urls(text)
+        if found:
+            return found[0]
     return ""
 
 

@@ -5,6 +5,7 @@ shippable-diff gate.
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -375,3 +376,24 @@ class TestHasShippableDiff(TestCase):
         Worktree.objects.create(ticket=ticket, repo_path=str(not_a_repo), branch="feature")
 
         assert ticket.has_shippable_diff() is False
+
+
+class TestHasDispatchableOverlay(TestCase):
+    """``Ticket.has_dispatchable_overlay`` — the single poison-pill predicate (#1959)."""
+
+    def test_blank_overlay_is_dispatchable(self) -> None:
+        ticket = Ticket.objects.create(overlay="")
+
+        assert ticket.has_dispatchable_overlay() is True
+
+    def test_resolvable_overlay_is_dispatchable(self) -> None:
+        ticket = Ticket.objects.create(overlay="known-overlay")
+
+        with patch("teatree.core.overlay_loader.resolve_overlay_name", return_value="known-overlay"):
+            assert ticket.has_dispatchable_overlay() is True
+
+    def test_unresolvable_overlay_is_poison(self) -> None:
+        ticket = Ticket.objects.create(overlay="ghost-overlay")
+
+        with patch("teatree.core.overlay_loader.resolve_overlay_name", return_value=None):
+            assert ticket.has_dispatchable_overlay() is False

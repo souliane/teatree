@@ -37,6 +37,8 @@ mechanics module stays under the OOP/LOC ceiling.
 
 import typer
 
+from teatree.utils.django_bootstrap import ensure_django
+
 # The live, colleague-visible comment is a ``post_comment`` on-behalf
 # action, so a recorded authorization for it IS the authorization the
 # live-post chokepoint needs.
@@ -120,12 +122,7 @@ def register(review_app: typer.Typer) -> None:
         invocation publishes and consumes both tokens. Any subsequent
         live post on the same MR requires a fresh ``authorize``.
         """
-        import os  # noqa: PLC0415
-
-        import django  # noqa: PLC0415
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
+        ensure_django()
 
         from teatree.core.models.live_post_approval import LivePostApproval, canonical_mr_scope  # noqa: PLC0415
         from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError  # noqa: PLC0415

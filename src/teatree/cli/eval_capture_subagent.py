@@ -7,14 +7,7 @@ import typer
 from teatree.eval.discovery import discover_specs, find_spec
 from teatree.eval.models import EvalSpec
 from teatree.eval.subagent_capture import capture_to
-
-
-def _bootstrap_django() -> None:
-    import django  # noqa: PLC0415
-    from django.apps import apps  # noqa: PLC0415
-
-    if not apps.ready:
-        django.setup()
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def _require_spec(name: str) -> EvalSpec:
@@ -52,7 +45,7 @@ def capture_subagent(
     dispatch and pass it as ``--since`` so back-to-back scenarios never grab a
     prior sub-agent's file.
     """
-    _bootstrap_django()
+    ensure_django()
     spec = _require_spec(name)
     target = (transcript_dir or Path.cwd()) / f"{spec.name}.jsonl"
     source = capture_to(target, since=since)

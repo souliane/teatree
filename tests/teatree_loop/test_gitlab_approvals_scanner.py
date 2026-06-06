@@ -572,12 +572,6 @@ class TestHelperFunctions(TestCase):
         with patch.object(mod, "_ticket_model", return_value=None):
             mod._record_emission("https://gitlab.com/a/b/-/merge_requests/1", "abc")
 
-    def test_gitlab_project_path_returns_empty_for_non_mr_url(self) -> None:
-        from teatree.loop.scanners.gitlab_approvals import _gitlab_project_path  # noqa: PLC0415
-
-        assert _gitlab_project_path("https://gitlab.com/acme/backend") == ""
-        assert _gitlab_project_path("https://github.com/o/r/pull/9") == ""
-
     def test_int_field_skips_bool_values(self) -> None:
         from teatree.loop.scanners.gitlab_approvals import _int_field  # noqa: PLC0415
 
