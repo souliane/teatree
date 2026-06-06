@@ -23,11 +23,17 @@ from dataclasses import dataclass, field, replace
 
 import pytest
 
+from teatree.core.models import AutoReviewDispatch, Task
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
 from teatree.loop.scanners.pr_sweep import CheckResult, PrSummary, PrSweepScanner
-from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier, SlackMergeNotifier, _decode_pr
+from teatree.loop.scanners.pr_sweep_adapters import (
+    AutoReviewTaskDispatcher,
+    NullMergeNotifier,
+    SlackMergeNotifier,
+    _decode_pr,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -134,13 +140,27 @@ class FakeKeystone:
         return self.merged, self.merged_sha, self.error
 
 
-def _scanner(
+@dataclass(slots=True)
+class FakeReviewDispatcher:
+    """Mock ``ReviewDispatcher`` — records every enqueue call."""
+
+    calls: list[tuple[str, int, str, str, str]] = field(default_factory=list)
+    returns: bool = True
+
+    def enqueue(self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> bool:
+        self.calls.append((slug, pr_id, head_sha, pr_url, overlay))
+        return self.returns
+
+
+def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweepScanner constructor flag the cases vary.
     *,
     api: FakePrApiClient,
     keystone: FakeKeystone,
     notifier: NullMergeNotifier | None = None,
     repos: tuple[str, ...] = (SLUG,),
     solo_overlay: bool = False,
+    auto_review_dispatch: bool = False,
+    dispatcher: FakeReviewDispatcher | None = None,
 ) -> tuple[PrSweepScanner, NullMergeNotifier]:
     notifier = notifier or NullMergeNotifier()
     return (
@@ -151,6 +171,8 @@ def _scanner(
             notifier=notifier,
             overlay="teatree",
             solo_overlay=solo_overlay,
+            auto_review_dispatch=auto_review_dispatch,
+            review_dispatcher=dispatcher,
         ),
         notifier,
     )
@@ -526,6 +548,174 @@ class TestSoloOverlayRequiresIndependentColdReview:
         assert api.merge_pr_calls == []
         assert notifier.flag_calls == []
         assert signals[0].payload["reason"] == "no_clear_for_head"
+
+
+class TestAutoReviewDispatch:
+    """flag_no_review on a full-autonomy overlay enqueues ONE claimable review task (#68).
+
+    The structural fix for "own CI-green PR sits open because nothing dispatches
+    the cold review". When the scanner refuses to self-merge (no independent
+    verdict) AND ``auto_review_dispatch`` is on, it enqueues a deduped reviewing
+    task whose recorded verdict the NEXT sweep merges on. Red CI / conflict /
+    draft never reach this path (the sweep already skips those). A
+    human-approval-required overlay (``solo_overlay=False``) never reaches
+    ``_flag_no_review`` at all, so it never enqueues.
+    """
+
+    def test_flag_no_review_enqueues_one_review_task_when_armed(self) -> None:
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is True
+
+    def test_no_dispatch_when_flag_disabled(self) -> None:
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=False, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload.get("review_dispatched") is False
+
+    def test_flag_on_but_no_dispatcher_does_not_dispatch(self) -> None:
+        # Defensive: armed but no dispatcher wired -> not dispatched, no crash.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=None
+        )
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is False
+
+    def test_dedup_dispatcher_returns_false_marks_not_dispatched(self) -> None:
+        # The dispatcher reports "already armed for this head" (dedup) — the
+        # signal records review_dispatched=False so a re-tick is a no-op.
+        dispatcher = FakeReviewDispatcher(returns=False)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, f"https://github.com/{SLUG}/pull/6230", "teatree")]
+        assert signals[0].payload["review_dispatched"] is False
+
+    def test_recorded_verdict_suppresses_dispatch_entirely(self) -> None:
+        # An independent merge_safe verdict at the head means the PR merges — it
+        # never reaches flag_no_review, so the dispatcher is never called.
+        _record_cold_review()
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].kind == "pr_sweep.merged"
+
+    def test_red_ci_suppresses_dispatch(self) -> None:
+        # A red required check skips before the cold-review gate — no review task.
+        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,))]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].payload["reason"] == "ci_red"
+
+    def test_draft_suppresses_dispatch(self) -> None:
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(is_draft=True)]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].payload["reason"] == "draft"
+
+    def test_human_approval_overlay_never_reaches_dispatch_path(self) -> None:
+        # solo_overlay=False is the human-approval-required posture (a
+        # GitLab-governed client overlay): the sweep skips on no_clear_for_head
+        # and never enters _evaluate_solo_overlay, so no review task is enqueued.
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=False, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].payload["reason"] == "no_clear_for_head"
+
+    def test_end_to_end_enqueued_task_then_recorded_verdict_merges_on_next_sweep(self) -> None:
+        # Sweep 1: no verdict, armed -> flag_no_review + a real reviewing task.
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api,
+            keystone=FakeKeystone(),
+            solo_overlay=True,
+            auto_review_dispatch=True,
+            dispatcher=AutoReviewTaskDispatcher(),
+        )
+
+        first = scanner.scan()
+
+        assert first[0].kind == "pr_sweep.flag_no_review"
+        assert first[0].payload["review_dispatched"] is True
+        assert AutoReviewDispatch.objects.filter(slug=SLUG, pr_id=6230, head_sha=HEAD).count() == 1
+        review_task = Task.objects.get(phase="reviewing")
+        assert review_task.status == Task.Status.PENDING
+
+        # The reviewer records a merge_safe verdict at the reviewed head.
+        _record_cold_review()
+
+        # Sweep 2 (same head): the recorded verdict authorises the merge.
+        second = scanner.scan()
+
+        assert second[0].kind == "pr_sweep.merged"
+        assert api.merge_pr_calls == [(SLUG, 6230)]
+        # No second dispatch row — the verdict path merged instead of re-arming.
+        assert AutoReviewDispatch.objects.count() == 1
+
+    def test_dispatcher_failure_does_not_crash_sweep(self) -> None:
+        @dataclass(slots=True)
+        class _BoomDispatcher:
+            def enqueue(self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> bool:
+                msg = "db down"
+                raise RuntimeError(msg)
+
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=_BoomDispatcher()
+        )
+
+        signals = scanner.scan()
+
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is False
 
 
 class TestConflictFlag:

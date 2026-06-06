@@ -105,6 +105,7 @@ class MergeAttempt:
     merged_sha: str = ""
     reason: str = ""
     url: str = ""
+    review_dispatched: bool = False
 
 
 @runtime_checkable
@@ -131,6 +132,23 @@ class MergeKeystone(Protocol):
     def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
         """Return ``(merged, merged_sha, error)`` — ``error`` is the rejection reason."""
         ...  # pragma: no branch
+
+
+@runtime_checkable
+class ReviewDispatcher(Protocol):
+    """Enqueue ONE claimable reviewing task for a no-review own PR (#68) — mockable.
+
+    The production adapter records an
+    :class:`teatree.core.models.auto_review_dispatch.AutoReviewDispatch` row
+    (deduped per ``(slug, pr_id, head_sha)``) and creates the
+    ``Task(phase=reviewing)`` the loop self-pump dispatches to ``t3:reviewer``.
+    Returns ``True`` when a new task was armed, ``False`` when a task for this
+    head already exists (the dedup no-op).
+    """
+
+    def enqueue(
+        self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str
+    ) -> bool: ...  # pragma: no branch
 
 
 @runtime_checkable
@@ -204,6 +222,14 @@ class PrSweepScanner:
     notifier: MergeNotifier
     overlay: str = ""
     solo_overlay: bool = False
+    #: #68: on ``flag_no_review`` for an own CI-green PR, enqueue ONE claimable
+    #: reviewing task so the loop dispatches the cold review whose recorded
+    #: verdict the next sweep merges on. Only meaningful on the solo-overlay
+    #: path (full autonomy + ``require_human_approval_to_merge=false``) — set
+    #: by ``tick_jobs`` exactly there; a human-approval overlay never enters
+    #: ``_evaluate_solo_overlay`` so it is never armed here in practice.
+    auto_review_dispatch: bool = False
+    review_dispatcher: "ReviewDispatcher | None" = None
     name: str = "pr_sweep"
 
     def scan(self) -> list[ScanSignal]:
@@ -319,15 +345,46 @@ class PrSweepScanner:
         return MergeAttempt(slug=pr.slug, pr_id=pr.number, decision="flag_conflict", reason="conflict", url=pr.url)
 
     def _flag_no_review(self, pr: PrSummary) -> MergeAttempt:
-        """Refuse a solo-overlay auto-merge with no recorded cold-review — flag only (#68)."""
+        """Refuse a solo-overlay auto-merge with no recorded cold-review, then arm the review (#68).
+
+        The maker≠checker boundary still forbids a self-merge — that part is
+        flag-only. What changes (#68) is the loop no longer just logs: when
+        ``auto_review_dispatch`` is on it enqueues ONE claimable reviewing task
+        (deduped per head) whose recorded ``merge_safe`` verdict the NEXT sweep
+        merges on. Draft / red-CI / conflict never reach here (the sweep skips
+        them upstream), so an armed task only ever covers a green+clean own PR.
+        """
         self._flag(slug=pr.slug, pr_id=pr.number, reason="no_independent_review", url=pr.url)
+        dispatched = self._enqueue_review(pr)
         return MergeAttempt(
             slug=pr.slug,
             pr_id=pr.number,
             decision="flag_no_review",
             reason="solo_overlay_no_review",
             url=pr.url,
+            review_dispatched=dispatched,
         )
+
+    def _enqueue_review(self, pr: PrSummary) -> bool:
+        """Enqueue the claimable review task for *pr*; return whether one was armed.
+
+        Best-effort: a missing dispatcher, the flag being off, or any enqueue
+        error all degrade to ``False`` (the flag-level signal still fires) so a
+        DB hiccup never aborts the sweep.
+        """
+        if not self.auto_review_dispatch or self.review_dispatcher is None:
+            return False
+        try:
+            return self.review_dispatcher.enqueue(
+                slug=pr.slug,
+                pr_id=pr.number,
+                head_sha=pr.head_sha,
+                pr_url=pr.url,
+                overlay=self.overlay,
+            )
+        except Exception:
+            logger.exception("pr_sweep failed to enqueue auto-review task for %s#%d", pr.slug, pr.number)
+            return False
 
     def _flag(self, *, slug: str, pr_id: int, reason: str, url: str) -> None:
         try:
@@ -467,5 +524,6 @@ def _signal_from_attempt(attempt: MergeAttempt, *, overlay: str) -> ScanSignal:
             "merged_sha": attempt.merged_sha,
             "overlay": overlay,
             "url": attempt.url,
+            "review_dispatched": attempt.review_dispatched,
         },
     )
