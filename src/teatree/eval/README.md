@@ -13,11 +13,58 @@ and a subprocess wrapper around `claude -p`. There is no test framework
 coupling: the runner returns an `EvalRun` dataclass and the matchers
 operate on plain captured tool calls.
 
+This file is the dedicated evals-architecture doc: where the parts live,
+the tech stack, how runs are triggered (local default, CI manual + weekly),
+and the per-skill coverage map.
+
+## Architecture
+
+### Where the parts live
+
+| Concern | Location |
+|---|---|
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval*.py` (`eval.py` wiring; `eval_multi_trial.py` pass@k/matrix; `eval_transcript_replay.py` replay command + resolver; `eval_docker.py` CI-image run; `eval_all.py` lane orchestration + table; `eval_run_modes.py` persist/grade/manifest helpers) |
+| Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
+| Spec discovery | `src/teatree/eval/discovery.py` |
+| Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
+| Transcript readers | `src/teatree/eval/transcript.py` (stream-json), `session_transcript.py` + `subagent_transcript.py` (on-disk session schema) |
+| Deterministic lanes | `src/teatree/eval/trigger_qa.py`, `regression_corpus.py`, `negative_control.py`, `transcript_conformance.py` |
+| Run-store | `src/teatree/core/models/eval_run.py` (`EvalRunRecord` + `EvalScenarioResult`) |
+| Generated corpus | `scripts/eval/corpus_gen/` + `generate_corpus.py` |
+| Pre-push hook | `.pre-commit-config.yaml` `eval-agent-behavior` (push stage → `t3 eval all --free-only`) |
+| CI triggers | `.github/workflows/ci.yml` + `.gitlab-ci.yml` (`eval-weekly`), `scripts/eval/first_pr_of_week.py` |
+
+### Tech stack
+
+Python 3.12+, typer (CLI), Django ORM (run-store only), `claude -p`
+`stream-json` for the AI lane, PyYAML for specs. No PyPI package — teatree is
+installed editable from a clone; the eval harness ships inside it.
+
+### How it runs
+
+- **Local, on the host (the default).** `t3 eval all` / `t3 eval all
+  --free-only` run directly on the host — no container, no setup. This is the
+  default for every local invocation.
+- **Local, in the CI image (opt-in parity).** `t3 eval all --docker` runs the
+  same gate inside `dev/Dockerfile.test` — the exact image the CI test job
+  builds — for environment parity when debugging a CI-only failure. Host-run
+  stays the default; `--docker` is the explicit opt-in.
+- **Pre-push (deterministic gate).** The `eval-agent-behavior` prek hook runs
+  the four free deterministic lanes (`t3 eval all --free-only`) at the push
+  stage — token-free, ~2–3 s — and fails the push on a real violation.
+- **CI manual.** The weekly eval gate can be triggered on demand
+  ([#1992](https://github.com/souliane/teatree/pull/1992)).
+- **CI weekly.** The metered `claude -p` scenario run plus the free lanes run
+  once per ISO week (first PR of the week, or a Sunday cron backstop for a
+  PR-less week). See "Triggering" below.
+
 ## Invocation
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
 t3 eval all                                  # all five lanes (trigger-qa + regression + negative-control + transcript-replay + AI) in one summary table
+t3 eval all --free-only                       # the four free deterministic lanes only (no AI lane) — the pre-push gate
+t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -44,11 +91,14 @@ t3 eval negative-control                      # harness self-test: plant a viola
 t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
 ```
 
-The `eval-agent-behavior` prek hook (manual stage) shells the same token-free
-self-test (`uv run python -m teatree.eval.negative_control`):
+The `eval-agent-behavior` prek hook runs the four free deterministic lanes
+(`t3 eval all --free-only`) at the **pre-push** stage — token-free, no model,
+no spec discovery, ~2–3 s. It fails the push on any real deterministic
+violation; the transcript-replay lane SKIPs (never FAILs) when no in-scope
+session transcript exists. Run it on demand with:
 
 ```bash
-prek run --hook-stage manual eval-agent-behavior
+prek run --hook-stage push eval-agent-behavior
 ```
 
 ### Execution backends and the cost split (default = subscription)
@@ -273,6 +323,34 @@ class, where it is pinned, and the originating fix:
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
 ticket, …) cover the remaining classes already shipped on this branch.
+
+### Per-skill coverage map
+
+Behavioral scenarios pin an `agent_path` (a `SKILL.md`). This map shows how
+many scenarios target each skill, so a coverage gap is a skill with no
+behavioral guard. The count is the number of scenario specs whose `agent_path`
+is that skill (cross-skill rules concentrate on `rules`).
+
+| Skill | Scenarios | Notes |
+|---|---|---|
+| rules | 39 | cross-cutting agent rules (the shared invariant surface) |
+| ship | 23 | delivery, merge keystone, MR-first-line, on-behalf, sweep |
+| review | 16 | cold-review depth, reaction discipline, claim-means-review-now |
+| code | 16 | worktree-first, root-cause, do-work-now, anti-vacuous self-review |
+| workspace | 12 | lifecycle, never-edit-main-clone, full-suite discipline |
+| test | 9 | test quality, never-local-full-suite, e2e-is-part-of-done |
+| debug | 9 | systematic-debugging discipline |
+| sweeping-prs | 7 | sweep-merge-never-rebase, review-branch-current |
+| ticket | 5 | intake, stale-open-issue gate |
+| e2e | 2 | mandatory-E2E gate, evidence source |
+| architecture-design | 2 | design-first pre-check |
+| answerer, checking, contribute, followup, next, review-request, scanning-news, speed, todos, update | 1 each | per-phase coverage |
+
+Skills with **no behavioral scenario yet** (deterministic gates or
+docs-driven, lower behavioral-regression risk): availability, handover, loops,
+platforms, retro, running-evals, setup, teatree, teatree-batch, teatree-bughunt,
+teatree-dogfood, teatree-plan, typer. Adding a scenario for one of these is the
+unit of work that closes a per-skill gap.
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
@@ -562,9 +640,10 @@ AC5/AC6) is the harness's own self-test: it plants a known rule violation (an
 agent editing the canonical clone without `git worktree add` first), drives it
 through the *public* report path, and exits 0 only when the harness reports the
 violation — naming the violated rule and the offending tool call. It is
-token-free and deterministic (it never shells `claude -p`), so it runs in the
-`eval-agent-behavior` prek manual hook. A non-zero exit means the harness went
-green on a genuine violation, i.e. the harness itself is broken.
+token-free and deterministic (it never shells `claude -p`), so it runs as one of
+the four lanes the `eval-agent-behavior` prek pre-push hook gates on. A non-zero
+exit means the harness went green on a genuine violation, i.e. the harness
+itself is broken.
 
 It is anti-vacuous by construction: `src/teatree/eval/negative_control.py`
 builds both a violating run (caught) and a compliant run (not caught) of the

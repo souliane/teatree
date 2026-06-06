@@ -236,12 +236,12 @@ repos:
         always_run: true
         stages: [manual]
       - id: eval-agent-behavior
-        name: Eval harness self-test (token-free negative control; on demand)
+        name: Deterministic eval lanes (trigger-qa, regression, negative-control, transcript-replay; token-free)
         language: system
-        entry: uv run python -m teatree.eval.negative_control
+        entry: uv run t3 eval all --free-only
         pass_filenames: false
         always_run: true
-        stages: [manual]
+        stages: [push]
 
   # Phase 7b - Quality gate guard
   - repo: local
