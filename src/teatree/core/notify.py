@@ -508,4 +508,54 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     return delivered, len(rows)
 
 
-__all__ = ["NotifyKind", "drain_deferred_questions", "notify_user"]
+def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: int = 50) -> tuple[int, int]:
+    """Re-deliver INFO DMs that stranded with no reachable backend.
+
+    The cross-tick re-delivery peer of :func:`drain_deferred_questions`. A
+    bot→user INFO DM fired from a sub-agent shell whose restricted PATH
+    cannot read ``pass`` resolves no messaging backend, so :func:`notify_user`
+    records a recoverable NOOP :class:`BotPing` row and returns ``False`` — the
+    DM is durably parked, not lost. This drain runs on a later tick in a
+    context that *does* have a working backend (the orchestrator loop) and
+    re-attempts each parked INFO row under its original ``idempotency_key``.
+
+    Distinct from the :func:`teatree.messaging.notify_with_fallback` NOOP rule
+    ("a NOOP is not recoverable"): that wrapper retries the *same* call within
+    one turn over the *same* unconfigured backend, where a NOOP genuinely
+    cannot recover. This drain retries on a *different tick* in a *different*
+    context whose backend resolves — the only place a NOOP becomes deliverable.
+
+    Re-delivery is via :func:`notify_user` under the parked key, so
+    :meth:`BotPing.claim_delivery` replaces the recoverable row with a fresh
+    claim and the existing idempotency/audit invariants hold unchanged. Fails
+    open: one row's delivery failure (re-recorded on its own row) never aborts
+    the drain or raises. Returns ``(delivered, total)``.
+    """
+    rows = list(BotPing.recoverable_info(limit=limit))
+    if not rows:
+        return 0, 0
+
+    previous_overlay = os.environ.get("T3_OVERLAY_NAME")
+    if overlay:
+        os.environ["T3_OVERLAY_NAME"] = overlay
+    delivered = 0
+    try:
+        for row in rows:
+            if notify_user(
+                row.text,
+                kind=NotifyKind.INFO,
+                idempotency_key=row.idempotency_key,
+                user_id=user_id or None,
+            ):
+                delivered += 1
+    finally:
+        if overlay:
+            if previous_overlay is None:
+                os.environ.pop("T3_OVERLAY_NAME", None)
+            else:
+                os.environ["T3_OVERLAY_NAME"] = previous_overlay
+
+    return delivered, len(rows)
+
+
+__all__ = ["NotifyKind", "drain_deferred_questions", "drain_undelivered_notifies", "notify_user"]
