@@ -1,6 +1,6 @@
 ---
 name: platforms
-description: Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms.
+description: Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms.
 compatibility: any
 metadata:
   version: 0.0.1
@@ -18,5 +18,6 @@ API recipes for issue trackers, CI systems, and chat platforms. Each platform ha
 | [`references/gitlab.md`](references/gitlab.md) | GitLab API, PR validation, pipeline control |
 | [`references/github.md`](references/github.md) | GitHub API, PR workflows |
 | [`references/slack.md`](references/slack.md) | Slack messaging, channel discovery |
+| [`references/x-twitter.md`](references/x-twitter.md) | X (Twitter) post reading via JSON mirror |
 
 Skills reference these via `See platforms/references/gitlab.md § <section>`.
