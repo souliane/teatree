@@ -383,7 +383,7 @@ uv tool install --editable .   # global `t3` binary, live-reloaded from this clo
 t3 setup                       # installs skills globally, respects local symlinks
 ```
 
-New here? [`MAP.md`](MAP.md) lists every package directory with a one-line
+New here? [`docs/MAP.md`](docs/MAP.md) lists every package directory with a one-line
 purpose and links to the relevant `BLUEPRINT.md` section — read it first to
 find where something lives.
 

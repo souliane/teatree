@@ -49,6 +49,10 @@ markdown_extensions:
 plugins:
   - search
 
+exclude_docs: |
+  MAP.md
+  audits/
+
 nav:
   - Getting Started:
       - Overview: index.md
