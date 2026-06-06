@@ -22,9 +22,9 @@ from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.management.commands.loop_tick import _registry_jobs_builder
 from teatree.core.models import MiniLoopMarker
+from teatree.loop.global_scanner_factories import build_default_jobs
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickRequest, run_tick
-from teatree.loop.tick_jobs import build_default_jobs
 from teatree.loops.config import LoopOverride, LoopsConfig
 from teatree.loops.fanout import build_registry_jobs
 from teatree.loops.orchestrator import Orchestrator
@@ -207,7 +207,9 @@ class RegistryLegacyParityTestCase(TestCase):
         non-empty — otherwise omitting the kwargs is indistinguishable from
         passing the empty default and the guard would be vacuous.
         """
-        from teatree.loop.tick_jobs import Domain, _jobs_for_backend_hosts, jobs_for_domain  # noqa: PLC0415
+        from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+        from teatree.loop.job_identity import Domain  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _jobs_for_backend_hosts  # noqa: PLC0415
 
         backend = self._url_gated_backend()
         legacy = {
@@ -243,7 +245,7 @@ class RegistryLegacyParityTestCase(TestCase):
 
 class RunTickRegistrySeamTestCase(TestCase):
     def test_run_tick_uses_injected_jobs_builder_and_keeps_side_effects(self) -> None:
-        from teatree.loop.tick_jobs import _ScannerJob  # noqa: PLC0415
+        from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
 
         seen: list[tuple[object, dt.datetime]] = []
 

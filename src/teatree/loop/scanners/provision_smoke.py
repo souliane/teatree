@@ -185,7 +185,7 @@ def build_provision_smoke_scanner(
     hatch). The overlay anchor is resolved via the injected
     ``discover_active_overlay`` callable, with ``dogfood_smoke_overlay``
     as the explicit pin and ``canonical_fallback`` (e.g. ``t3-teatree``)
-    as the defensive default. The callables are injected so tick_jobs
+    as the defensive default. The callables are injected so global_scanner_factories
     keeps wiring lean and tests can stub each layer independently.
     """
     settings = load_config().user  # type: ignore[attr-defined]

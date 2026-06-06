@@ -14,13 +14,14 @@ from typing import TYPE_CHECKING
 from teatree.loops.base import MiniLoop
 
 if TYPE_CHECKING:
-    from teatree.loop.tick_jobs import _ScannerJob
+    from teatree.loop.job_identity import _ScannerJob
 
 _REGISTRY_CADENCE_FLOOR = 60
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
-    from teatree.loop.tick_jobs import _resource_pressure_scanner, _ScannerJob  # noqa: PLC0415
+    from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415
+    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
 
     scanner = _resource_pressure_scanner()
     if scanner is None:

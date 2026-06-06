@@ -9,7 +9,7 @@ through the TOCTOU-safe :meth:`ImplementedIssueMarker.claim` so two
 concurrent ticks never double-dispatch the same issue.
 
 Whether the scanner runs at all is decided one layer up by
-:func:`teatree.loop.tick_jobs._issue_implementer_scanner_for` — the triple
+:func:`teatree.loop.scanner_factories._issue_implementer_scanner_for` — the triple
 gate (enabled flag, in-flight concurrency budget, per-issue claim
 idempotency). Dispatch routing of the emitted signals lands in C4 (#1554);
 C3 stops at claim + signal emission.

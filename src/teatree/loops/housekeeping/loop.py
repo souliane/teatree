@@ -6,7 +6,7 @@ from teatree.loops.base import MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
-    from teatree.loop.tick_jobs import _ScannerJob
+    from teatree.loop.job_identity import _ScannerJob
 
 
 def _build_jobs(
@@ -21,7 +21,9 @@ def _build_jobs(
     it is built directly here, not via the per-overlay seam. The
     per-overlay pull-main-clone scanner is owned by ``Domain.HOUSEKEEPING``.
     """
-    from teatree.loop.tick_jobs import Domain, _ScannerJob, _self_update_scanner, jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
 
     jobs: list[_ScannerJob] = []
     self_update = _self_update_scanner()

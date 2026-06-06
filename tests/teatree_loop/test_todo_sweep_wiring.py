@@ -82,10 +82,10 @@ class BuilderTests(TestCase):
 
     def test_builds_scanner_for_overlay_with_class(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _todo_sweep_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _todo_sweep_scanner_for  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=UserSettings(todo_sweep_recheck_interval_hours=4),
         ):
             scanner = _todo_sweep_scanner_for(self._backend(overlay=_Overlay()))
@@ -94,23 +94,23 @@ class BuilderTests(TestCase):
         assert scanner.recheck_interval_hours == 4
 
     def test_returns_none_when_no_overlay_class(self) -> None:
-        from teatree.loop.tick_jobs import _todo_sweep_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _todo_sweep_scanner_for  # noqa: PLC0415
 
         assert _todo_sweep_scanner_for(self._backend(overlay=None)) is None
 
     def test_returns_none_when_disabled(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _todo_sweep_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _todo_sweep_scanner_for  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=UserSettings(todo_sweep_disabled=True),
         ):
             assert _todo_sweep_scanner_for(self._backend(overlay=_Overlay())) is None
 
     def test_jobs_for_overlay_backend_wires_scanner(self) -> None:
+        from teatree.loop.domain_jobs import _jobs_for_overlay_backend  # noqa: PLC0415
         from teatree.loop.scanners.todo_sweep import TodoSweepScanner  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _jobs_for_overlay_backend  # noqa: PLC0415
 
         fake = TodoSweepScanner(overlay=_Overlay(), overlay_name="t3-acme")
         backend = type(
@@ -127,15 +127,14 @@ class BuilderTests(TestCase):
             },
         )()
         with (
-            patch("teatree.loop.tick_jobs._todo_sweep_scanner_for", return_value=fake),
-            patch("teatree.loop.tick_jobs._architectural_review_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._pr_sweep_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._pull_main_clone_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._codex_review_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._slack_broadcasts_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._failed_e2e_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._jobs_for_backend_hosts", return_value=[]),
-            patch("teatree.loop.tick_jobs._user_slack_id_for_overlay", return_value=""),
+            patch("teatree.loop.domain_jobs._todo_sweep_scanner_for", return_value=fake),
+            patch("teatree.loop.domain_jobs._architectural_review_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._pr_sweep_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._pull_main_clone_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._codex_review_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._slack_broadcasts_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._failed_e2e_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._user_slack_id_for_overlay", return_value=""),
         ):
             jobs = _jobs_for_overlay_backend(backend)
         assert any(j.scanner is fake and j.overlay == "t3-acme" for j in jobs)

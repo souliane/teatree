@@ -1,7 +1,7 @@
 """Shared enable + cadence gate for the mini-loop registry (#1481).
 
 Both :class:`teatree.loops.orchestrator.Orchestrator.tick` and
-:func:`teatree.loop.tick_jobs.build_default_jobs` decide which mini-loops
+:func:`teatree.loop.global_scanner_factories.build_default_jobs` decide which mini-loops
 run a given tick. Before #1481 each owned its own copy of the
 enable/cadence logic — the two-sources-of-truth drift the issue calls
 out. :func:`elapsed_and_enabled` is the single decision both call so the

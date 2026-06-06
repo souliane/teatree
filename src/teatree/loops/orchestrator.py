@@ -39,9 +39,9 @@ if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend, MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
     from teatree.loop.dispatch import DispatchAction
+    from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.base import ScanSignal
     from teatree.loop.scanners.notion_view import NotionLike
-    from teatree.loop.tick_jobs import _ScannerJob
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def _default_dispatch(jobs: "list[_ScannerJob]") -> "list[DispatchAction]":
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
     from teatree.loop.dispatch import dispatch  # noqa: PLC0415
-    from teatree.loop.tick_jobs import _run_job  # noqa: PLC0415
+    from teatree.loop.domain_jobs import _run_job  # noqa: PLC0415
 
     signals: list[ScanSignal] = []
     with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as pool:

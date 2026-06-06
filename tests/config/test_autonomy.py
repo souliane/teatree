@@ -192,7 +192,7 @@ class TestAutonomyFullResolution:
         """``full`` implies ``mode = auto`` so merge autonomy is actually reached.
 
         ``require_human_approval_to_merge = false`` only unlocks the loop's
-        auto-merge when ``mode == AUTO`` (see ``tick_jobs`` solo-overlay gate),
+        auto-merge when ``mode == AUTO`` (see ``scanner_factories`` solo-overlay gate),
         so a ``full`` overlay that forgot ``mode`` would be a silent no-op.
         """
         del elsewhere, no_installed_overlays

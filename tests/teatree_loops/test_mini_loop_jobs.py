@@ -1,7 +1,7 @@
 """Per-mini-loop ``_build_jobs`` coverage.
 
 Each mini-loop's ``_build_jobs`` callable is exercised with a stub
-backend list so the delegation paths into ``teatree.loop.tick_jobs`` are
+backend list so the delegation paths into ``teatree.loop.domain_jobs`` are
 walked. The tests assert structural shape (jobs are a list of
 ``_ScannerJob`` records); the scanner classes themselves are covered
 by the existing ``tests/teatree_loop/`` suite.
@@ -29,7 +29,7 @@ from teatree.loops.tickets.loop import MINI_LOOP as TICKETS_LOOP
 
 @pytest.fixture
 def stub_backend() -> Any:
-    """A backend stub matching the shape ``teatree.loop.tick_jobs`` expects."""
+    """A backend stub matching the shape ``teatree.loop.domain_jobs`` expects."""
     backend = MagicMock()
     backend.name = "stub-overlay"
     backend.hosts = ()  # no hosts → most per-host scanners skip
@@ -103,14 +103,14 @@ class TestEvalLocalLoopBuildJobs:
         from teatree.loop.scanners.eval_local import EvalLocalScanner  # noqa: PLC0415
 
         fake = EvalLocalScanner(overlay_name="t3-teatree")
-        with patch("teatree.loop.tick_jobs._eval_local_scanner", return_value=fake):
+        with patch("teatree.loop.global_scanner_factories._eval_local_scanner", return_value=fake):
             jobs = EVAL_LOCAL_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
 
     def test_omits_scanner_when_disabled(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loop.tick_jobs._eval_local_scanner", return_value=None):
+        with patch("teatree.loop.global_scanner_factories._eval_local_scanner", return_value=None):
             jobs = EVAL_LOCAL_LOOP.build_jobs()
         assert jobs == []
 
@@ -138,14 +138,14 @@ class TestResourcePressureLoopBuildJobs:
         from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
 
         fake = ResourcePressureScanner()
-        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=fake):
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
 
     def test_omits_scanner_when_disabled(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=None):
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None):
             jobs = RESOURCE_PRESSURE_LOOP.build_jobs()
         assert jobs == []
 

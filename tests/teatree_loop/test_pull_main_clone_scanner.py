@@ -439,7 +439,7 @@ class PullMainCloneScannerWiringTests(TestCase):
 
         from teatree.config import UserSettings  # noqa: PLC0415
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _pull_main_clone_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _pull_main_clone_scanner_for  # noqa: PLC0415
 
         workspace = Path(tempfile.mkdtemp(prefix="pull_main_clone_wiring_"))
         self.addCleanup(_rmtree_safe, str(workspace))
@@ -453,10 +453,10 @@ class PullMainCloneScannerWiringTests(TestCase):
         backend = OverlayBackends(name="acme", overlay=overlay)
         with (
             patch(
-                "teatree.loop.tick_jobs._effective_settings_for_overlay",
+                "teatree.loop.scanner_factories._effective_settings_for_overlay",
                 return_value=UserSettings(pull_main_clone_cadence_hours=4),
             ),
-            patch("teatree.loop.tick_jobs.workspace_dir", return_value=workspace),
+            patch("teatree.loop.scanner_factories.workspace_dir", return_value=workspace),
         ):
             scanner = _pull_main_clone_scanner_for(backend)
 
@@ -472,11 +472,11 @@ class PullMainCloneScannerWiringTests(TestCase):
 
         from teatree.config import UserSettings  # noqa: PLC0415
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _pull_main_clone_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _pull_main_clone_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=_FakeOverlay(["acme-backend"]))
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=UserSettings(pull_main_clone_disabled=True),
         ):
             scanner = _pull_main_clone_scanner_for(backend)
@@ -485,7 +485,7 @@ class PullMainCloneScannerWiringTests(TestCase):
     def test_wiring_returns_none_when_overlay_has_no_python_class(self) -> None:
         """An overlay backend with no Python class has no workspace repos to walk."""
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _pull_main_clone_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _pull_main_clone_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
         assert _pull_main_clone_scanner_for(backend) is None
@@ -496,17 +496,17 @@ class PullMainCloneScannerWiringTests(TestCase):
 
         from teatree.config import UserSettings  # noqa: PLC0415
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _pull_main_clone_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _pull_main_clone_scanner_for  # noqa: PLC0415
 
         empty_workspace = Path(tempfile.mkdtemp(prefix="pull_main_clone_empty_"))
         self.addCleanup(_rmtree_safe, str(empty_workspace))
         backend = OverlayBackends(name="acme", overlay=_FakeOverlay(["acme-backend"]))
         with (
             patch(
-                "teatree.loop.tick_jobs._effective_settings_for_overlay",
+                "teatree.loop.scanner_factories._effective_settings_for_overlay",
                 return_value=UserSettings(),
             ),
-            patch("teatree.loop.tick_jobs.workspace_dir", return_value=empty_workspace),
+            patch("teatree.loop.scanner_factories.workspace_dir", return_value=empty_workspace),
         ):
             scanner = _pull_main_clone_scanner_for(backend)
         assert scanner is None
@@ -520,18 +520,17 @@ class PullMainCloneScannerWiringTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _jobs_for_overlay_backend  # noqa: PLC0415
+        from teatree.loop.domain_jobs import _jobs_for_overlay_backend  # noqa: PLC0415
 
         fake_scanner = PullMainCloneScanner(repos=(("acme:acme-backend", Path("/x")),), cadence_hours=1)
         backend = OverlayBackends(name="acme", overlay=_FakeOverlay(["acme-backend"]))
         with (
-            patch("teatree.loop.tick_jobs._pull_main_clone_scanner_for", return_value=fake_scanner),
-            patch("teatree.loop.tick_jobs._jobs_for_backend_hosts", return_value=[]),
-            patch("teatree.loop.tick_jobs._architectural_review_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._pr_sweep_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._codex_review_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._slack_broadcasts_scanner_for", return_value=None),
-            patch("teatree.loop.tick_jobs._failed_e2e_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._pull_main_clone_scanner_for", return_value=fake_scanner),
+            patch("teatree.loop.domain_jobs._architectural_review_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._pr_sweep_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._codex_review_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._slack_broadcasts_scanner_for", return_value=None),
+            patch("teatree.loop.domain_jobs._failed_e2e_scanner_for", return_value=None),
         ):
             jobs = _jobs_for_overlay_backend(backend)
 

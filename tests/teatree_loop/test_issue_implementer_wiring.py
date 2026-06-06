@@ -20,12 +20,14 @@ from teatree.backends.protocols import CodeHostBackend
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import dispatch
+from teatree.loop.domain_jobs import jobs_for_domain
+from teatree.loop.job_identity import Domain
+from teatree.loop.scanner_factories import _issue_implementer_scanner_for
 from teatree.loop.scanners.issue_implementer import IssueImplementerScanner
-from teatree.loop.tick_jobs import Domain, _issue_implementer_scanner_for, jobs_for_domain
 from teatree.loops.issue_implementer.loop import MINI_LOOP
 from tests.factories import ImplementedIssueMarkerFactory
 
-_PATCH_TARGET = "teatree.loop.tick_jobs._effective_settings_for_overlay"
+_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
 def _backend(name: str = "acme") -> OverlayBackends:
@@ -135,7 +137,7 @@ class IssueImplementerEmptyLabelWarningTests(TestCase):
     def test_enabled_empty_label_emits_no_scanner_and_warns(self) -> None:
         with (
             patch(_PATCH_TARGET, return_value=_settings(issue_implementer_enabled=True)),
-            self.assertLogs("teatree.loop.tick_jobs", level="WARNING") as captured,
+            self.assertLogs("teatree.loop.scanner_factories", level="WARNING") as captured,
         ):
             scanner = _issue_implementer_scanner_for(_backend("acme"))
         assert scanner is None
@@ -149,14 +151,14 @@ class IssueImplementerEmptyLabelWarningTests(TestCase):
                 _PATCH_TARGET,
                 return_value=_settings(issue_implementer_enabled=True, issue_implementer_label="auto-implement"),
             ),
-            self.assertNoLogs("teatree.loop.tick_jobs", level="WARNING"),
+            self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
         ):
             assert _issue_implementer_scanner_for(_backend()) is not None
 
     def test_disabled_empty_label_does_not_warn(self) -> None:
         with (
             patch(_PATCH_TARGET, return_value=_settings()),
-            self.assertNoLogs("teatree.loop.tick_jobs", level="WARNING"),
+            self.assertNoLogs("teatree.loop.scanner_factories", level="WARNING"),
         ):
             assert _issue_implementer_scanner_for(_backend()) is None
 

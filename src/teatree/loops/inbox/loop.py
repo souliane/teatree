@@ -12,8 +12,8 @@ from teatree.loops.base import MiniLoop
 if TYPE_CHECKING:
     from teatree.backends.protocols import MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.notion_view import NotionLike
-    from teatree.loop.tick_jobs import _ScannerJob
 
 
 def _build_jobs(
@@ -32,8 +32,9 @@ def _build_jobs(
     scanner and the single-overlay messaging path are global / ad-hoc and
     are not part of the per-overlay fan-out, so they stay wired here.
     """
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
-    from teatree.loop.tick_jobs import Domain, _ScannerJob, jobs_for_domain  # noqa: PLC0415
 
     jobs: list[_ScannerJob] = []
     if backends:
@@ -48,13 +49,13 @@ def _build_jobs(
 
 
 def _single_overlay_messaging_jobs(messaging: "MessagingBackend") -> "list[_ScannerJob]":
+    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
     from teatree.loop.scanners import (  # noqa: PLC0415
         RedCardScanner,
         SlackDmInboundScanner,
         SlackMentionsScanner,
         SlackReviewIntentScanner,
     )
-    from teatree.loop.tick_jobs import _ScannerJob  # noqa: PLC0415
 
     return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),

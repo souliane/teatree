@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases.sweep import SWEEP_SCANNER_NAMES, sweep_phase
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.tick_jobs import _ScannerJob
 
 
 @dataclass(slots=True)

@@ -298,11 +298,11 @@ class ArchitecturalReviewWiringTests(TestCase):
         needed.
         """
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _architectural_review_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=self._patched_settings(),
         ):
             scanner = _architectural_review_scanner_for(backend)
@@ -315,11 +315,11 @@ class ArchitecturalReviewWiringTests(TestCase):
     def test_disabled_in_core_config_skips_wiring(self) -> None:
         """Escape hatch: ``architectural_review_disabled = True`` → no scanner."""
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _architectural_review_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=self._patched_settings(architectural_review_disabled=True),
         ):
             scanner = _architectural_review_scanner_for(backend)
@@ -328,11 +328,11 @@ class ArchitecturalReviewWiringTests(TestCase):
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _architectural_review_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=self._patched_settings(
                 architectural_review_skill="ac-custom",
                 architectural_review_cadence_hours=72,
@@ -355,11 +355,11 @@ class ArchitecturalReviewWiringTests(TestCase):
         overlays participate in the core platform cadence too.
         """
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _architectural_review_scanner_for  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _architectural_review_scanner_for  # noqa: PLC0415
 
         backend = OverlayBackends(name="acme", overlay=None)
         with patch(
-            "teatree.loop.tick_jobs._effective_settings_for_overlay",
+            "teatree.loop.scanner_factories._effective_settings_for_overlay",
             return_value=self._patched_settings(),
         ):
             scanner = _architectural_review_scanner_for(backend)

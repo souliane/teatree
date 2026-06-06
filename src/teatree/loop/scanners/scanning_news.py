@@ -11,7 +11,7 @@ deliberately simpler:
     fixed-rate platform behaviour, not coupled to delivery velocity.
 * **Overlay anchor is injected, not baked.** This is a core scanner —
     it does not know any overlay's name. The wiring layer
-    (``teatree.loop.tick_jobs._scanning_news_scanner``) resolves the
+    (``teatree.loop.global_scanner_factories._scanning_news_scanner``) resolves the
     active core overlay via :func:`teatree.config.discover_active_overlay`
     and passes the result as the ``overlay_name`` constructor kwarg.
     Tasks queued by the scanner are anchored at a placeholder Ticket
