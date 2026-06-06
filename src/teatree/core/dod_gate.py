@@ -44,7 +44,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.e2e_workitem import load_recipe
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import frontend_repos_for_overlay
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -70,33 +70,37 @@ class DodLocalE2EError(InvalidTransitionError):
 class _UiVisibilityUndeterminedError(Exception):
     """The overlay's frontend-repo config could not be resolved (#1426).
 
-    Raised internally when ``ticket.overlay`` is unresolvable or its config
-    does not expose ``frontend_repos`` — the gate cannot tell whether the
-    ticket is UI-visible, so it must NOT silently treat it as backend-only.
-    A safety gate fails CLOSED: ``is_ui_visible`` maps this to "presumed
-    UI-visible" so the DoD check still runs, and the override / artifact
-    escape hatches in ``check_local_e2e_dod`` keep it from ever locking out.
+    Raised internally only when ``ticket.overlay`` resolves to no registered
+    overlay at all — a removed overlay, a typo, a synthetic tag. The gate
+    cannot tell whether such a ticket is UI-visible, so it must NOT silently
+    treat it as backend-only. A safety gate fails CLOSED: ``is_ui_visible``
+    maps this to "presumed UI-visible" so the DoD check still runs, and the
+    override / artifact escape hatches in ``check_local_e2e_dod`` keep it
+    from ever locking out.
+
+    A **path-only** TOML overlay (a ``path`` but no Python ``class``, reached
+    through the CLI subprocess bridge) is NOT undetermined: it is a known,
+    registered overlay whose ``frontend_repos`` are read from its
+    ``[overlays.<name>]`` config table, so an in-process gate on its tickets
+    no longer fails closed for every ticket.
     """
 
 
 def _frontend_repos(ticket: "Ticket") -> list[str]:
     """The active overlay's configured frontend repos.
 
-    Raises :class:`_UiVisibilityUndeterminedError` when the overlay is
-    unresolvable (no entry point, ambiguous, mis-named ``ticket.overlay``)
-    or its config does not expose ``frontend_repos`` — the UI-visibility of
-    the ticket cannot be determined and the caller must fail closed rather
-    than infer "not UI-visible" from the absence of an answer.
+    Resolves through :func:`frontend_repos_for_overlay`, which answers for
+    path-only TOML overlays (reached via the CLI subprocess bridge, so not
+    instantiable as :class:`OverlayBase` in this process) from their config
+    table. Raises :class:`_UiVisibilityUndeterminedError` only when the
+    overlay resolves to nothing registered — the genuinely-undetermined case
+    the caller must fail closed on rather than infer "not UI-visible" from
+    the absence of an answer.
     """
     try:
-        overlay = get_overlay(ticket.overlay or None)
+        return frontend_repos_for_overlay(ticket.overlay or None)
     except ImproperlyConfigured as exc:
         raise _UiVisibilityUndeterminedError(str(exc)) from exc
-    config = overlay.config
-    if not hasattr(config, "frontend_repos"):
-        msg = f"overlay {ticket.overlay!r} config has no frontend_repos"
-        raise _UiVisibilityUndeterminedError(msg)
-    return list(config.frontend_repos or [])
 
 
 def is_ui_visible(ticket: "Ticket") -> bool:

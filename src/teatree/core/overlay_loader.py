@@ -8,17 +8,12 @@ of whether the overlay was registered via ``pip install`` (entry point) or
 import importlib
 import logging
 import os
-import tempfile
-from contextlib import contextmanager
 from functools import lru_cache
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from teatree.core.models import Ticket, Worktree
     from teatree.core.overlay import OverlayBase
 
@@ -152,6 +147,44 @@ def get_all_overlay_names() -> list[str]:
         if cfg.get("path"):
             names.add(name)
     return sorted(names)
+
+
+def frontend_repos_for_overlay(name: str | None) -> list[str]:
+    """The overlay's configured frontend repos, resolvable for path-only overlays.
+
+    An instantiable overlay (entry-point package, or a TOML table carrying a
+    ``class``) answers from ``overlay.config.frontend_repos``. A **path-only**
+    TOML overlay — registered with a ``path`` but no Python ``class`` — cannot
+    be instantiated as :class:`OverlayBase` in the teatree process (it is
+    reached through the CLI subprocess bridge), so ``get_overlay`` raises
+    ``Overlay not found`` for it even though it is a known, registered overlay.
+    For that case the frontend repos are read straight from the
+    ``[overlays.<name>]`` TOML table — the same config surface
+    :func:`get_all_overlay_names` already trusts for path-only entries.
+
+    A blank ``name`` is the ambient single-overlay default and routes through
+    ``get_overlay(None)``. A name that resolves to no registered overlay (a
+    removed overlay, a typo, a synthetic tag) raises ``ImproperlyConfigured``
+    so a safety-gate caller can keep its fail-closed posture for a genuinely
+    unknown overlay instead of silently inferring an empty repo set.
+    """
+    from teatree.config import load_config  # noqa: PLC0415
+
+    resolved = _canonical_overlay_name(name) if name else None
+    try:
+        overlay = get_overlay(resolved)
+    except ImproperlyConfigured:
+        canonical = resolve_overlay_name(name) if name else None
+        if canonical is None:
+            raise
+        table = load_config().raw.get("overlays", {}).get(canonical, {})
+        repos = table.get("frontend_repos") or []
+        return [str(r) for r in repos]
+    config = overlay.config
+    if not hasattr(config, "frontend_repos"):
+        msg = f"overlay {name!r} config has no frontend_repos"
+        raise ImproperlyConfigured(msg)
+    return list(config.frontend_repos or [])
 
 
 def resolve_overlay_name(name: str) -> str | None:
@@ -304,27 +337,3 @@ def reset_overlay_cache() -> None:
 
     _discover_overlays.cache_clear()
     sys.modules.pop("teatree.contrib.t3_teatree.overlay", None)
-
-
-@contextmanager
-def staged_overlay_autonomy(overlay_name: str, autonomy: str) -> "Iterator[None]":
-    """Run the block with a hermetic ``~/.teatree.toml`` pinning *overlay_name* to *autonomy*.
-
-    A test-isolation helper for assertions whose outcome depends on the
-    overlay's effective autonomy (the substrate-merge carve-out). Swaps
-    :data:`teatree.config.CONFIG_PATH` at the single seam ``get_effective_settings``
-    reads, so the resolved autonomy is deterministic regardless of the
-    developer's live config, and restores it on exit. Production code never
-    calls this.
-    """
-    from teatree import config as config_module  # noqa: PLC0415
-
-    with tempfile.TemporaryDirectory() as raw:
-        cfg = Path(raw) / ".teatree.toml"
-        cfg.write_text(f'[teatree]\n[overlays.{overlay_name}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
-        original = config_module.CONFIG_PATH
-        config_module.CONFIG_PATH = cfg
-        try:
-            yield
-        finally:
-            config_module.CONFIG_PATH = original
