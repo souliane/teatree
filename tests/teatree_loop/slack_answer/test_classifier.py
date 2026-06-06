@@ -101,3 +101,20 @@ class TestNeedsWork:
     )
     def test_ambiguous_input_fails_safe_to_needs_work(self, text: str) -> None:
         assert classify(text) is AnswerRoute.NEEDS_WORK
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "https://x.com/user/status/1780726427261379",
+            "https://twitter.com/somebody/status/555",
+            "https://x.com/i/status/9999",
+            "<https://x.com/user/status/1780726427261379>",
+            "https://example.com/today/progress/blocker-status",
+        ],
+    )
+    def test_link_only_message_is_not_a_status_request(self, text: str) -> None:
+        # A bare URL carries no status intent: its path may contain the
+        # substring "status"/"progress"/"today", but those are URL segments,
+        # not the user asking for a status. Must fail-safe to NEEDS_WORK so
+        # the real handler picks it up — never the default statusline reply.
+        assert classify(text) is AnswerRoute.NEEDS_WORK
