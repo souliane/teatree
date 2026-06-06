@@ -106,6 +106,9 @@ class SpeakConfig:
     def speaks_in_client_turns(self) -> bool:
         return self.scope is SpeakScope.ALL and self.local and not self.slack_audio
 
+    def to_dict(self) -> dict[str, bool | str]:
+        return {"local": self.local, "slack_audio": self.slack_audio, "scope": self.scope.value}
+
 
 class ScannerErrorClass(enum.StrEnum):
     """Classes of recoverable scanner failure surfaced to the dispatcher (#1287).
