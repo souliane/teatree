@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
+import pytest
+
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
     _discover_toml_overlays,
+    frontend_repos_for_overlay,
     get_overlay_for_repo,
     infer_overlay_for_url,
     resolve_overlay_name,
@@ -287,6 +290,52 @@ class TestResolveOverlayName:
         ):
             assert resolve_overlay_name("teatree") is not None
             assert resolve_overlay_name("removed-overlay") is None
+
+
+class TestFrontendReposForOverlay:
+    """``frontend_repos_for_overlay`` resolves path-only TOML overlays (#733).
+
+    A path-only overlay (``path`` but no Python ``class``) is reached through
+    the CLI subprocess bridge and cannot be instantiated as ``OverlayBase`` in
+    the teatree process, so ``get_overlay`` raises ``Overlay not found`` for
+    it. Before this helper, an in-process safety gate (the DoD local-E2E gate)
+    therefore failed CLOSED for EVERY ticket of such an overlay. The helper
+    answers from the overlay's ``[overlays.<name>]`` TOML table instead, while
+    keeping the genuinely-unknown overlay raising so the gate's fail-closed
+    posture survives where it is actually warranted.
+    """
+
+    def _patch_landscape(self, overlays: dict, discovered: dict | None):
+        """Patch the entry-point/TOML discovery landscape (the unstoppable external)."""
+        from contextlib import ExitStack  # noqa: PLC0415
+
+        stack = ExitStack()
+        stack.enter_context(patch.object(config_mod, "load_config", return_value=_make_config(overlays)))
+        stack.enter_context(patch("teatree.core.overlay_loader._discover_overlays", return_value=discovered or {}))
+        return stack
+
+    def test_path_only_overlay_with_no_frontend_repos_resolves_empty(self):
+        """The regression: a path-only overlay must resolve to ``[]``, not raise."""
+        overlays = {"t3-path": {"path": "~/somewhere/t3-path", "protected_branches": ["development"]}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert frontend_repos_for_overlay("t3-path") == []
+
+    def test_path_only_overlay_with_declared_frontend_repos_resolves_them(self):
+        overlays = {"t3-path": {"path": "~/x/t3-path", "frontend_repos": ["acme-web", "acme-admin"]}}
+        with self._patch_landscape(overlays, discovered={}):
+            assert frontend_repos_for_overlay("t3-path") == ["acme-web", "acme-admin"]
+
+    def test_instantiable_overlay_answers_from_its_config(self):
+        overlay = _StubOverlay()
+        overlay.config.frontend_repos = ["from-config"]
+        with self._patch_landscape({}, discovered={"t3-stub": overlay}):
+            assert frontend_repos_for_overlay("t3-stub") == ["from-config"]
+
+    def test_genuinely_unknown_overlay_raises_for_fail_closed(self):
+        from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+        with self._patch_landscape({}, discovered={}), pytest.raises(ImproperlyConfigured):
+            frontend_repos_for_overlay("removed-or-typo")
 
 
 # ── Test helpers ─────────────────────────────────────────────────────

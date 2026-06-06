@@ -397,14 +397,12 @@ class TestSyncGitHub(TestCase):
             position=7,
             labels=[],
         )
-        fake_overlay = MagicMock()
-        fake_overlay.config.frontend_repos = ["teatree"]
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github_sync.cleanup_worktree"),
-            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+            patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
 
@@ -431,14 +429,13 @@ class TestSyncGitHub(TestCase):
             position=8,
             labels=[],
         )
-        fake_overlay = MagicMock()
-        fake_overlay.config.frontend_repos = ["some-frontend"]  # ticket repo not in it
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github_sync.cleanup_worktree"),
-            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+            # ticket repo "teatree" not in the overlay's frontend repos -> not UI-visible
+            patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["some-frontend"]),
         ):
             GitHubSyncBackend().sync(overlay)
 
@@ -465,14 +462,12 @@ class TestSyncGitHub(TestCase):
             position=9,
             labels=[],
         )
-        fake_overlay = MagicMock()
-        fake_overlay.config.frontend_repos = ["teatree"]
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github_sync.cleanup_worktree"),
-            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+            patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
 
@@ -508,14 +503,12 @@ class TestSyncGitHub(TestCase):
             position=10,
             labels=[],
         )
-        fake_overlay = MagicMock()
-        fake_overlay.config.frontend_repos = ["teatree"]
         with (
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
-            patch.object(dod_gate, "get_overlay", return_value=fake_overlay),
+            patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
 
