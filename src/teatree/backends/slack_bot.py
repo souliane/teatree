@@ -734,9 +734,9 @@ class SlackBotBackend:
         to hold the ``files:write`` scope. Without it
         ``files.getUploadURLExternal`` (or ``completeUploadExternal``)
         returns ``ok:false`` with ``error:"missing_scope"`` — surfaced
-        verbatim in the returned body so the caller can flag it. Re-run
-        ``t3 setup slack-bot`` after adding ``files:write`` to the bot's
-        OAuth scopes to grant it.
+        verbatim in the returned body so the caller can flag it. It is in
+        the bot manifest (``slack_setup._BOT_SCOPES``); re-run
+        ``t3 setup slack-bot`` to grant it on a pre-existing token.
 
         Routes under :meth:`_route_token` (self-DM → bot, else → ``xoxp``),
         the same destination policy as :meth:`post_routed`. Returns the raw
