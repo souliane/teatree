@@ -12,7 +12,7 @@ rules:
       status: blocking
     paths:
       include:
-        - "/src/teatree/backends/slack_reactions.py"
+        - "/src/teatree/backends/slack/reactions.py"
     patterns:
       - pattern: $RESP.json()
       - pattern-not-inside: |

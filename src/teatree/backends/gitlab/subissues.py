@@ -12,8 +12,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from teatree.backends.gitlab_api import GitLabAPI
-from teatree.backends.gitlab_payloads import (
+from teatree.backends.gitlab.api import GitLabAPI
+from teatree.backends.gitlab.payloads import (
     WORK_ITEM_CONVERT_MUTATION,
     WORK_ITEM_ID_QUERY,
     WORK_ITEM_SET_PARENT_MUTATION,

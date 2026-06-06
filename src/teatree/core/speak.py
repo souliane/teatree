@@ -9,7 +9,7 @@ and delivers spoken agent text. Two distinct deliveries share one config:
     self-DM in :func:`teatree.core.on_behalf_egress.OnBehalfSlackEgress.post`).
     When ``slack`` is on and synthesis succeeds it posts a SINGLE DM carrying
     the text + an inline audio attachment
-    (:meth:`~teatree.backends.slack_bot.SlackBotBackend.post_audio_dm`); on a
+    (:meth:`~teatree.backends.slack.bot.SlackBotBackend.post_audio_dm`); on a
     synthesis failure (or ``slack`` off) it degrades to a text-only
     :meth:`post_message`. Independently, when ``local`` is ``dm`` or ``all``
     the same text plays through the machine's speakers — so the user's own DM

@@ -17,7 +17,7 @@ silent bot-token write would post under the wrong identity or drop the
 partner write entirely.
 """
 
-from teatree.backends.slack_token_policy import SlackOp, channel_token
+from teatree.backends.slack.token_policy import SlackOp, channel_token
 
 
 def test_no_user_token_returns_bot_token() -> None:

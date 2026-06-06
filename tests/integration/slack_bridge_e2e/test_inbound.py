@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.models import PendingChatInjection
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _own_loop

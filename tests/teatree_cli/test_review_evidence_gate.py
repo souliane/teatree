@@ -273,7 +273,7 @@ class TestFindingEvidenceSchema:
     def test_wrong_api_signature_evidence_shape(self) -> None:
         """Wrong-API-signature finding: helper_indirection_paths shows where the canonical signature lives."""
         ev = FindingEvidence(
-            master_check_paths=["src/teatree/backends/gitlab_api.py:200"],
+            master_check_paths=["src/teatree/backends/gitlab/api.py:200"],
             ticket_dep_refs=[],
             helper_indirection_paths=["src/teatree/cli/review_diff.py"],
             recent_merge_sweep_query="",

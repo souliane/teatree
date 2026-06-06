@@ -34,8 +34,8 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.backends.slack_bot import SlackBotBackend
-from teatree.backends.slack_token_validation import (
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.token_validation import (
     TokenSlotMismatchError,
     assert_user_token,
     resolve_user_token_or_degrade,

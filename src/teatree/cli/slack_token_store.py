@@ -4,7 +4,7 @@ The ``pass`` store is not version-controlled, so an overwrite is
 irreversible and a wrong-slot write (a ``xoxb-`` value in the ``xoxp-``
 slot) is silent until the slot-based routing policy mis-sends or drops a
 call. The prefix validators in
-:mod:`teatree.backends.slack_token_validation` run at *read* time
+:mod:`teatree.backends.slack.token_validation` run at *read* time
 (backend construction), where a mismatch aborts a loop tick rather than
 refusing the bad write up front.
 
@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from teatree.backends.slack_token_validation import (
+from teatree.backends.slack.token_validation import (
     TokenSlotMismatchError,
     assert_app_token,
     assert_bot_token,

@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pytest
 from inline_snapshot import snapshot
 
-from teatree.backends import slack_http
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core import notify as core_notify
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay

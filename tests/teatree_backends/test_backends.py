@@ -5,7 +5,8 @@ import httpx
 import pytest
 
 from teatree.backends import gitlab, notion, slack
-from teatree.backends.gitlab_api import GitLabAPI
+from teatree.backends.gitlab.api import GitLabAPI
+from teatree.backends.slack import client as slack_client
 
 
 def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -16,7 +17,7 @@ def test_slack_backend_posts_webhook_payload(monkeypatch: pytest.MonkeyPatch) ->
         sent["json"] = json
         return httpx.Response(200, json={"ok": True}, request=httpx.Request("POST", url))
 
-    monkeypatch.setattr(slack.httpx, "post", fake_post)
+    monkeypatch.setattr(slack_client.httpx, "post", fake_post)
 
     assert slack.post_webhook_message("https://hooks.slack.test/123", "TeaTree ready") == {"ok": True}
     assert sent["json"] == {"text": "TeaTree ready"}

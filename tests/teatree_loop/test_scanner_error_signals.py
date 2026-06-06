@@ -24,8 +24,8 @@ import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.backends import slack_http
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import ApprovalState, ReviewState
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal
 from teatree.loop.scanners.gitlab_approvals import GitLabApprovalsScanner

@@ -10,7 +10,7 @@ from teatree.core import reaction_dispatch
 class TestReactionPublisherRegistry:
     def test_backends_ready_registers_the_slack_publisher(self) -> None:
         """``BackendsConfig.ready()`` ran at django.setup() — a real publisher resolves."""
-        from teatree.backends.slack_reactions import SlackReactionPublisher  # noqa: PLC0415
+        from teatree.backends.slack.reactions import SlackReactionPublisher  # noqa: PLC0415
 
         assert isinstance(reaction_dispatch.get_reaction_publisher(), SlackReactionPublisher)
 

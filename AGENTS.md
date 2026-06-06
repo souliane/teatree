@@ -221,7 +221,7 @@ class SyncBackend(ABC):
 
 Convention: `sync()` and `is_configured()` are instance methods decorated with `@override`. All internal helpers are `@classmethod`. No module-level functions in backend files — all logic lives on the class.
 
-Current implementations: `GitHubSyncBackend` (`backends/github_sync.py`), `GitLabSyncBackend` (`backends/gitlab_sync.py`).
+Current implementations: `GitHubSyncBackend` (`backends/github/sync.py`), `GitLabSyncBackend` (`backends/gitlab/sync.py`).
 
 ## Agent Runtime
 

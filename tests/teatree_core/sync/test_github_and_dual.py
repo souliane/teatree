@@ -11,7 +11,7 @@ import pytest
 from django.core.cache import cache
 from django.test import TestCase
 
-from teatree.backends.gitlab_sync import GitLabSyncBackend
+from teatree.backends.gitlab.sync import GitLabSyncBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.sync import _merge_results, sync_followup
 from teatree.types import PENDING_REVIEWS_CACHE_KEY, SyncResult
@@ -74,7 +74,7 @@ class TestDualSync(TestCase):
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -86,7 +86,7 @@ class TestDualSync(TestCase):
     def test_gitlab_only_when_no_github_token(self) -> None:
         overlay = SyncOverlay(github_token="", gitlab_token="gl-token")
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         with _patch_overlay(overlay):
             result = sync_followup()
@@ -162,7 +162,7 @@ class TestSyncGitHub(TestCase):
 
     def test_creates_ticket_from_project_item(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         item = ProjectItem(
@@ -190,7 +190,7 @@ class TestSyncGitHub(TestCase):
 
     def test_updates_existing_ticket(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         Ticket.objects.create(
@@ -212,7 +212,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch("teatree.backends.github.sync.cleanup_worktree"),
         ):
             result = GitHubSyncBackend().sync(overlay)
 
@@ -225,7 +225,7 @@ class TestSyncGitHub(TestCase):
     def test_auto_cleans_worktrees_on_board_done_transition(self) -> None:
         """Board moves ticket to ``Done`` → cleanup runs for each worktree."""
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(
@@ -251,7 +251,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+            patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
         ):
             result = GitHubSyncBackend().sync(overlay)
 
@@ -261,7 +261,7 @@ class TestSyncGitHub(TestCase):
     def test_skips_cleanup_when_ticket_already_delivered(self) -> None:
         """Ticket already Done on a prior sync → no double cleanup."""
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         Ticket.objects.create(
@@ -281,7 +281,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+            patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
         ):
             GitHubSyncBackend().sync(overlay)
 
@@ -290,7 +290,7 @@ class TestSyncGitHub(TestCase):
     def test_keeps_worktree_with_unpushed_work(self) -> None:
         """RuntimeError from cleanup_worktree (unsynced commits) doesn't add to errors — logged as info."""
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(
@@ -317,7 +317,7 @@ class TestSyncGitHub(TestCase):
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
             patch(
-                "teatree.backends.github_sync.cleanup_worktree",
+                "teatree.backends.github.sync.cleanup_worktree",
                 side_effect=RuntimeError("refused cleanup — 1 unsynced commit(s)"),
             ),
         ):
@@ -335,7 +335,7 @@ class TestSyncGitHub(TestCase):
         ``SyncResult.errors`` exit channel.
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
         from teatree.core.cleanup import CleanupResult  # noqa: PLC0415
 
         overlay = self._make_overlay()
@@ -366,7 +366,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree", return_value=dirty_result),
+            patch("teatree.backends.github.sync.cleanup_worktree", return_value=dirty_result),
         ):
             result = GitHubSyncBackend().sync(overlay)
 
@@ -380,7 +380,7 @@ class TestSyncGitHub(TestCase):
         dod_e2e_violation marker recorded.
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
         from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
@@ -401,7 +401,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch("teatree.backends.github.sync.cleanup_worktree"),
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
@@ -412,7 +412,7 @@ class TestSyncGitHub(TestCase):
 
     def test_done_board_move_no_violation_when_not_ui_visible(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
         from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
@@ -433,7 +433,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch("teatree.backends.github.sync.cleanup_worktree"),
             # ticket repo "teatree" not in the overlay's frontend repos -> not UI-visible
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["some-frontend"]),
         ):
@@ -450,7 +450,7 @@ class TestSyncGitHub(TestCase):
         real repo and record the violation.
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
         from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()  # github_owner="souliane"
@@ -466,7 +466,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree"),
+            patch("teatree.backends.github.sync.cleanup_worktree"),
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
@@ -484,7 +484,7 @@ class TestSyncGitHub(TestCase):
         gets the audit once its repo scope is repaired from the URL.
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
         from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
@@ -507,7 +507,7 @@ class TestSyncGitHub(TestCase):
             _patch_overlay(overlay),
             patch("teatree.backends.github.fetch_project_items", return_value=[item]),
             patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
-            patch("teatree.backends.github_sync.cleanup_worktree") as mock_cleanup,
+            patch("teatree.backends.github.sync.cleanup_worktree") as mock_cleanup,
             patch.object(dod_gate, "frontend_repos_for_overlay", return_value=["teatree"]),
         ):
             GitHubSyncBackend().sync(overlay)
@@ -519,13 +519,13 @@ class TestSyncGitHub(TestCase):
         mock_cleanup.assert_not_called()
 
     def test_returns_error_for_non_overlay(self) -> None:
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = GitHubSyncBackend().sync("not an overlay")
         assert any("Invalid overlay" in e for e in result.errors)
 
     def test_returns_error_when_config_missing(self) -> None:
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = SyncOverlay(
             gitlab_token="",
@@ -541,7 +541,7 @@ class TestSyncGitHub(TestCase):
         assert any("not configured" in e for e in result.errors)
 
     def test_handles_fetch_exception(self) -> None:
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         overlay = self._make_overlay()
 
@@ -559,7 +559,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
         import json  # noqa: PLC0415
         import subprocess  # noqa: PLC0415
 
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         prs = [
             {
@@ -591,7 +591,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
         cache.delete(PENDING_REVIEWS_CACHE_KEY)
 
     def test_skips_when_gh_not_found(self) -> None:
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         with patch("shutil.which", return_value=None):
@@ -600,7 +600,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
         assert result.reviews_synced == 0
 
     def test_handles_subprocess_exception(self) -> None:
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         with (
@@ -614,7 +614,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
     def test_returns_early_on_nonzero_exit(self) -> None:
         import subprocess  # noqa: PLC0415
 
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         mock_run = MagicMock(
@@ -631,7 +631,7 @@ class TestSyncGitHubReviewerPrs(TestCase):
     def test_handles_invalid_json(self) -> None:
         import subprocess  # noqa: PLC0415
 
-        from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
+        from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
 
         result = SyncResult()
         mock_run = MagicMock(

@@ -1,6 +1,6 @@
 import pytest
 
-from teatree.backends import gitlab_api
+from teatree.backends.gitlab import api as gitlab_api
 
 
 class _PagedResponse:

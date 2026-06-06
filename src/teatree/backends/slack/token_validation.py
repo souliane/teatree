@@ -6,7 +6,7 @@ once a token sits in ``pass`` as a raw string the runtime construction
 path (``backend_factory._messaging_from_toml``,
 ``backends.loader.get_messaging``) reads it back and threads it into a
 ``SlackBotBackend`` slot with no prefix check. The deterministic policy
-in :mod:`teatree.backends.slack_token_policy` then routes by *slot*,
+in :mod:`teatree.backends.slack.token_policy` then routes by *slot*,
 never by prefix, so a swapped token (the field bug observed
 2026-05-20: an ``xoxb-…`` ended up at the ``xoxp-`` user slot) either
 impersonates the user or — worse — is silently dropped on a Slack-Connect

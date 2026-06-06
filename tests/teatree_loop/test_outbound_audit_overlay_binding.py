@@ -115,7 +115,7 @@ class OverlayBoundVerifierDispatchTests(TestCase):
                 "teatree.loop.scanners.outbound_audit._resolve_github_token_for_overlay",
                 side_effect=_resolve,
             ),
-            patch("teatree.backends.github._gh_api_get", side_effect=_gh_get),
+            patch("teatree.backends.github.client._gh_api_get", side_effect=_gh_get),
         ):
             scanner = OutboundAuditScanner()
             scanner.scan()
@@ -245,7 +245,9 @@ class RecordClaimStampsOverlayTests(TestCase):
         assert row.extra["overlay"] == "gitlab-overlay"
 
     def test_record_github_note_claim_stamps_overlay(self) -> None:
-        from teatree.backends.github import _record_github_note_claim  # noqa: PLC0415
+        from teatree.backends.github.claims import (  # noqa: PLC0415
+            record_github_note_claim as _record_github_note_claim,
+        )
 
         with patch.dict(os.environ, {"T3_OVERLAY_NAME": "gh-overlay"}, clear=False):
             _record_github_note_claim(
@@ -555,7 +557,7 @@ class OverlayCredentialResolutionTests(TestCase):
 
         sentinel = object()
         with patch(
-            "teatree.backends.gitlab_api.GitLabAPI",
+            "teatree.backends.gitlab.api.GitLabAPI",
             return_value=sentinel,
         ) as ctor:
             api = gitlab_api_for_overlay("")
@@ -577,7 +579,7 @@ class OverlayCredentialResolutionTests(TestCase):
                 return_value=fake_overlay,
             ),
             patch(
-                "teatree.backends.gitlab_api.GitLabAPI",
+                "teatree.backends.gitlab.api.GitLabAPI",
                 return_value=sentinel,
             ) as ctor,
         ):
@@ -591,7 +593,7 @@ class OverlayCredentialResolutionTests(TestCase):
         from teatree.loop.scanners.outbound_audit_overlay_verifiers import gitlab_api_for_overlay  # noqa: PLC0415
 
         with patch(
-            "teatree.backends.gitlab_api.GitLabAPI",
+            "teatree.backends.gitlab.api.GitLabAPI",
             side_effect=RuntimeError("network failed at construction"),
         ):
             assert gitlab_api_for_overlay("") is None

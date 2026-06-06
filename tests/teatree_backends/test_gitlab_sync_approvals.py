@@ -1,6 +1,6 @@
 """Tests for detect_approval_dismissal in gitlab_sync_approvals."""
 
-from teatree.backends.gitlab_sync_approvals import ApprovalDismissal, detect_approval_dismissal
+from teatree.backends.gitlab.sync_approvals import ApprovalDismissal, detect_approval_dismissal
 
 
 def _disc(notes: list[dict]) -> dict:

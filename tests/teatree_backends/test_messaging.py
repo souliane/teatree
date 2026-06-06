@@ -7,9 +7,10 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_http, slack_scopes
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack import scopes as slack_scopes
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import MessagingBackend
 
 

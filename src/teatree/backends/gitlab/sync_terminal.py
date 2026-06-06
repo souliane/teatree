@@ -24,7 +24,7 @@ from teatree.types import PREntryDict, RawAPIDict, SyncResult
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.backends.gitlab_api import GitLabAPI
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
 
 logger = logging.getLogger(__name__)

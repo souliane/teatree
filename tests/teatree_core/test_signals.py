@@ -369,7 +369,7 @@ class TestApprovalReactionOnTransition(TestCase):
 
     def test_add_approval_reaction_uses_white_check_mark_on_slack_url(self) -> None:
         """End-to-end: the real helper reacts on the PR's stored slack_url."""
-        from teatree.backends import slack_reactions  # noqa: PLC0415
+        from teatree.backends.slack import reactions as slack_reactions  # noqa: PLC0415
 
         pr = self._pr()
         recorded: list[tuple[str, str, str]] = []
