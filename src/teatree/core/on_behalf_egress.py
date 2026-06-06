@@ -9,7 +9,12 @@ public method runs the identical fixed sequence in one place:
     ``route_token`` classifier;
 2.  a *self* destination (the user's own DM) → call the raw routed
     primitive directly and return — ungated and unaudited, because a
-    bot→user / self-ack is never an on-behalf post;
+    bot→user / self-ack is never an on-behalf post. ``post`` additionally
+    reads a successful self-DM aloud through the shared
+    :func:`teatree.core.notify._maybe_speak` IM-egress seam (a bot→user DM
+    is exactly the IM/DM egress ``speak_mode`` covers), so the
+    ``notify post`` user-DM path speaks via the same primitive
+    ``notify_user`` already does;
 3.  a *colleague/channel* destination → :func:`require_on_behalf_approval`
     *before* the wire call (a BLOCK verdict with no recorded approval
     raises :class:`OnBehalfPostBlockedError` and nothing posts), then the
@@ -123,15 +128,26 @@ class OnBehalfSlackEgress:
     ) -> RawAPIDict:
         """Post to *channel*, gated+audited on a colleague surface.
 
-        Self-DM: post raw via ``post_routed`` and return (ungated,
-        unaudited). Colleague/channel: gate first (raises
+        Self-DM: post raw via ``post_routed`` (ungated, unaudited) and, on a
+        successful publish, read the text aloud through the shared
+        :func:`teatree.core.notify._maybe_speak` IM-egress chokepoint — a
+        bot→user DM is the IM/DM egress ``speak_mode = im-only`` / ``all``
+        covers, the same seam :func:`teatree.core.notify.notify_user` uses,
+        so the ``notify post`` and ``notify send`` user-DM paths share one
+        dispatch primitive. Colleague/channel: gate first (raises
         :class:`OnBehalfPostBlockedError` on BLOCK with no recorded
         approval, before any wire call), post, then DM the after-receipt
-        notice only on a successful publish (``ok`` truthy). Returns the raw
-        Slack body so callers keep inspecting ``ok`` / ``error`` / ``ts``.
+        notice only on a successful publish (``ok`` truthy) — a colleague
+        surface is never read aloud. Returns the raw Slack body so callers
+        keep inspecting ``ok`` / ``error`` / ``ts``.
         """
         if self._is_self_dm(channel):
-            return self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
+            from teatree.core.notify import _maybe_speak  # noqa: PLC0415
+
+            response = self._messaging.post_routed(channel=channel, text=text, thread_ts=thread_ts)
+            if response.get("ok"):
+                _maybe_speak(text)
+            return response
         response = require_on_behalf_approval(
             target=target,
             action=action,
