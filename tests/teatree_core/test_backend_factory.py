@@ -111,7 +111,7 @@ def test_messaging_from_overlay_returns_none_when_overlay_not_configured() -> No
 def test_messaging_from_overlay_delegates_to_loader() -> None:
     with (
         _patch_overlay(_NoTokenOverlay),
-        patch("teatree.core.backend_factory.get_messaging", return_value="sentinel") as get_messaging_mock,
+        patch("teatree.backends.loader.get_messaging", return_value="sentinel") as get_messaging_mock,
     ):
         result = messaging_from_overlay()
 
