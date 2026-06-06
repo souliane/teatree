@@ -134,12 +134,12 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `mr_title_regex` | #1540: MR title pattern the `pr create` gate enforces (default Conventional Commits); an overlay declares its own grammar. The gate also requires a What/Why description, no bypass. |
 | `private_repos` | Offline slug-SUBSTRING allowlist of known-private repos. Drives the #126/#1657 carve-out and (unioned with `internal_publish_namespaces`, #1672) the destination skip, so a user with only this set needs no second list. `teatree.hooks._repo_visibility`. |
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
-| `speak` | #1791/#2050: text-to-speech `[teatree.speak]` sub-table — `local`/`slack_audio` bools + `scope` (`dm`/`all`). See §10.1.1. |
+| `speak` | #2060: text-to-speech `[teatree.speak]` sub-table — `local` enum (`off`/`dm`/`all`) + `slack` bool. See §10.1.1. |
 
 `notify_on_behalf` is NOT in this registry — it is derived (read-only),
 set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
 
-### 10.1.1 Local text-to-speech (#1791/#2050)
+### 10.1.1 Local text-to-speech (#2060)
 
 The `[teatree.speak]` sub-table reads agent output aloud, gated on the macOS
 `say` binary (the whole feature is inert when it is absent). Per-overlay
@@ -147,23 +147,25 @@ overridable via `[overlays.<name>.speak]`; ad-hoc local read via `t3 speak "…"
 
 ```toml
 [teatree.speak]
-local = true            # false (default) | play the spoken reply on this machine's speakers (macOS say)
-slack_audio = true      # false (default) | attach a spoken audio file to each Slack DM you receive
-scope = "dm"            # "dm" (default) | "all" — dm speaks only the bot's DMs; all also speaks the in-client turn
+local = "all"           # "off" (default) | "dm" | "all" — what plays through this machine's speakers
+slack = true            # false (default) | attach a spoken audio file to each Slack DM you receive
 ```
 
-The feature is OFF when both booleans are false. `slack_audio` attaches the
-spoken audio to each bot→user DM in the **same message** (text + inline player,
-one DM) via `SlackBotBackend.post_audio_dm` — no separate audio-only post. This
-needs the token's **`files:write`** scope (else `ok:false` / `missing_scope` —
-the DM degrades to text-only and the failure surfaces once per error class to
-the user's DM with the scope-fix hint; re-run `t3 setup slack-bot` to grant it).
-Both the `notify_user` DM and the on-behalf self-DM run through one shared
-`teatree.core.speak.deliver_user_dm` chokepoint.
+`local` is what plays through the speakers (macOS `say`): `off` nothing, `dm`
+the bot→user DM texts, `all` those DM texts **and** the Stop-hook reading of
+in-client turn ends. `slack` attaches the spoken audio to each bot→user DM in
+the **same message** (text + inline player, one DM) via
+`SlackBotBackend.post_audio_dm` — no separate audio-only post; it applies to
+DMs only by nature. This needs the token's **`files:write`** scope (else
+`ok:false` / `missing_scope` — the DM degrades to text-only and the failure
+surfaces once per error class to the user's DM with the scope-fix hint; re-run
+`t3 setup slack-bot` to grant it). Both the `notify_user` DM and the on-behalf
+self-DM run through one shared `teatree.core.speak.deliver_user_dm` chokepoint.
 
-No double-speak by construction: the Stop-hook in-client read fires only when
-`scope = all` AND `local` AND NOT `slack_audio` — when `slack_audio` is on the
-DM carries the canonical audio, so the Stop hook stands down. No DB, no state.
+The two axes are fully independent. Slack never auto-plays, so local playback
+is never suppressed by `slack`. The Stop-hook in-client read fires whenever
+`local = all` — in-client turns are never Slack messages, so there is no
+double-play to suppress. No DB, no state.
 
 Callers read `get_effective_settings().speak`. Adding a new overridable key
 is a one-line registry change picked up via `dataclasses.replace`; `speak` is

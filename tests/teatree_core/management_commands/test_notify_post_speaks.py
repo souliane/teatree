@@ -1,17 +1,18 @@
-"""``t3 <overlay> notify post`` to the user's own DM reads the text aloud (#2050).
+"""``t3 <overlay> notify post`` to the user's own DM reads the text aloud (#2060).
 
 The ``notify post`` self-DM short-circuit is a bot→user IM/DM egress — it
 routes through the SAME :func:`teatree.core.speak.deliver_user_dm` chokepoint
 :func:`teatree.core.notify.notify_user` uses, so the user's own DM plays
-locally when ``local`` is on and attaches audio when ``slack_audio`` is on.
+locally when ``local`` plays DMs and attaches audio when ``slack`` is on.
 
 Coverage:
 
-*   a self-DM post with ``local`` on reaches the ``say`` binary (asserted via
-    a fake ``say`` on ``PATH`` that records a marker);
+*   a self-DM post with ``local = dm`` reaches the ``say`` binary (asserted
+    via a fake ``say`` on ``PATH`` that records a marker);
 *   a colleague/channel post does NOT speak (a colleague surface is not a
     bot→user IM, so reading it aloud to the user would be wrong);
-*   the feature off (both destinations false) is silent on the self-DM path.
+*   the feature off (``local = off``, ``slack`` false) is silent on the
+    self-DM path.
 
 Only the Slack HTTP egress is mocked; the speak chokepoint, the self-DM
 classifier, and the CLI plumbing all run for real, with ``say`` shadowed
@@ -29,7 +30,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.backends.slack_bot import SlackBotBackend
-from teatree.types import SpeakConfig
+from teatree.types import LocalPlayback, SpeakConfig
 
 pytestmark = pytest.mark.django_db
 
@@ -93,7 +94,10 @@ class TestNotifyPostSpeaks:
                 "teatree.core.management.commands.notify.messaging_from_overlay",
                 lambda *_a, **_k: backend,
             ),
-            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig(local=True))),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(local=LocalPlayback.DM)),
+            ),
         ):
             code = _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "hello phone")
 
@@ -116,7 +120,10 @@ class TestNotifyPostSpeaks:
                 "teatree.core.management.commands.notify.messaging_from_overlay",
                 lambda *_a, **_k: backend,
             ),
-            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig(local=True))),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(local=LocalPlayback.DM)),
+            ),
             patch(
                 "teatree.core.on_behalf_egress.require_on_behalf_approval",
                 lambda *, target, action, publish: publish(),
@@ -147,4 +154,4 @@ class TestNotifyPostSpeaks:
             _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "nothing to hear")
 
         time.sleep(0.5)
-        assert not marker.exists(), "the feature off (both destinations false) must stay silent on the self-DM path"
+        assert not marker.exists(), "the feature off (local=off, slack false) must stay silent on the self-DM path"
