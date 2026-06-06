@@ -19,6 +19,7 @@ from teatree.core.worktree_env import (
     load_overrides,
     render_env_cache,
     set_override,
+    worktree_pg_connection,
     write_env_cache,
 )
 from teatree.types import BaseImageConfig, DbImportStrategy
@@ -448,3 +449,38 @@ class TestOverrides(TestCase):
             assert spec is not None
             assert "SECRET_PASSWORD" not in spec.content
             assert "leak" not in spec.content
+
+
+class _PgUserOverlay(OverlayBase):
+    """Overlay that connects to postgres as a non-default role + custom port."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "db.internal", "POSTGRES_PORT": "5544"}
+
+
+_PG_USER = {"test": _PgUserOverlay()}
+
+
+class TestWorktreePgConnection(TestCase):
+    def test_resolves_overlay_role_host_and_port(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt, _ = _make_worktree(tmp, ticket_name="pgc", ticket_url="https://ex.com/pgc", db_name="wt_pgc")
+            with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_PG_USER):
+                user, host, env = worktree_pg_connection(wt)
+        assert user == "db_superuser"
+        assert host == "db.internal"
+        assert env["PGPORT"] == "5544"
+
+    def test_unprovisioned_worktree_returns_blank_defaults(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://ex.com/np")
+        wt = Worktree.objects.create(
+            overlay="test", ticket=ticket, repo_path="backend", branch="feature", db_name="wt_np", extra={}
+        )
+        user, host, env = worktree_pg_connection(wt)
+        assert (user, host, env) == ("", "", {})
