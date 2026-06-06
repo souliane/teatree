@@ -29,8 +29,7 @@ from teatree.core.runners import (
     WorktreeTeardownRunner,
     WorktreeVerifyRunner,
 )
-from teatree.core.runners.worktree_start import compose_project
-from teatree.core.worktree_env import CACHE_FILENAME
+from teatree.core.worktree_env import CACHE_FILENAME, compose_project
 from teatree.docker.build import ensure_base_image
 from teatree.utils import redis_container
 from teatree.utils.ports import get_worktree_ports

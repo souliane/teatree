@@ -24,7 +24,7 @@ from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.worktree_env import worktree_pg_connection
+from teatree.core.worktree_env import compose_project, worktree_pg_connection
 from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -537,7 +537,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     # the auto-merged-ticket teardown, `clean-merged`, `clean-all`, and
     # sync backends all funnel through here. Idempotent: docker compose
     # down on a project with no containers is a no-op.
-    from teatree.core.runners.worktree_start import compose_project, docker_compose_down  # noqa: PLC0415
+    from teatree.core.runners.worktree_start import docker_compose_down  # noqa: PLC0415
 
     docker_compose_down(compose_project(worktree))
 
@@ -553,9 +553,9 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene))
 
     if worktree.db_name:
-        db_user, _, _ = worktree_pg_connection(worktree, overlay=overlay)
+        db_user, db_host, db_env = worktree_pg_connection(worktree, overlay=overlay)
         try:
-            drop_db(worktree.db_name, user=db_user)
+            drop_db(worktree.db_name, user=db_user, host=db_host, env=db_env or None)
         except Exception as exc:
             logger.exception("dropdb failed for %s (%s)", worktree.db_name, worktree.repo_path)
             step_errors.append(f"dropdb failed for {worktree.db_name}: {exc}")

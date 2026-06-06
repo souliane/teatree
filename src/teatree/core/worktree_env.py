@@ -54,6 +54,18 @@ class EnvCacheSpec:
     content: str
 
 
+def compose_project(worktree: Worktree) -> str:
+    """Return the docker-compose project name for *worktree*.
+
+    The single source of truth for the ``<repo_path>-wt<ticket_number>``
+    qualified key. Every consumer (the env cache, the stack gate, the
+    reconciler, the start/cleanup runners, the CLI) resolves through here
+    so the naming scheme can never drift across call sites.
+    """
+    ticket = worktree.ticket
+    return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
+
+
 def _docker_host_address() -> str:
     """Return the address Docker containers should use to reach the host."""
     if platform.system() in {"Darwin", "Windows"}:
@@ -76,7 +88,7 @@ def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
         ("TICKET_DIR", str(ticket_dir)),
         ("TICKET_URL", ticket.issue_url),
         ("WT_DB_NAME", worktree.db_name),
-        ("COMPOSE_PROJECT_NAME", f"{worktree.repo_path}-wt{ticket.ticket_number}"),
+        ("COMPOSE_PROJECT_NAME", compose_project(worktree)),
         (PASS_KEY_ENV, postgres_pass_key(ticket.ticket_number)),
     ]
     if ticket.redis_db_index is not None:
