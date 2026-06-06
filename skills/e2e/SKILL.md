@@ -28,6 +28,8 @@ Always start dev servers via `t3 <overlay> worktree start` before running tests.
 
 ## Claude in Chrome connectivity
 
+**Automated account-switch recovery (#1916).** A `/login` switch is now detected without manual checks: the `SessionStart` hook compares the active `~/.claude.json` `oauthAccount.accountUuid` against the last-recovered one and, on a change, prepends a directive telling you to run `t3 doctor check` (or `t3 setup recover-account-switch`). That command invalidates the teatree backend token cache and live-re-probes each Slack/Notion connector's `auth.test`, recording the new account so the notice clears. It exits non-zero when a connector is still unreachable. The Slack/Notion legs are automatic; the Claude-in-Chrome extension re-pairing below is still manual (item (a)).
+
 Browser-driven E2E and visual checks run through the Claude-in-Chrome MCP server. Two failure modes are easy to misread as "the browser is broken" when the fix is mechanical.
 
 **Diagnosis one-liner: MCP server connected ≠ extension connected.** `/mcp` showing the `claude-in-chrome` server green only proves the MCP server reachable — it does NOT prove the extension is paired with the active account.
