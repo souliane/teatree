@@ -4,7 +4,6 @@ Covers apply_merged_status and apply_closed_status.
 """
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
@@ -18,18 +17,9 @@ from teatree.types import SyncResult
 _FRONTEND = "frontend"
 
 
-@dataclass
-class _FakeConfig:
-    frontend_repos: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _FakeOverlay:
-    config: _FakeConfig
-
-
 def _patch_dod_overlay(frontend_repos: list[str]) -> AbstractContextManager[MagicMock]:
-    return patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_FakeConfig(frontend_repos)))
+    """Patch the frontend-repo resolution seam the DoD gate delegates to."""
+    return patch.object(dod_gate, "frontend_repos_for_overlay", return_value=list(frontend_repos))
 
 
 class TestApplyMergedStatusAllMerged(TestCase):

@@ -4,7 +4,6 @@ Covers update_ticket field preservation and merge_ticket_extras.
 """
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -20,19 +19,9 @@ if TYPE_CHECKING:
     from teatree.types import PREntryDict
 
 
-@dataclass
-class _FakeConfig:
-    frontend_repos: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _FakeOverlay:
-    config: _FakeConfig
-
-
 def _patch_dod_overlay(frontend_repos: list[str]) -> AbstractContextManager[MagicMock]:
-    """Patch the DoD gate's overlay so a scoped repo can be UI-visible in sync tests."""
-    return patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_FakeConfig(frontend_repos)))
+    """Patch the frontend-repo resolution seam the DoD gate delegates to (UI-visibility in sync tests)."""
+    return patch.object(dod_gate, "frontend_repos_for_overlay", return_value=list(frontend_repos))
 
 
 class TestUpdateTicket(TestCase):
