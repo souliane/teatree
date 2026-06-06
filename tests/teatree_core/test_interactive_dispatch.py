@@ -219,7 +219,7 @@ class TestHeadlessDispatchGuard(TestCase):
         sentinel = TaskAttempt(exit_code=0, result={"summary": "ran"})
 
         with (
-            patch("teatree.agents.headless.run_headless", return_value=sentinel) as run,
+            patch("teatree.core.headless_dispatch._runner", return_value=sentinel) as run,
             patch("teatree.core.overlay_loader.get_overlay") as overlay,
         ):
             overlay.return_value.metadata.get_skill_metadata.return_value = {}
@@ -244,7 +244,7 @@ class TestHeadlessDispatchGuard(TestCase):
         sentinel = TaskAttempt(exit_code=0, result={"summary": "ran"})
 
         with (
-            patch("teatree.agents.headless.run_headless", return_value=sentinel) as run,
+            patch("teatree.core.headless_dispatch._runner", return_value=sentinel) as run,
             patch("teatree.core.overlay_loader.get_overlay") as overlay,
         ):
             overlay.return_value.metadata.get_skill_metadata.return_value = {}

@@ -20,6 +20,7 @@ INSTALLED_APPS = [
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",
+    "teatree.backends",
     "teatree.contrib.t3_teatree",
 ]
 

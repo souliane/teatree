@@ -3,12 +3,12 @@ import logging
 from django.db.models.signals import post_save
 from django_fsm.signals import post_transition
 
-from teatree.backends.slack_reactions import add_approval_reaction, add_reactions_for_transition
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.reaction_dispatch import get_reaction_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def _add_slack_reactions_on_transition(
         reacted = require_on_behalf_approval(
             target=target,
             action=f"transition_reaction:{name}",
-            publish=lambda: add_reactions_for_transition(instance, name),
+            publish=lambda: get_reaction_publisher().add_reactions_for_transition(instance, name),
         )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Transition reaction for ticket %s (%s) gated: %s", instance.pk, name, blocked)
@@ -109,7 +109,7 @@ def _add_approval_reaction_on_transition(
         reacted = require_on_behalf_approval(
             target=target,
             action="approval_reaction",
-            publish=lambda: add_approval_reaction(instance),
+            publish=lambda: get_reaction_publisher().add_approval_reaction(instance),
         )
     except OnBehalfPostBlockedError as blocked:
         logger.info("Approval reaction for PR %s gated: %s", instance.pk, blocked)
