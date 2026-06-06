@@ -9,7 +9,7 @@ the orphan half — compose projects whose worktree directory is already gone.
 from pathlib import Path
 
 from teatree.core.models import Worktree
-from teatree.core.runners.worktree_start import compose_project
+from teatree.core.worktree_env import compose_project
 from teatree.docker.reap import reap_orphan_compose_projects
 
 

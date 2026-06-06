@@ -15,6 +15,7 @@ CLI-level ``call_command`` test that proves the gate refuses through
 
 import tempfile
 from pathlib import Path
+from subprocess import CompletedProcess
 from unittest.mock import patch
 
 import pytest
@@ -28,14 +29,20 @@ from teatree.core.models import Ticket, Worktree
 
 
 @pytest.fixture(autouse=True)
-def _stacks_appear_live() -> "object":
-    """Default every blocker to a live docker stack for the existing gate tests.
+def _stacks_appear_live(request: pytest.FixtureRequest) -> "object":
+    """Default every blocker to a live docker stack for the gate-behavior tests.
 
-    The gate now reconciles blocker rows against ``docker ps`` and demotes
-    phantoms (zero running containers). The pre-existing tests model rows
-    that are genuinely up, so default the docker probe to "live"; the
-    reconciliation tests override this with their own ``patch.object``.
+    The gate reconciles blocker rows against docker and demotes phantoms
+    (zero running and zero existing containers). The gate-behavior tests
+    model rows that are genuinely up, so default the running probe to
+    "live"; the reconciliation/restart tests override this with their own
+    ``patch.object``. The count-mapping tests exercise the probe helpers
+    themselves, so they opt out — patching the helper would shadow what
+    they assert.
     """
+    if request.cls is TestContainerCountMapping:
+        yield
+        return
     with patch.object(gate_mod, "_running_container_count", return_value=1):
         yield
 
@@ -399,6 +406,128 @@ class TestLocalStackGateDockerReconciliation(TestCase):
         message = str(exc.value)
         assert "/ws/7040-feat/backend" not in message
         assert "/ws/7041-feat/backend" in message
+
+
+class TestLocalStackGateRestartRace(TestCase):
+    """A stack mid-restart (containers exist but momentarily not running) is not a phantom.
+
+    ``docker ps`` (running only) reports zero during a ``docker compose
+    restart`` or a Docker-daemon reboot of a live worktree, but the
+    containers still exist (``docker ps -a`` lists them). Demoting such a
+    row to ``PROVISIONED`` and excluding it would corrupt a genuinely-live
+    stack's FSM and undercount the cap. Only a stack with zero containers
+    *total* is a phantom; "running zero, exist N" stays counted (fail-safe).
+    """
+
+    def test_restarting_stack_with_existing_containers_is_not_demoted(self) -> None:
+        restarting = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8010",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/8010-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8011",
+            state=Worktree.State.PROVISIONED,
+        )
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=0),
+            patch.object(gate_mod, "_existing_container_count", return_value=2),
+            pytest.raises(LocalStackLimitExceededError),
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        restarting.refresh_from_db()
+        assert restarting.state == Worktree.State.SERVICES_UP
+
+    def test_fully_gone_stack_is_still_demoted(self) -> None:
+        phantom = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8020",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/8020-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8021",
+            state=Worktree.State.PROVISIONED,
+        )
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=0),
+            patch.object(gate_mod, "_existing_container_count", return_value=0),
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        phantom.refresh_from_db()
+        assert phantom.state == Worktree.State.PROVISIONED
+
+    def test_unverifiable_existence_keeps_a_zero_running_row_counted(self) -> None:
+        """When ``docker ps -a`` cannot be queried (-1), a zero-running row stays counted."""
+        blocker = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8030",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/8030-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="8031",
+            state=Worktree.State.PROVISIONED,
+        )
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=0),
+            patch.object(gate_mod, "_existing_container_count", return_value=-1),
+            pytest.raises(LocalStackLimitExceededError),
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        blocker.refresh_from_db()
+        assert blocker.state == Worktree.State.SERVICES_UP
+
+
+class TestContainerCountMapping(TestCase):
+    """``_container_count`` maps docker output and exit code to a count.
+
+    Pins the returncode→count contract the gate's fail-safe relies on:
+    a non-zero docker exit yields ``-1`` (could-not-verify), while a clean
+    run counts the non-blank container names (``0`` = empty, ``N`` = live).
+    The ``include_stopped`` flag is what tells "gone" from "restarting":
+    it adds ``docker ps -a`` so stopped/restarting containers count too.
+    """
+
+    @staticmethod
+    def _result(returncode: int, stdout: str) -> "CompletedProcess[str]":
+        return CompletedProcess(["docker", "ps"], returncode, stdout, "")
+
+    def test_returns_minus_one_on_docker_failure(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(1, "")):
+            assert gate_mod._container_count("backend-wt1", include_stopped=False) == -1
+
+    def test_counts_nonblank_names(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(0, "c1\n\nc2\n")):
+            assert gate_mod._container_count("backend-wt1", include_stopped=False) == 2
+
+    def test_zero_for_empty_stdout(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(0, "")):
+            assert gate_mod._container_count("backend-wt1", include_stopped=False) == 0
+
+    def test_minus_one_for_blank_project(self) -> None:
+        assert gate_mod._container_count("", include_stopped=False) == -1
+
+    def test_running_count_omits_the_all_flag(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(0, "")) as run:
+            gate_mod._running_container_count("backend-wt1")
+        cmd = run.call_args.args[0]
+        assert cmd[:2] == ["docker", "ps"]
+        assert "-a" not in cmd
+
+    def test_existing_count_passes_the_all_flag(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(0, "")) as run:
+            gate_mod._existing_container_count("backend-wt1")
+        cmd = run.call_args.args[0]
+        assert cmd[:3] == ["docker", "ps", "-a"]
+
+    def test_existing_count_counts_all_states(self) -> None:
+        with patch.object(gate_mod, "run_allowed_to_fail", return_value=self._result(0, "c1\nc2\nc3\n")):
+            assert gate_mod._container_count("backend-wt1", include_stopped=True) == 3
 
 
 class TestLocalStackGateMultipleBlockers(TestCase):
