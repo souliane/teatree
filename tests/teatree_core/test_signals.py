@@ -1,3 +1,5 @@
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
 from django.db import DatabaseError
@@ -9,6 +11,29 @@ from teatree.core.models import PullRequest, Session, Task, Ticket
 from teatree.core.models.transition import TicketTransition
 from tests.teatree_core._on_behalf_gate_helpers import on_behalf_gate_off
 from tests.teatree_core.conftest import CommandOverlay
+
+
+class _FakeReactionPublisher:
+    """Test double for the reaction-publisher registry — routes one method to *fn*."""
+
+    def __init__(self, *, transition: Callable[..., int] | None = None, approval: Callable[..., int] | None = None):
+        self._transition = transition or (lambda *_a, **_k: 0)
+        self._approval = approval or (lambda *_a, **_k: 0)
+
+    def add_reactions_for_transition(self, ticket: object, transition_name: str) -> int:
+        return self._transition(ticket, transition_name)
+
+    def add_approval_reaction(self, pull_request: object) -> int:
+        return self._approval(pull_request)
+
+
+def _patch_transition_publisher(fn: Callable[..., int]) -> AbstractContextManager[object]:
+    return patch.object(signals_mod, "get_reaction_publisher", lambda: _FakeReactionPublisher(transition=fn))
+
+
+def _patch_approval_publisher(fn: Callable[..., int]) -> AbstractContextManager[object]:
+    return patch.object(signals_mod, "get_reaction_publisher", lambda: _FakeReactionPublisher(approval=fn))
+
 
 IMMEDIATE_BACKEND = {
     "TASKS": {
@@ -181,7 +206,7 @@ class TestSlackReactionsOnTransition(TestCase):
             called.append((t, name))
             return 1
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _fake):
+        with on_behalf_gate_off(), _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -195,7 +220,7 @@ class TestSlackReactionsOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _boom):
+        with on_behalf_gate_off(), _patch_transition_publisher(_boom):
             ticket.mark_merged()
             ticket.save()
 
@@ -210,11 +235,28 @@ class TestSlackReactionsOnTransition(TestCase):
             names.append(name)
             return 0
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_reactions_for_transition", _record):
+        with on_behalf_gate_off(), _patch_transition_publisher(_record):
             ticket.rework()
             ticket.save()
 
         assert names == ["rework"]
+
+    def test_transition_commits_when_no_publisher_registered(self) -> None:
+        """Fail-SAFE: an empty reaction registry → no-op reaction, transition still commits."""
+        from teatree.core import reaction_dispatch  # noqa: PLC0415
+
+        ticket = self._ticket_with_mr()
+        original = reaction_dispatch._publisher
+        reaction_dispatch._publisher = None
+        try:
+            with on_behalf_gate_off():
+                ticket.mark_merged()
+                ticket.save()
+        finally:
+            reaction_dispatch.register_reaction_publisher(original)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.MERGED
 
 
 class TestApprovalReactionOnTransition(TestCase):
@@ -248,7 +290,7 @@ class TestApprovalReactionOnTransition(TestCase):
             calls.append((pull_request,))
             return 1
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", _fake):
+        with on_behalf_gate_off(), _patch_approval_publisher(_fake):
             pr.approve()
             pr.save()
 
@@ -266,7 +308,7 @@ class TestApprovalReactionOnTransition(TestCase):
         # Gate ON (default) — no recorded approval → reaction is skipped
         # (NOT pure suppression: a recorded approval would let it
         # publish, exercised by the next test).
-        with patch.object(signals_mod, "add_approval_reaction", _fake):
+        with _patch_approval_publisher(_fake):
             pr.approve()
             pr.save()
 
@@ -292,7 +334,7 @@ class TestApprovalReactionOnTransition(TestCase):
             return 1
 
         # Gate ON by default — but the recorded approval satisfies it.
-        with patch.object(signals_mod, "add_approval_reaction", _fake):
+        with _patch_approval_publisher(_fake):
             pr.approve()
             pr.save()
 
@@ -305,7 +347,7 @@ class TestApprovalReactionOnTransition(TestCase):
             msg = "slack down"
             raise RuntimeError(msg)
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", _boom):
+        with on_behalf_gate_off(), _patch_approval_publisher(_boom):
             pr.approve()
             pr.save()
 
@@ -318,7 +360,7 @@ class TestApprovalReactionOnTransition(TestCase):
 
         with (
             on_behalf_gate_off(),
-            patch.object(signals_mod, "add_approval_reaction", lambda p: calls.append(p) or 0),
+            _patch_approval_publisher(lambda p: calls.append(p) or 0),
         ):
             pr.mark_merged()
             pr.save()
@@ -386,7 +428,7 @@ class TestApprovalReactionOnTransition(TestCase):
         )
         assert row is not None
 
-        with on_behalf_gate_off(), patch.object(signals_mod, "add_approval_reaction", lambda _pr: 1):
+        with on_behalf_gate_off(), _patch_approval_publisher(lambda _pr: 1):
             pr.approve()
             pr.save()
 
@@ -421,7 +463,7 @@ class TestTransitionReactionGated(TestCase):
             return 1
 
         # Gate ON by default — no recorded approval → reaction is skipped.
-        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+        with _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 
@@ -448,7 +490,7 @@ class TestTransitionReactionGated(TestCase):
             return 1
 
         # Gate ON by default — recorded approval satisfies it.
-        with patch.object(signals_mod, "add_reactions_for_transition", _fake):
+        with _patch_transition_publisher(_fake):
             ticket.mark_merged()
             ticket.save()
 

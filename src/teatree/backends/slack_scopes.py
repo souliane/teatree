@@ -8,9 +8,9 @@ guard can read it without re-issuing the request. Keeping the parsing here
 connector-preflight guard share one source of truth.
 """
 
+from teatree.core.connector_keys import GRANTED_SCOPES_KEY
 from teatree.types import RawAPIDict
 
-GRANTED_SCOPES_KEY = "_granted_scopes"
 OAUTH_SCOPES_HEADER = "X-OAuth-Scopes"
 
 

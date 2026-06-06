@@ -11,9 +11,8 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.backends.loader import get_ci_service, get_code_host, get_code_hosts, get_messaging
-from teatree.backends.loader import reset_backend_caches as _reset_loader_caches
-from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
+from teatree.core.backend_registry import get_backend_provider
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.paths import find_overlay_db
@@ -99,7 +98,7 @@ def _build_code_host(overlay_name: str) -> CodeHostBackend | None:
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return _code_host_from_toml_overlay(overlay_name)
-    return get_code_host(overlay)
+    return get_backend_provider().get_code_host(overlay)
 
 
 def messaging_from_overlay(overlay_name: str | None = None) -> MessagingBackend | None:
@@ -127,7 +126,7 @@ def _build_messaging(overlay_name: str) -> MessagingBackend | None:
         overlay = get_overlay(overlay_name or None)
     except ImproperlyConfigured:
         return _messaging_from_toml_overlay(overlay_name)
-    backend = get_messaging(overlay)
+    backend = get_backend_provider().get_messaging(overlay)
     _apply_voice_classifier_mode(backend)
     return backend
 
@@ -140,7 +139,7 @@ def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None
     except ImproperlyConfigured:
         return None
 
-    return get_ci_service(
+    return get_backend_provider().get_ci_service(
         gitlab_token=overlay.config.get_gitlab_token(),
         gitlab_url=overlay.config.gitlab_url,
     )
@@ -190,15 +189,16 @@ def iter_overlay_backends() -> list[OverlayBackends]:
     out: list[OverlayBackends] = []
     found_names: set[str] = set()
     identities = _resolved_identities()
+    provider = get_backend_provider()
 
     for name, overlay in get_all_overlays().items():
         found_names.add(name)
         try:
-            hosts = tuple(get_code_hosts(overlay))
+            hosts = tuple(provider.get_code_hosts(overlay))
         except (ImproperlyConfigured, ValueError):
             hosts = ()
         try:
-            messaging = get_messaging(overlay)
+            messaging = provider.get_messaging(overlay)
         except (ImproperlyConfigured, ValueError):
             messaging = None
         out.append(
@@ -287,23 +287,20 @@ def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
     """
     from teatree.utils.secrets import read_pass  # noqa: PLC0415
 
+    provider = get_backend_provider()
     hosts: list[CodeHostBackend] = []
     github_token_ref = cfg.get("github_token_ref", "")
     if github_token_ref:
         token = read_pass(github_token_ref)
         if token:
-            from teatree.backends.github import GitHubCodeHost  # noqa: PLC0415
-
-            hosts.append(GitHubCodeHost(token=token))
+            hosts.append(provider.build_github_host(token=token))
 
     gitlab_token_ref = cfg.get("gitlab_token_ref", "")
     gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
     if gitlab_token_ref:
         token = read_pass(gitlab_token_ref)
         if token:
-            from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
-
-            hosts.append(GitLabCodeHost(token=token, base_url=gitlab_url))
+            hosts.append(provider.build_gitlab_host(token=token, base_url=gitlab_url))
     return hosts
 
 
@@ -321,7 +318,6 @@ def _host_from_toml(cfg: dict) -> CodeHostBackend | None:
 def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     if cfg.get("messaging_backend") != "slack":
         return None
-    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
     from teatree.utils.secrets import read_pass  # noqa: PLC0415
 
     token_ref = cfg.get("slack_token_ref", "")
@@ -333,20 +329,19 @@ def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     user_token = read_pass(user_token_ref) if user_token_ref else ""
     user_id = cfg.get("slack_user_id", "")
     # Setup-time provisioned IM channel id (#1342). When set, threads into
-    # ``SlackBotBackend`` so the per-overlay bot's ``open_dm`` short-circuits
-    # the live ``conversations.open`` for the configured user, routing DMs
-    # through this bot's IM instead of failing ``channel_not_found``.
+    # the Slack bot so its ``open_dm`` short-circuits the live
+    # ``conversations.open`` for the configured user, routing DMs through this
+    # bot's IM instead of failing ``channel_not_found``.
     dm_channel_id = cfg.get("slack_dm_channel_id", "")
     if bot_token:
         # Loop construction path — a malformed user token degrades to
         # bot-only instead of crashing the tick (see ``get_messaging``).
-        backend = SlackBotBackend(
+        backend = get_backend_provider().build_slack_messaging(
             bot_token=bot_token,
             app_token=app_token or "",
             user_token=user_token,
             user_id=user_id,
             dm_channel_id=dm_channel_id,
-            degrade_bad_user_token=True,
         )
         _apply_voice_classifier_mode(backend)
         return backend
@@ -382,16 +377,13 @@ def reset_backend_caches() -> None:
     """
     _code_host_cache.clear()
     _messaging_cache.clear()
-    _reset_loader_caches()
+    get_backend_provider().reset_caches()
 
 
 __all__ = [
     "OverlayBackends",
     "ci_service_from_overlay",
     "code_host_from_overlay",
-    "get_ci_service",
-    "get_code_host",
-    "get_messaging",
     "iter_overlay_backends",
     "messaging_from_overlay",
     "reset_backend_caches",

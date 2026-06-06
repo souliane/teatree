@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "django_tasks_db",
     "teatree.core",
     "teatree.agents",
+    "teatree.backends",
     *_discover_overlay_apps(),
 ]
 

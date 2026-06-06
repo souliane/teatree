@@ -336,7 +336,7 @@ On every `t3 setup` run, `dep_drift` checks `[project].dependencies` against the
 | `pytest` + `pytest-cov` | >90% branch coverage |
 | `ruff` | All rules enabled, specific ignores justified (`# noqa` requires approval) |
 | `ty` | Static type checker with `error-on-warning = true` |
-| `import-linter` | Transitive/laundered dependency boundaries tach's direct-edge model misses (`core → messaging` even via an intermediate module, substrate → `contrib`, mini-loop independence); config in `pyproject.toml [tool.importlinter]` |
+| `import-linter` | Wildcard sibling-independence tach cannot express (substrate → `contrib`; mini-loops independent). Acyclicity + backend/agent-independence are tach-enforced (`forbid_circular_dependencies`, #1922). Config: `pyproject.toml` |
 | `codespell` | Spell check |
 | `prek` | Runs all above on commit |
 
