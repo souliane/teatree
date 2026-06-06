@@ -138,11 +138,13 @@ slack_token_ref = "teatree/<name>/slack"
 
 `t3 setup` installs teatree's skills per runtime:
 
-- **Claude** — core skills ship inside the plugin (loaded via symlink at
-  `~/.claude/plugins/t3 → <clone>`), so `t3 setup` does **not** symlink
-  them into `~/.claude/skills/`. Any leftover core symlinks from
-  pre-plugin installs are pruned to avoid duplicate entries. Overlay
-  skills (not shipped by the plugin) are still symlinked.
+- **Claude** — core skills ship inside the plugin, which `t3 setup` registers in
+  `~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
+  main clone (no `~/.claude/plugins/t3` symlink — any leftover legacy one is
+  removed by `_cleanup_legacy_plugin`). Because the plugin carries the core
+  skills, `t3 setup` does **not** symlink them into `~/.claude/skills/`; any
+  leftover core symlinks from pre-plugin installs are pruned to avoid duplicate
+  entries. Overlay skills (not shipped by the plugin) are still symlinked.
 - **Other runtimes** listed in `teatree.cli.setup.AGENT_SKILL_RUNTIMES`
   (e.g. Codex) are targeted when their home directory already exists, and
   receive symlinks for both core and overlay skills.

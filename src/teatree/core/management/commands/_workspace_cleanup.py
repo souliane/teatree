@@ -11,7 +11,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.config import load_config
+from teatree.config import get_effective_settings
 from teatree.core.cleanup import _branch_tree_matches_squash, cleanup_worktree
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
@@ -100,7 +100,7 @@ def is_squash_merged(repo: str, branch: str, default: str) -> bool:
 def _refuse_if_unpushed(repo: str, name: str) -> str:
     """Return a refusal message when ``name`` has commits absent from all remotes (#706).
 
-    Defense-in-depth for #710. ``prune_squash_merged`` deletes a branch and its
+    Defense-in-depth for #710. ``_prune_squash_merged`` deletes a branch and its
     worktree directly via ``git.worktree_remove`` / ``git.branch_delete``,
     bypassing the guarded teardown seam (``cleanup._raise_if_unpushed``) that
     every ``Worktree``-row-driven caller funnels through. That seam needs a
@@ -133,7 +133,7 @@ def _refuse_if_unpushed(repo: str, name: str) -> str:
     )
 
 
-def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
+def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
     """Remove a confirmed squash-merged branch (and its worktree if linked).
 
     A branch whose tip tree matches the PR's merge commit is cleaned despite
@@ -161,7 +161,20 @@ def prune_squash_merged(repo: str, name: str, wt_map: dict[str, str]) -> str:
     return f"Pruned squash-merged branch: {name}"
 
 
-def _branch_is_clean_ignored(branch: str, patterns: list[str]) -> bool:
+def is_clean_ignored(branch: str, *, overlay: str | None = None) -> bool:
+    """Whether ``branch`` matches a ``clean_ignore`` glob and must never be reaped.
+
+    The single predicate every clean-all deletion path consults — the worktree-row
+    reaper, the CREATED-state row loop, and the branch-prune passes — so the
+    never-reap guarantee lives in one place rather than three drifting copies.
+
+    ``clean_ignore`` is per-overlay overridable, so the patterns are resolved
+    through :func:`get_effective_settings` for the row's own overlay (``overlay``
+    = ``worktree.overlay``) or, on the repo-scoped branch-prune path, the active
+    overlay (``overlay=None``). Resolution per pattern set: ``[overlays.<name>]``
+    override, global ``[teatree] clean_ignore``, empty default.
+    """
+    patterns = get_effective_settings(overlay).clean_ignore
     return any(fnmatch(branch, pattern) for pattern in patterns)
 
 
@@ -193,12 +206,12 @@ class WorktreeReaper:
         ``strict_hygiene=True`` / ``force=False``, so the #706/#835/#1506 data-loss
         guards still refuse a branch with commits on no remote — a positive squash
         signal narrows the candidate set, it never bypasses the guards. Branches
-        matching ``clean_ignore`` are skipped before any classification.
+        matching ``clean_ignore`` — resolved per the row's own overlay via
+        :func:`is_clean_ignored` — are skipped before any classification.
         """
-        clean_ignore = load_config().user.clean_ignore
         cleaned: list[str] = []
         for worktree in Worktree.objects.exclude(state=Worktree.State.CREATED).select_related("ticket"):
-            if _branch_is_clean_ignored(worktree.branch, clean_ignore):
+            if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
                 cleaned.append(f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
                 continue
             repo = resolve_clone_path(self.workspace, worktree)
@@ -324,7 +337,14 @@ def _prune_gone_remote_worktrees(repo: str, wt_map: dict[str, str], protected: s
 
 
 def prune_branches(repo: str) -> list[str]:
-    """Delete local branches that are gone or merged, including squash-merged."""
+    """Delete local branches that are gone or merged, including squash-merged.
+
+    ``clean_ignore``-matching branches (never-merge dev overrides, long-lived
+    spikes) are added to ``protected`` up front via :func:`is_clean_ignored`, so
+    every deletion pass below — gone-branch, merged-branch, and squash-merge —
+    skips them through the single ``name in protected`` guard rather than each
+    pass re-checking the globs.
+    """
     cleaned: list[str] = []
     git.run(repo=repo, args=["fetch", "--prune"])
     git.run(repo=repo, args=["worktree", "prune"])
@@ -335,6 +355,12 @@ def prune_branches(repo: str) -> list[str]:
     wt_branches = worktree_branches(repo)
 
     wt_map = worktree_map(repo)
+
+    all_local = {
+        line.strip().removeprefix("* ").removeprefix("+ ")
+        for line in git.run(repo=repo, args=["branch", "--no-color"]).splitlines()
+    }
+    protected |= {name for name in all_local if is_clean_ignored(name)}
 
     for line in git.run(repo=repo, args=["branch", "-v", "--no-color"]).splitlines():
         if "[gone]" not in line:
@@ -361,7 +387,7 @@ def prune_branches(repo: str) -> list[str]:
     for name in sorted(all_branches - protected):
         if not is_squash_merged(repo, name, default):
             continue
-        cleaned.append(prune_squash_merged(repo, name, wt_map))
+        cleaned.append(_prune_squash_merged(repo, name, wt_map))
 
     remaining = {
         line.strip().removeprefix("* ").removeprefix("+ ")

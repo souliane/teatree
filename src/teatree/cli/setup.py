@@ -533,10 +533,11 @@ def run(
 ) -> None:
     """Install and configure teatree skills globally.
 
-    Runs APM dependency install, syncs skill symlinks, and links the t3
-    plugin into ``~/.claude/plugins/t3``.  Safe to run from a teatree
-    worktree — the main clone is resolved via the worktree's ``.git``
-    file so the global install stays anchored to a stable path.
+    Runs APM dependency install, syncs skill symlinks, and registers the t3
+    plugin in ``~/.claude/plugins/installed_plugins.json`` (``installPath``
+    pointing at the main clone — no ``~/.claude/plugins/t3`` symlink).  Safe to
+    run from a teatree worktree — the main clone is resolved via the worktree's
+    ``.git`` file so the global install stays anchored to a stable path.
     """
     if ctx.invoked_subcommand is not None:
         return

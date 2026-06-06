@@ -25,6 +25,7 @@ from teatree.core.management.commands._workspace_cleanup import (
     _raise_on_cleanup_failures,
     drop_orphan_databases,
     drop_orphaned_stashes,
+    is_clean_ignored,
     prune_branches,
     resolve_unsynced_worktree,
 )
@@ -568,6 +569,9 @@ class Command(TyperCommand):
         reaper = WorktreeReaper(workspace)
         cleaned.extend(reaper.reap_squash_merged_worktrees(interactive=interactive))
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
+            if is_clean_ignored(wt.branch, overlay=wt.overlay):
+                cleaned.append(f"SKIPPED '{wt.branch}': matches clean_ignore — keeping")
+                continue
             try:
                 cleaned.append(str(cleanup_worktree(wt)))
             except RuntimeError as exc:

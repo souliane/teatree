@@ -1,7 +1,9 @@
 """``t3 eval list`` / ``t3 eval run`` end-to-end through the typer CLI."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -11,8 +13,12 @@ from teatree.cli import app
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
-from teatree.eval.report import ScenarioResult
+from teatree.eval.report import MatcherResult, ScenarioResult
+from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _spec(name: str = "scenario_a") -> EvalSpec:
@@ -245,7 +251,7 @@ class TestEvalPassAtK:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -264,7 +270,7 @@ class TestEvalPassAtK:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--require", "all", "--no-persist"])
         assert result.exit_code == 1
@@ -288,7 +294,7 @@ class TestEvalPassAtK:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--format", "json", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -308,7 +314,7 @@ class TestEvalPassAtK:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _StubRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _StubRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
         assert result.exit_code == 0
@@ -365,7 +371,7 @@ class TestEvalRequireExecuted:
         specs = [_spec("alpha"), _spec("beta")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
         assert result.exit_code != 0, result.output
@@ -375,7 +381,7 @@ class TestEvalRequireExecuted:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -391,7 +397,7 @@ class TestEvalRequireExecuted:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassingRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _PassingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "3", "--require-executed", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -500,7 +506,7 @@ class TestEvalBackend:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _PassRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--trials", "2", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -585,7 +591,7 @@ class TestEvalModelMatrix:
         specs = [_spec("alpha"), _spec("beta")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _PassRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -598,7 +604,7 @@ class TestEvalModelMatrix:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _PassRunner),
         ):
             result = CliRunner().invoke(
                 app, ["eval", "run", "--models", "opus,haiku", "--format", "json", "--no-persist"]
@@ -618,7 +624,7 @@ class TestEvalModelMatrix:
 
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _FailOnHaiku),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _FailOnHaiku),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code == 1, result.output
@@ -636,7 +642,7 @@ class TestEvalModelMatrix:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _PassRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _PassRunner),
             patch("teatree.eval.persistence.current_git_sha", return_value=""),
         ):
             CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku"])
@@ -648,7 +654,7 @@ class TestEvalModelMatrix:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(
                 app, ["eval", "run", "--models", "opus,haiku", "--require-executed", "--no-persist"]
@@ -660,7 +666,7 @@ class TestEvalModelMatrix:
         specs = [_spec("alpha")]
         with (
             patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.ClaudePRunner", _SkippingRunner),
+            patch("teatree.cli.eval_multi_trial.ClaudePRunner", _SkippingRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "run", "--models", "opus,haiku", "--no-persist"])
         assert result.exit_code == 0, result.output
@@ -710,26 +716,90 @@ def _regression(*, ok: bool) -> RegressionReport:
     return RegressionReport(results=(CheckResult(check=check, ok=ok, skipped=False, detail="" if ok else "violated"),))
 
 
+def _negative_outcome(*, caught: bool) -> NegativeControlOutcome:
+    matchers = (_matcher_result(passed=not caught),)
+    return NegativeControlOutcome(
+        scenario_name="worktree_first",
+        result=ScenarioResult(
+            spec=_spec("worktree_first"),
+            run=_run("worktree_first"),
+            matcher_results=matchers,
+            skipped=False,
+        ),
+        offending_tool_call=None,
+    )
+
+
+def _matcher_result(*, passed: bool) -> MatcherResult:
+    return MatcherResult(
+        matcher=Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="x"),
+        passed=passed,
+        message="ok" if passed else "violation",
+    )
+
+
+@contextmanager
+def _patch_all_lanes(
+    specs: list[EvalSpec],
+    *,
+    trigger: TriggerQAReport | None = None,
+    regression_ok: bool = True,
+    negative_caught: bool = True,
+    replay_results: list[InvariantResult] | None = None,
+) -> "Iterator[None]":
+    """Patch every free-lane input `eval all` resolves so the run is deterministic."""
+    with (
+        patch("teatree.cli.eval.discover_specs", return_value=specs),
+        patch("teatree.cli.eval.run_trigger_qa", return_value=trigger or _good_trigger()),
+        patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=regression_ok)),
+        patch("teatree.cli.eval.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
+        patch("teatree.cli.eval.replay_transcript_for_all", return_value=replay_results),
+    ):
+        yield
+
+
 class TestEvalAll:
     def test_runs_free_lanes_and_renders_unified_table(self, tmp_path: Path) -> None:
-        specs = [_spec("worktree_first")]
-        with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.run_trigger_qa", return_value=_good_trigger()),
-            patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=True)),
-        ):
+        with _patch_all_lanes([_spec("worktree_first")]):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
         assert "trigger-qa" in result.output
         assert "regression" in result.output
 
+    def test_table_lists_all_five_lanes(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        for lane in ("trigger-qa", "regression", "negative-control", "transcript-replay", "ai-eval"):
+            assert lane in result.output, f"missing lane {lane!r}: {result.output}"
+
+    def test_transcript_replay_skips_not_fails_when_no_transcript(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "transcript-replay" in result.output
+        assert "SKIP" in result.output
+
+    def test_negative_control_failure_exits_nonzero(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+
+    def test_transcript_replay_violation_exits_nonzero(self, tmp_path: Path) -> None:
+        violation = [InvariantResult(ok=False, offending_index=2, message="inv")]
+        with _patch_all_lanes([_spec("worktree_first")], replay_results=violation):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+
+    def test_skips_alone_keep_exit_zero(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
+            result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+
     def test_no_transcripts_emits_manifest_never_meters(self, tmp_path: Path) -> None:
-        specs = [_spec("worktree_first")]
         with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.run_trigger_qa", return_value=_good_trigger()),
-            patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=True)),
+            _patch_all_lanes([_spec("worktree_first")]),
             patch("teatree.eval.backends.ClaudePRunner", side_effect=AssertionError("must not meter")),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
@@ -743,31 +813,19 @@ class TestEvalAll:
             encoding="utf-8"
         )
         (tmp_path / "worktree_first.jsonl").write_text(transcript, encoding="utf-8")
-        with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.run_trigger_qa", return_value=_good_trigger()),
-            patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=True)),
-        ):
+        with _patch_all_lanes(specs):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "ai-eval" in result.output
 
     def test_failing_free_lane_exits_nonzero(self, tmp_path: Path) -> None:
-        specs = [_spec("worktree_first")]
-        with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.run_trigger_qa", return_value=_bad_trigger()),
-            patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=True)),
-        ):
+        with _patch_all_lanes([_spec("worktree_first")], trigger=_bad_trigger()):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
     def test_sdk_backend_is_explicit_metered_opt_in(self, tmp_path: Path) -> None:
-        specs = [_spec("alpha")]
         with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
-            patch("teatree.cli.eval.run_trigger_qa", return_value=_good_trigger()),
-            patch("teatree.cli.eval.run_regression_corpus", return_value=_regression(ok=True)),
+            _patch_all_lanes([_spec("alpha")]),
             patch("teatree.eval.backends.ClaudePRunner", _PassRunner),
         ):
             result = CliRunner().invoke(app, ["eval", "all", "--backend", "sdk", "--transcript-dir", str(tmp_path)])
@@ -775,7 +833,7 @@ class TestEvalAll:
         assert "ai-eval" in result.output
 
     def test_unknown_backend_exits_code_2(self, tmp_path: Path) -> None:
-        with patch("teatree.cli.eval.discover_specs", return_value=[_spec("alpha")]):
+        with _patch_all_lanes([_spec("alpha")]):
             result = CliRunner().invoke(app, ["eval", "all", "--backend", "magic", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 2
         assert "unknown eval backend" in result.output

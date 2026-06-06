@@ -128,14 +128,22 @@ class Command(TyperCommand):
         Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
         outcome (merged / posted / shipped / deployed) it must also carry a
         resolvable artifact pointer (URL / SHA / ``!123`` / ``#123`` / note id /
-        path), so a phantom "done" claim cannot be recorded without proof. A
-        note with no outcome claim — or no note — is untouched.
+        path / Slack ts), so a phantom "done" claim cannot be recorded without
+        proof. A Slack post recorded as ``slack:<channel>:<ts>`` or
+        ``<channel>:<ts>`` is normalized to its archives permalink before the gate
+        and before storage. A note with no outcome claim — or no note — is
+        untouched.
         """
         from django.db import transaction  # noqa: PLC0415
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.completion_evidence import CompletionEvidenceError, check_completion_evidence  # noqa: PLC0415
+        from teatree.core.completion_evidence import (  # noqa: PLC0415
+            CompletionEvidenceError,
+            check_completion_evidence,
+            normalize_artifact_pointers,
+        )
 
+        note = normalize_artifact_pointers(note)
         try:
             check_completion_evidence(note)
         except CompletionEvidenceError as exc:

@@ -17,7 +17,7 @@ operate on plain captured tool calls.
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
-t3 eval all                                  # all lanes (trigger-qa + regression + AI) in one summary table
+t3 eval all                                  # all five lanes (trigger-qa + regression + negative-control + transcript-replay + AI) in one summary table
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -64,6 +64,14 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 
 The free, no-model commands — `trigger-qa`, `regression`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
+
+### `t3 eval all` — the combined five-lane surface (#1781)
+
+`t3 eval all` runs every lane in one summary table: the four free deterministic
+lanes (`trigger-qa`, `regression`, `negative-control`, `transcript-replay`) plus
+the metered AI lane. The AI lane never meters silently — `--backend sdk` opts in.
+A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
+command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
 
 `--trials`/`--models` always force the metered `sdk` runner regardless of
 `--backend` (a multi-trial / matrix run cannot be served from a single saved

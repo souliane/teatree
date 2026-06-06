@@ -313,6 +313,40 @@ class TestExtractPublishPayload:
         assert "acmecorp" in payload
 
 
+class TestRelativeBodyFileResolvesAgainstCommandDir:
+    """A relative ``--body-file`` resolves against the command's own ``cd`` dir.
+
+    At PreToolUse the cold hook subprocess's cwd has reset away from the
+    worktree, so a ``cd <worktree> && gh pr create --body-file body.md`` body
+    file is unreadable from the cwd. The gate previously failed closed and
+    blocked a clean post; it now resolves the relative path against the
+    command's leading ``cd`` dir — clean passes, banned blocks.
+    """
+
+    def test_clean_relative_body_file_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "body.md").write_text("ship the docs refresh next week\n", encoding="utf-8")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        payload = banned_terms_scanner.extract_publish_payload(
+            "Bash", {"command": f"cd {tmp_path} && gh pr create --title t --body-file body.md"}
+        )
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert "ship the docs refresh" in payload
+
+    def test_banned_relative_body_file_blocks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        (tmp_path / "body.md").write_text("internal note about acmecorp\n", encoding="utf-8")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        payload = banned_terms_scanner.extract_publish_payload(
+            "Bash", {"command": f"cd {tmp_path} && gh pr create --title t --body-file body.md"}
+        )
+        assert payload is not None
+        assert "acmecorp" in payload
+
+
 class TestBodyFileWriteThenPostResolution:
     """An in-command write paired with a later ``--body-file <path>`` resolves.
 
