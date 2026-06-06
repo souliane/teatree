@@ -332,6 +332,34 @@ class TestIsGhGlabPostingCommand:
             is False
         )
 
+    def test_host_qualified_allowlist_downgrades_bare_repo_flag_post(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # #2067: a host-qualified ``private_repos`` entry (the doc'd / cwd form)
+        # must downgrade a ``gh pr create --repo owner/name`` (bare flag form).
+        cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.command_is_pure_private_gh_glab_post(
+                "gh pr create --repo acmecorp-engineering/product --title x --body y", None, config_path=cfg
+            )
+            is True
+        )
+
+    def test_host_qualified_allowlist_does_not_downgrade_public_repo_flag_post(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        monkeypatch.delenv("GH_REPO", raising=False)
+        assert (
+            publish_surface.command_is_pure_private_gh_glab_post(
+                "gh pr create --repo souliane/teatree --title x --body y", None, config_path=cfg
+            )
+            is False
+        )
+
 
 class TestExtractRepoFlag:
     """``_extract_repo_flag`` must mirror gh/glab's LAST-WINS resolution.
@@ -403,6 +431,47 @@ class TestPrivateRepoAllowlist:
     def test_none_cwd_is_not_private(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["acmecorp-engineering"])
         assert publish_surface.commit_targets_private_repo(None, config_path=cfg) is False
+
+
+class TestAllowlistHostQualificationSymmetry:
+    """A host-qualified ``private_repos`` entry must match a bare ``--repo`` slug.
+
+    The carve-out doc states an entry is matched against a repo's origin slug
+    ``host/owner/repo``, and ``slug_for_cwd`` emits exactly that host-qualified
+    form -- so a user (or the cwd/commit path) supplies ``host/owner/repo``. But
+    ``gh pr create --repo`` takes a BARE ``owner/repo`` slug. The plain
+    ``entry in slug`` substring check is asymmetric: a host-qualified entry is a
+    substring of a host-qualified slug but NOT of a bare one, so the SAME private
+    repo downgrades on commit (cwd slug) yet hard-blocks on pr-create (#2067).
+    The match must normalize the host prefix on BOTH sides.
+    """
+
+    def test_host_qualified_entry_matches_bare_repo_flag_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is True
+
+    def test_host_qualified_entry_still_matches_host_qualified_slug(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/acmecorp-engineering/product", cfg) is True
+
+    def test_bare_org_entry_matches_both_slug_forms(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acmecorp-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/acmecorp-engineering/product", cfg) is True
+
+    def test_unrelated_public_slug_still_not_allowlisted(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["github.com/acmecorp-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("souliane/teatree", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/souliane/teatree", cfg) is False
+
+    def test_bare_host_root_entry_does_not_downgrade_any_repo(self, tmp_path: Path) -> None:
+        # B1: a malformed entry ``host./`` host-strips to "" — without filtering
+        # the empty form, ``"" in slug`` is always True and EVERY repo (incl.
+        # public) would downgrade. The empty form must be dropped on both sides.
+        cfg = _config(tmp_path, ["github.com/"])
+        assert _repo_visibility.slug_is_allowlisted_private("souliane/teatree", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/souliane/teatree", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is False
 
 
 class TestVisibilityProbeFallback:

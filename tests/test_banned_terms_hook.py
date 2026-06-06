@@ -273,6 +273,62 @@ def test_live_hook_allows_customer_term_on_git_c_commit_to_private_worktree(
     assert captured.out == ""  # no deny JSON
 
 
+# #2067: the private_repos entry is HOST-QUALIFIED (the form `slug_for_cwd`
+# emits and the carve-out doc states -- ``host/owner/repo``), while
+# ``gh pr create --repo`` supplies a BARE ``owner/repo`` slug. The carve-out
+# must still recognise the bare flag slug as that private repo.
+_HOST_QUALIFIED_CONFIG = (
+    '[teatree]\nbanned_terms = ["customercorp"]\nprivate_repos = ["github.com/customer-org/their-svc"]\n'
+)
+
+
+def test_live_hook_allows_customer_term_to_host_qualified_private_repo_via_bare_repo_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #2067 must-WARN: a host-qualified `private_repos` entry must downgrade a
+    # `gh pr create --repo owner/name` (bare flag) post on the repo's own term.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _HOST_QUALIFIED_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": 'gh pr create --repo customer-org/their-svc --title fix --body "customercorp rollout"'
+        },
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
+
+
+def test_live_hook_blocks_customer_term_to_public_repo_under_host_qualified_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # #2067 must-BLOCK: a host-qualified private allowlist must NOT weaken the
+    # public surface -- a customer term toward the public repo still hard-blocks.
+    home = Path(os.environ["HOME"])
+    _write_home_config(home, _HOST_QUALIFIED_CONFIG, monkeypatch, tmp_path)
+    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
+    monkeypatch.delenv("GH_REPO", raising=False)
+
+    data = {
+        "tool_name": "Bash",
+        "tool_input": {"command": 'gh pr create --repo souliane/teatree --title fix --body "customercorp leak"'},
+        "cwd": str(_public_clone(tmp_path)),
+    }
+    blocked = handle_banned_terms_pretool(data)
+    captured = capsys.readouterr()
+
+    assert blocked is True
+    decision = json.loads(captured.out)
+    assert decision["permissionDecision"] == "deny"
+
+
 # A banned term that is a SUBSTRING TOKEN of the own private-repo slug (the org
 # prefix of ``acmecorp-engineering``), so the work-item URL ``host/acmecorp-
 # engineering/.../-/issues/N`` tokenizes ``acmecorp`` out of it. The own-slug
