@@ -110,7 +110,7 @@ class TestNonGreenVerdictNeverMerges(TestCase):
                 clear = MergeClearFactory(**{trait: True})
                 ticket = clear.ticket
                 with (
-                    patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub_live_green),
+                    patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green),
                     pytest.raises(MergePreconditionError, match="not green"),
                 ):
                     merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -123,7 +123,7 @@ class TestNonGreenVerdictNeverMerges(TestCase):
     def test_green_verdict_clear_merges_through_the_keystone(self) -> None:
         clear = MergeClearFactory()
         ticket = clear.ticket
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub_live_green):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()

@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from teatree.core.backend_protocols import ROLLUP_QUERY_FAILED, ForgeMergeResult, PrMergeState
 from teatree.types import RawAPIDict
+from teatree.utils.run import run_allowed_to_fail
 
 Runner = Callable[[list[str]], tuple[int, str, str]]
 
@@ -28,7 +29,6 @@ def gh_runner(token: str) -> Runner:
     non-zero): the merge-RPC methods inspect the return code, so they need the
     ``(rc, out, err)`` shape :func:`run_allowed_to_fail` returns.
     """
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — avoid an import cycle at module load.
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
@@ -46,7 +46,6 @@ def glab_runner() -> Runner:
     ``GitLabAPI`` client) so the SHA-bind behaviour and error strings match what
     the keystone tests pin.
     """
-    from teatree.utils.run import run_allowed_to_fail  # noqa: PLC0415 — avoid an import cycle at module load.
 
     def run(argv: list[str]) -> tuple[int, str, str]:
         glab = shutil.which("glab") or "glab"
