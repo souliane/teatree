@@ -719,32 +719,28 @@ class SlackBotBackend:
         permalink = data.get("permalink", "")
         return permalink if isinstance(permalink, str) else ""
 
-    def upload_audio_to_dm(self, *, channel: str, filepath: str, title: str = "") -> RawAPIDict:
-        """Upload an audio file to ``channel`` so it plays inline in the DM (#1791).
+    def post_audio_dm(
+        self,
+        *,
+        channel: str,
+        filepath: str,
+        text: str,
+        thread_ts: str = "",
+        title: str = "",
+    ) -> RawAPIDict:
+        """Post ONE DM to ``channel`` carrying ``text`` + an inline audio attachment (#2050).
 
-        The three-step modern Slack upload flow (``files.upload`` is
-        deprecated): ``files.getUploadURLExternal`` reserves an off-Slack
-        one-shot ``upload_url`` + file ``id``; the bytes are POSTed there;
-        ``files.completeUploadExternal`` finalises the file and shares it
-        into ``channel_id``. Slack renders an inline audio player for an
-        ``.m4a`` / ``.mp3``, which is what surfaces the spoken reply on the
-        user's phone.
+        The modern three-step upload (``files.upload`` is deprecated):
+        ``getUploadURLExternal`` reserves an off-Slack ``upload_url`` + file
+        ``id``; the bytes are POSTed there; ``completeUploadExternal`` shares
+        the file into ``channel_id`` with ``text`` as the ``initial_comment``
+        and, when set, ``thread_ts`` — a SINGLE DM (text + inline player).
 
-        **Scope dependency:** finalising + sharing requires the Slack token
-        to hold the ``files:write`` scope. Without it
-        ``files.getUploadURLExternal`` (or ``completeUploadExternal``)
-        returns ``ok:false`` with ``error:"missing_scope"`` — surfaced
-        verbatim in the returned body so the caller can flag it. It is in
-        the bot manifest (``slack_setup._BOT_SCOPES``); re-run
-        ``t3 setup slack-bot`` to grant it on a pre-existing token.
-
-        Routes under :meth:`_route_token` (self-DM → bot, else → ``xoxp``),
-        the same destination policy as :meth:`post_routed`. Returns the raw
-        ``completeUploadExternal`` body (``ok`` / ``error`` / ``files``);
-        ``{}`` when no token is configured, the file is missing/unreadable,
-        or a step returns a non-ok body (the failure is in the returned
-        body for the ok-path steps; a transport error propagates to the
-        caller, which never lets it escape the speak seam).
+        Finalising requires the token's ``files:write`` scope; without it the
+        reserve step returns ``ok:false`` / ``missing_scope`` (surfaced
+        verbatim so the caller degrades to a text-only post). Routes under
+        :meth:`_route_token`. Returns the raw ``completeUploadExternal`` body
+        (``{}`` when no token is configured or the file is unreadable).
         """
         token = self._route_token(channel)
         if not token or not channel:
@@ -769,9 +765,12 @@ class SlackBotBackend:
         file_entry: RawAPIDict = {"id": file_id}
         if title:
             file_entry["title"] = title
+        payload: RawAPIDict = {"files": [file_entry], "channel_id": channel, "initial_comment": text}
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
         return self._post(
             "files.completeUploadExternal",
-            {"files": [file_entry], "channel_id": channel},
+            payload,
             token=token,
             idempotent=False,
         )

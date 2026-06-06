@@ -23,6 +23,7 @@ from teatree.cli._doctor_checks import (
     _check_editable_sanity,
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
+    _check_legacy_speak_keys,
     _check_single_db,
     _check_singletons,
     _check_skills,
@@ -60,6 +61,7 @@ __all__ = (
     "_check_editable_sanity",
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
+    "_check_legacy_speak_keys",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -547,6 +549,7 @@ def check() -> bool:
     ok = doctor_check_clone_currency(_collect_repos()) and ok
     _check_singletons()
     _check_legacy_overlay_alias()
+    _check_legacy_speak_keys()
     report_missing_authorizations(typer.echo)
     _ensure_plugin_registered()
 

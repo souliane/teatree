@@ -1,21 +1,19 @@
-"""``t3 <overlay> notify post`` to the user's own DM reads the text aloud.
+"""``t3 <overlay> notify post`` to the user's own DM reads the text aloud (#2050).
 
-The ``notify post`` self-DM short-circuit is a bot→user IM/DM egress —
-the same class :func:`teatree.core.notify.notify_user` speaks for under
-``speak_mode = im-only`` / ``all``. Before the fix only ``notify send``
-(``notify_user``) spoke; ``notify post --channel <self-DM>`` posted the
-DM and stayed silent because it bypasses ``notify_user`` entirely and the
-speak seam was wired only into ``notify_user``.
+The ``notify post`` self-DM short-circuit is a bot→user IM/DM egress — it
+routes through the SAME :func:`teatree.core.speak.deliver_user_dm` chokepoint
+:func:`teatree.core.notify.notify_user` uses, so the user's own DM plays
+locally when ``local`` is on and attaches audio when ``slack_audio`` is on.
 
 Coverage:
 
-*   a self-DM post under ``speak_mode = all`` reaches the ``say`` binary
-    (asserted via a fake ``say`` on ``PATH`` that records a marker);
+*   a self-DM post with ``local`` on reaches the ``say`` binary (asserted via
+    a fake ``say`` on ``PATH`` that records a marker);
 *   a colleague/channel post does NOT speak (a colleague surface is not a
     bot→user IM, so reading it aloud to the user would be wrong);
-*   ``speak_mode = off`` is silent on the self-DM path too.
+*   the feature off (both destinations false) is silent on the self-DM path.
 
-Only the Slack HTTP egress is mocked; the speak seam, the self-DM
+Only the Slack HTTP egress is mocked; the speak chokepoint, the self-DM
 classifier, and the CLI plumbing all run for real, with ``say`` shadowed
 by a fake on ``PATH`` so no audio plays and the user is never messaged.
 """
@@ -31,8 +29,7 @@ import pytest
 from django.core.management import call_command
 
 from teatree.backends.slack_bot import SlackBotBackend
-from teatree.config import UserSettings
-from teatree.types import SpeakMode, SpeakTarget
+from teatree.types import SpeakConfig
 
 pytestmark = pytest.mark.django_db
 
@@ -52,8 +49,10 @@ def _install_fake_say(bin_dir: Path, marker: Path) -> None:
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _settings(mode: SpeakMode) -> UserSettings:
-    return UserSettings(speak_mode=mode, speak_target=SpeakTarget.LOCAL)
+def _settings(speak: SpeakConfig) -> object:
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    return MagicMock(speak=speak)
 
 
 def _backend() -> SlackBotBackend:
@@ -94,7 +93,7 @@ class TestNotifyPostSpeaks:
                 "teatree.core.management.commands.notify.messaging_from_overlay",
                 lambda *_a, **_k: backend,
             ),
-            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakMode.ALL)),
+            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig(local=True))),
         ):
             code = _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "hello phone")
 
@@ -117,7 +116,7 @@ class TestNotifyPostSpeaks:
                 "teatree.core.management.commands.notify.messaging_from_overlay",
                 lambda *_a, **_k: backend,
             ),
-            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakMode.ALL)),
+            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig(local=True))),
             patch(
                 "teatree.core.on_behalf_egress.require_on_behalf_approval",
                 lambda *, target, action, publish: publish(),
@@ -143,9 +142,9 @@ class TestNotifyPostSpeaks:
                 "teatree.core.management.commands.notify.messaging_from_overlay",
                 lambda *_a, **_k: backend,
             ),
-            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakMode.OFF)),
+            patch("teatree.core.speak.get_effective_settings", lambda *_a, **_k: _settings(SpeakConfig())),
         ):
             _call("notify", "post", "--channel", _DM_CHANNEL, "--text", "nothing to hear")
 
         time.sleep(0.5)
-        assert not marker.exists(), "speak_mode = off must stay silent on the self-DM post path too"
+        assert not marker.exists(), "the feature off (both destinations false) must stay silent on the self-DM path"
