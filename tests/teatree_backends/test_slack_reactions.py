@@ -1,4 +1,4 @@
-"""Tests for teatree.backends.slack_reactions."""
+"""Tests for teatree.backends.slack.reactions."""
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from teatree.backends import slack_reactions
-from teatree.backends.slack_reactions import (
+from teatree.backends.slack import reactions as slack_reactions
+from teatree.backends.slack.reactions import (
     _iter_pr_permalinks,
     add_approval_reaction,
     add_reaction,
@@ -83,7 +83,7 @@ class TestAddReaction:
         memory ``feedback_react_not_emoji_thread_comment`` forbids. Raising
         loudly at the helper boundary forecloses the silent swallow.
         """
-        from teatree.backends.slack_react_errors import SlackReactionError  # noqa: PLC0415
+        from teatree.backends.slack.react_errors import SlackReactionError  # noqa: PLC0415
 
         post = _FakePost(
             responses=[
@@ -182,7 +182,7 @@ class TestAddReactionsForTransition:
     def test_posts_one_reaction_per_permalink(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
         monkeypatch.setattr(
-            "teatree.backends.slack_reactions.get_overlay",
+            "teatree.backends.slack.reactions.get_overlay",
             lambda name=None: overlay,
         )
         calls: list[tuple[str, str, str, str]] = []
@@ -207,7 +207,7 @@ class TestAddReactionsForTransition:
 
     def test_skips_unparseable_permalinks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: True)
 
         ticket = self._ticket(["not-a-permalink", "https://team.slack.com/archives/C1/p1700000000000100"])
@@ -215,7 +215,7 @@ class TestAddReactionsForTransition:
 
     def test_no_op_when_transition_unmapped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         called = []
         monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: called.append(a) or True)
 
@@ -225,7 +225,7 @@ class TestAddReactionsForTransition:
 
     def test_no_op_when_no_token(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token=""))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         called = []
         monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: called.append(a) or True)
 
@@ -235,7 +235,7 @@ class TestAddReactionsForTransition:
 
     def test_counts_only_successful_reactions(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         results = iter([True, False, True])
         monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: next(results))
 
@@ -260,7 +260,7 @@ class TestAddReactionsForTransition:
         :eyes:.
         """
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
@@ -281,7 +281,7 @@ class TestAddReactionsForTransition:
     def test_posts_eyes_on_reviewer_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Reviewer role still triggers :eyes: — the author skip does not affect reviewer flows."""
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
@@ -299,7 +299,7 @@ class TestAddReactionsForTransition:
     def test_posts_outcome_emoji_on_authored_ticket(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Outcome emojis (tada, white_check_mark) still post on authored tickets — only :eyes: is gated."""
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
@@ -316,7 +316,7 @@ class TestAddReactionsForTransition:
 
     def test_overlay_override_takes_precedence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb", emojis={"mark_merged": "rocket"}))
-        monkeypatch.setattr("teatree.backends.slack_reactions.get_overlay", lambda name=None: overlay)
+        monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         recorded: list[str] = []
         monkeypatch.setattr(slack_reactions, "add_reaction", lambda _t, _c, _ts, emoji: recorded.append(emoji) or True)
 

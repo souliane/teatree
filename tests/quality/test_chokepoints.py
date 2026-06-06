@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 import scripts.hooks.check_chokepoints as checker
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.quality.chokepoints import Chokepoint, ChokepointError, load_registry, registry_path
 

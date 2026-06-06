@@ -1,10 +1,12 @@
-"""Self-pin that the PR5 god-module splits left no dangling legacy paths.
+"""Self-pin that the file-hierarchy campaign splits left no dangling legacy paths.
 
-After the campaign PR5 relocations — ``core/merge_execution.py`` →
+After the campaign relocations — PR5: ``core/merge_execution.py`` →
 ``core/merge/`` package, ``config.py`` → ``config/`` package, the 17 flat
 phase/ship gates → ``core/gates/`` package, ``loop/tick_jobs.py`` →
 ``job_identity`` / ``scanner_factories`` / ``domain_jobs`` /
-``global_scanner_factories`` — every importer and ``mock.patch`` target moved
+``global_scanner_factories``; PR8: the 24 flat ``backends/<provider>_*.py``
+modules → ``backends/gitlab`` / ``backends/slack`` / ``backends/github``
+subpackages (prefix stripped) — every importer and ``mock.patch`` target moved
 to the new location. This module is the fitness function that keeps it that
 way: a regression that resurrects an old path (a copy-pasted import, a
 ``patch("teatree.core.merge_execution...")`` target, a doc/skill reference)
@@ -68,6 +70,39 @@ _GATE_STEMS = (
     "schema_guard",
 )
 
+# PR8 backends/ grouping: each flat ``teatree.backends.<provider>_<rest>`` moved
+# into a ``teatree.backends.<provider>`` subpackage with the redundant prefix
+# stripped (e.g. ``teatree.backends.gitlab_api`` → ``teatree.backends.gitlab.api``,
+# the bare client ``teatree.backends.gitlab`` → ``teatree.backends.gitlab.client``).
+# The flat ``<provider>_<rest>`` paths are now dead; the dotted
+# ``teatree.backends.<provider>.<rest>`` paths are live.
+_BACKEND_FLAT_STEMS = (
+    "gitlab_api",
+    "gitlab_ci",
+    "gitlab_payloads",
+    "gitlab_subissues",
+    "gitlab_sync",
+    "gitlab_sync_approvals",
+    "gitlab_sync_issues",
+    "gitlab_sync_prs",
+    "gitlab_sync_terminal",
+    "slack_bot",
+    "slack_bot_errors",
+    "slack_http",
+    "slack_react_errors",
+    "slack_reactions",
+    "slack_receiver",
+    "slack_review_sync",
+    "slack_scopes",
+    "slack_token_policy",
+    "slack_token_validation",
+    "slack_voice_classifier",
+    "github_claims",
+    "github_payloads",
+    "github_projects",
+    "github_sync",
+)
+
 
 def _legacy_patterns() -> dict[str, re.Pattern[str]]:
     patterns = {
@@ -79,6 +114,10 @@ def _legacy_patterns() -> dict[str, re.Pattern[str]]:
     for stem in _GATE_STEMS:
         # Flat ``teatree.core.<gate>`` — but NOT the live ``teatree.core.gates.<gate>``.
         patterns[f"teatree.core.{stem}"] = re.compile(rf"\bteatree\.core\.{stem}\b")
+    for stem in _BACKEND_FLAT_STEMS:
+        # Flat ``teatree.backends.<provider>_<rest>`` — the dotted subpackage path
+        # ``teatree.backends.<provider>.<rest>`` is live and never matches this.
+        patterns[f"teatree.backends.{stem}"] = re.compile(rf"\bteatree\.backends\.{stem}\b")
     return patterns
 
 
@@ -149,6 +188,31 @@ class TestFacadeImportSmoke:
         tick = importlib.import_module("teatree.loop.tick")
         for name in ("build_default_jobs", "build_default_scanners", "jobs_for_domain", "_ScannerJob", "Domain"):
             assert hasattr(tick, name), f"teatree.loop.tick missing re-export {name}"
+
+    @pytest.mark.parametrize("stem", _BACKEND_FLAT_STEMS)
+    def test_backend_subpackage_modules_import(self, stem: str) -> None:
+        provider, _, rest = stem.partition("_")
+        importlib.import_module(f"teatree.backends.{provider}.{rest}")
+
+    def test_gitlab_package_facade_re_exports(self) -> None:
+        gitlab = importlib.import_module("teatree.backends.gitlab")
+        for name in ("GitLabCodeHost", "get_client"):
+            assert hasattr(gitlab, name), f"teatree.backends.gitlab missing {name}"
+
+    def test_slack_package_facade_re_exports(self) -> None:
+        slack = importlib.import_module("teatree.backends.slack")
+        for name in (
+            "post_webhook_message",
+            "search_review_permalinks",
+            "read_recent_review_matches",
+            "SlackReviewSearchRequest",
+        ):
+            assert hasattr(slack, name), f"teatree.backends.slack missing {name}"
+
+    def test_github_package_facade_re_exports(self) -> None:
+        github = importlib.import_module("teatree.backends.github")
+        for name in ("GitHubCodeHost", "ProjectItem", "fetch_project_items", "issue_repo_short"):
+            assert hasattr(github, name), f"teatree.backends.github missing {name}"
 
 
 class TestPr7DeletableShims:

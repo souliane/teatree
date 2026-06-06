@@ -1,6 +1,6 @@
-"""Tests for ``teatree.backends.slack_scopes`` (X-OAuth-Scopes header parsing)."""
+"""Tests for ``teatree.backends.slack.scopes`` (X-OAuth-Scopes header parsing)."""
 
-from teatree.backends.slack_scopes import parse_oauth_scopes
+from teatree.backends.slack.scopes import parse_oauth_scopes
 
 
 def test_parse_oauth_scopes_splits_comma_separated_header() -> None:

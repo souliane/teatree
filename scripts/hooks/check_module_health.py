@@ -22,6 +22,9 @@ import subprocess
 MAX_LOC = 500
 MAX_MODULE_FUNCTIONS = 10
 
+_RENAME_FIELDS = 2
+_SINGLE_PATH_FIELD = 1
+
 _DICT_OBJECT_PATTERNS = [
     "dict[str, object]",
     "Dict[str, object]",
@@ -46,6 +49,30 @@ def _staged_python_files() -> list[str]:
         check=False,
     )
     return [f for f in result.stdout.strip().splitlines() if f.startswith("src/")]
+
+
+def _head_paths() -> dict[str, str]:
+    """Map each staged path to its pre-rename path at HEAD.
+
+    A renamed file (``R``) compares against its source path at HEAD so the
+    grandfather/ratchet logic follows the move instead of treating the new
+    path as a fresh over-cap file. Non-renamed files map to themselves.
+    """
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-status", "-M", "--diff-filter=ACMR", "--", "*.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    mapping: dict[str, str] = {}
+    for line in result.stdout.strip().splitlines():
+        status, *paths = line.split("\t")
+        if status.startswith("R") and len(paths) == _RENAME_FIELDS:
+            old_path, new_path = paths
+            mapping[new_path] = old_path
+        elif len(paths) == _SINGLE_PATH_FIELD:
+            mapping[paths[0]] = paths[0]
+    return mapping
 
 
 def _count_loc(filepath: str) -> int:
@@ -102,10 +129,11 @@ def _count_module_level_functions(filepath: str) -> list[str]:
     ]
 
 
-def _added_line_numbers(filepath: str) -> set[int] | None:
+def _added_line_numbers(filepath: str, head_path: str) -> set[int] | None:
     """Return the set of line numbers added/modified in the staged version, or None for new files."""
+    paths = [head_path, filepath] if head_path != filepath else [filepath]
     result = subprocess.run(
-        ["git", "diff", "--cached", "-U0", "--", filepath],
+        ["git", "diff", "--cached", "-U0", "-M", "--", *paths],
         capture_output=True,
         text=True,
         check=False,
@@ -146,12 +174,14 @@ def main() -> int:
     if not files:
         return 0
 
+    head_paths = _head_paths()
     violations: list[str] = []
 
     for filepath in files:
+        head_path = head_paths.get(filepath, filepath)
         loc = _count_loc(filepath)
         if loc > MAX_LOC:
-            prev_loc = _count_loc_at_head(filepath)
+            prev_loc = _count_loc_at_head(head_path)
             # A file newly crossing the cap is blocked outright. A file already
             # over the cap at HEAD is grandfathered but ratcheted: it may only
             # shrink. Growth is a regression that re-accretes the god-module.
@@ -165,7 +195,7 @@ def main() -> int:
 
         public_functions = _count_module_level_functions(filepath)
         if len(public_functions) > MAX_MODULE_FUNCTIONS:
-            prev_count = len(_count_module_level_functions_at_head(filepath))
+            prev_count = len(_count_module_level_functions_at_head(head_path))
             names = ", ".join(public_functions[:5])
             if prev_count <= MAX_MODULE_FUNCTIONS:
                 violations.append(
@@ -179,7 +209,7 @@ def main() -> int:
                     f"Over-cap files may only shrink — move a function to a class. Examples: {names}"
                 )
 
-        added_lines = _added_line_numbers(filepath)
+        added_lines = _added_line_numbers(filepath, head_path)
         dict_hits = _find_dict_object_annotations(filepath)
         for line_num, _line in dict_hits:
             # Only flag lines that were added or modified in this commit

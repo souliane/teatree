@@ -18,7 +18,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner
 from teatree.loop.scanners.slack_dm_inbound import SlackDmInboundScanner

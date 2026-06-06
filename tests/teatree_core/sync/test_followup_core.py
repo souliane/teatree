@@ -34,7 +34,7 @@ class TestSyncFollowup(TestCase):
 
     def test_creates_tickets_from_mrs(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE, _MR_WITHOUT_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -57,7 +57,7 @@ class TestSyncFollowup(TestCase):
     def test_sync_sets_draft_comments_pending(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         mock_client.get_draft_notes_count.return_value = 5
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -69,7 +69,7 @@ class TestSyncFollowup(TestCase):
     def test_sync_clears_draft_comments_when_zero(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         mock_client.get_draft_notes_count.return_value = 0
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -80,7 +80,7 @@ class TestSyncFollowup(TestCase):
 
     def test_fetches_issue_labels(self) -> None:
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -98,7 +98,7 @@ class TestSyncFollowup(TestCase):
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -120,7 +120,7 @@ class TestSyncFollowup(TestCase):
     def test_captures_api_errors(self) -> None:
         mock_client = MagicMock()
         mock_client.list_all_open_mrs.side_effect = RuntimeError("API timeout")
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -142,8 +142,8 @@ class TestSyncFollowup(TestCase):
         type(failing_backend).__name__ = "FailingBackend"
 
         with (
-            patch("teatree.backends.gitlab_sync.GitLabSyncBackend", return_value=failing_backend),
-            patch("teatree.backends.github_sync.GitHubSyncBackend") as gh_backend_cls,
+            patch("teatree.backends.gitlab.sync.GitLabSyncBackend", return_value=failing_backend),
+            patch("teatree.backends.github.sync.GitHubSyncBackend") as gh_backend_cls,
         ):
             gh_backend_cls.return_value.is_configured.return_value = False
             result = sync_followup()
@@ -156,7 +156,7 @@ class TestSyncFollowup(TestCase):
         overlay = SyncOverlay(gitlab_username="")
         mock_client = MagicMock()
         mock_client.current_username.return_value = ""
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         with _patch_overlay(overlay):
             result = sync_followup()
@@ -172,7 +172,7 @@ class TestSyncFollowup(TestCase):
         )
 
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -189,7 +189,7 @@ class TestSyncFollowup(TestCase):
         )
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -201,7 +201,7 @@ class TestSyncFollowup(TestCase):
         """First sync (no cached timestamp) should call list_open_mrs without updated_after."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -211,7 +211,7 @@ class TestSyncFollowup(TestCase):
         """After a successful sync, the timestamp is cached and passed on the next call."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         # First run: stores the timestamp
         sync_followup()
@@ -229,7 +229,7 @@ class TestSyncFollowup(TestCase):
         """Timestamp is stored after a successful sync even if zero MRs are returned."""
         cache.delete(LAST_SYNC_CACHE_KEY)
         mock_client = _make_mock_client([])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -238,7 +238,7 @@ class TestSyncFollowup(TestCase):
     def test_creates_ticket_with_inferred_state(self) -> None:
         """New ticket from a non-draft MR should be SHIPPED, not NOT_STARTED."""
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -248,7 +248,7 @@ class TestSyncFollowup(TestCase):
     def test_creates_draft_ticket_as_started(self) -> None:
         """New ticket from a draft MR should be STARTED."""
         mock_client = _make_mock_client([_MR_WITHOUT_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -265,7 +265,7 @@ class TestSyncFollowup(TestCase):
             extra={"prs": {}},
         )
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -284,7 +284,7 @@ class TestSyncFollowup(TestCase):
         # MR with no approvals -> inferred SHIPPED, but ticket is already at IN_REVIEW
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
         mock_client.get_mr_approvals.return_value = {"count": 0, "required": 1}
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         sync_followup()
 
@@ -298,7 +298,7 @@ class TestSyncFollowup(TestCase):
             "reviewers": None,
         }
         mock_client = _make_mock_client([mr])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 
@@ -341,7 +341,7 @@ class TestSyncFollowup(TestCase):
         self._monkeypatch.setattr(Ticket.objects, "filter", patched_filter)
 
         mock_client = _make_mock_client([_MR_WITH_ISSUE])
-        self._monkeypatch.setattr("teatree.backends.gitlab_api.GitLabAPI", lambda **_kw: mock_client)
+        self._monkeypatch.setattr("teatree.backends.gitlab.api.GitLabAPI", lambda **_kw: mock_client)
 
         result = sync_followup()
 

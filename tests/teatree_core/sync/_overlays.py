@@ -9,7 +9,7 @@ factory functions, relocated so each focused test module can import them.
 from unittest.mock import MagicMock, patch
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.backends.gitlab_api import ProjectInfo
+from teatree.backends.gitlab.api import ProjectInfo
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 
 # Test overlay classes

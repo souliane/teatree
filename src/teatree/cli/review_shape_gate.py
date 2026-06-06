@@ -34,7 +34,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from teatree.backends.gitlab_api import GitLabHTTPClient
+    from teatree.backends.gitlab.api import GitLabHTTPClient
 
 COLLEAGUE_PROSE_CAP_PARAGRAPHS = 3
 COLLEAGUE_PROSE_CAP_WORDS = 200
@@ -45,7 +45,7 @@ _TTL_MR_AUTHOR = 300  # 5 minutes — mirrors `_TTL_USERNAME` shape
 def fetch_mr_author(api: "GitLabHTTPClient", encoded_repo: str, mr: int) -> str:
     """Return the MR author's username, cached for 5 minutes per ``(repo, mr)``.
 
-    Reuses the :class:`~teatree.backends.gitlab_api.GitLabHTTPClient`
+    Reuses the :class:`~teatree.backends.gitlab.api.GitLabHTTPClient`
     response-cache machinery (``_set_cached`` / ``_get_cached``) so a
     second post on the same MR within the TTL skips the GitLab GET.
     The cache lookup is best-effort: a non-canonical API stub without

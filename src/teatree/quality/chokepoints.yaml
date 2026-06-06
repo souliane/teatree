@@ -54,7 +54,7 @@
   protected_attrs: [react, post_message]
   exempt_receivers: [egress, OnBehalfSlackEgress]
   allowed_modules:
-    - teatree.backends.slack_bot
+    - teatree.backends.slack.bot
     - teatree.core.notify
     - teatree.core.reply_transport
     - teatree.core.daily_digest

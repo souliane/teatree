@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.backends.slack_receiver import (
+from teatree.backends.slack.receiver import (
     QueuePaths,
     _enqueue,
     _run_single_overlay,
@@ -394,7 +394,7 @@ class TestRunListener:
             started.wait(timeout=2.0)
             sig.raise_signal(sig.SIGINT)
 
-        with patch("teatree.backends.slack_receiver._run_single_overlay", side_effect=fake_overlay):
+        with patch("teatree.backends.slack.receiver._run_single_overlay", side_effect=fake_overlay):
             trigger = threading.Thread(target=run_and_signal, daemon=True)
             trigger.start()
             run_listener([("ov", "xapp", "xoxb")], queue_path=tmp_path / "events.jsonl")

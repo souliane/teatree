@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.cli.slack_channel_provisioning import JoinStatus, join_channel, join_review_channels, render_join_result
 
 

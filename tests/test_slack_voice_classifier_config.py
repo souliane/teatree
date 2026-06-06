@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.backends.slack_voice_classifier import ClassifierMode
+from teatree.backends.slack.voice_classifier import ClassifierMode
 from teatree.config import load_config
 
 

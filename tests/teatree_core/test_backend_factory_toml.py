@@ -15,7 +15,7 @@ import pytest
 
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 
 

@@ -19,7 +19,7 @@ class SlackVoiceClassifierMode(enum.StrEnum):
     Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config`
     can parse the ``[teatree] slack_voice_classifier_mode`` setting
     without importing the classifier implementation in
-    :mod:`teatree.backends.slack_voice_classifier` (the
+    :mod:`teatree.backends.slack.voice_classifier` (the
     ``teatree.backends → teatree.config`` direction is forbidden by
     the tach module boundary, but ``teatree.config → teatree.types``
     is allowed).

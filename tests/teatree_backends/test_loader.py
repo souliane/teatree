@@ -8,7 +8,7 @@ import pytest
 
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.gitlab_ci import GitLabCIService
+from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.loader import (
     get_ci_service,
     get_code_host,
@@ -18,7 +18,7 @@ from teatree.backends.loader import (
     reset_backend_caches,
 )
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig
 
 

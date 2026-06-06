@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.backends.gitlab_sync_terminal import apply_closed_status, apply_merged_status
+from teatree.backends.gitlab.sync_terminal import apply_closed_status, apply_merged_status
 from teatree.core.e2e_workitem import record_run
 from teatree.core.gates import dod_gate
 from teatree.core.models import Ticket, Worktree
@@ -23,7 +23,7 @@ def _patch_dod_overlay(frontend_repos: list[str]) -> AbstractContextManager[Magi
 
 
 class TestApplyMergedStatusAllMerged(TestCase):
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree")
     def test_advances_state_when_all_merged_no_discussions(self, mock_cleanup: MagicMock) -> None:
         """All MRs merged but none have discussions — state should still advance."""
         ticket = Ticket.objects.create(
@@ -47,7 +47,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree")
     def test_auto_cleans_worktrees_on_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/3",
@@ -65,7 +65,7 @@ class TestApplyMergedStatusAllMerged(TestCase):
         mock_cleanup.assert_called_once()
         assert result.worktrees_cleaned == 1
 
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree", side_effect=RuntimeError("cleanup failed"))
     def test_cleanup_failure_does_not_block_merge(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             issue_url="https://gitlab.com/org/repo/-/issues/4",
@@ -185,7 +185,7 @@ class TestApplyClosedStatus(TestCase):
             branch="fix-80",
         )
         result = SyncResult()
-        with patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree") as mock_cleanup:
+        with patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree") as mock_cleanup:
             apply_closed_status(ticket, {"url1"}, result)
         mock_cleanup.assert_not_called()
         assert result.worktrees_cleaned == 0
@@ -199,7 +199,7 @@ class TestMergedTerminalDodGate(TestCase):
     ``dod_e2e_violation`` marker when the DoD local-E2E gate was unmet.
     """
 
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree")
     def test_ui_visible_no_e2e_keeps_merged_but_records_violation(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -218,7 +218,7 @@ class TestMergedTerminalDodGate(TestCase):
         # The unmet DoD is recorded for audit rather than silently bypassed.
         assert ticket.extra["dod_e2e_violation"]["state"] == Ticket.State.MERGED
 
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree")
     def test_ui_visible_with_green_e2e_keeps_merged_no_violation(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",
@@ -236,7 +236,7 @@ class TestMergedTerminalDodGate(TestCase):
         assert ticket.state == Ticket.State.MERGED
         assert "dod_e2e_violation" not in ticket.extra
 
-    @patch("teatree.backends.gitlab_sync_terminal.cleanup_worktree")
+    @patch("teatree.backends.gitlab.sync_terminal.cleanup_worktree")
     def test_backend_only_keeps_merged_no_violation(self, mock_cleanup: MagicMock) -> None:
         ticket = Ticket.objects.create(
             overlay="acme",

@@ -8,10 +8,10 @@ import pytest
 from teatree.backends.slack import (
     SlackReviewMatch,
     SlackReviewSearchRequest,
-    _resolve_workspace_domain,
     read_recent_review_matches,
     search_review_permalinks,
 )
+from teatree.backends.slack.client import _resolve_workspace_domain
 
 
 class FakeClient:
@@ -122,7 +122,7 @@ def test_search_review_permalinks_finds_matching_mr(monkeypatch: pytest.MonkeyPa
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://team.slack.com/", pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -158,7 +158,7 @@ def test_search_review_permalinks_stops_when_all_found(monkeypatch: pytest.Monke
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://t.slack.com/", pages=[page1, page2])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -190,7 +190,7 @@ def test_search_review_permalinks_paginates(monkeypatch: pytest.MonkeyPatch) -> 
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://ws.slack.com/", pages=[page1, page2])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -209,7 +209,7 @@ def test_search_review_permalinks_stops_on_not_ok(monkeypatch: pytest.MonkeyPatc
     """search_review_permalinks breaks when API returns ok=false (line 73-74)."""
     page = {"ok": False, "error": "channel_not_found"}
     fake_client = FakeClient(pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -235,7 +235,7 @@ def test_search_review_permalinks_skips_messages_without_ts(monkeypatch: pytest.
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://ws.slack.com/", pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -259,7 +259,7 @@ def test_search_review_permalinks_uses_provided_workspace_domain(monkeypatch: py
         "has_more": False,
     }
     fake_client = FakeClient(pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -287,7 +287,7 @@ def test_search_review_permalinks_deduplicates_same_mr(monkeypatch: pytest.Monke
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://ws.slack.com/", pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -310,7 +310,7 @@ def test_search_review_permalinks_stops_when_no_cursor(monkeypatch: pytest.Monke
         "response_metadata": {},
     }
     fake_client = FakeClient(pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     result = search_review_permalinks(
         SlackReviewSearchRequest(
@@ -343,7 +343,7 @@ def test_oldest_ts_is_passed_as_oldest_param(monkeypatch: pytest.MonkeyPatch) ->
     """SlackReviewSearchRequest.oldest_ts bounds conversations.history (#1084)."""
     page = {"ok": True, "messages": [], "has_more": False}
     fake_client = _ParamCapturingClient(pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     search_review_permalinks(
         SlackReviewSearchRequest(
@@ -371,7 +371,7 @@ def test_read_recent_review_matches_returns_empty_ok_when_no_token() -> None:
 def test_read_recent_review_matches_clean_empty_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     """A clean read that finds nothing is ok=True, matches=[] (safe to post)."""
     fake_client = FakeClient(pages=[{"ok": True, "messages": [], "has_more": False}])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
@@ -383,7 +383,7 @@ def test_read_recent_review_matches_clean_empty_is_ok(monkeypatch: pytest.Monkey
 def test_read_recent_review_matches_not_ok_when_api_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     """An API ok=false page means ok=False (fail safe to NOT posting)."""
     fake_client = FakeClient(pages=[{"ok": False, "error": "channel_not_found"}])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
@@ -407,7 +407,7 @@ def test_read_recent_review_matches_finds_and_paginates(monkeypatch: pytest.Monk
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://w.slack.com/", pages=[page1, page2])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=[pr_url])
@@ -421,7 +421,7 @@ def test_read_recent_review_matches_finds_and_paginates(monkeypatch: pytest.Monk
 def test_read_recent_review_matches_stops_when_no_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     """has_more but no cursor terminates the loop with a clean ok read."""
     fake_client = FakeClient(pages=[{"ok": True, "messages": [], "has_more": True, "response_metadata": {}}])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=["https://x/pull/1"])
@@ -438,7 +438,7 @@ def test_iter_review_matches_uses_bot_id_author(monkeypatch: pytest.MonkeyPatch)
         "has_more": False,
     }
     fake_client = FakeClient(auth_url="https://w.slack.com/", pages=[page])
-    monkeypatch.setattr("teatree.backends.slack.httpx.Client", lambda **kw: fake_client)
+    monkeypatch.setattr("teatree.backends.slack.client.httpx.Client", lambda **kw: fake_client)
 
     read = read_recent_review_matches(
         SlackReviewSearchRequest(token="xoxb", channel_id="C1", channel_name="r", pr_urls=[pr_url])

@@ -40,7 +40,7 @@ class TestSlackMentionsScanner:
             {"event": {"type": "app_mention", "ts": "3.0", "text": "queued mention"}},
             {"event": {"type": "message", "channel_type": "im", "ts": "4.0", "text": "queued dm"}},
         ]
-        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=queued_events):
+        with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=queued_events):
             signals = scanner.scan()
 
         assert len(signals) == 2
@@ -51,7 +51,7 @@ class TestSlackMentionsScanner:
         backend = self._make_backend()
         scanner = SlackMentionsScanner(backend=backend, cursor_path=tmp_path / "cursor.json")
         queued = [{"event": {"type": "message", "channel_type": "channel", "ts": "5.0", "text": "not im"}}]
-        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=queued):
+        with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=queued):
             signals = scanner.scan()
 
         assert len(signals) == 0
@@ -71,7 +71,7 @@ class TestSlackMentionsScanner:
         cursor_path = tmp_path / "cursor.json"
         scanner = SlackMentionsScanner(backend=backend, cursor_path=cursor_path)
 
-        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=[]):
+        with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=[]):
             scanner.scan()
 
         assert not cursor_path.is_file()

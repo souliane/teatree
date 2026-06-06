@@ -34,7 +34,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:

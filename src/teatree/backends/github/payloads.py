@@ -1,6 +1,6 @@
 """GitHub payload shapes + pure parsers — the read-side of the gh backend.
 
-Mirrors :mod:`teatree.backends.gitlab_payloads`: the TypedDict shapes teatree
+Mirrors :mod:`teatree.backends.gitlab.payloads`: the TypedDict shapes teatree
 reads off ``gh`` JSON and the pure functions that map a payload to a teatree
 enum. No subprocess here — the I/O lives in :mod:`teatree.backends.github`.
 """

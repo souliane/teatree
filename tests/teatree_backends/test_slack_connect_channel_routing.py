@@ -20,8 +20,9 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_bot, slack_http
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import bot as slack_bot
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 
 _EXT_SHARED = "C0AM3TENTLK"  # an externally-shared partner channel (Slack-Connect)
 _INTERNAL = "C09INTERNAL0"  # an ordinary workspace channel

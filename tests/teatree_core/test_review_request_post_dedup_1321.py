@@ -21,7 +21,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.backends import slack
+from teatree.backends.slack import client as slack_client
 from teatree.core.gates.review_request_guard import GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
@@ -104,7 +104,7 @@ class TestPostRefusedWhenChannelHistoryHasHit(TestCase):
         }
         backend = _PostRecordingBackend()
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(slack.httpx, "Client", lambda **kw: _FakeHttpxClient(pages=[page], **kw))
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _FakeHttpxClient(pages=[page], **kw))
             with (
                 patch(f"{_CMD_MOD}.resolve_guard_target", return_value=_TARGET),
                 patch(f"{_CMD_MOD}.messaging_from_overlay", return_value=backend),

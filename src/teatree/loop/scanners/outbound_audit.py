@@ -318,7 +318,7 @@ def _gitlab_note_verifier() -> Verifier | None:
 def _resolve_github_token() -> str:
     """Resolve a GitHub PAT from env, falling back to the ``pass`` store.
 
-    Mirrors :func:`teatree.backends.gitlab_api._resolve_token` so the
+    Mirrors :func:`teatree.backends.gitlab.api._resolve_token` so the
     GitHub-note verifier has the same credential pipeline the GitLab
     verifier already relies on. An empty result means the verifier
     factory will return ``None`` (no production verifier) and the

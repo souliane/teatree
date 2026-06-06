@@ -11,8 +11,8 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-from teatree.backends import slack_http
-from teatree.backends.slack_http import SlackHttpClient
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.http import SlackHttpClient
 
 
 def _ok(body: dict[str, object] | None = None) -> httpx.Response:

@@ -106,7 +106,7 @@ class TestNotifyPost:
         # Self-DM reply (the user's own bot DM) is the ungated path; the
         # ``--thread-ts`` value must reach the chat.postMessage payload so a
         # threaded user-reply actually threads. Mock only the HTTP egress.
-        from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+        from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
             bot_token="xoxb-test",

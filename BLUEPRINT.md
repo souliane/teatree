@@ -59,7 +59,7 @@ cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive gro
 core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols + merge/ + gates/ packages
 agents/      # Headless executor runtime (claude -p swap point)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
-backends/    # Pluggable external service integrations (GitHub, GitLab, Slack, Notion, Sentry)
+backends/    # Pluggable external service integrations; per-forge subpackages github/ gitlab/ slack/ (+ flat notion, sentry)
 config/      # Settings load + overlay discovery
 utils/       # Pure utilities (git, ports, db, secrets, compose contract, ...)
 overlay_init/, contrib/, docker/, templates/overlay/
@@ -67,7 +67,7 @@ overlay_init/, contrib/, docker/, templates/overlay/
 
 Plus top-level: `agents/` (phase sub-agent definitions), `skills/*/` (workflow skills), `hooks/` (plugin hooks), `tests/` (pytest suite), `scripts/` (utility scripts), `.claude-plugin/`, `apm.yml`, `settings.json`.
 
-Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the one-command `t3 setup slack-provision` that runs the whole lifecycle (manifest scopes, OAuth URL, channel join, tokens) idempotently ([#1686](https://github.com/souliane/teatree/issues/1686)) — are detailed in [docs/blueprint/configuration.md](docs/blueprint/configuration.md) §10.1 "Slack bot setup", cited from `src/teatree/backends/slack_bot.py`, `src/teatree/cli/slack_setup.py`, and `src/teatree/cli/slack_provision.py` as `BLUEPRINT §3.6`.
+Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the one-command `t3 setup slack-provision` that runs the whole lifecycle (manifest scopes, OAuth URL, channel join, tokens) idempotently ([#1686](https://github.com/souliane/teatree/issues/1686)) — are detailed in [docs/blueprint/configuration.md](docs/blueprint/configuration.md) §10.1 "Slack bot setup", cited from `src/teatree/backends/slack/bot.py`, `src/teatree/cli/slack_setup.py`, and `src/teatree/cli/slack_provision.py` as `BLUEPRINT §3.6`.
 
 ---
 
@@ -217,7 +217,7 @@ Request parameters are grouped into frozen `slots=True` dataclasses (`PullReques
 
 **Inbound events.** `t3 slack listen` runs a Socket Mode receiver that writes events to append-only JSONL queues (`slack-events.jsonl`, `slack-reactions.jsonl`) so scanners can drain atomically without racing.
 
-**Reaction surface (#1281).** FSM `reactions.add` failures (`missing_scope`, `not_in_channel`, `mcp_externally_shared_channel_restricted`, …) raise `SlackReactionError` from `backends/slack_react_errors.py` — never silently return `False` — so callers cannot fall back to a `chat.postMessage(text=":emoji:")` thread reply. `SlackBotBackend.post_message` / `post_reply` reject bodies matching `^:[a-z0-9_+\-]+:$` with `SingleEmojiBodyRefusedError`, foreclosing the failure-mode shape at the backend boundary. FSM-side wrappers (`add_reactions_for_transition`, `add_approval_reaction`) catch the raise locally so Slack auth gaps cannot roll back FSM transitions.
+**Reaction surface (#1281).** FSM `reactions.add` failures (`missing_scope`, `not_in_channel`, `mcp_externally_shared_channel_restricted`, …) raise `SlackReactionError` from `backends/slack/react_errors.py` — never silently return `False` — so callers cannot fall back to a `chat.postMessage(text=":emoji:")` thread reply. `SlackBotBackend.post_message` / `post_reply` reject bodies matching `^:[a-z0-9_+\-]+:$` with `SingleEmojiBodyRefusedError`, foreclosing the failure-mode shape at the backend boundary. FSM-side wrappers (`add_reactions_for_transition`, `add_approval_reaction`) catch the raise locally so Slack auth gaps cannot roll back FSM transitions.
 
 **Destination-routed post/react ([#1750](https://github.com/souliane/teatree/issues/1750)).** Token picked by *destination* via `SlackBotBackend._route_token`: user's own DM → bot; colleague/channel → personal `xoxp`. Every colleague-surface post/react under the user's identity routes through the one gate+route+audit chokepoint `core/on_behalf_egress.OnBehalfSlackEgress` (self-DM acks ungated); the call-site authorization is pinned by the `on-behalf-routed-egress` / `on-behalf-colleague-primitives` entries in the chokepoint registry (`quality/chokepoints.yaml`, enforced by `scripts/hooks/check_chokepoints.py`); see [`skills/rules/SKILL.md`](skills/rules/SKILL.md).
 

@@ -1,13 +1,13 @@
 """Sync data-type and pure-helper tests (souliane/teatree#443 split of test_sync.py).
 
 Covers SyncResult/DiscussionSummary/PREntry value types and the pure
-classify/extract/infer helpers from teatree.backends.gitlab_sync_*.
+classify/extract/infer helpers from teatree.backends.gitlab.sync_*.
 """
 
 import pytest
 
-from teatree.backends.gitlab_sync_issues import extract_variant, process_label
-from teatree.backends.gitlab_sync_prs import classify_discussions, extract_issue_url, infer_state_from_prs
+from teatree.backends.gitlab.sync_issues import extract_variant, process_label
+from teatree.backends.gitlab.sync_prs import classify_discussions, extract_issue_url, infer_state_from_prs
 from teatree.core.models import Ticket
 from teatree.types import DiscussionSummary, PREntry, SyncResult
 from tests.teatree_core.sync._overlays import _MR_WITH_ISSUE, _MR_WITHOUT_ISSUE, SyncOverlay, _patch_overlay

@@ -188,7 +188,7 @@ class TestM4DraftNotesNoneReturnsStructuredResult:
 
         url = "https://gitlab.com/org/proj/-/merge_requests/77"
         with (
-            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=_NullDraftAPI()),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=_NullDraftAPI()),
             patch("teatree.cli.review.ReviewService.get_gitlab_token", return_value="t"),
         ):
             result = runner.invoke(review_app, ["run", url])

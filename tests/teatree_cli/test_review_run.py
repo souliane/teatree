@@ -13,7 +13,7 @@ acceptance criteria call out:
     instead of relying on prose-level "only GitLab" rules).
 * Malformed URL → ``bad_url`` JSON error, exit code 2.
 
-The GitLab branch patches :class:`teatree.backends.gitlab_api.GitLabAPI`
+The GitLab branch patches :class:`teatree.backends.gitlab.api.GitLabAPI`
 so no network is touched. Mirrors the sibling
 ``test_review_shape_gate.py`` stub style.
 """
@@ -35,7 +35,7 @@ type JSONObject = dict[str, object]
 
 @dataclass(frozen=True, slots=True)
 class _ProjectInfo:
-    """Mirrors the production ``teatree.backends.gitlab_api.ProjectInfo`` shape.
+    """Mirrors the production ``teatree.backends.gitlab.api.ProjectInfo`` shape.
 
     The attribute name (``project_id``) is load-bearing: the audit code
     reads ``project.project_id``, not ``project.id``. A test stub that
@@ -109,7 +109,7 @@ class TestReviewRunHappyPath:
         url = "https://gitlab.com/org/proj/-/merge_requests/42"
 
         with (
-            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=stub),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
             patch(
                 "teatree.cli.review.ReviewService.get_gitlab_token",
                 return_value="t",
@@ -190,7 +190,7 @@ class TestReviewRunHttpError:
 
         url = "https://gitlab.com/org/proj/-/merge_requests/55"
         with (
-            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=_HttpErrAPI()),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=_HttpErrAPI()),
             patch(
                 "teatree.cli.review.ReviewService.get_gitlab_token",
                 return_value="t",
@@ -242,7 +242,7 @@ class TestReviewRunApiUnavailable:
 
         url = "https://gitlab.com/org/proj/-/merge_requests/77"
         with (
-            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=_NullAPI()),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=_NullAPI()),
             patch(
                 "teatree.cli.review.ReviewService.get_gitlab_token",
                 return_value="t",
@@ -277,7 +277,7 @@ class TestReviewRunLargeMRFinding:
         url = "https://gitlab.com/org/proj/-/merge_requests/99"
 
         with (
-            patch("teatree.backends.gitlab_api.GitLabAPI", return_value=stub),
+            patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
             patch(
                 "teatree.cli.review.ReviewService.get_gitlab_token",
                 return_value="t",

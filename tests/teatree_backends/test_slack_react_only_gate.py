@@ -23,9 +23,9 @@ import httpx
 import pytest
 from typer.testing import CliRunner
 
-from teatree.backends import slack_reactions
-from teatree.backends.slack_bot import SlackBotBackend
-from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, SlackReactionError, is_single_emoji_body
+from teatree.backends.slack import reactions as slack_reactions
+from teatree.backends.slack.bot import SlackBotBackend
+from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, SlackReactionError, is_single_emoji_body
 from teatree.cli.slack_listen import slack_app
 from teatree.types import RawAPIDict
 
@@ -63,7 +63,7 @@ class _MissingScopeFake:
 
 
 class TestAddReactionRaisesOnSlackError:
-    """``backends.slack_reactions.add_reaction`` raises on every Slack ``ok:false``.
+    """``backends.slack.reactions.add_reaction`` raises on every Slack ``ok:false``.
 
     Same rule as the CLI helper. The FSM-side wrapper
     (``add_reactions_for_transition``) catches the exception and continues

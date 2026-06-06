@@ -383,31 +383,31 @@ class GitLabNoteVerifierTests(TestCase):
 
     def test_returns_none_when_gitlab_api_module_unimportable(self) -> None:
         # Forcing import-time failure: shadow the module name with None
-        # so the lazy ``from teatree.backends.gitlab_api import GitLabAPI``
+        # so the lazy ``from teatree.backends.gitlab.api import GitLabAPI``
         # raises ImportError, which the factory catches and returns None.
         import sys  # noqa: PLC0415
 
         # Save real entry (if loaded) and shadow with None.
-        saved = sys.modules.get("teatree.backends.gitlab_api")
-        sys.modules["teatree.backends.gitlab_api"] = None  # type: ignore[assignment]
+        saved = sys.modules.get("teatree.backends.gitlab.api")
+        sys.modules["teatree.backends.gitlab.api"] = None  # type: ignore[assignment]
         try:
             assert _gitlab_note_verifier() is None
         finally:
             if saved is not None:
-                sys.modules["teatree.backends.gitlab_api"] = saved
+                sys.modules["teatree.backends.gitlab.api"] = saved
             else:
-                sys.modules.pop("teatree.backends.gitlab_api", None)
+                sys.modules.pop("teatree.backends.gitlab.api", None)
 
     def test_returns_none_when_gitlab_api_constructor_raises(self) -> None:
         # Missing token -> resolve fails -> GitLabAPI() still constructs (token=""),
         # but our `_resolve_token` could raise; simulate constructor raise.
-        with patch("teatree.backends.gitlab_api.GitLabAPI", side_effect=RuntimeError("no token")):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", side_effect=RuntimeError("no token")):
             assert _gitlab_note_verifier() is None
 
     def test_404_returns_drift(self) -> None:
         fake_api = MagicMock()
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.NOT_FOUND)
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -423,7 +423,7 @@ class GitLabNoteVerifierTests(TestCase):
     def test_500_re_raises_so_scan_skips(self) -> None:
         fake_api = MagicMock()
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -447,7 +447,7 @@ class GitLabNoteVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
         notify = MagicMock()
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         scanner = OutboundAuditScanner(verifiers={"gitlab_note": verifier}, notifier=notify)
@@ -460,7 +460,7 @@ class GitLabNoteVerifierTests(TestCase):
 
     def test_returns_ok_when_extra_missing_required_fields(self) -> None:
         fake_api = MagicMock()
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -475,7 +475,7 @@ class GitLabNoteVerifierTests(TestCase):
     def test_returns_ok_when_get_json_succeeds(self) -> None:
         fake_api = MagicMock()
         fake_api.get_json.return_value = {"id": 42, "body": "the note"}
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -490,7 +490,7 @@ class GitLabNoteVerifierTests(TestCase):
         # Defensive guard: GitLab's note ids are numeric; a non-digit string
         # is a malformed claim — return ok rather than 404 on a non-route.
         fake_api = MagicMock()
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_note_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -508,31 +508,31 @@ class GitLabApproveVerifierTests(TestCase):
     def test_returns_none_when_username_resolution_fails(self) -> None:
         fake_api = MagicMock()
         fake_api.current_username.return_value = ""
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             assert _gitlab_approve_verifier() is None
 
     def test_returns_none_when_constructor_raises(self) -> None:
-        with patch("teatree.backends.gitlab_api.GitLabAPI", side_effect=RuntimeError("auth")):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", side_effect=RuntimeError("auth")):
             assert _gitlab_approve_verifier() is None
 
     def test_returns_none_when_gitlab_api_module_unimportable(self) -> None:
         import sys  # noqa: PLC0415
 
-        saved = sys.modules.get("teatree.backends.gitlab_api")
-        sys.modules["teatree.backends.gitlab_api"] = None  # type: ignore[assignment]
+        saved = sys.modules.get("teatree.backends.gitlab.api")
+        sys.modules["teatree.backends.gitlab.api"] = None  # type: ignore[assignment]
         try:
             assert _gitlab_approve_verifier() is None
         finally:
             if saved is not None:
-                sys.modules["teatree.backends.gitlab_api"] = saved
+                sys.modules["teatree.backends.gitlab.api"] = saved
             else:
-                sys.modules.pop("teatree.backends.gitlab_api", None)
+                sys.modules.pop("teatree.backends.gitlab.api", None)
 
     def test_approve_drift_when_user_not_in_approvers(self) -> None:
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "bob"}}]}
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -548,7 +548,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "alice"}}]}
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -562,7 +562,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "alice"}}]}
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -578,7 +578,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.return_value = {"approved_by": [{"user": {"username": "bob"}}]}
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -592,7 +592,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.NOT_FOUND)
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -608,7 +608,7 @@ class GitLabApproveVerifierTests(TestCase):
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
         fake_api.get_json.side_effect = _http_status_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -622,7 +622,7 @@ class GitLabApproveVerifierTests(TestCase):
     def test_returns_ok_when_extra_missing_required_fields(self) -> None:
         fake_api = MagicMock()
         fake_api.current_username.return_value = "alice"
-        with patch("teatree.backends.gitlab_api.GitLabAPI", return_value=fake_api):
+        with patch("teatree.backends.gitlab.api.GitLabAPI", return_value=fake_api):
             verifier = _gitlab_approve_verifier()
         assert verifier is not None
         claim = OutboundClaim(
@@ -792,7 +792,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 side_effect=_gh_cmd_failed("HTTP 404: Not Found"),
             ),
         ):
@@ -812,7 +812,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
             ),
         ):
@@ -839,7 +839,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 side_effect=_gh_cmd_failed("HTTP 500: Internal Server Error"),
             ),
         ):
@@ -857,7 +857,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 return_value={"id": 42, "body": "tampered"},
             ),
         ):
@@ -880,7 +880,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 return_value={"id": 42, "body": "lgtm"},
             ),
         ):
@@ -909,7 +909,7 @@ class GitHubNoteVerifierTests(TestCase):
 
         with (
             patch(self._RESOLVE_PATH, return_value="pat_abc"),
-            patch("teatree.backends.github._gh_api_get", side_effect=_fake_get),
+            patch("teatree.backends.github.client._gh_api_get", side_effect=_fake_get),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -925,7 +925,7 @@ class GitHubNoteVerifierTests(TestCase):
     def test_returns_ok_when_extra_missing_required_fields(self) -> None:
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
-            patch("teatree.backends.github._gh_api_get") as mock_get,
+            patch("teatree.backends.github.client._gh_api_get") as mock_get,
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -941,7 +941,7 @@ class GitHubNoteVerifierTests(TestCase):
     def test_returns_ok_when_artifact_id_is_non_numeric(self) -> None:
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
-            patch("teatree.backends.github._gh_api_get") as mock_get,
+            patch("teatree.backends.github.client._gh_api_get") as mock_get,
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -956,7 +956,7 @@ class GitHubNoteVerifierTests(TestCase):
     def test_non_dict_payload_returns_drift(self) -> None:
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
-            patch("teatree.backends.github._gh_api_get", return_value=[]),
+            patch("teatree.backends.github.client._gh_api_get", return_value=[]),
         ):
             verifier = _github_note_verifier()
             assert verifier is not None
@@ -974,7 +974,7 @@ class GitHubNoteVerifierTests(TestCase):
         with (
             patch(self._RESOLVE_PATH, return_value="tok-test"),
             patch(
-                "teatree.backends.github._gh_api_get",
+                "teatree.backends.github.client._gh_api_get",
                 return_value={"id": 42, "body": "anything"},
             ),
         ):

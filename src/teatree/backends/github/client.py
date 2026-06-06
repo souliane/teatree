@@ -1,9 +1,4 @@
-"""GitHub backend — code host via the ``gh`` CLI.
-
-The Projects v2 board reads (``ProjectItem``, ``fetch_project_items``) live
-in :mod:`teatree.backends.github_projects` and are re-exported here so the
-historical ``from teatree.backends.github import …`` import sites are unchanged.
-"""
+"""GitHub backend — code host via the ``gh`` CLI."""
 
 import json
 import os
@@ -12,15 +7,14 @@ from typing import cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
-from teatree.backends.github_claims import record_github_note_claim as _record_github_note_claim
-from teatree.backends.github_payloads import (
+from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
+from teatree.backends.github.payloads import (
     _GitHubPullRequestSummary,
     _GitHubUser,
     latest_review_state_from_reviews,
     pr_open_state_from_payload,
     reviewer_is_requested,
 )
-from teatree.backends.github_projects import ProjectItem, fetch_project_items
 from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
@@ -32,8 +26,6 @@ from teatree.core.backend_protocols import (
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
-
-__all__ = ["GitHubCodeHost", "ProjectItem", "fetch_project_items", "issue_repo_short"]
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")

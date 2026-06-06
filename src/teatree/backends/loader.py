@@ -11,10 +11,10 @@ from typing import TYPE_CHECKING
 
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.gitlab_api import GitLabAPI
-from teatree.backends.gitlab_ci import GitLabCIService
+from teatree.backends.gitlab.api import GitLabAPI
+from teatree.backends.gitlab.ci import GitLabCIService
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.utils.secrets import read_pass
 

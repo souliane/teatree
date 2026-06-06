@@ -109,7 +109,7 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
 
     Last-priority fallback for an MR with no ``PullRequest`` FK row and no
     ``Closes #N`` footer. The ship pipeline records every MR under its
-    ticket's ``extra["prs"]`` dict (see ``backends/gitlab_sync_prs``), so
+    ticket's ``extra["prs"]`` dict (see ``backends/gitlab/sync_prs``), so
     walking that map closes the index gap for bare manually-opened MRs.
     Falls back to an empty dict when Django isn't ready or a query fails so
     the FK + footer paths still resolve normally.

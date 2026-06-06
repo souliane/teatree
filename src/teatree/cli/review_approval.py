@@ -11,7 +11,7 @@ it sits naturally in its own file.
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from teatree.backends.gitlab_api import GitLabAPI
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.types import RawAPIDict
 
 

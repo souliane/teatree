@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 import typer
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.cli.slack_token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
 from teatree.config import CONFIG_PATH, discover_overlays
 from teatree.utils.secrets import read_pass, write_pass
