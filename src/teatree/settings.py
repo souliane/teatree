@@ -140,6 +140,7 @@ TEATREE_TIMEOUTS = {
     "start": 60,
     "db_import": 180,
     "docker_compose_up": 60,
+    "docker_compose_build": 600,
     "docker_compose_down": 30,
     "provision_step": 120,
     "pre_run_step": 60,
