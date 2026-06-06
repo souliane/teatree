@@ -26,7 +26,10 @@ Delivery is governed by :class:`~teatree.types.SpeakTarget`:
 
 Every leg is non-blocking (spawned in a daemon thread / detached process)
 and never raises into the caller's egress / Stop path — a failure to
-synthesise or play is logged at debug and dropped.
+synthesise or play locally is logged at debug and dropped. A failed
+``slack-audio`` upload is additionally surfaced to the user once per error
+class via a text DM (:func:`_surface_upload_failure`), so a missing
+``files:write`` scope can't silently masquerade as working delivery.
 """
 
 import logging
@@ -201,8 +204,9 @@ def _upload_to_slack(audio_path: Path) -> None:
     Reuses the same backend + ``slack_user_id`` resolution the bot→user
     DM path uses (:func:`teatree.core.notify.notify_user`'s helpers), so
     a single config drives both. A non-ok upload body (e.g. ``files:write``
-    scope missing) is logged at debug and dropped — the spoken reply just
-    doesn't reach the phone this time.
+    scope missing) is logged at debug AND surfaced once to the user via a
+    text DM through :func:`_surface_upload_failure`, so a silent audio drop
+    can't masquerade as working ``slack-audio`` delivery.
     """
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
     from teatree.core.notify import _resolve_user_id  # noqa: PLC0415
@@ -218,5 +222,41 @@ def _upload_to_slack(audio_path: Path) -> None:
         return
     body = backend.upload_audio_to_dm(channel=channel, filepath=str(audio_path), title="Agent reply")
     if not body.get("ok"):
-        error = body.get("error", "no response")
+        error = str(body.get("error", "no response"))
         logger.debug("speak slack upload not ok: %s", error)
+        _surface_upload_failure(error)
+
+
+_MISSING_SCOPE_HINT = (
+    "Add the `files:write` scope to the bot's OAuth scopes and re-run "
+    "`t3 setup slack-bot`, then the audio will reach your phone."
+)
+
+
+def _surface_upload_failure(error: str) -> None:
+    """DM the user once per error class when ``slack-audio`` delivery fails.
+
+    A failed upload is otherwise invisible: the user enables
+    ``speak_target = both`` / ``slack-audio``, hears nothing on his phone,
+    and gets no signal why. The text DM path (``chat:write``) is healthy
+    even when ``files:write`` is not, so this reaches the user reliably.
+
+    Idempotent per error class — the ``BotPing`` ledger dedupes the
+    ``speak-upload-failed-<error>`` key, so a recurring ``missing_scope``
+    surfaces once, not on every spoken reply. Never raises into the speak
+    seam (the daemon-thread delivery path must stay crash-proof).
+    """
+    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
+
+    hint = _MISSING_SCOPE_HINT if error == "missing_scope" else ""
+    message = f"Couldn't deliver the spoken reply as Slack audio (Slack error: {error})."
+    if hint:
+        message = f"{message} {hint}"
+    try:
+        notify_user(
+            message,
+            kind=NotifyKind.INFO,
+            idempotency_key=f"speak-upload-failed-{error}",
+        )
+    except Exception as exc:  # noqa: BLE001 — surfacing must never break the speak seam
+        logger.debug("speak upload-failure surface failed: %s", exc)
