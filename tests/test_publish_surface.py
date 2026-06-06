@@ -464,6 +464,15 @@ class TestAllowlistHostQualificationSymmetry:
         assert _repo_visibility.slug_is_allowlisted_private("souliane/teatree", cfg) is False
         assert _repo_visibility.slug_is_allowlisted_private("github.com/souliane/teatree", cfg) is False
 
+    def test_bare_host_root_entry_does_not_downgrade_any_repo(self, tmp_path: Path) -> None:
+        # B1: a malformed entry ``host./`` host-strips to "" — without filtering
+        # the empty form, ``"" in slug`` is always True and EVERY repo (incl.
+        # public) would downgrade. The empty form must be dropped on both sides.
+        cfg = _config(tmp_path, ["github.com/"])
+        assert _repo_visibility.slug_is_allowlisted_private("souliane/teatree", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/souliane/teatree", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is False
+
 
 class TestVisibilityProbeFallback:
     @pytest.fixture(autouse=True)

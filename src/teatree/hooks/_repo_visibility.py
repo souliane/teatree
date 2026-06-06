@@ -312,9 +312,18 @@ def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
     are compared in their original and host-stripped forms, so a host-qualified
     entry matches a bare slug, a bare entry matches a host-qualified slug, and a
     bare-org entry keeps matching both -- while no public repo gains a match.
+
+    A host-root-only entry (one whose host-stripped form is empty, e.g.
+    ``github.com/`` or ``host./``) carries no owner/repo identity and is
+    skipped entirely: matching on its bare host segment would downgrade EVERY
+    repo on that host, public ones included, and matching on its empty
+    host-stripped form (``"" in any_string`` is always True) would downgrade
+    everything. Such an entry is malformed, not a private-repo declaration.
     """
-    slug_forms = {slug.lower(), _strip_host_prefix(slug.lower())}
+    slug_forms = {f for f in {slug.lower(), _strip_host_prefix(slug.lower())} if f}
     for entry in _private_repo_allowlist(config_path):
+        if not _strip_host_prefix(entry):
+            continue
         entry_forms = {entry, _strip_host_prefix(entry)}
         if any(e in s for e in entry_forms for s in slug_forms):
             return True
