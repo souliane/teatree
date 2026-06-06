@@ -20,6 +20,7 @@ from typing import Any
 import teatree.config as config_mod
 from teatree.config import get_effective_settings
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
+from teatree.types import SpeakConfig
 from teatree.utils.django_bootstrap import ensure_django
 
 _REGENERABLE_CACHE_FILES: tuple[str, ...] = (
@@ -45,12 +46,17 @@ class ConfigView:
         }
 
 
+def _json_safe(value: object) -> object:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, SpeakConfig):
+        return value.to_dict()
+    return value
+
+
 def _intent() -> dict[str, Any]:
     settings = get_effective_settings()
-    out: dict[str, Any] = {}
-    for f in dataclasses.fields(settings):
-        value = getattr(settings, f.name)
-        out[f.name] = str(value) if isinstance(value, Path) else value
+    out = {f.name: _json_safe(getattr(settings, f.name)) for f in dataclasses.fields(settings)}
     out["mode"] = str(out["mode"])
     return out
 

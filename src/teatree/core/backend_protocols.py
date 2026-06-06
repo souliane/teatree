@@ -312,10 +312,12 @@ class MessagingBackend(Protocol):
 
     def auth_test(self) -> RawAPIDict: ...  # pragma: no branch
 
-    def upload_audio_to_dm(
+    def post_audio_dm(
         self,
         *,
         channel: str,
         filepath: str,
+        text: str,
+        thread_ts: str = "",
         title: str = "",
     ) -> RawAPIDict: ...  # pragma: no branch

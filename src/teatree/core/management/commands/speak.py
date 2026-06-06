@@ -1,17 +1,17 @@
-"""``t3 speak`` — read text aloud via the local text-to-speech seam (#1791).
+"""``t3 speak`` — read the in-client turn aloud via the local speakers (#1791/#2050).
 
-The detached worker the Stop hook spawns for ``speak_mode = all`` and a
-shell entry point for ad-hoc use. It bootstraps Django (so the config +
-Slack backend resolve), then calls :func:`teatree.core.speak.speak` with
-``block=True`` so synthesis + delivery complete before the process exits —
-a non-blocking daemon thread would die with the short-lived subprocess.
+The detached worker the Stop hook spawns for ``scope = all`` (and a shell
+entry point for ad-hoc use). It bootstraps Django (so the config resolves),
+then calls :func:`teatree.core.speak.speak` with ``block=True`` so the local
+read completes before the process exits — a non-blocking daemon thread would
+die with the short-lived subprocess.
 
-Delivery and the binary-presence gate live entirely in
-:mod:`teatree.core.speak`: when ``speak_mode`` resolves to ``off`` (the
-default, or forced off because the ``say`` binary is absent) this is a
-clean no-op that exits 0. ``--overlay`` sets ``T3_OVERLAY_NAME`` for the
-call so the right per-overlay Slack credentials resolve for the
-``slack-audio`` / ``both`` delivery targets.
+The local-speakers leg and the binary-presence gate live entirely in
+:mod:`teatree.core.speak`: when ``local`` is off (the default, or forced off
+because the ``say`` binary is absent) this is a clean no-op that exits 0. The
+Slack-audio attach is owned by :func:`teatree.core.speak.deliver_user_dm` (it
+rides each bot→user DM), not this command. ``--overlay`` sets
+``T3_OVERLAY_NAME`` so the per-overlay ``[teatree.speak]`` config resolves.
 """
 
 import os
@@ -53,7 +53,7 @@ class Command(TyperCommand):
             typer.Option("--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay Slack credentials)."),
         ] = "",
     ) -> None:
-        """Read ``text`` aloud synchronously per the resolved speak mode + target."""
+        """Read ``text`` aloud synchronously through the local speakers per [teatree.speak]."""
         from teatree.core.speak import speak  # noqa: PLC0415
 
         body = sys.stdin.read() if text == "-" else text

@@ -81,6 +81,6 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
-    def upload_audio_to_dm(*, channel: str, filepath: str, title: str = "") -> RawAPIDict:
-        _ = channel, filepath, title
+    def post_audio_dm(*, channel: str, filepath: str, text: str, thread_ts: str = "", title: str = "") -> RawAPIDict:
+        _ = channel, filepath, text, thread_ts, title
         return {}
