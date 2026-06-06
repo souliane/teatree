@@ -30,12 +30,30 @@ from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
-    from teatree.backends.github import GitHubCodeHost
-    from teatree.backends.gitlab_api import GitLabAPI
-    from teatree.backends.slack_bot import SlackBotBackend
+    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+class _ProjectInfoLike(Protocol):
+    project_id: int
+
+
+class GitLabNoteClient(Protocol):
+    """The GitLab REST surface :class:`GitLabReplier` needs to post an MR note.
+
+    Structural so ``core`` types the replier against a capability rather than
+    importing the concrete ``backends.gitlab_api.GitLabAPI`` (#1922).
+    """
+
+    def resolve_project(self, repo_path: str) -> _ProjectInfoLike | None: ...  # pragma: no branch
+
+    def post_json(
+        self,
+        endpoint: str,
+        payload: "RawAPIDict | None" = None,
+    ) -> "RawAPIDict | None": ...  # pragma: no branch
 
 
 @dataclass(slots=True)
@@ -329,7 +347,7 @@ def _linkify_for_slack(body: str) -> str:
 class SlackReplier(_BaseReplier):
     """Posts via the Slack Web API (``SlackBotBackend``)."""
 
-    def __init__(self, *, bot: "SlackBotBackend") -> None:
+    def __init__(self, *, bot: "MessagingBackend") -> None:
         self._bot = bot
 
     def _deliver(self, spec: ReplySpec) -> str:
@@ -373,7 +391,7 @@ class SlackReplier(_BaseReplier):
 class GitLabReplier(_BaseReplier):
     """Posts an MR note via the GitLab REST API."""
 
-    def __init__(self, *, client: "GitLabAPI") -> None:
+    def __init__(self, *, client: "GitLabNoteClient") -> None:
         self._client = client
 
     def _deliver(self, spec: ReplySpec) -> str:
@@ -401,7 +419,7 @@ class GitLabReplier(_BaseReplier):
 class GitHubReplier(_BaseReplier):
     """Posts a PR comment via the GitHub API (``GitHubCodeHost``)."""
 
-    def __init__(self, *, host: "GitHubCodeHost") -> None:
+    def __init__(self, *, host: "CodeHostBackend") -> None:
         self._host = host
 
     def _deliver(self, spec: ReplySpec) -> str:
@@ -423,9 +441,9 @@ class GitHubReplier(_BaseReplier):
 def replier_for(
     source: str,
     *,
-    bot: "SlackBotBackend | None" = None,
-    gitlab: "GitLabAPI | None" = None,
-    github: "GitHubCodeHost | None" = None,
+    bot: "MessagingBackend | None" = None,
+    gitlab: "GitLabNoteClient | None" = None,
+    github: "CodeHostBackend | None" = None,
 ) -> Replier:
     """Pick the production replier for *source*, or ``NoopReplier``.
 

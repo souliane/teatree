@@ -2,7 +2,7 @@
 
 Every Slack post or reaction made *under the user's identity on a
 colleague surface* goes through :class:`OnBehalfSlackEgress`. One instance
-wraps one :class:`~teatree.backends.protocols.MessagingBackend`; each
+wraps one :class:`~teatree.core.backend_protocols.MessagingBackend`; each
 public method runs the identical fixed sequence in one place:
 
 1.  classify the destination self-vs-colleague via the backend's #1750
@@ -40,12 +40,11 @@ sinks (``notify_user``, ``reply_transport.post_dm``, the daily digest,
 approve/comment paths (already gated via ``check_on_behalf``).
 
 Home is :mod:`teatree.core`: both the gate and the audit already live
-here, and ``MessagingBackend``/``RawAPIDict`` are in
-``teatree.backends``/``teatree.types`` which ``teatree.core`` already
-depends on — no new tach edge.
+here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
+/``teatree.types`` — no edge into ``teatree.backends``.
 """
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.types import RawAPIDict

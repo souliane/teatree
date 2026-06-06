@@ -16,8 +16,8 @@ convention (``raise SystemExit``, never ``typer.Exit``).
 
 import logging
 
-from teatree.backends.protocols import MessagingBackend
-from teatree.backends.slack_scopes import GRANTED_SCOPES_KEY
+from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.connector_keys import GRANTED_SCOPES_KEY
 from teatree.core.overlay_loader import get_all_overlays
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def assert_slack_scope(backend: MessagingBackend, scope: str) -> None:
 
     Reads the granted OAuth scopes that ``auth.test`` surfaces from the
     ``X-OAuth-Scopes`` response header (under
-    :data:`~teatree.backends.slack_bot.GRANTED_SCOPES_KEY`). An overlay's
+    :data:`~teatree.core.connector_keys.GRANTED_SCOPES_KEY`). An overlay's
     connector-preflight callable wires this so the loop refuses to continue
     when a required scope (e.g. ``reactions:write``) is missing — rather than
     discovering ``missing_scope`` mid-tick via a phantom write success.

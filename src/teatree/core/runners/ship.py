@@ -3,9 +3,9 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
-from teatree.backends.protocols import PullRequestSpec
 from teatree.config import load_config
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.backend_protocols import PullRequestSpec
 from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.open_questions_gate import warn_if_open_questions_missing
@@ -14,7 +14,7 @@ from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHostBackend
+    from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.types import TicketExtra
     from teatree.core.models.worktree import Worktree
