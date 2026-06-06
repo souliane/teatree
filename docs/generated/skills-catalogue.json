@@ -50,7 +50,7 @@
     },
     {
       "name": "platforms",
-      "summary": "Platform-specific API recipes for GitLab, GitHub, and Slack. Auto-loaded as a dependency by skills that interact with these platforms"
+      "summary": "Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms"
     },
     {
       "name": "retro",
