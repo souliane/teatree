@@ -1,12 +1,13 @@
-"""The text-to-speech ``speak()`` seam + the shared ``deliver_user_dm`` chokepoint (#2050).
+"""The text-to-speech ``speak()`` seam + the shared ``deliver_user_dm`` chokepoint (#2060).
 
 Covers the binary-presence gate (``say`` absent → inert config), the
 markdown/code/URL stripping, the local-speakers Stop-hook path, and — the
-load-bearing #2050 behaviour — :func:`deliver_user_dm` posting ONE DM that
+load-bearing #2060 behaviour — :func:`deliver_user_dm` posting ONE DM that
 carries the text + an inline audio attachment (degrading to a text-only
-post when synthesis fails). Every unstoppable external is mocked at the
-network boundary: the ``say`` / ``afconvert`` subprocesses and the
-messaging backend. ``block=True`` runs delivery synchronously so assertions
+post when synthesis fails). The v3 axes are independent: local play (``local``
+dm/all) is never suppressed by the ``slack`` attach. Every unstoppable external
+is mocked at the network boundary: the ``say`` / ``afconvert`` subprocesses and
+the messaging backend. ``block=True`` runs delivery synchronously so assertions
 don't race the daemon thread.
 """
 
@@ -14,7 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from teatree.core import speak as speak_mod
-from teatree.types import SpeakConfig, SpeakScope
+from teatree.types import LocalPlayback, SpeakConfig
 
 
 class TestBinaryGate:
@@ -32,13 +33,13 @@ class TestBinaryGate:
             patch.object(
                 speak_mod,
                 "get_effective_settings",
-                return_value=MagicMock(speak=SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.ALL)),
+                return_value=MagicMock(speak=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
             ),
         ):
             assert speak_mod.resolve_speak() == SpeakConfig()
 
     def test_resolve_speak_returns_configured_when_binary_present(self) -> None:
-        configured = SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.DM)
+        configured = SpeakConfig(local=LocalPlayback.DM, slack=True)
         with (
             patch.object(speak_mod, "binary_available", return_value=True),
             patch.object(speak_mod, "get_effective_settings", return_value=MagicMock(speak=configured)),
@@ -68,17 +69,36 @@ class TestCleanForSpeech:
 
 
 class TestSpeakLocalDispatch:
+    """The in-client Stop-hook read: ``speak()`` fires only when ``local == all``."""
+
     def test_noop_when_local_off(self) -> None:
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=False, slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.OFF, slack=True)),
             patch.object(speak_mod, "_speak_local") as local,
         ):
             speak_mod.speak("anything", block=True)
         local.assert_not_called()
 
+    def test_noop_when_local_dm(self) -> None:
+        # local=dm speaks DM texts only, not the in-client turn.
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM)),
+            patch.object(speak_mod, "_speak_local") as local,
+        ):
+            speak_mod.speak("tests are green", block=True)
+        local.assert_not_called()
+
+    def test_fires_when_local_all_regardless_of_slack(self) -> None:
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            patch.object(speak_mod, "_speak_local") as local,
+        ):
+            speak_mod.speak("tests are green", block=True)
+        local.assert_called_once_with("tests are green")
+
     def test_blank_cleaned_text_is_noop(self) -> None:
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
             patch.object(speak_mod, "_speak_local") as local,
         ):
             speak_mod.speak("```only code```", block=True)
@@ -86,7 +106,7 @@ class TestSpeakLocalDispatch:
 
     def test_block_true_runs_local_synchronously(self) -> None:
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
             patch.object(speak_mod, "_speak_local") as local,
         ):
             speak_mod.speak("tests are green", block=True)
@@ -94,7 +114,7 @@ class TestSpeakLocalDispatch:
 
     def test_block_false_spawns_daemon_thread(self) -> None:
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL)),
             patch.object(speak_mod.threading, "Thread") as thread_cls,
         ):
             speak_mod.speak("hi", block=False)
@@ -116,14 +136,14 @@ def _backend(*, audio_ok: bool = True, audio_error: str = "") -> MagicMock:
 
 
 class TestDeliverUserDmAttachAudio:
-    """#2050 part 1: ONE DM = text + attached audio (the load-bearing tests)."""
+    """#2060 part 1: ONE DM = text + attached audio (the load-bearing tests)."""
 
     def test_dm_with_audio_is_one_message_with_initial_comment(self, tmp_path: Path) -> None:
         audio = tmp_path / "speech.m4a"
         audio.write_bytes(b"x")
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
         ):
             response = speak_mod.deliver_user_dm(
@@ -143,7 +163,7 @@ class TestDeliverUserDmAttachAudio:
         audio.write_bytes(b"x")
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
@@ -155,7 +175,7 @@ class TestDeliverUserDmAttachAudio:
         audio.write_bytes(b"x")
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi", thread_ts="1700.0001")
@@ -164,7 +184,7 @@ class TestDeliverUserDmAttachAudio:
     def test_synth_failure_degrades_to_text_dm(self) -> None:
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=None),
         ):
             response = speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi", thread_ts="T1")
@@ -172,10 +192,10 @@ class TestDeliverUserDmAttachAudio:
         backend.post_message.assert_called_once_with(channel="D-USER", text="hi", thread_ts="T1")
         assert response["ok"] is True
 
-    def test_slack_audio_off_posts_text_only(self) -> None:
+    def test_slack_off_posts_text_only(self) -> None:
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=True, slack_audio=False)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=False)),
             patch.object(speak_mod, "synthesise") as synth,
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
@@ -188,7 +208,7 @@ class TestDeliverUserDmAttachAudio:
         audio.write_bytes(b"x")
         backend = _backend(audio_ok=False, audio_error="missing_scope")
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=audio),
             patch.object(speak_mod, "_surface_upload_failure") as surface,
         ):
@@ -197,20 +217,34 @@ class TestDeliverUserDmAttachAudio:
         backend.post_message.assert_called_once()
         assert response["ok"] is True
 
-    def test_local_leg_fires_independently_when_local_on(self, tmp_path: Path) -> None:
+    def test_local_leg_fires_independently_of_slack_when_local_plays_dms(self, tmp_path: Path) -> None:
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=True, slack_audio=False)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=False)),
             patch.object(speak_mod.threading, "Thread") as thread_cls,
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="play me")
         thread_cls.assert_called_once()
         assert thread_cls.call_args.kwargs["daemon"] is True
 
+    def test_local_leg_fires_under_slack_on_too(self, tmp_path: Path) -> None:
+        # v3: the local play is independent of the slack attach — both run.
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.DM, slack=True)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.deliver_user_dm(backend, channel="D-USER", text="play me")
+        backend.post_audio_dm.assert_called_once()
+        thread_cls.assert_called_once()
+
     def test_no_local_leg_when_local_off(self) -> None:
         backend = _backend()
         with (
-            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(slack=True)),
             patch.object(speak_mod, "synthesise", return_value=None),
             patch.object(speak_mod.threading, "Thread") as thread_cls,
         ):

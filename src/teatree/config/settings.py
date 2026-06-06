@@ -476,8 +476,8 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
-    # #1791/#2050 The resolved [teatree.speak] sub-table — local/slack_audio
-    # bools + scope. See :class:`SpeakConfig` + blueprint §10.1.1.
+    # #2060 The resolved [teatree.speak] sub-table — a local playback enum
+    # (off/dm/all) + a slack bool. See :class:`SpeakConfig` + blueprint §10.1.1.
     speak: SpeakConfig = field(default_factory=SpeakConfig)
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these
