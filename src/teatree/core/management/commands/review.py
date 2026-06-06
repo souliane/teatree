@@ -155,7 +155,7 @@ class Command(TyperCommand):
         }
 
     def _trigger_sweep(self, recorded: ReviewVerdict) -> None:
-        """Run the pr_sweep merge decision for *recorded* PR now, not next tick (#2017).
+        """Run the pr_sweep merge decision for *recorded* PR now, not next tick (#2026).
 
         A ``merge_safe`` verdict is the artifact the sweep merges on; recording
         one for an own PR the sweep is waiting on must not idle a full ~12-min

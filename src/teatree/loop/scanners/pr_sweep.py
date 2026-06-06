@@ -248,7 +248,7 @@ class PrSweepScanner:
         return signals
 
     def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:
-        """Run the same decision ladder for a single open PR, on demand (#2017).
+        """Run the same decision ladder for a single open PR, on demand (#2026).
 
         The event-driven complement to the periodic :meth:`scan`: when a
         ``merge_safe`` :class:`ReviewVerdict` is recorded for a PR the sweep

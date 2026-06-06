@@ -1,4 +1,4 @@
-"""``t3 <overlay> review record`` triggers the pr_sweep merge on demand (#2017).
+"""``t3 <overlay> review record`` triggers the pr_sweep merge on demand (#2026).
 
 Reproduces the incident: a ``merge_safe`` :class:`ReviewVerdict` was recorded
 for an own PR the periodic sweep was waiting on, but nothing re-ran the sweep —
