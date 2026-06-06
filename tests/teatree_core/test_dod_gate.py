@@ -15,7 +15,6 @@ removed, the UI-visible no-E2E ship advances.
 """
 
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -35,18 +34,9 @@ from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
 
 
-@dataclass
-class _FakeConfig:
-    frontend_repos: list[str] = field(default_factory=list)
-
-
-@dataclass
-class _FakeOverlay:
-    config: _FakeConfig
-
-
 def _patch_overlay(frontend_repos: list[str]) -> AbstractContextManager[MagicMock]:
-    return patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_FakeConfig(frontend_repos)))
+    """Patch the frontend-repo resolution seam ``_frontend_repos`` delegates to."""
+    return patch.object(dod_gate, "frontend_repos_for_overlay", return_value=list(frontend_repos))
 
 
 class TestIsUiVisible(TestCase):
@@ -73,17 +63,7 @@ class TestIsUiVisible(TestCase):
         from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
-        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
-            assert is_ui_visible(ticket) is True
-
-    def test_config_without_frontend_repos_attr_fails_closed(self) -> None:
-        """A config that does not expose ``frontend_repos`` fails CLOSED (presumed UI-visible), not a crash."""
-
-        class _ConfigNoAttr:
-            pass
-
-        ticket = Ticket.objects.create(overlay="acme", repos=["acme-frontend"])
-        with patch.object(dod_gate, "get_overlay", return_value=_FakeOverlay(_ConfigNoAttr())):
+        with patch.object(dod_gate, "frontend_repos_for_overlay", side_effect=ImproperlyConfigured("no overlay")):
             assert is_ui_visible(ticket) is True
 
     def test_no_scoped_repos_is_not_ui_visible_even_when_overlay_undeterminable(self) -> None:
@@ -96,7 +76,7 @@ class TestIsUiVisible(TestCase):
         from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="missing", repos=[])
-        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+        with patch.object(dod_gate, "frontend_repos_for_overlay", side_effect=ImproperlyConfigured("no overlay")):
             assert is_ui_visible(ticket) is False
 
 
@@ -198,7 +178,7 @@ class TestCheckLocalE2EDod(TestCase):
 
         ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
         with (
-            patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")),
+            patch.object(dod_gate, "frontend_repos_for_overlay", side_effect=ImproperlyConfigured("no overlay")),
             pytest.raises(DodLocalE2EError),
         ):
             check_local_e2e_dod(ticket)
@@ -209,7 +189,7 @@ class TestCheckLocalE2EDod(TestCase):
 
         ticket = Ticket.objects.create(overlay="missing", repos=["acme-frontend"])
         ticket.merge_extra(set_keys={"dod_e2e_override": {"reason": "exempt config-only change"}})
-        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+        with patch.object(dod_gate, "frontend_repos_for_overlay", side_effect=ImproperlyConfigured("no overlay")):
             check_local_e2e_dod(ticket)  # no raise
 
     def test_undeterminable_overlay_is_not_a_lockout_with_green_e2e(self) -> None:
@@ -218,7 +198,23 @@ class TestCheckLocalE2EDod(TestCase):
 
         ticket = Ticket.objects.create(overlay="missing", issue_url="https://example.com/i/12", repos=["acme-frontend"])
         record_run(ticket, result="green", per_repo_shas={"acme-frontend": "sha"}, env="local")
-        with patch.object(dod_gate, "get_overlay", side_effect=ImproperlyConfigured("no overlay")):
+        with patch.object(dod_gate, "frontend_repos_for_overlay", side_effect=ImproperlyConfigured("no overlay")):
+            check_local_e2e_dod(ticket)  # no raise
+
+    def test_path_only_toml_overlay_does_not_fail_closed_for_backend_ticket(self) -> None:
+        """A path-only TOML overlay (no Python ``class``) resolves from its config table.
+
+        The regression (#733): ``get_overlay`` cannot instantiate a path-only
+        overlay in the teatree process, so the gate failed closed and refused
+        the ship for EVERY one of its tickets. With resolution delegated to
+        ``frontend_repos_for_overlay``, a path-only overlay with no declared
+        ``frontend_repos`` resolves to an empty list — the ticket is
+        backend-from-teatree's-view and the gate passes, instead of presuming
+        UI-visible and blocking.
+        """
+        ticket = Ticket.objects.create(overlay="path-only-ovl", repos=["some-repo"])
+        with patch.object(dod_gate, "frontend_repos_for_overlay", return_value=[]):
+            assert is_ui_visible(ticket) is False
             check_local_e2e_dod(ticket)  # no raise
 
 
