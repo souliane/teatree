@@ -165,12 +165,10 @@ No double-speak by construction: the Stop-hook in-client read fires only when
 `scope = all` AND `local` AND NOT `slack_audio` — when `slack_audio` is on the
 DM carries the canonical audio, so the Stop hook stands down. No DB, no state.
 
-The legacy `speak_mode` / `speak_target` keys auto-map to this sub-table for
-one transition release; `t3 doctor` WARNs with the exact `[teatree.speak]`
-block to paste. Callers read `get_effective_settings().speak`. Adding a new
-overridable key is a one-line registry change picked up via
-`dataclasses.replace`; `speak` is the one non-generic override (its overlay
-sub-table merges onto the base rather than flat-replacing).
+Callers read `get_effective_settings().speak`. Adding a new overridable key
+is a one-line registry change picked up via `dataclasses.replace`; `speak` is
+the one non-generic override (its overlay sub-table merges onto the base
+rather than flat-replacing).
 
 ```toml
 [teatree]

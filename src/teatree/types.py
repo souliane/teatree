@@ -78,7 +78,7 @@ class SpeakConfig:
     """The resolved ``[teatree.speak]`` sub-table — two booleans + one scope (#2050).
 
     One cohesive object the config layer produces and :mod:`teatree.core.speak`
-    reads, replacing the confusing ``speak_mode`` / ``speak_target`` pair.
+    reads: two destination booleans plus a scope enum.
 
     *   ``local`` — synthesise with the macOS ``say`` binary and play through
         the local speakers. Inert off macOS.
