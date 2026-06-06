@@ -1,7 +1,6 @@
 """Tests for the run management command."""
 
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -21,6 +20,22 @@ from tests.teatree_core.management_commands._overlays import FULL_OVERLAY, MINIM
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
+
+
+def _popen_mock(returncode: int = 0, stderr: str = "") -> MagicMock:
+    """Build a ``Popen`` context-manager mock matching ``run_streamed``'s usage.
+
+    ``run_streamed`` tees stderr (iterates ``proc.stderr``) then calls
+    ``proc.wait()``; the mock exposes both so a test can assert the streamed
+    command was invoked and drive the surfaced exit code.
+    """
+    proc = MagicMock()
+    proc.stderr = iter(stderr.splitlines(keepends=True))
+    proc.wait.return_value = returncode
+    ctx = MagicMock()
+    ctx.__enter__.return_value = proc
+    ctx.__exit__.return_value = False
+    return MagicMock(return_value=ctx)
 
 
 # ── Run commands ───────────────────────────────────────────────────
@@ -45,8 +60,9 @@ class TestRunBackend(TestCase):
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
+            mock_run = _popen_mock()
             with (
-                patch.object(utils_run_mod.subprocess, "run") as mock_run,
+                patch.object(utils_run_mod, "Popen", mock_run),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 result = cast("str", call_command("run", "backend", path=str(wt_dir)))
@@ -97,11 +113,8 @@ class TestRunBuildFrontend(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            with patch.object(
-                utils_run_mod.subprocess,
-                "run",
-                return_value=subprocess.CompletedProcess([], 0, "", ""),
-            ) as mock_run:
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
                 result = cast("str", call_command("run", "build-frontend", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -149,8 +162,8 @@ class TestRunTests(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_result = subprocess.CompletedProcess([], 0)
-            with patch.object(utils_run_mod.subprocess, "run", return_value=mock_result) as mock_run:
+            mock_run = _popen_mock()
+            with patch.object(utils_run_mod, "Popen", mock_run):
                 result = cast("str", call_command("run", "tests", path=str(wt_dir)))
 
             mock_run.assert_called_once()
@@ -205,9 +218,8 @@ class TestRunTestsFailureExitCode(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            mock_result = subprocess.CompletedProcess([], 1)
             with (
-                patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
+                patch.object(utils_run_mod, "Popen", _popen_mock(returncode=1)),
                 pytest.raises(SystemExit) as exc_info,
             ):
                 call_command("run", "tests", path=str(wt_dir))

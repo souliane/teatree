@@ -183,7 +183,7 @@ def _migrate_self_db() -> None:
     typer.echo("OK    self-DB migrations applied.")
 
 
-def ensure_self_db_migrated() -> bool:
+def ensure_self_db_migrated(*, quiet: bool = False) -> bool:
     """Migrate the runtime teatree self-DB iff migrations are actually pending.
 
     Probe-gated and fully decoupled from whether a repo advanced *this
@@ -193,12 +193,17 @@ def ensure_self_db_migrated() -> bool:
     unmigrated (caller exits non-zero — fail-closed, #870); ``False``
     when nothing was pending or the migration succeeded.
 
+    With *quiet* the no-op case (nothing pending) emits nothing, so a
+    caller like ``t3 setup`` stays silent on a current DB; the migrate and
+    fail-closed paths always report regardless of *quiet*.
+
     Both probe and migrate run in the runtime interpreter (``python -m
     teatree``), so they always target the DB the runtime resolves — there
     is no clone to resolve and no ``uv`` dependency for this path (#126).
     """
     if not _self_db_has_pending_migrations():
-        typer.echo("OK    self-DB already migrated.")
+        if not quiet:
+            typer.echo("OK    self-DB already migrated.")
         return False
     try:
         _migrate_self_db()

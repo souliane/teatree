@@ -76,16 +76,23 @@ class TestDocsCommand:
         fake_mkdocs = types.ModuleType("mkdocs")
         monkeypatch.setitem(sys.modules, "mkdocs", fake_mkdocs)
 
+        # ``docs`` runs mkdocs through ``run_streamed`` → ``Popen`` (tee
+        # stderr, then ``wait()``); mock that seam, not ``subprocess.run``.
+        proc = MagicMock()
+        proc.stderr = iter(())
+        proc.wait.return_value = 0
+        ctx = MagicMock()
+        ctx.__enter__.return_value = proc
+        ctx.__exit__.return_value = False
+        mock_run = MagicMock(return_value=ctx)
         with (
-            patch.object(utils_run_mod.subprocess, "run") as mock_run,
+            patch.object(utils_run_mod, "Popen", mock_run),
             patch("teatree.cli._maybe_show_update_notice"),
         ):
-            mock_run.return_value = MagicMock(returncode=0)
             result = runner.invoke(app, ["docs"])
             assert result.exit_code == 0
             mock_run.assert_called_once()
-            call_args = mock_run.call_args
-            assert "mkdocs" in str(call_args)
+            assert "mkdocs" in str(mock_run.call_args)
 
 
 # ── agent command ─────────────────────────────────────────────────────

@@ -4,11 +4,11 @@ from teatree.utils.postgres_secret import resolve_postgres_password
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
 
 
-def pg_env() -> dict[str, str]:
-    env = os.environ.copy()
+def pg_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(base) if base is not None else os.environ.copy()
     if password := resolve_postgres_password(env):
         env["PGPASSWORD"] = password
-    if port := os.environ.get("POSTGRES_PORT", ""):
+    if port := env.get("POSTGRES_PORT", ""):
         env["PGPORT"] = port
     return env
 
@@ -88,10 +88,10 @@ def db_restore(db_name: str, dump_path: str) -> None:
     _check_truncation(restore.stderr, db_name, dump_path)
 
 
-def db_exists(db_name: str) -> bool:
+def db_exists(db_name: str, *, user: str = "", host: str = "", env: dict[str, str] | None = None) -> bool:
     result = run_allowed_to_fail(
-        ["psql", "-h", pg_host(), "-U", pg_user(), "-lqt"],
-        env=pg_env(),
+        ["psql", "-h", host or pg_host(), "-U", user or pg_user(), "-lqt"],
+        env=env if env is not None else pg_env(),
         expected_codes=None,
     )
     return any(line.split("|")[0].strip() == db_name for line in result.stdout.splitlines() if line)

@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import tempfile
+from contextlib import AbstractContextManager
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -22,6 +24,7 @@ import teatree.core.runners.provision as provision_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.run as utils_run_mod
+from teatree.config import load_config
 from teatree.core.management.commands.workspace import _branch_prefix, _build_branch_name, _workspace_dir
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
@@ -2598,3 +2601,234 @@ class TestPruneGoneRemoteWorktree(TestCase):
             # Removal failed → the working tree and branch ref both survive.
             assert Path(wt_path).is_dir()
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
+
+def _squash_merge_into_main(tmp: Path, *, subject: str) -> tuple[Path, str]:
+    """Build a repo whose ``feature`` branch is squash-merged into main under ``subject``.
+
+    The feature branch is pushed to its own remote ref (the PR existed, so the
+    #706 data-loss guard sees the work on a remote), then squash-merged into a
+    pushed ``main`` under a *different* subject. ``git diff origin/main...feature
+    --stat`` is therefore empty — the ``is_squash_merged`` empty-diff fallback
+    fires even though no subject matches. Returns ``(work_repo, feature_tip)``.
+    """
+    _remote, work = _init_repo_with_remote(tmp)
+    _git(work, "checkout", "-q", "-b", "feature")
+    (work / "f.py").write_text("shipped work\n", encoding="utf-8")
+    _git(work, "add", "f.py")
+    _git(work, "commit", "-q", "-m", "wip: scratch subject that will not match")
+    _git(work, "push", "-q", "origin", "feature")
+    tip = _git(work, "rev-parse", "feature")
+    _git(work, "checkout", "-q", "main")
+    _git(work, "merge", "-q", "--squash", "feature")
+    _git(work, "commit", "-q", "-m", subject)
+    _git(work, "push", "-q", "origin", "main")
+    _git(work, "fetch", "-q", "origin")
+    return work, tip
+
+
+class TestReapSquashMergedWorktreeRows(TestCase):
+    """#1940 gap (a): a Worktree *row* whose branch is squash-merged is reaped.
+
+    ``clean-all`` only reaped ``CREATED``-state rows. A PROVISIONED/READY row
+    whose branch shipped (squash-merged under a retitled subject) survived
+    forever — its dir, compose project, and ticket dir all leaked. The new
+    ``reap_squash_merged_worktrees`` pass closes that, reusing the existing
+    ``is_squash_merged`` classifier (no duplicated subject-match logic).
+    """
+
+    def _make_row(self, work: Path, wt_dir: Path, *, branch: str = "feature") -> Worktree:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1940")
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="work",
+            branch=branch,
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": str(wt_dir), "clone_path": str(work)},
+        )
+
+    def _reap(self, workspace: Path) -> list[str]:
+        return ws_cleanup_mod.WorktreeReaper(workspace).reap_squash_merged_worktrees(interactive=False)
+
+    def test_squash_merged_row_with_different_subject_is_reaped(self) -> None:
+        """A squash-merged row (retitled subject) is reaped via the forge signal.
+
+        A squash-merge into a pushed main does NOT yield an empty
+        ``origin/main...feature`` diff (the squash is a new commit, not an
+        ancestor of feature) — the empty-diff fallback never fires. The forge
+        merged-PR lookup is the real-world primary signal: both the selection
+        classifier (``is_squash_merged``) and ``cleanup_worktree``'s strict
+        data-loss guards probe the forge, so the unstoppable ``gh``/``glab``
+        CLI is the legitimate mock boundary for both.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            work, _tip = _squash_merge_into_main(workspace, subject="feat: shipped work (#1940)")
+            wt_dir = workspace / "feature" / "work"
+            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
+            row = self._make_row(work, wt_dir)
+
+            ws_merged = subprocess.CompletedProcess([], 0, '[{"number": 1940}]', "")
+            with (
+                patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
+                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=True),
+                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
+            ):
+                cleaned = self._reap(workspace)
+
+            assert not Worktree.objects.filter(pk=row.pk).exists(), (
+                f"squash-merged row should be reaped; got: {cleaned!r}"
+            )
+            assert not wt_dir.exists(), "squash-merged worktree dir should be removed"
+            assert any("Cleaned" in c or "feature" in c for c in cleaned)
+
+    def test_clean_ignore_branch_is_skipped_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            work, _tip = _squash_merge_into_main(workspace, subject="feat: shipped work (#1940)")
+            wt_dir = workspace / "keepme" / "work"
+            _git(work, "branch", "-m", "feature", "keepme")
+            _git(work, "worktree", "add", "-q", str(wt_dir), "keepme")
+            row = self._make_row(work, wt_dir, branch="keepme")
+
+            with self._patch_clean_ignore(["keep*"]):
+                cleaned = self._reap(workspace)
+
+            assert Worktree.objects.filter(pk=row.pk).exists(), "clean_ignore branch must be kept"
+            assert wt_dir.is_dir(), "clean_ignore worktree dir must survive"
+            assert any("SKIP" in c and "keepme" in c for c in cleaned)
+
+    def _patch_clean_ignore(self, patterns: list[str]) -> AbstractContextManager[object]:
+        base = load_config()
+        patched = replace(base, user=replace(base.user, clean_ignore=patterns))
+        return patch.object(ws_cleanup_mod, "load_config", return_value=patched)
+
+    def test_uncertain_classification_is_skipped_not_deleted(self) -> None:
+        """A row whose branch is genuinely ahead (not merged) is kept, warn-not-fail."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            _remote, work = _init_repo_with_remote(workspace)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "ahead.py").write_text("unmerged work\n", encoding="utf-8")
+            _git(work, "add", "ahead.py")
+            _git(work, "commit", "-q", "-m", "feat: not merged yet")
+            _git(work, "push", "-q", "origin", "feature")
+            _git(work, "checkout", "-q", "main")
+            wt_dir = workspace / "feature" / "work"
+            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
+            row = self._make_row(work, wt_dir)
+
+            cleaned = self._reap(workspace)
+
+            assert Worktree.objects.filter(pk=row.pk).exists(), (
+                f"genuinely-ahead row must NOT be deleted; got: {cleaned!r}"
+            )
+            assert wt_dir.is_dir()
+
+    def test_row_without_a_resolvable_clone_is_skipped(self) -> None:
+        """A row whose source clone is gone is silently skipped, not crashed."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s) / "workspace"
+            workspace.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1940")
+            row = Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="ghost",
+                branch="feature",
+                state=Worktree.State.PROVISIONED,
+                extra={"worktree_path": str(workspace / "feature" / "ghost")},
+            )
+
+            cleaned = self._reap(workspace)
+
+            assert Worktree.objects.filter(pk=row.pk).exists()
+            assert cleaned == []
+
+    def test_data_loss_guard_refusal_is_surfaced_not_deleted(self) -> None:
+        """is_squash_merged says shipped, but cleanup_worktree's #706 guard refuses → kept.
+
+        A positive squash signal narrows the candidate set; it never bypasses the
+        data-loss guards. A branch with commits on no remote is surfaced as a
+        Skipped warning, the row preserved.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            _remote, work = _init_repo_with_remote(workspace)
+            _git(work, "checkout", "-q", "-b", "feature")
+            (work / "unpushed.py").write_text("never pushed\n", encoding="utf-8")
+            _git(work, "add", "unpushed.py")
+            _git(work, "commit", "-q", "-m", "feat: unpushed work")
+            _git(work, "checkout", "-q", "main")
+            wt_dir = workspace / "feature" / "work"
+            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
+            row = self._make_row(work, wt_dir)
+
+            ws_merged = subprocess.CompletedProcess([], 0, '[{"number": 1940}]', "")
+            with (
+                patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
+                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
+            ):
+                cleaned = self._reap(workspace)
+
+            assert Worktree.objects.filter(pk=row.pk).exists(), f"data-loss row must be kept; got: {cleaned!r}"
+            assert wt_dir.is_dir()
+            assert any("Skipped" in c for c in cleaned)
+
+
+class TestRemoveEmptyTicketDirs(TestCase):
+    """#1940 gap (b): a ticket dir holding only empty repo subdirs is removed.
+
+    A multi-repo ticket dir (``ac/1234/`` with empty ``backend/`` + ``frontend/``)
+    has children, so the old single-level ``not any(iterdir())`` check left it
+    behind. The recursive remover prunes the empty leaves then the now-empty
+    ticket dir.
+    """
+
+    def _remove(self, workspace: Path) -> list[str]:
+        return ws_cleanup_mod.WorktreeReaper(workspace).remove_empty_ticket_dirs()
+
+    def test_ticket_dir_with_only_empty_repo_subdirs_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s)
+            ticket_dir = workspace / "ac-1234"
+            (ticket_dir / "backend").mkdir(parents=True)
+            (ticket_dir / "frontend").mkdir(parents=True)
+
+            removed = self._remove(workspace)
+
+            assert not ticket_dir.exists(), f"empty multi-repo ticket dir should be removed; got: {removed!r}"
+            assert any("ac-1234" in r for r in removed)
+
+    def test_ticket_dir_with_real_files_is_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s)
+            ticket_dir = workspace / "ac-5678"
+            (ticket_dir / "backend").mkdir(parents=True)
+            (ticket_dir / "backend" / "real.py").write_text("x\n", encoding="utf-8")
+
+            removed = self._remove(workspace)
+
+            assert ticket_dir.exists(), "ticket dir with real content must be kept"
+            assert not any("ac-5678" in r for r in removed)
+
+    def test_top_level_file_is_left_untouched(self) -> None:
+        """A loose file at the workspace root is not a ticket dir — skip it."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            workspace = Path(tmp_s)
+            loose = workspace / "notes.txt"
+            loose.write_text("x\n", encoding="utf-8")
+
+            removed = self._remove(workspace)
+
+            assert loose.exists()
+            assert removed == []
