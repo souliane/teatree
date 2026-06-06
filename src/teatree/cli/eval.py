@@ -12,36 +12,32 @@ from teatree.cli.eval_all import (
     build_scenarios_table,
     build_summary_table,
     hint_missing_transcripts,
+    negative_control_lane,
     regression_lane,
     run_ai_lane,
+    transcript_replay_lane,
     trigger_lane,
 )
 from teatree.cli.eval_capture_subagent import capture_subagent
+from teatree.cli.eval_multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval_negative_control import negative_control
 from teatree.cli.eval_run_modes import (
     build_subscription_manifest,
     gate_run_regressions,
     guard_executed,
     make_grader,
-    persist_matrix_run,
-    persist_pass_at_k_run,
     persist_single,
     render_subscription_text,
-    with_model,
 )
-from teatree.cli.eval_transcript_replay import resolve_transcript
+from teatree.cli.eval_transcript_replay import replay_transcript_for_all, transcript_replay
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.discovery import discover_specs, find_spec
-from teatree.eval.matrix import MatrixRow, render_matrix_json, render_matrix_text
 from teatree.eval.models import EvalSpec
-from teatree.eval.pass_at_k import run_pass_at_k
+from teatree.eval.negative_control import run_negative_control
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
-from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
-from teatree.eval.runner import ClaudePRunner
-from teatree.eval.session_transcript import parse_session_jsonl
-from teatree.eval.transcript_conformance import render_report, render_report_json, replay
+from teatree.eval.report import evaluate, render_json, render_text
 from teatree.eval.trigger_qa import render_json as render_trigger_json
 from teatree.eval.trigger_qa import render_text as render_trigger_text
 from teatree.eval.trigger_qa import run_trigger_qa
@@ -49,6 +45,7 @@ from teatree.eval.trigger_qa import run_trigger_qa
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
 eval_app.command("capture-subagent")(capture_subagent)
+eval_app.command("transcript-replay")(transcript_replay)
 
 _VALID_FORMATS = ("text", "json")
 
@@ -193,7 +190,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
             err=True,
         )
     if models is not None:
-        _run_model_matrix(
+        run_model_matrix_lane(
             specs,
             models=models,
             max_turns=max_turns,
@@ -208,7 +205,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         )
         return
     if trials > 1:
-        _run_pass_at_k(
+        run_pass_at_k_lane(
             specs,
             max_turns=max_turns,
             trials=trials,
@@ -237,137 +234,6 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         regressed = gate_run_regressions(record, enabled=gate_regressions)
     if any(not r.passed for r in results) or regressed:
         sys.exit(1)
-
-
-def _run_pass_at_k(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the pass@k path.
-    specs: list[EvalSpec],
-    *,
-    max_turns: int | None,
-    trials: int,
-    require: str,
-    output_format: str,
-    persist: bool = False,
-    baseline: bool = False,
-    gate_regressions: bool = False,
-    model_override: str | None = None,
-    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
-    require_executed: bool = False,
-) -> bool:
-    """Run the pass@k path; return ``True`` when any scenario failed or regressed."""
-    if require not in {"any", "all"}:
-        typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
-        raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns)
-
-    def _trial(spec: EvalSpec) -> ScenarioResult:
-        return evaluate(spec, runner.run(spec), judge=grader)
-
-    effective_specs = [with_model(spec, model_override) for spec in specs] if model_override else specs
-    results = [run_pass_at_k(spec, _trial, k=trials, require=require) for spec in effective_specs]
-    if output_format == "json":
-        typer.echo(
-            json.dumps(
-                {
-                    "mode": f"pass@{trials}" if require == "any" else f"pass^{trials}",
-                    "scenarios": [
-                        {
-                            "name": r.spec_name,
-                            "trials": r.trials,
-                            "passes": r.passes,
-                            "pass_rate": r.pass_rate,
-                            "skipped": r.skipped,
-                            "ok": r.ok,
-                        }
-                        for r in results
-                    ],
-                },
-                indent=2,
-            )
-        )
-    else:
-        for r in results:
-            if r.skipped:
-                typer.echo(f"SKIP {r.spec_name}: all {r.trials} trials skipped")
-                continue
-            status = "PASS" if r.ok else "FAIL"
-            typer.echo(f"{status} {r.spec_name} ({r.passes}/{r.trials} trials, require={r.require})")
-    guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)
-    regressed = False
-    if persist:
-        model_name = model_override or (effective_specs[0].model if effective_specs else "")
-        record = persist_pass_at_k_run(results, model=model_name, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    failed = any(not r.ok for r in results) or regressed
-    if failed and model_override is None:
-        sys.exit(1)
-    return failed
-
-
-def _run_model_matrix(  # noqa: PLR0913 — each kwarg threads one `eval run` CLI flag through the matrix path.
-    specs: list[EvalSpec],
-    *,
-    models: str,
-    max_turns: int | None,
-    trials: int,
-    require: str,
-    output_format: str,
-    persist: bool,
-    baseline: bool,
-    gate_regressions: bool,
-    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
-    require_executed: bool = False,
-) -> None:
-    """Run the suite once per model and render a per-model comparison."""
-    model_list = [m.strip() for m in models.split(",") if m.strip()]
-    if not model_list:
-        typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
-        raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns)
-    rows: list[MatrixRow] = []
-    for model in model_list:
-        for spec in specs:
-            scoped = with_model(spec, model)
-            rows.append(_matrix_trial(runner, scoped, trials=trials, require=require, grader=grader))
-    if output_format == "json":
-        typer.echo(render_matrix_json(rows, model_list, specs))
-    else:
-        typer.echo(render_matrix_text(rows, model_list, specs))
-    guard_executed(executed=sum(1 for row in rows if not row.skipped), collected=len(rows), required=require_executed)
-    regressed = False
-    if persist:
-        record = persist_matrix_run(rows, models=model_list, max_turns=max_turns, baseline=baseline)
-        regressed = gate_run_regressions(record, enabled=gate_regressions)
-    if any(not row.passed and not row.skipped for row in rows) or regressed:
-        sys.exit(1)
-
-
-def _matrix_trial(
-    runner: ClaudePRunner,
-    spec: EvalSpec,
-    *,
-    trials: int,
-    require: str,
-    grader=None,  # noqa: ANN001 — JudgeGrader | None, kept local to the CLI.
-) -> MatrixRow:
-    if trials > 1:
-        result = run_pass_at_k(spec, lambda s: evaluate(s, runner.run(s), judge=grader), k=trials, require=require)
-        return MatrixRow(
-            scenario=spec.name,
-            model=spec.model,
-            passed=result.ok and not result.skipped,
-            score=0.0 if result.skipped else result.pass_rate,
-            trials=result.trials,
-            skipped=result.skipped,
-        )
-    scenario_result = evaluate(spec, runner.run(spec), judge=grader)
-    return MatrixRow(
-        scenario=spec.name,
-        model=spec.model,
-        passed=scenario_result.passed and not scenario_result.skipped,
-        score=0.0 if scenario_result.skipped else (1.0 if scenario_result.passed else 0.0),
-        trials=1,
-        skipped=scenario_result.skipped,
-    )
 
 
 @eval_app.command("prepare-subscription")
@@ -492,17 +358,21 @@ def all_lanes(
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
-    Free deterministic lanes (trigger-qa, regression) always run. The AI lane
-    grades subscription-produced transcripts when present; with none on disk it
-    emits the subscription manifest plus the in-session recipe and NEVER silently
-    shells the metered ``claude -p`` runner. ``--backend sdk`` is the explicit
-    metered opt-in (CI's path).
+    The four free deterministic lanes (trigger-qa, regression, negative-control,
+    transcript-replay) always run; transcript-replay SKIPs when no real session
+    transcript is in scope (a missing run is not a violation). The AI lane grades
+    subscription-produced transcripts when present; with none on disk it emits the
+    subscription manifest plus the in-session recipe and NEVER silently shells the
+    metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
+    (CI's path). A SKIP never fails the run; only a real FAIL exits non-zero.
     """
     _bootstrap_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
         trigger_lane(run_trigger_qa()),
         regression_lane(run_regression_corpus()),
+        negative_control_lane(run_negative_control()),
+        transcript_replay_lane(replay_transcript_for_all()),
         run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir),
     ]
     Console().print(build_summary_table(lanes))
@@ -518,31 +388,3 @@ def _require_spec(name: str) -> EvalSpec:
         typer.echo(f"available scenarios: {available}", err=True)
         raise typer.Exit(code=2)
     return spec
-
-
-@eval_app.command("transcript-replay")
-def transcript_replay(
-    latest: bool = typer.Option(True, "--latest/--no-latest", help="Replay the newest session for the cwd's project."),  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
-    session: str | None = typer.Option(None, "--session", help="Replay a specific session id (in the cwd's project)."),
-    file: Path | None = typer.Option(None, "--file", help="Replay a specific session JSONL file path."),
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-) -> None:
-    """Replay a real session transcript against teatree behavioural invariants.
-
-    The #169 complement to the #168 gate-liveness corpus: #168 proves the gates
-    CAN fire on synthetic payloads; this proves they DID (or weren't needed) in
-    a REAL run. Django-free, stdout-only, no transport: privacy by construction.
-    Exits non-zero on any invariant violation; skips and exits 0 when no
-    transcript is found. The report names only invariant ids and event indexes —
-    never a tool input, prompt, hook output, or quote.
-    """
-    transcript = resolve_transcript(latest=latest, session=session, file=file)
-    if transcript is None:
-        typer.echo("SKIP transcript-replay: no session transcript found in scope", err=True)
-        return
-    events = parse_session_jsonl(transcript.read_text(encoding="utf-8", errors="replace"))
-    results = replay(events)
-    rendered = render_report_json(results) if output_format == "json" else render_report(results)
-    typer.echo(rendered)
-    if any(not result.ok for result in results):
-        sys.exit(1)
