@@ -44,6 +44,7 @@ class BotPing(models.Model):
         SENT = "sent", "Sent"
         NOOP = "noop", "Noop (no backend)"
         FAILED = "failed", "Failed"
+        EXPIRED = "expired", "Expired (re-delivery abandoned)"
 
     class Transport(models.TextChoices):
         """Which delivery path actually landed the DM (#1181).
@@ -71,6 +72,21 @@ class BotPing(models.Model):
     # staying well under the loop tick interval so recovery lands next tick.
     SENDING_STALE_AFTER: ClassVar = timedelta(seconds=300)
 
+    # A recoverable INFO row gets at most this many re-delivery attempts
+    # before it is terminally EXPIRED. The cross-tick drain bumps
+    # ``attempts`` each tick a row is attempted but does not deliver; once
+    # the cap is reached the row is abandoned so it can never grind every
+    # tick forever (#2064 — the no-backend NOOP that re-records under the
+    # same key and re-queues indefinitely).
+    MAX_REDELIVERY_ATTEMPTS: ClassVar = 5
+
+    # An operator notification, not a message queue: a stranded INFO DM
+    # older than this is stale noise, not an in-flight delivery. The drain
+    # terminally EXPIRES it WITHOUT delivery so a weeks-old notification can
+    # never surface in the user's DM (the worse failure of #2063 if the
+    # re-claim path ever started working).
+    REDELIVERY_AGE_CUTOFF: ClassVar = timedelta(hours=72)
+
     idempotency_key = models.CharField(max_length=255, unique=True)
     kind = models.CharField(max_length=16, choices=Kind.choices)
     status = models.CharField(max_length=16, choices=Status.choices)
@@ -80,6 +96,7 @@ class BotPing(models.Model):
     permalink = models.URLField(max_length=512, blank=True)
     error_message = models.TextField(blank=True)
     transport = models.CharField(max_length=16, choices=Transport.choices, blank=True, default="")
+    attempts = models.PositiveIntegerField(default=0)
     posted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
@@ -125,13 +142,68 @@ class BotPing(models.Model):
         replaces, scoped here to the INFO kind (QUESTION rows are drained
         separately by :func:`drain_deferred_questions`).
 
-        A fresh SENDING row is a genuine in-flight delivery and is excluded.
+        Excludes rows that must never re-deliver again (#2064): a row whose
+        :attr:`attempts` reached :attr:`MAX_REDELIVERY_ATTEMPTS`, and a row
+        older than :attr:`REDELIVERY_AGE_CUTOFF` (stale operator noise). Both
+        are terminally EXPIRED by :meth:`expire_stale_info` rather than retried
+        forever. A terminal EXPIRED/SENT row is excluded by status. A fresh
+        SENDING row is a genuine in-flight delivery and is excluded.
         """
         moment = timezone.now()
         stale_before = moment - cls.SENDING_STALE_AFTER
+        age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
         terminal = Q(status__in=tuple(cls._RECOVERABLE))
         stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
-        return cls.objects.filter(kind=cls.Kind.INFO).filter(terminal | stale_claim).order_by("posted_at", "pk")[:limit]
+        return (
+            cls.objects.filter(kind=cls.Kind.INFO)
+            .filter(terminal | stale_claim)
+            .filter(posted_at__gt=age_cutoff, attempts__lt=cls.MAX_REDELIVERY_ATTEMPTS)
+            .order_by("posted_at", "pk")[:limit]
+        )
+
+    @classmethod
+    def expire_stale_info(cls, *, now: datetime | None = None) -> int:
+        """Terminally EXPIRE recoverable INFO rows that must never re-deliver.
+
+        Two cases, both abandoned WITHOUT a delivery attempt (#2064): a row
+        older than :attr:`REDELIVERY_AGE_CUTOFF` (a weeks-stale operator
+        notification that must never reach the user's DM late), and a row whose
+        :attr:`attempts` reached :attr:`MAX_REDELIVERY_ATTEMPTS` (the bound that
+        stops unbounded per-tick grinding when the backend never resolves).
+
+        Idempotent: only rows in the recoverable set (NOOP/FAILED/stale-SENDING,
+        INFO kind) are touched, and the update is a single conditional write, so
+        a second pass over an already-EXPIRED row is a no-op. Returns the number
+        of rows expired.
+        """
+        moment = now or timezone.now()
+        stale_before = moment - cls.SENDING_STALE_AFTER
+        age_cutoff = moment - cls.REDELIVERY_AGE_CUTOFF
+        terminal = Q(status__in=tuple(cls._RECOVERABLE))
+        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
+        too_old = Q(posted_at__lte=age_cutoff)
+        too_many = Q(attempts__gte=cls.MAX_REDELIVERY_ATTEMPTS)
+        return (
+            cls.objects.filter(kind=cls.Kind.INFO)
+            .filter(terminal | stale_claim)
+            .filter(too_old | too_many)
+            .update(status=cls.Status.EXPIRED)
+        )
+
+    @classmethod
+    def bump_attempt(cls, idempotency_key: str) -> None:
+        """Record one consumed re-delivery attempt that did not deliver.
+
+        Incremented by the drain when a recoverable row was attempted but did
+        not deliver (the backend did not resolve, or a configured send failed).
+        Keyed by ``idempotency_key`` rather than pk because a failed delivery
+        through :meth:`claim_delivery` deletes the recoverable row and recreates
+        a fresh one under the same key — the count must survive that swap.
+        Drives the :attr:`MAX_REDELIVERY_ATTEMPTS` bound so a row that can never
+        deliver is EXPIRED rather than retried forever. An ``F`` expression so
+        concurrent drains never lose a count.
+        """
+        cls.objects.filter(idempotency_key=idempotency_key).update(attempts=models.F("attempts") + 1)
 
     @classmethod
     def claim_delivery(
