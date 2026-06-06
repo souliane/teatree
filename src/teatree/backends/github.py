@@ -8,12 +8,27 @@ historical ``from teatree.backends.github import …`` import sites are unchange
 import json
 import os
 import re
-from typing import TypedDict, cast
+from typing import cast
 from urllib.parse import quote_plus, urlparse
 
+from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends.github_claims import record_github_note_claim as _record_github_note_claim
+from teatree.backends.github_payloads import (
+    _GitHubPullRequestSummary,
+    _GitHubUser,
+    latest_review_state_from_reviews,
+    pr_open_state_from_payload,
+    reviewer_is_requested,
+)
 from teatree.backends.github_projects import ProjectItem, fetch_project_items
-from teatree.backends.protocols import ApprovalState, PrOpenState, PullRequestSpec, ReviewState
+from teatree.backends.protocols import (
+    ApprovalState,
+    ForgeMergeResult,
+    PrMergeState,
+    PrOpenState,
+    PullRequestSpec,
+    ReviewState,
+)
 from teatree.types import RawAPIDict
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
@@ -37,36 +52,6 @@ def issue_repo_short(url: str) -> str:
     return match.group("repo") if match else ""
 
 
-_GH_REVIEW_STATE_MAP: dict[str, ReviewState] = {
-    "APPROVED": ReviewState.APPROVED,
-    "CHANGES_REQUESTED": ReviewState.CHANGES_REQUESTED,
-    "DISMISSED": ReviewState.DISMISSED,
-    "PENDING": ReviewState.PENDING,
-}
-
-
-class _GitHubUser(TypedDict, total=False):
-    """Subset of the GitHub ``/user`` response that teatree reads."""
-
-    login: str
-
-
-class _GitHubReviewEntry(TypedDict, total=False):
-    """Subset of the GitHub PR-review response that teatree reads."""
-
-    user: _GitHubUser
-    state: str
-
-
-class _GitHubPullRequestSummary(TypedDict, total=False):
-    """Subset of the GitHub PR response read for the review state lookup."""
-
-    requested_reviewers: list[_GitHubUser]
-    state: str
-    merged: bool
-    user: _GitHubUser
-
-
 def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
     """Run a ``gh`` CLI command and return the result.
 
@@ -76,56 +61,6 @@ def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
     """
     env = {**os.environ, "GH_TOKEN": token} if token else None
     return run_checked(list(args), env=env)
-
-
-def _latest_review_state_from_reviews(reviews: object, reviewer: str) -> ReviewState | None:
-    """Return the most recent terminal review state by *reviewer*, or ``None``."""
-    if not isinstance(reviews, list):
-        return None
-    for raw_entry in reversed(reviews):
-        if not isinstance(raw_entry, dict):
-            continue
-        entry = cast("_GitHubReviewEntry", raw_entry)
-        user = entry.get("user")
-        login = user.get("login") if isinstance(user, dict) else None
-        if login != reviewer:
-            continue
-        state_str = entry.get("state")
-        if not isinstance(state_str, str):
-            continue
-        mapped = _GH_REVIEW_STATE_MAP.get(state_str.upper())
-        if mapped is not None:
-            return mapped
-    return None
-
-
-def _pr_open_state_from_payload(pr: object) -> PrOpenState:
-    """Map a GitHub PR payload to a :class:`PrOpenState` (#1074).
-
-    ``state=="open"`` → OPEN; ``merged is True`` → MERGED; ``state=="closed"``
-    without ``merged`` → CLOSED. Any non-dict or unrecognised shape →
-    ``UNKNOWN`` so the orphan sweep fails open.
-    """
-    if not isinstance(pr, dict):
-        return PrOpenState.UNKNOWN
-    summary = cast("_GitHubPullRequestSummary", pr)
-    if summary.get("state") == "open":
-        return PrOpenState.OPEN
-    if summary.get("merged") is True:
-        return PrOpenState.MERGED
-    if summary.get("state") == "closed":
-        return PrOpenState.CLOSED
-    return PrOpenState.UNKNOWN
-
-
-def _reviewer_is_requested(pr: object, reviewer: str) -> bool:
-    """Return True iff *reviewer* appears on the PR's ``requested_reviewers``."""
-    if not isinstance(pr, dict):
-        return False
-    requested = cast("_GitHubPullRequestSummary", pr).get("requested_reviewers")
-    if not isinstance(requested, list):
-        return False
-    return any(isinstance(entry, dict) and entry.get("login") == reviewer for entry in requested)
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:
@@ -245,7 +180,7 @@ def _gh_api_patch(endpoint: str, payload: dict[str, object], *, token: str = "")
     return json.loads(result.stdout)
 
 
-class GitHubCodeHost:
+class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
     """CodeHost implementation backed by the ``gh`` CLI."""
 
     def __init__(self, *, token: str = "") -> None:
@@ -518,12 +453,12 @@ class GitHubCodeHost:
 
         base = f"repos/{match['owner']}/{match['repo']}/pulls/{match['number']}"
         reviews = _gh_api_get_paginated(f"{base}/reviews?per_page=100", token=self._token)
-        terminal = _latest_review_state_from_reviews(reviews, reviewer)
+        terminal = latest_review_state_from_reviews(reviews, reviewer)
         if terminal is not None:
             return terminal
 
         pr = _gh_api_get(base, token=self._token)
-        if _reviewer_is_requested(pr, reviewer):
+        if reviewer_is_requested(pr, reviewer):
             return ReviewState.PENDING
         return ReviewState.NONE
 
@@ -547,7 +482,7 @@ class GitHubCodeHost:
             )
         except Exception:  # noqa: BLE001 — fail open: any failure must NOT reap a live review.
             return PrOpenState.UNKNOWN
-        return _pr_open_state_from_payload(pr)
+        return pr_open_state_from_payload(pr)
 
     def get_pr_author(self, *, pr_url: str) -> str:
         """Return the PR author's GitHub login, or ``""`` when it can't be resolved.
@@ -577,3 +512,21 @@ class GitHubCodeHost:
             if isinstance(login, str):
                 return login
         return ""
+
+    def _merge_rpc(self) -> _forge_merge.GhMergeRpc:
+        return _forge_merge.GhMergeRpc(_forge_merge.gh_runner(self._token))
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str:
+        return self._merge_rpc().fetch_live_head_sha(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState:
+        return self._merge_rpc().fetch_pr_merge_state(slug=slug, pr_id=pr_id)
+
+    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+        return self._merge_rpc().fetch_pr_is_draft(slug=slug, pr_id=pr_id)
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+        return self._merge_rpc().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)

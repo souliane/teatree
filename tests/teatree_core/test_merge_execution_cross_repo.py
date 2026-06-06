@@ -109,8 +109,8 @@ class TestCrossRepoCandidateProbe(TestCase):
 
         with (
             patch(
-                "teatree.core.merge_execution._run_gh",
-                side_effect=_gh_keyed_by_repo(calls),
+                "teatree.backends.forge_merge_rpc.gh_runner",
+                return_value=_gh_keyed_by_repo(calls),
             ),
             patch(
                 "teatree.core.merge_execution._project_repo_slug",
@@ -177,7 +177,7 @@ class TestCrossRepoCandidateProbe(TestCase):
             return ""
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_gh_all_wrong),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_all_wrong),
             patch(
                 "teatree.core.merge_execution._project_repo_slug",
                 return_value=_CLONE_ORIGIN,
@@ -221,8 +221,8 @@ class TestCrossRepoCandidateProbe(TestCase):
 
         with (
             patch(
-                "teatree.core.merge_execution._run_gh",
-                side_effect=_gh_keyed_by_repo(calls, right_repo=_CLONE_ORIGIN),
+                "teatree.backends.forge_merge_rpc.gh_runner",
+                return_value=_gh_keyed_by_repo(calls, right_repo=_CLONE_ORIGIN),
             ),
             patch(
                 "teatree.core.merge_execution._project_repo_slug",

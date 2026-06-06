@@ -16,9 +16,9 @@ Decision ladder per open PR:
 4. no actionable ``MergeClear`` row for ``(slug, pr_id, head_sha)``
     → skip (collaborative-overlay default) OR the solo-overlay
     carve-out (#1309 — see ``solo_overlay`` on :class:`PrSweepScanner`):
-    merge via ``gh pr merge --squash`` ONLY when a recorded independent
-    cold-review (``merge_safe`` ``ReviewVerdict`` at the head,
-    ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
+    merge via the SHA-bound ``merge_pr_squash_bound`` (#1985) ONLY when a
+    recorded independent cold-review (``merge_safe`` ``ReviewVerdict`` at the
+    head, ``reviewer != maker``) exists, else flag (``pr_sweep.flag_no_review``,
     #68)
 5. CI ``test(3.13)`` not green AND red checks include something
     other than ``uv-audit`` → skip
@@ -27,8 +27,8 @@ Decision ladder per open PR:
 7. all required checks green → merge through the keystone
 
 Step 6's ``--fallback-uv-audit`` switch documents the scanner's standing
-authorisation to escalate to ``gh pr merge --squash`` when the keystone
-transition refuses on the same fallback path (a pre-existing-on-``main``
+authorisation to escalate to the SHA-bound ``merge_pr_squash_bound`` when the
+keystone transition refuses on the same fallback path (a pre-existing-on-``main``
 failing audit job is a deterministic gate, not an ad-hoc judgement —
 exactly the case §17.4.3 step 7 reserves for the scanner).
 
@@ -122,7 +122,13 @@ class PrApiClient(Protocol):
 
     def main_check_failed(self, *, slug: str, check_name: str) -> bool: ...  # pragma: no branch
 
-    def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]: ...  # pragma: no branch
+    def merge_pr_squash_bound(
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+        expected_head_oid: str,
+    ) -> tuple[bool, str]: ...  # pragma: no branch
 
 
 @runtime_checkable
@@ -192,8 +198,8 @@ class PrSweepScanner:
     reports. When ``solo_overlay=True`` AND no actionable CLEAR exists for
     the head, the scanner runs the same precondition checks (draft,
     changes-requested, CI verdict) and — only if every gate is green —
-    falls back to a direct ``gh pr merge --squash`` via
-    :meth:`PrApiClient.merge_pr_squash`. The CLEAR contract is left
+    falls back to the SHA-bound merge via
+    :meth:`PrApiClient.merge_pr_squash_bound`. The CLEAR contract is left
     untouched for every overlay that did NOT explicitly opt in; this is
     the conservative side of the two options on the table because it
     keeps the cold-reviewer attestation as the default and only relaxes
@@ -335,15 +341,23 @@ class PrSweepScanner:
         the scanner refuses to merge and emits a flag-level signal so the
         only-identity-on-the-repo maker can never self-merge. Once both the
         CI gate and the cold-review gate pass, calls
-        :meth:`PrApiClient.merge_pr_squash` directly — the keystone path
-        can't be used here because it requires a CLEAR row.
+        :meth:`PrApiClient.merge_pr_squash_bound` — the bound merge runs the
+        §17.4.3 SHA-bind + not-draft + live-CI re-checks via
+        ``execute_bound_merge`` (the keystone CLEAR path can't be used here
+        because it needs a CLEAR row, but the SHA-bind primitive applies
+        without one, so a force-push in the TOCTOU window can no longer slip an
+        unreviewed head through this bypass — #1985).
         """
         ci_skip, fallback = self._ci_gate(pr)
         if ci_skip is not None:
             return _skip(pr, reason=ci_skip)
         if not _has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
-        ok, merged_sha = self.api.merge_pr_squash(slug=pr.slug, pr_id=pr.number)
+        ok, merged_sha = self.api.merge_pr_squash_bound(
+            slug=pr.slug,
+            pr_id=pr.number,
+            expected_head_oid=pr.head_sha,
+        )
         if not ok:
             return MergeAttempt(
                 slug=pr.slug,
@@ -435,7 +449,11 @@ class PrSweepScanner:
                 reason="fallback_uv_audit" if fallback else "all_green",
             )
         if fallback:
-            ok, fallback_sha = self.api.merge_pr_squash(slug=pr.slug, pr_id=pr.number)
+            ok, fallback_sha = self.api.merge_pr_squash_bound(
+                slug=pr.slug,
+                pr_id=pr.number,
+                expected_head_oid=pr.head_sha,
+            )
             if ok:
                 self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=fallback_sha, fallback=True)
                 return MergeAttempt(
