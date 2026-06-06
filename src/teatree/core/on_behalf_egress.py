@@ -11,8 +11,8 @@ public method runs the identical fixed sequence in one place:
     :func:`teatree.core.speak.deliver_user_dm` chokepoint and return —
     ungated and unaudited, because a bot→user / self-ack is never an
     on-behalf post. ``deliver_user_dm`` attaches spoken audio to the DM
-    when ``slack_audio`` is on and plays it locally when ``local`` is on
-    (#2050), so the ``notify post`` user-DM path runs the same DM+speak
+    when ``slack`` is on and plays it locally when ``local`` plays DMs
+    (#2060), so the ``notify post`` user-DM path runs the same DM+speak
     chokepoint :func:`teatree.core.notify.notify_user` does;
 3.  a *colleague/channel* destination → :func:`require_on_behalf_approval`
     *before* the wire call (a BLOCK verdict with no recorded approval
@@ -128,9 +128,9 @@ class OnBehalfSlackEgress:
 
         Self-DM: deliver via the shared :func:`teatree.core.speak.deliver_user_dm`
         chokepoint (ungated, unaudited) — a bot→user DM is exactly the
-        "text DM to the user" #2050 targets, so the user's own DM both
-        attaches spoken audio when ``slack_audio`` is on AND plays locally
-        when ``local`` is on, driven by the SAME chokepoint
+        "text DM to the user" #2060 targets, so the user's own DM both
+        attaches spoken audio when ``slack`` is on AND plays locally
+        when ``local`` plays DMs, driven by the SAME chokepoint
         :func:`teatree.core.notify.notify_user` uses (one place owns the
         speak logic for both DM egress points). Colleague/channel: gate
         first (raises :class:`OnBehalfPostBlockedError` on BLOCK with no

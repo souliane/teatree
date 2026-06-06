@@ -18,8 +18,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
-│ speak           Read text aloud through the local speakers per  (no-op when  │
-│                 local is off).                                               │
+│ speak           Read text aloud through the local speakers per  (no-op       │
+│                 unless local = all).                                         │
 │ info            Show t3 installation, teatree/overlay sources, and editable  │
 │                 status.                                                      │
 │ ui              Browse and run every t3 command in an interactive terminal   │
@@ -156,7 +156,7 @@ Usage: t3 cost [OPTIONS]
 ```
 Usage: t3 speak [OPTIONS] TEXT
 
- Read text aloud through the local speakers per  (no-op when local is off).
+ Read text aloud through the local speakers per  (no-op unless local = all).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    text      TEXT  Text to read aloud. Use '-' to read it from stdin.      │

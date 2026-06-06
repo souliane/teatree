@@ -7437,59 +7437,57 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
-# ── Stop: speak-on-stop arm (scope == all, #1791) ───────────────────────────
+# ── Stop: speak-on-stop arm (local == all, #2060) ───────────────────────────
 
 
-def _speak_settings() -> tuple[bool, bool, str]:
-    """Read ``[teatree.speak]`` from ``~/.teatree.toml`` → ``(local, slack_audio, scope)`` (#2050).
+def _speak_settings() -> tuple[str, bool]:
+    """Read ``[teatree.speak]`` from ``~/.teatree.toml`` → ``(local, slack)`` (#2060).
 
     The hook-side mirror of :func:`teatree.config_speak.resolve_speak` (the hook
     cannot cheaply import the Django config, so it re-reads the toml with the
     SAME precedence — a parity test pins the two in agreement): an explicit
-    ``[teatree.speak]`` sub-table wins, else the defaults (``False, False,
-    "dm"``). Best-effort: a missing or malformed config, or no ``[teatree]``
-    table, yields the defaults so the Stop arm stays silent unless the user
-    opted in.
+    ``[teatree.speak]`` sub-table wins, else the defaults (``"off", False``).
+    ``local`` is the :class:`~teatree.types.LocalPlayback` value
+    (``off``/``dm``/``all``). Best-effort: a missing or malformed config, or
+    no ``[teatree]`` table, yields the defaults so the Stop arm stays silent
+    unless the user opted in.
     """
     import tomllib  # noqa: PLC0415
 
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return False, False, "dm"
+        return "off", False
     try:
         with config_path.open("rb") as f:
             config = tomllib.load(f)
     except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
-        return False, False, "dm"
+        return "off", False
     teatree = config.get("teatree") if isinstance(config, dict) else None
     if not isinstance(teatree, dict):
-        return False, False, "dm"
+        return "off", False
     subtable = teatree.get("speak")
     if isinstance(subtable, dict):
-        scope = subtable.get("scope")
+        local = subtable.get("local")
         return (
-            bool(subtable.get("local", False)),
-            bool(subtable.get("slack_audio", False)),
-            scope.strip().lower() if isinstance(scope, str) else "dm",
+            local.strip().lower() if isinstance(local, str) else "off",
+            bool(subtable.get("slack", False)),
         )
-    return False, False, "dm"
+    return "off", False
 
 
 def handle_speak_all_on_stop(data: dict) -> None:
-    """Speak the in-client turn on the speakers, with no-double-speak by construction (#2050).
+    """Speak the in-client turn on the speakers when ``local == all`` (#2060).
 
-    The Stop-hook arm fires its detached ``t3 speak`` IFF ALL of: ``scope ==
-    all`` (otherwise only DMs are spoken, never in-client turns), AND ``local``
-    (otherwise nothing plays on the speakers anyway), AND NOT ``slack_audio``
-    (when on, the bot→user DM carries the canonical spoken audio, so the Stop
-    hook must not re-read the same content on the speakers — #2021 "slack
-    wins", exclusivity by construction). The toml pre-check keeps the fast
-    hook from spawning Django on every Stop. Returns ``None`` unconditionally
-    (a side-effect handler, never a decision) and is crash-proof.
+    The Stop-hook arm fires its detached ``t3 speak`` IFF ``local == all`` —
+    in-client turns are never Slack messages, so the ``slack`` attach is
+    irrelevant and there is no double-play to suppress. The toml pre-check
+    keeps the fast hook from spawning Django on every Stop. Returns ``None``
+    unconditionally (a side-effect handler, never a decision) and is
+    crash-proof.
     """
     try:
-        local, slack_audio, scope = _speak_settings()
-        if scope != "all" or not local or slack_audio:
+        local, _slack = _speak_settings()
+        if local != "all":
             return
         if shutil.which("say") is None or shutil.which("t3") is None:
             return

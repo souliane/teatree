@@ -40,74 +40,75 @@ class SlackVoiceClassifierMode(enum.StrEnum):
             raise ValueError(message) from exc
 
 
-class SpeakScope(enum.StrEnum):
-    """Which agent text the text-to-speech seam reads aloud (#1791/#2050).
+class LocalPlayback(enum.StrEnum):
+    """What plays through this machine's speakers (#2060).
 
     Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config` can
-    parse the ``[teatree.speak] scope`` setting without importing the
+    parse the ``[teatree.speak] local`` setting without importing the
     :mod:`teatree.core.speak` implementation (the ``teatree.core →
     teatree.config`` edge is allowed but ``teatree.config →
     teatree.core`` would cycle).
 
-    *   :attr:`DM` (default) — speak only the Slack DMs the bot sends the
-        user (the IM/DM egress in :func:`teatree.core.notify.notify_user`
-        and the on-behalf self-DM).
-    *   :attr:`ALL` — additionally speak the last in-client assistant reply
-        of each turn (the Stop hook reads the transcript's last text block).
+    *   :attr:`OFF` (default) — nothing plays locally.
+    *   :attr:`DM` — the bot→user DM texts play locally.
+    *   :attr:`ALL` — DM texts AND the Stop-hook reading of in-client turn
+        ends play locally.
 
-    The whole feature is off when both ``local`` and ``slack_audio`` are
-    false, so there is no separate "off" scope — see :class:`SpeakConfig`.
+    Independent of :attr:`SpeakConfig.slack`: Slack never auto-plays, so
+    local playback is never suppressed by the Slack attach.
     """
 
+    OFF = "off"
     DM = "dm"
     ALL = "all"
 
     @classmethod
-    def parse(cls, value: str) -> "SpeakScope":
-        normalised = value.strip().lower()
+    def parse(cls, value: object) -> "LocalPlayback":
+        normalised = value.strip().lower() if isinstance(value, str) else value
         try:
             return cls(normalised)
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
-            message = f"Invalid speak scope {value!r}; valid values: {valid}"
+            message = f"Invalid speak local {value!r}; valid values: {valid}"
             raise ValueError(message) from exc
 
 
 @dataclass(frozen=True)
 class SpeakConfig:
-    """The resolved ``[teatree.speak]`` sub-table — two booleans + one scope (#2050).
+    """The resolved ``[teatree.speak]`` sub-table — a local-playback enum + a slack bool (#2060).
 
     One cohesive object the config layer produces and :mod:`teatree.core.speak`
-    reads: two destination booleans plus a scope enum.
+    reads. The two axes are fully independent:
 
-    *   ``local`` — synthesise with the macOS ``say`` binary and play through
-        the local speakers. Inert off macOS.
-    *   ``slack_audio`` — attach a spoken audio rendition to every Slack text
-        DM the user receives, in the SAME message (one DM = text + inline
-        audio player). Requires the Slack token's ``files:write`` scope.
-    *   ``scope`` — :attr:`SpeakScope.DM` speaks only the bot's DMs;
-        :attr:`SpeakScope.ALL` additionally speaks the in-client turn.
+    *   ``local`` — :class:`LocalPlayback`: what plays through this machine's
+        speakers (macOS ``say``). :attr:`~LocalPlayback.OFF` nothing,
+        :attr:`~LocalPlayback.DM` the bot→user DM texts,
+        :attr:`~LocalPlayback.ALL` DM texts plus the in-client turn ends.
+        Inert off macOS.
+    *   ``slack`` — attach a spoken audio rendition to every Slack text DM the
+        user receives, in the SAME message (one DM = text + inline audio
+        player). Requires the Slack token's ``files:write`` scope. Applies to
+        DMs only by nature; no scope interaction.
 
-    The feature is enabled iff at least one destination is on; the whole
-    thing is additionally gated on the ``say`` binary being present
+    The feature does something iff ``local`` is not off OR ``slack`` is on;
+    the whole thing is additionally gated on the ``say`` binary being present
     (:func:`teatree.core.speak.binary_available`).
     """
 
-    local: bool = False
-    slack_audio: bool = False
-    scope: SpeakScope = SpeakScope.DM
+    local: LocalPlayback = LocalPlayback.OFF
+    slack: bool = False
 
     def enabled(self) -> bool:
-        return self.local or self.slack_audio
+        return self.local is not LocalPlayback.OFF or self.slack
 
     def speaks_dms(self) -> bool:
-        return self.enabled()
+        return self.local in {LocalPlayback.DM, LocalPlayback.ALL}
 
     def speaks_in_client_turns(self) -> bool:
-        return self.scope is SpeakScope.ALL and self.local and not self.slack_audio
+        return self.local is LocalPlayback.ALL
 
     def to_dict(self) -> dict[str, bool | str]:
-        return {"local": self.local, "slack_audio": self.slack_audio, "scope": self.scope.value}
+        return {"local": self.local.value, "slack": self.slack}
 
 
 class ScannerErrorClass(enum.StrEnum):

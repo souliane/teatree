@@ -1,4 +1,4 @@
-"""``t3 speak`` — read text aloud via the local text-to-speech seam (#1791).
+"""``t3 speak`` — read text aloud via the local text-to-speech seam (#2060).
 
 Top-level convenience over the ``speak`` Django management command.
 Anything that resolves config + the Slack backend runs through the
@@ -17,7 +17,7 @@ def speak(
     *,
     overlay: str = typer.Option("", "--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay Slack creds)."),
 ) -> None:
-    """Read text aloud through the local speakers per [teatree.speak] (no-op when local is off)."""
+    """Read text aloud through the local speakers per [teatree.speak] (no-op unless local = all)."""
     ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415

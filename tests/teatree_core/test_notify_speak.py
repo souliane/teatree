@@ -1,9 +1,9 @@
-"""``notify_user`` delivers the bot→user DM through the shared speak chokepoint (#2050).
+"""``notify_user`` delivers the bot→user DM through the shared speak chokepoint (#2060).
 
 The IM/DM arm of text-to-speech: a successful bot→user DM goes through
 :func:`teatree.core.speak.deliver_user_dm`, which posts ONE message
-carrying the text + attached audio when ``slack_audio`` is on (and reads it
-locally when ``local`` is on), degrading to a text-only post otherwise.
+carrying the text + attached audio when ``slack`` is on (and reads it
+locally when ``local`` plays DMs), degrading to a text-only post otherwise.
 Speaking/attaching must never break or block the notification path. Only
 the messaging backend (network boundary) and the synthesis seam are mocked.
 """
@@ -40,10 +40,10 @@ class TestNotifyUserSpeaks(TestCase):
         backend.post_message.assert_called_once()
         backend.post_audio_dm.assert_not_called()
 
-    def test_attaches_audio_to_the_dm_when_slack_audio_on(self) -> None:
+    def test_attaches_audio_to_the_dm_when_slack_on(self) -> None:
         backend = _backend()
         with (
-            patch("teatree.core.speak.resolve_speak", return_value=SpeakConfig(slack_audio=True)),
+            patch("teatree.core.speak.resolve_speak", return_value=SpeakConfig(slack=True)),
             patch("teatree.core.speak.synthesise", return_value=__import__("pathlib").Path("/tmp/x/speech.m4a")),
             patch("teatree.core.speak.shutil.rmtree"),
         ):
