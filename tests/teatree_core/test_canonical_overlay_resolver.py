@@ -5,7 +5,7 @@ Issue souliane/teatree#1138: ``teatree.config._canonical_ep_name`` and
 encoded the same alias rule in two places and DIVERGED on suffix
 matches without a leading dash (the loop variant used
 ``endswith((f"-{alias}", alias))`` which over-matched). The unified
-resolver ``teatree.config._match_canonical_ep`` is the single home for
+resolver ``teatree.config.discovery._match_canonical_ep`` is the single home for
 the rule; both call sites consume it.
 """
 
