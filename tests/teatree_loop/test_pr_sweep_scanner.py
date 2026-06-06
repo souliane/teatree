@@ -937,3 +937,62 @@ class TestErrorIsolation:
         signals = scanner.scan()
 
         assert [s.kind for s in signals] == ["pr_sweep.flag_conflict"]
+
+
+class TestEvaluateOne:
+    """On-demand single-PR evaluation — the event-driven sweep complement (#2017).
+
+    ``evaluate_one`` is what a freshly recorded ``merge_safe`` verdict triggers so
+    the merge does not idle a full tick cadence. It must reuse the identical
+    decision ladder ``scan`` runs (no drift) and no-op cleanly when the PR is no
+    longer open.
+    """
+
+    def test_evaluate_one_merges_green_cold_reviewed_solo_pr_via_gh(self) -> None:
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        attempt = scanner.evaluate_one(slug=SLUG, pr_id=6230)
+
+        assert attempt is not None
+        assert attempt.merged is True
+        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert attempt.reason == "solo_overlay_no_clear"
+
+    def test_evaluate_one_returns_none_when_pr_no_longer_open(self) -> None:
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: []})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        attempt = scanner.evaluate_one(slug=SLUG, pr_id=6230)
+
+        assert attempt is None
+        assert api.merge_pr_calls == []
+
+    def test_evaluate_one_scopes_to_the_target_pr_only(self) -> None:
+        _record_cold_review(pr_id=6230)
+        other = _open_pr(pr_id=9999)
+        api = FakePrApiClient(prs_by_slug={SLUG: [other, _open_pr(pr_id=6230)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        attempt = scanner.evaluate_one(slug=SLUG, pr_id=6230)
+
+        assert attempt is not None
+        assert attempt.pr_id == 6230
+        assert api.merge_pr_calls == [(SLUG, 6230)]  # 9999 (no cold review) untouched
+
+    def test_evaluate_one_does_not_merge_without_cold_review(self) -> None:
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        attempt = scanner.evaluate_one(slug=SLUG, pr_id=6230)
+
+        assert attempt is not None
+        assert attempt.merged is False
+        assert attempt.decision == "flag_no_review"
+        assert api.merge_pr_calls == []

@@ -144,6 +144,7 @@ class Command(TyperCommand):
             f"{recorded.slug}#{recorded.pr_id}@{recorded.reviewed_sha[:8]} ({len(findings)} finding(s))"
         )
         self._emit_review_done_signal(recorded)
+        self._trigger_sweep(recorded)
         return {
             "recorded": True,
             "verdict_id": int(recorded.pk),
@@ -152,6 +153,31 @@ class Command(TyperCommand):
             "verdict": recorded.verdict,
             "findings_count": len(findings),
         }
+
+    def _trigger_sweep(self, recorded: ReviewVerdict) -> None:
+        """Run the pr_sweep merge decision for *recorded* PR now, not next tick (#2017).
+
+        A ``merge_safe`` verdict is the artifact the sweep merges on; recording
+        one for an own PR the sweep is waiting on must not idle a full ~12-min
+        cadence (a parallel human keystone-merge wins that race — the incident
+        this fixes). Only ``merge_safe`` verdicts trigger a merge attempt; a
+        HOLD never merges. Best-effort: a failure logs inside the trigger and
+        never turns verdict recording into a command failure; the periodic sweep
+        is the unchanged backstop.
+        """
+        if not recorded.is_merge_safe():
+            return
+        import os  # noqa: PLC0415
+
+        from teatree.loop.sweep_on_demand import trigger_sweep_for_verdict  # noqa: PLC0415
+
+        attempt = trigger_sweep_for_verdict(
+            slug=recorded.slug,
+            pr_id=int(recorded.pr_id),
+            overlay=os.environ.get("T3_OVERLAY_NAME", ""),
+        )
+        if attempt is not None and attempt.merged:
+            self.stdout.write(f"  pr_sweep merged {attempt.slug}#{attempt.pr_id} @ {attempt.merged_sha[:8]}")
 
     def _emit_review_done_signal(self, recorded: ReviewVerdict) -> None:
         """Post the review-DONE Slack reaction set for *recorded* (#113/#88).
