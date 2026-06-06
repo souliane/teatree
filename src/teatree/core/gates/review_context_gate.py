@@ -26,7 +26,7 @@ Satisfying evidence
     ``analysis`` records how the implementation was checked against it.
 
 The gate is a pure function over durable ``extra`` state, mirroring
-``teatree.core.review_skill_gate``. On a block it raises
+``teatree.core.gates.review_skill_gate``. On a block it raises
 :class:`ReviewContextError` with a remediation message naming the
 ``record-review-context`` command; the ``visit-phase`` command surfaces it as a
 non-zero exit.

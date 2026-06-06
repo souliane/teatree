@@ -24,6 +24,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -31,7 +32,6 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.review_message_cache import persist_review_message
-from teatree.core.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.types import RawAPIDict
 
@@ -191,7 +191,7 @@ class Command(TyperCommand):
         is itself a block with actionable steering, since the request-review
         transition must be SHA-bound.
         """
-        from teatree.core.anti_vacuity_gate import (  # noqa: PLC0415
+        from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
             AntiVacuityAttestationError,
             anti_vacuity_required,
             check_anti_vacuity_attestation,

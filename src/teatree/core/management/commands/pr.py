@@ -13,6 +13,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
 from teatree.core.management.commands._ensure_pr import EnsurePrResult, create_or_defer_pr
@@ -53,7 +54,6 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.orphan_guard import BranchStatus, classify_branch
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.phases import normalize_phase
 from teatree.core.public_identity import MergeResult

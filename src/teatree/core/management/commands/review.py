@@ -24,9 +24,9 @@ from typing import Annotated, TypedDict
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge_execution import fetch_live_head_sha, fetch_required_checks_status
 from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Ticket
-from teatree.core.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.utils.url_slug import pr_ref_from_url
 
 

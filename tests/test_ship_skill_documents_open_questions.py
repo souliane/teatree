@@ -10,7 +10,7 @@ every CI run (in the spirit of ``test_ship_skill_documents_skip_flags``).
 
 from pathlib import Path
 
-from teatree.core.open_questions_gate import OPEN_QUESTIONS_HINT
+from teatree.core.gates.open_questions_gate import OPEN_QUESTIONS_HINT
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SHIP_SKILL = _REPO_ROOT / "skills" / "ship" / "SKILL.md"
@@ -27,7 +27,7 @@ def test_ship_skill_documents_section_and_statuses() -> None:
 
 def test_ship_skill_names_the_gate_module() -> None:
     text = _SHIP_SKILL.read_text(encoding="utf-8")
-    assert "teatree.core.open_questions_gate" in text
+    assert "teatree.core.gates.open_questions_gate" in text
 
 
 def test_ship_skill_commit_section_requires_the_section() -> None:

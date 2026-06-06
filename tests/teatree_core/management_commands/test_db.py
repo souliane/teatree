@@ -444,7 +444,7 @@ class TestDbApproveCommand(TestCase):
 
     def test_recorded_approval_satisfies_the_gate_end_to_end(self) -> None:
         """The escape works: a recorded approval lets a non-TTY caller consume it."""
-        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+        from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
         from teatree.core.models import DbApproval  # noqa: PLC0415
 
         call_command("db", "approve", "fresh-dump", "test_db", "--approver", "souliane", stdout=io.StringIO())

@@ -5,7 +5,7 @@ sanctioned, non-destructive migrate targeted *that* DB: ``t3 update`` ran
 ``uv --directory <clone> run migrate`` (a different, auto-isolated DB for a
 worktree-anchored editable install) and ``resetdb`` is destructive. This
 command closes the gap — it delegates to
-:func:`teatree.core.schema_guard.migrate_self_db`, which migrates the exact
+:func:`teatree.core.gates.schema_guard.migrate_self_db`, which migrates the exact
 connection the gate reads, in the running process.
 """
 
@@ -53,7 +53,7 @@ class DbMigrateCommandTest(TransactionTestCase):
     def test_migrate_fails_closed_when_underlying_migrate_errors(self) -> None:
         import pytest  # noqa: PLC0415
 
-        from teatree.core.schema_guard import SelfDbMigrationError  # noqa: PLC0415
+        from teatree.core.gates.schema_guard import SelfDbMigrationError  # noqa: PLC0415
 
         with (
             patch(

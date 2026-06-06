@@ -33,7 +33,7 @@ def check_live_post(*, repo: str, mr: int) -> str:
     (#126) is what mints that token in the same command that records the
     on-behalf authorization, so a single user action satisfies both gates.
     """
-    from teatree.core.live_post_gate import LivePostBlockedError, require_live_post_approval  # noqa: PLC0415
+    from teatree.core.gates.live_post_gate import LivePostBlockedError, require_live_post_approval  # noqa: PLC0415
 
     try:
         require_live_post_approval(mr_url=f"{repo}!{mr}")

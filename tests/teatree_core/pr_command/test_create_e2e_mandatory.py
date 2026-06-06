@@ -38,7 +38,7 @@ class TestPrCreateE2EMandatory(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
             patch.object(pr_command, "validate_pr_metadata", return_value=None),
-            patch("teatree.core.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
+            patch("teatree.core.gates.e2e_mandatory_gate.get_overlay", return_value=_ImpactingOverlay()),
             patch("teatree.core.management.commands._ship_gates.git.head_sha", return_value=_SHA),
             patch(
                 "teatree.core.management.commands._ship_gates.visual_qa.changed_files",

@@ -39,7 +39,7 @@ from teatree.types import RawAPIDict
 from teatree.url_classify import is_gitlab_mr_url, pr_ref
 
 if TYPE_CHECKING:
-    from teatree.core.merge_guard import MergeGuard
+    from teatree.core.gates.merge_guard import MergeGuard
     from teatree.core.models import Ticket as _Ticket
 
     TicketModel = type[_Ticket]

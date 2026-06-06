@@ -951,7 +951,7 @@ def _assert_anti_vacuity(clear: "MergeClear", head_sha: str) -> None:
     single re-escalation path surfaces it (the loop never self-issues a
     replacement CLEAR).
     """
-    from teatree.core.anti_vacuity_gate import (  # noqa: PLC0415
+    from teatree.core.gates.anti_vacuity_gate import (  # noqa: PLC0415
         AntiVacuityAttestationError,
         check_anti_vacuity_attestation,
     )

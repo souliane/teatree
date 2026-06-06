@@ -22,16 +22,16 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import UserSettings
+from teatree.core.gates.review_skill_gate import configured_review_skill, recorded_review_skill
 from teatree.core.management.commands.lifecycle import ReviewSkillEvidenceError
 from teatree.core.models import Session, Ticket
-from teatree.core.review_skill_gate import configured_review_skill, recorded_review_skill
 
 pytestmark = pytest.mark.django_db
 
 
 @contextmanager
 def _configured_review_skill(skill: str) -> Iterator[None]:
-    with patch("teatree.core.review_skill_gate.configured_review_skill", return_value=skill):
+    with patch("teatree.core.gates.review_skill_gate.configured_review_skill", return_value=skill):
         yield
 
 
@@ -102,7 +102,7 @@ class TestRecordReviewSkillRun(TestCase):
 class TestReviewSkillResolvers(TestCase):
     def test_configured_review_skill_reads_effective_settings(self) -> None:
         with patch(
-            "teatree.core.review_skill_gate.get_effective_settings",
+            "teatree.core.gates.review_skill_gate.get_effective_settings",
             return_value=UserSettings(review_skill="  ac-reviewing-codebase  "),
         ):
             assert configured_review_skill() == "ac-reviewing-codebase"

@@ -64,7 +64,7 @@ class FixRecordDodError(InvalidTransitionError):
     """A fix-ticket merge was refused: no validated FixRecord.
 
     A subclass of :class:`InvalidTransitionError` (sibling of
-    :class:`~teatree.core.dod_gate.DodLocalE2EError`) so the loop's
+    :class:`~teatree.core.gates.dod_gate.DodLocalE2EError`) so the loop's
     ``Task.complete()`` outer atomic rolls the merge advance back and the FSM
     stays put. The message names the override escape hatch so the operator can
     unblock a legitimately-exempt fix without code.

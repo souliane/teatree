@@ -23,8 +23,8 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import load_config
-from teatree.core import local_stack_gate as gate_mod
-from teatree.core.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
+from teatree.core.gates import local_stack_gate as gate_mod
+from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import Ticket, Worktree
 
 
@@ -291,7 +291,7 @@ class TestWorktreeStartCliRefusesWhenLimitExceeded(TestCase):
             # Exercise the real gate end-to-end: patch ``resolve_worktree``
             # to return the candidate and the effective-limit resolver to
             # return ``1``. The CLI must surface the refusal as SystemExit(1).
-            from teatree.core import local_stack_gate as gate_mod  # noqa: PLC0415
+            from teatree.core.gates import local_stack_gate as gate_mod  # noqa: PLC0415
 
             with (
                 patch.object(worktree_cmd, "resolve_worktree", return_value=candidate),

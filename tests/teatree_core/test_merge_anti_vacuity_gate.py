@@ -44,7 +44,7 @@ def _clear(ticket: Ticket) -> MergeClear:
 @contextmanager
 def _gate(*, required: bool) -> Iterator[None]:
     with patch(
-        "teatree.core.anti_vacuity_gate.get_effective_settings",
+        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
         return_value=UserSettings(require_anti_vacuity_attestation=required),
     ):
         yield

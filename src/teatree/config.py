@@ -567,7 +567,7 @@ class UserSettings:
     architectural_review_cadence_hours: int = 168
     architectural_review_after_merge_count: int = 25
     # #1539 Per-ticket deep-review skill. Empty = opt-in unset: the
-    # reviewing-phase evidence gate (``teatree.core.review_skill_gate``) is
+    # reviewing-phase evidence gate (``teatree.core.gates.review_skill_gate``) is
     # a NO-OP, so projects that do not configure a review skill keep
     # recording the ``reviewing`` attestation unchanged. When set (e.g.
     # ``ac-reviewing-codebase``), ``lifecycle visit-phase <id> reviewing``

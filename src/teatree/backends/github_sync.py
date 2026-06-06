@@ -130,7 +130,7 @@ class GitHubSyncBackend(SyncBackend):
         the gap is recorded as a durable marker + loud log rather than being
         silently bypassed (mirrors the merged-PR terminal handling).
         """
-        from teatree.core.dod_gate import record_terminal_dod_violation  # noqa: PLC0415
+        from teatree.core.gates.dod_gate import record_terminal_dod_violation  # noqa: PLC0415
         from teatree.core.models import Ticket  # noqa: PLC0415
 
         record_terminal_dod_violation(ticket, Ticket.State.DELIVERED)

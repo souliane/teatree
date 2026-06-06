@@ -34,8 +34,8 @@ from pathlib import Path
 import pytest
 from django.db import connections
 
+from teatree.core.gates.review_request_guard import GuardTarget, _claim_or_reclaim, canonical_mr_url
 from teatree.core.models import ReviewRequestPost
-from teatree.core.review_request_guard import GuardTarget, _claim_or_reclaim, canonical_mr_url
 from teatree.settings import SQLITE_WRITE_SERIALIZATION_OPTIONS
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"

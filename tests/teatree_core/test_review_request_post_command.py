@@ -23,8 +23,8 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import UserSettings
+from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost, Ticket
-from teatree.core.review_request_guard import GuardDecision, GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-crew", token="xoxp")
@@ -85,7 +85,7 @@ class _DataDirMixin:
 
 def _gate_required(*, required: bool) -> AbstractContextManager[object]:
     return patch(
-        "teatree.core.anti_vacuity_gate.get_effective_settings",
+        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
         return_value=UserSettings(require_anti_vacuity_attestation=required),
     )
 
