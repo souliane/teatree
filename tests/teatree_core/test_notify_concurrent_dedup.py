@@ -67,6 +67,7 @@ def _make_alias(tmp_path: Path) -> str:
                 permalink VARCHAR(512) NOT NULL DEFAULT '',
                 error_message TEXT NOT NULL DEFAULT '',
                 transport VARCHAR(16) NOT NULL DEFAULT '',
+                attempts INTEGER UNSIGNED NOT NULL DEFAULT 0,
                 posted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """

@@ -519,6 +519,16 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     context that *does* have a working backend (the orchestrator loop) and
     re-attempts each parked INFO row under its original ``idempotency_key``.
 
+    Bounded so it can never grind forever (#2064). Before attempting any
+    delivery the drain :meth:`BotPing.expire_stale_info` terminally EXPIRES
+    rows past :attr:`BotPing.REDELIVERY_AGE_CUTOFF` (stale operator noise that
+    must never surface late) or past :attr:`BotPing.MAX_REDELIVERY_ATTEMPTS`
+    (the per-row attempt cap). For each remaining recoverable row it re-runs
+    :func:`notify_user`; a row that did NOT deliver (no backend resolved in
+    this context) has its :attr:`BotPing.attempts` bumped so it converges on
+    the cap instead of silently re-recording the same NOOP under its unique key
+    every tick — the root cause of the no-op grind.
+
     Distinct from the :func:`teatree.messaging.notify_with_fallback` NOOP rule
     ("a NOOP is not recoverable"): that wrapper retries the *same* call within
     one turn over the *same* unconfigured backend, where a NOOP genuinely
@@ -529,8 +539,10 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
     :meth:`BotPing.claim_delivery` replaces the recoverable row with a fresh
     claim and the existing idempotency/audit invariants hold unchanged. Fails
     open: one row's delivery failure (re-recorded on its own row) never aborts
-    the drain or raises. Returns ``(delivered, total)``.
+    the drain or raises. Returns ``(delivered, total)`` over the rows attempted.
     """
+    BotPing.expire_stale_info()
+
     rows = list(BotPing.recoverable_info(limit=limit))
     if not rows:
         return 0, 0
@@ -548,12 +560,16 @@ def drain_undelivered_notifies(*, user_id: str = "", overlay: str = "", limit: i
                 user_id=user_id or None,
             ):
                 delivered += 1
+            else:
+                BotPing.bump_attempt(row.idempotency_key)
     finally:
         if overlay:
             if previous_overlay is None:
                 os.environ.pop("T3_OVERLAY_NAME", None)
             else:
                 os.environ["T3_OVERLAY_NAME"] = previous_overlay
+
+    BotPing.expire_stale_info()
 
     return delivered, len(rows)
 
