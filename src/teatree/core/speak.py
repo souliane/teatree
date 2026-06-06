@@ -228,8 +228,8 @@ def _upload_to_slack(audio_path: Path) -> None:
 
 
 _MISSING_SCOPE_HINT = (
-    "Add the `files:write` scope to the bot's OAuth scopes and re-run "
-    "`t3 setup slack-bot`, then the audio will reach your phone."
+    "Re-run `t3 setup slack-bot` to reinstall the bot with the `files:write` "
+    "scope it now declares, then the audio will reach your phone."
 )
 
 
