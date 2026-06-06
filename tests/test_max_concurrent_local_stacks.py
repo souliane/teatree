@@ -324,7 +324,10 @@ class TestLocalStackGateDockerReconciliation(TestCase):
             ticket_number="7011",
             state=Worktree.State.PROVISIONED,
         )
-        with patch.object(gate_mod, "_running_container_count", return_value=0):
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=0),
+            patch.object(gate_mod, "_existing_container_count", return_value=0),
+        ):
             check_local_stack_limit(candidate, limit=1)
         phantom.refresh_from_db()
         assert phantom.state == Worktree.State.PROVISIONED
@@ -395,6 +398,7 @@ class TestLocalStackGateDockerReconciliation(TestCase):
 
         with (
             patch.object(gate_mod, "_running_container_count", side_effect=counts),
+            patch.object(gate_mod, "_existing_container_count", return_value=0),
             pytest.raises(LocalStackLimitExceededError) as exc,
         ):
             check_local_stack_limit(candidate, limit=1)

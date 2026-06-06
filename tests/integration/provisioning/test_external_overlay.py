@@ -35,7 +35,7 @@ from teatree.config import discover_overlays, load_config
 from teatree.core.overlay import OverlayBase, RunCommand
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.readiness import Probe
-from teatree.core.runners.worktree_start import compose_project
+from teatree.core.worktree_env import compose_project
 from teatree.utils.ports import get_worktree_ports
 
 from ._base import ProvisionedWorktree, ProvisioningIntegrationBase
