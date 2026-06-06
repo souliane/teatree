@@ -18,7 +18,7 @@ Two scanner-side bugs surface as wrong statusline rows:
 from dataclasses import dataclass, field
 from typing import Any
 
-from teatree.backends.protocols import ReviewState
+from teatree.core.backend_protocols import ReviewState
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.loop.tick_resolvers import best_url_match_specificity, url_match_specificity, url_matches_prefix

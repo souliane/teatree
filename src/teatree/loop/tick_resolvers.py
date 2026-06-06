@@ -18,9 +18,9 @@ config-resolution code along.
 
 import logging
 
-from teatree.backends.protocols import CodeHostBackend
 from teatree.config import discover_overlays
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
 
 logger = logging.getLogger(__name__)
 

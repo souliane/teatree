@@ -21,7 +21,7 @@ from teatree.backends.github import (
     issue_repo_short,
 )
 from teatree.backends.github_projects import _gh_graphql
-from teatree.backends.protocols import PullRequestSpec
+from teatree.core.backend_protocols import PullRequestSpec
 
 
 class TestIssueRepoShort:
@@ -778,7 +778,7 @@ class TestGitHubCodeHost:
         assert "error" in result
 
     def test_get_review_state_returns_approved_for_latest_review(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         reviews = [
             {"user": {"login": "alice"}, "state": "COMMENTED"},
@@ -794,7 +794,7 @@ class TestGitHubCodeHost:
         mock_paginated.assert_called_once_with("repos/o/r/pulls/7/reviews?per_page=100", token="tok")
 
     def test_get_review_state_returns_dismissed_when_latest_is_dismissed(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         reviews = [
             {"user": {"login": "alice"}, "state": "APPROVED"},
@@ -807,7 +807,7 @@ class TestGitHubCodeHost:
             )
 
     def test_get_review_state_ignores_comment_only_state(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         # COMMENTED is not a terminal state; falls through to requested_reviewers → PENDING.
         commented = [{"user": {"login": "alice"}, "state": "COMMENTED"}]
@@ -820,7 +820,7 @@ class TestGitHubCodeHost:
         assert result == ReviewState.PENDING
 
     def test_get_review_state_returns_pending_when_in_requested_reviewers(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         pr_payload = {"requested_reviewers": [{"login": "alice"}, {"login": "bob"}]}
         with (
@@ -833,7 +833,7 @@ class TestGitHubCodeHost:
             )
 
     def test_get_review_state_returns_none_for_unparseable_url(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         host = GitHubCodeHost()
         assert host.get_review_state(pr_url="https://gitlab.com/x/-/merge_requests/1", reviewer="alice") == (
@@ -841,7 +841,7 @@ class TestGitHubCodeHost:
         )
 
     def test_get_review_state_returns_none_when_no_match_anywhere(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         with (
             patch.object(github_mod, "_gh_api_get_paginated", return_value=[]),
@@ -851,7 +851,7 @@ class TestGitHubCodeHost:
             assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice") == (ReviewState.NONE)
 
     def test_get_review_state_returns_none_when_reviewer_empty(self) -> None:
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         host = GitHubCodeHost()
         assert host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="") == ReviewState.NONE
@@ -860,7 +860,7 @@ class TestGitHubCodeHost:
         # GitHub returns reviews oldest-first. With >100 reviews the latest
         # terminal state lives on page 2+; a single GET misreads dismissed-then-
         # re-approved as still DISMISSED — spuriously blocking the PR sweep.
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         page_one = [{"user": {"login": "alice"}, "state": "APPROVED"}] * 100
         page_two = [{"user": {"login": "alice"}, "state": "DISMISSED"}]
@@ -875,7 +875,7 @@ class TestGitHubCodeHost:
         assert "--slurp" in argv
 
     def test_get_pr_open_state_maps_open_to_open(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", return_value={"state": "open"}) as mock_get:
             host = GitHubCodeHost(token="tok")
@@ -883,35 +883,35 @@ class TestGitHubCodeHost:
         mock_get.assert_called_once_with("repos/o/r/pulls/7", token="tok")
 
     def test_get_pr_open_state_maps_merged_true_to_merged(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": True}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.MERGED
 
     def test_get_pr_open_state_maps_closed_unmerged_to_closed(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", return_value={"state": "closed", "merged": False}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.CLOSED
 
     def test_get_pr_open_state_unrecognised_payload_is_unknown(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", return_value={"state": "draft"}):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_non_dict_payload_is_unknown(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", return_value=["not", "a", "dict"]):
             host = GitHubCodeHost()
             assert host.get_pr_open_state(pr_url="https://github.com/o/r/pull/7") == PrOpenState.UNKNOWN
 
     def test_get_pr_open_state_unparsable_url_is_unknown(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get") as mock_get:
             host = GitHubCodeHost()
@@ -919,7 +919,7 @@ class TestGitHubCodeHost:
         mock_get.assert_not_called()
 
     def test_get_pr_open_state_any_exception_fails_open_to_unknown(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         with patch.object(github_mod, "_gh_api_get", side_effect=RuntimeError("gh api auth failure")):
             host = GitHubCodeHost()

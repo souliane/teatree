@@ -1,6 +1,6 @@
 """``SlackBotBackend`` — Slack messaging via the Web API.
 
-Implements :class:`teatree.backends.protocols.MessagingBackend`. Outbound posts,
+Implements :class:`teatree.core.backend_protocols.MessagingBackend`. Outbound posts,
 reactions, and user-id resolution use the Web API directly via httpx; inbound
 ``fetch_mentions`` / ``fetch_dms`` stream live events through Socket Mode and
 are wired up by the ``t3 setup slack-bot`` walkthrough (see BLUEPRINT § 3.6).

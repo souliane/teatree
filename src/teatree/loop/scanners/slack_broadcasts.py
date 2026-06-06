@@ -58,7 +58,7 @@ from typing import Protocol
 
 from django.db import OperationalError, ProgrammingError
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review_candidate import eyes_reacted_by_other

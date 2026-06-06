@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.backends.protocols import PullRequestSpec
+from teatree.core.backend_protocols import PullRequestSpec
 
 
 def _project() -> ProjectInfo:
@@ -328,7 +328,7 @@ def test_get_issue_returns_error_when_api_returns_none() -> None:
 
 
 def test_get_review_state_returns_approved_when_user_in_approved_by() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -347,7 +347,7 @@ def test_get_review_state_returns_approved_when_user_in_approved_by() -> None:
 
 
 def test_get_review_state_returns_pending_when_assigned_but_not_approved() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -365,7 +365,7 @@ def test_get_review_state_returns_pending_when_assigned_but_not_approved() -> No
 
 
 def test_get_review_state_returns_none_when_user_neither_approved_nor_assigned() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -383,7 +383,7 @@ def test_get_review_state_returns_none_when_user_neither_approved_nor_assigned()
 
 
 def test_get_review_state_returns_none_for_unparseable_url() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     host = GitLabCodeHost(client=client)
@@ -393,7 +393,7 @@ def test_get_review_state_returns_none_for_unparseable_url() -> None:
 
 
 def test_get_review_state_returns_none_when_project_unresolved() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = None
@@ -409,7 +409,7 @@ def test_get_review_state_returns_none_when_project_unresolved() -> None:
 
 
 def test_get_review_state_returns_none_when_reviewer_empty() -> None:
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     host = GitLabCodeHost(client=client)
@@ -629,7 +629,7 @@ def test_update_issue_comment_returns_empty_dict_when_put_returns_none() -> None
 
 
 def test_get_pr_open_state_maps_opened_to_open() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -641,7 +641,7 @@ def test_get_pr_open_state_maps_opened_to_open() -> None:
 
 
 def test_get_pr_open_state_maps_merged_to_merged() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -652,7 +652,7 @@ def test_get_pr_open_state_maps_merged_to_merged() -> None:
 
 
 def test_get_pr_open_state_maps_closed_and_locked_to_closed() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -665,7 +665,7 @@ def test_get_pr_open_state_maps_closed_and_locked_to_closed() -> None:
 
 
 def test_get_pr_open_state_unrecognised_state_is_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -676,7 +676,7 @@ def test_get_pr_open_state_unrecognised_state_is_unknown() -> None:
 
 
 def test_get_pr_open_state_non_string_or_missing_state_is_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -689,7 +689,7 @@ def test_get_pr_open_state_non_string_or_missing_state_is_unknown() -> None:
 
 
 def test_get_pr_open_state_unparsable_url_is_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     host = GitLabCodeHost(client=client)
@@ -699,7 +699,7 @@ def test_get_pr_open_state_unparsable_url_is_unknown() -> None:
 
 
 def test_get_pr_open_state_unresolved_project_is_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = None
@@ -709,7 +709,7 @@ def test_get_pr_open_state_unresolved_project_is_unknown() -> None:
 
 
 def test_get_pr_open_state_non_dict_payload_is_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()
@@ -720,7 +720,7 @@ def test_get_pr_open_state_non_dict_payload_is_unknown() -> None:
 
 
 def test_get_pr_open_state_any_exception_fails_open_to_unknown() -> None:
-    from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+    from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.side_effect = RuntimeError("network down / auth error")

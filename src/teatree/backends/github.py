@@ -21,7 +21,7 @@ from teatree.backends.github_payloads import (
     reviewer_is_requested,
 )
 from teatree.backends.github_projects import ProjectItem, fetch_project_items
-from teatree.backends.protocols import (
+from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
     PrMergeState,

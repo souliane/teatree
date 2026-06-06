@@ -18,8 +18,8 @@ from unittest.mock import MagicMock
 
 from django.test import TestCase
 
-from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.core.management.commands.loop_tick import _registry_jobs_builder
 from teatree.core.models import MiniLoopMarker
 from teatree.loop.global_scanner_factories import build_default_jobs

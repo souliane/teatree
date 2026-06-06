@@ -40,7 +40,7 @@ from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlac
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import MessagingBackend
+    from teatree.core.backend_protocols import MessagingBackend
     from teatree.loop.scanners.base import ScanSignal
 
 logger = logging.getLogger(__name__)

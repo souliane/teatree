@@ -13,7 +13,7 @@ tuple keeps the legacy "emit all" behaviour.
 from dataclasses import dataclass, field
 from typing import Any
 
-from teatree.backends.protocols import ReviewState
+from teatree.core.backend_protocols import ReviewState
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict

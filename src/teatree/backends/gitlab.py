@@ -7,7 +7,7 @@ from teatree.backends import forge_merge_rpc as _forge_merge
 from teatree.backends import gitlab_api as _gitlab_api
 from teatree.backends import gitlab_subissues as _subissues
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
-from teatree.backends.protocols import (
+from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
     PrMergeState,

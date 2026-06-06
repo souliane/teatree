@@ -1,8 +1,8 @@
 """Backend loader — selects code-host and messaging implementations per overlay.
 
 The loader is the only place that branches on platform. Caller code consumes
-:class:`teatree.backends.protocols.CodeHostBackend` and
-:class:`teatree.backends.protocols.MessagingBackend` uniformly; the choice of
+:class:`teatree.core.backend_protocols.CodeHostBackend` and
+:class:`teatree.core.backend_protocols.MessagingBackend` uniformly; the choice of
 GitHub vs GitLab and Slack vs Noop is encoded on ``OverlayBase.config``.
 """
 
@@ -14,8 +14,8 @@ from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_api import GitLabAPI
 from teatree.backends.gitlab_ci import GitLabCIService
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.backends.slack_bot import SlackBotBackend
+from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
