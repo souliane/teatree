@@ -276,13 +276,14 @@ omit = [ "src/teatree/core/migrations/*.py" ]
 # small file dropping to 30% would still leave the project >= 93%.
 
 # --- import-linter ---
-# Complements tach: tach's depends_on is a direct-edge allow-list; these
-# contracts catch the transitive/laundered chains and the wildcard
-# sibling-independence invariants tach's per-module model cannot express
-# (BLUEPRINT §17.6.2, #724/#725). Only contracts that are GREEN on the current
-# tree are kept; the transitive-layers, acyclic, backend-independence and
-# domain-forbids-typer/httpx contracts are deferred until the core↔backends
-# cycles are broken (#179/#180) — see the PR body.
+# Complements tach: tach's depends_on is a direct-edge allow-list. The one
+# invariant tach's per-module model cannot express is wildcard
+# sibling-independence (the mini-loops must not import each other) — that is the
+# "Mini-loops are mutually independent" contract below. The acyclic and
+# backend/agent-independence guarantees are now enforced by tach itself
+# (forbid_circular_dependencies = true; teatree.core.depends_on no longer lists
+# backends/agents), so import-linter does not duplicate them.
+# (BLUEPRINT §17.6.2, #724/#725, #1922.)
 
 [tool.importlinter]
 root_package = "teatree"
@@ -318,18 +319,6 @@ modules = [
   "teatree.loops.ship",
   "teatree.loops.tickets",
 ]
-
-[[tool.importlinter.contracts]]
-name = "Domain core must not import the messaging layer"
-type = "forbidden"
-source_modules = [ "teatree.core" ]
-forbidden_modules = [ "teatree.messaging", "teatree.notify" ]
-# teatree.core.management is the interface (CLI-command) layer per tach, not the
-# domain layer this contract guards; its commands legitimately drive the loop
-# (which reaches messaging). Excluding the interface subtree leaves the contract
-# biting every domain module under teatree.core — none of which reaches
-# messaging today.
-ignore_imports = [ "teatree.core.management.** -> **" ]
 
 [tool.teatree.coverage]
 per_module_floors = [
