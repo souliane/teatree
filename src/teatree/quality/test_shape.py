@@ -112,10 +112,10 @@ class ShadowedFixture:
     @property
     def message(self) -> str:
         return (
-            f"{self.path}: autouse fixture {self.name!r} shadows an identical "
-            f"autouse fixture already provided by ancestor conftest "
-            f"{self.ancestor_conftest!r}. Delete the redundant local copy — the "
-            "ancestor conftest already applies it to this file."
+            f"{self.path}: autouse fixture {self.name!r} shadows an ancestor "
+            f"autouse fixture of the same name in conftest "
+            f"{self.ancestor_conftest!r}. The ancestor already applies it to this "
+            "file; delete the local copy (confirm the bodies match first)."
         )
 
 

@@ -12,6 +12,7 @@ import pytest
 import scripts.hooks.check_url_classify as checker
 
 _URL_CLASSIFY_PATTERN = 'import re\n_RE = re.compile(r"https?://[^/]+/(?:merge_requests|pull|pulls)/\\d+")\n'
+_URL_CLASSIFY_REORDERED = 'import re\n_RE = re.compile(r"https?://[^/]+/(?:pulls|pull|merge_requests)/\\d+")\n'
 _GITLAB_MR_SHAPE = 'import re\n_RE = re.compile(r"^/(?P<project>[^?#]+?)/-/merge_requests/(?P<iid>\\d+)/?$")\n'
 _API_ENDPOINT_PATTERN = 'import re\n_RE = re.compile(r"(?:merge_requests|pulls)/\\d+/merge\\b")\n'
 _URL_CONSTRUCTOR = 'def link(repo, n):\n    return f"https://gitlab.com/{repo}/-/merge_requests/{n}"\n'
@@ -35,6 +36,10 @@ class TestCheckerBehavior:
         src_file.write_text(_URL_CLASSIFY_PATTERN, encoding="utf-8")
         assert checker.main([str(src_file)]) == 1
         assert "teatree.url_classify" in capsys.readouterr().err
+
+    def test_flags_reordered_alternation(self, src_file: pathlib.Path) -> None:
+        src_file.write_text(_URL_CLASSIFY_REORDERED, encoding="utf-8")
+        assert checker.main([str(src_file)]) == 1
 
     def test_flags_gitlab_mr_shape_regex(self, src_file: pathlib.Path) -> None:
         src_file.write_text(_GITLAB_MR_SHAPE, encoding="utf-8")

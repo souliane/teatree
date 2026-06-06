@@ -33,11 +33,15 @@ _ALLOWED_MODULES: frozenset[str] = frozenset(
 )
 _ALLOWED_PACKAGE_PREFIXES: tuple[str, ...] = ("teatree.backends.",)
 
-# The web-URL classification shape: a slash-delimited path-segment alternation
-# over the three PR/MR segments. Deliberately narrower than the forge *API*
-# endpoint matchers in eval/transcript_conformance.py (``merge_requests|pulls``
-# with no leading slash and no ``pull`` singular), which are a distinct concern.
-_PR_ALTERNATION_RE = re.compile(r"/\(\?:merge_requests\|pull\|pulls\)")
+# The web-URL classification shape: a slash-delimited non-capturing group that
+# alternates over BOTH the ``merge_requests`` and a ``pull`` path segment, in any
+# order (``merge_requests|pull|pulls``, ``pulls|pull|merge_requests``, …). Keying
+# on the leading ``/(?:`` keeps it narrower than the forge *API* endpoint matchers
+# in eval/transcript_conformance.py (``(?:merge_requests|pulls)/…`` — no leading
+# slash), which are a distinct concern.
+_SLASH_GROUP_RE = re.compile(r"/\(\?:([^)]*)\)")
+_MERGE_REQUESTS_MEMBER_RE = re.compile(r"\bmerge_requests\b")
+_PULL_MEMBER_RE = re.compile(r"\bpull\b")
 _GITLAB_MR_SHAPE_RE = re.compile(r"/-/merge_requests/\(\?P<\w+>\\d\+\)")
 
 
@@ -72,7 +76,10 @@ def _pattern_literal(node: ast.Call) -> str | None:
 
 
 def _is_pr_url_pattern(pattern: str) -> bool:
-    return bool(_PR_ALTERNATION_RE.search(pattern)) or bool(_GITLAB_MR_SHAPE_RE.search(pattern))
+    for group in _SLASH_GROUP_RE.findall(pattern):
+        if _MERGE_REQUESTS_MEMBER_RE.search(group) and _PULL_MEMBER_RE.search(group):
+            return True
+    return bool(_GITLAB_MR_SHAPE_RE.search(pattern))
 
 
 def _scan_file(path: pathlib.Path) -> list[int]:
