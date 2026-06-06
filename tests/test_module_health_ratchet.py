@@ -72,6 +72,42 @@ class TestLocShrinkRatchet:
         assert mod.main() == 0
 
 
+class TestMergeCommitSkipsRatchet:
+    def test_grown_over_cap_file_in_merge_commit_is_allowed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "big.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(_src(_OVER_CAP_GREW), encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(mod, "_is_merge_commit", lambda: True)
+        monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
+        monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
+        monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 0
+
+    def test_grown_over_cap_file_outside_merge_still_blocks(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "big.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(_src(_OVER_CAP_GREW), encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(mod, "_is_merge_commit", lambda: False)
+        monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
+        monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
+        monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 1
+
+
 class TestFunctionCountShrinkRatchet:
     def test_over_cap_function_count_that_grows_is_blocked(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

@@ -11,6 +11,8 @@ The corpus runs under :class:`~django.test.TestCase` so the DB-backed checks
 (merge precondition, loop-lease, migration graph) execute against the test DB.
 """
 
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from django.db.migrations.graph import MigrationGraph
@@ -61,6 +63,19 @@ class TestRegressionCorpusGreen(TestCase):
     def test_every_origin_is_a_clickable_url(self) -> None:
         for check in regression_corpus._CHECKS:
             assert check.origin.startswith("https://"), f"{check.failure_class} origin must be a clickable URL"
+
+    def test_corpus_stays_green_under_a_hijacked_git_env(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            outer = Path(raw)
+            env = {
+                "GIT_DIR": str(outer / "outer.git"),
+                "GIT_INDEX_FILE": str(outer / "index"),
+                "GIT_WORK_TREE": str(outer),
+            }
+            with patch.dict("os.environ", env):
+                report = run_regression_corpus()
+        failures = [(r.check.failure_class, r.detail) for r in report.failures]
+        assert report.ok, f"corpus went RED under a hijacked GIT_* env (git-hook context): {failures}"
 
 
 class TestRegressionCorpusAntiVacuous(TestCase):

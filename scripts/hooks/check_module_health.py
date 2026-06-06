@@ -28,6 +28,16 @@ _DICT_OBJECT_PATTERNS = [
 ]
 
 
+def _is_merge_commit() -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _staged_python_files() -> list[str]:
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR", "--", "*.py"],
@@ -129,6 +139,9 @@ def _find_dict_object_annotations(filepath: str) -> list[tuple[int, str]]:
 
 
 def main() -> int:
+    if _is_merge_commit():
+        return 0
+
     files = _staged_python_files()
     if not files:
         return 0

@@ -374,6 +374,21 @@ def _gate_review_intent(_signal: ScanSignal) -> list[DispatchAction] | None:
     return [] if not review_loop_enabled() else None
 
 
+def _dispatch_flag_no_review(signal: ScanSignal) -> list[DispatchAction] | None:
+    """Route ``pr_sweep.flag_no_review`` by whether the review was auto-dispatched (#68).
+
+    The reviewing task is created by the scanner itself (via the
+    :class:`ReviewDispatcher` port) — this only decides the statusline zone:
+    ``in_flight`` when a cold review was auto-armed (the loop is handling it),
+    ``action_needed`` when it was not (operator triage, the pre-#68 behaviour).
+    Returns ``None`` to fall through to the generic statusline route when the
+    payload does not flag a dispatch.
+    """
+    if signal.payload.get("review_dispatched") is not True:
+        return None
+    return [DispatchAction(kind="statusline", zone="in_flight", detail=signal.summary, payload=signal.payload)]
+
+
 def _dispatch_slack_message(signal: ScanSignal) -> list[DispatchAction] | None:
     pr_url = _slack_pr_url(signal)
     return _review_request_dispatch(signal, pr_url) if pr_url else None
@@ -462,6 +477,7 @@ def _review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAc
 #: :func:`_conditional_dispatch`).
 _CONDITIONAL_HANDLERS: dict[str, "Callable[[ScanSignal], list[DispatchAction] | None]"] = {
     "pending_task": _dispatch_pending_task,
+    "pr_sweep.flag_no_review": _dispatch_flag_no_review,
     "slack.review_intent": _gate_review_intent,
     "slack.mention": _dispatch_slack_message,
     "slack.dm": _dispatch_slack_message,

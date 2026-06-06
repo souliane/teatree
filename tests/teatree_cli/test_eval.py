@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli import app
+from teatree.cli.eval_docker import DockerUnavailableError
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import CheckResult, RegressionCheck, RegressionReport
@@ -773,6 +774,54 @@ class TestEvalAll:
         assert result.exit_code == 0, result.output
         for lane in ("trigger-qa", "regression", "negative-control", "transcript-replay", "ai-eval"):
             assert lane in result.output, f"missing lane {lane!r}: {result.output}"
+
+    def test_free_only_drops_the_ai_lane(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")]):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        for lane in ("trigger-qa", "regression", "negative-control", "transcript-replay"):
+            assert lane in result.output, f"missing free lane {lane!r}: {result.output}"
+        assert "ai-eval" not in result.output, result.output
+
+    def test_free_only_never_discovers_specs_or_meters(self, tmp_path: Path) -> None:
+        with (
+            _patch_all_lanes([_spec("worktree_first")]),
+            patch("teatree.cli.eval.run_ai_lane", side_effect=AssertionError("free-only must not run the AI lane")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+
+    def test_free_only_still_fails_on_a_deterministic_violation(self, tmp_path: Path) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], negative_caught=False):
+            result = CliRunner().invoke(app, ["eval", "all", "--free-only", "--transcript-dir", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+
+    def test_docker_delegates_to_the_container_and_skips_host_lanes(self) -> None:
+        with (
+            patch("teatree.cli.eval.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "all", "--docker", "--free-only"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_called_once()
+        assert run_docker.call_args.args[0] == ["all", "--free-only"]
+
+    def test_docker_propagates_container_exit_code(self) -> None:
+        with patch("teatree.cli.eval.run_eval_in_docker", return_value=1):
+            result = CliRunner().invoke(app, ["eval", "all", "--docker"])
+        assert result.exit_code == 1, result.output
+
+    def test_docker_passes_non_default_backend_through(self) -> None:
+        with patch("teatree.cli.eval.run_eval_in_docker", return_value=0) as run_docker:
+            result = CliRunner().invoke(app, ["eval", "all", "--docker", "--backend", "sdk"])
+        assert result.exit_code == 0, result.output
+        assert run_docker.call_args.args[0] == ["all", "--backend", "sdk"]
+
+    def test_docker_unavailable_exits_code_2(self) -> None:
+        with patch("teatree.cli.eval.run_eval_in_docker", side_effect=DockerUnavailableError):
+            result = CliRunner().invoke(app, ["eval", "all", "--docker"])
+        assert result.exit_code == 2
+        assert "docker is not on PATH" in result.output
 
     def test_transcript_replay_skips_not_fails_when_no_transcript(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
