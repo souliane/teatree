@@ -27,8 +27,6 @@ graph TD
     teatree.core --> teatree.skill_deps
     teatree.core --> teatree.skill_map
     teatree.core --> teatree.trigger_parser
-    teatree.core --> teatree.agents
-    teatree.core --> teatree.backends
     teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
