@@ -1,4 +1,4 @@
-"""Orphan per-worktree docker reaping used by ``t3 workspace clean-all``.
+"""Orphan per-worktree docker reaping used by ``t3 teatree workspace clean-all``.
 
 Its own module so :mod:`teatree.core.management.commands._workspace_cleanup`
 stays under the module-health function cap. The per-worktree (on-teardown)

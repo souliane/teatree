@@ -153,7 +153,7 @@ def validate_directory(root: Path) -> tuple[list[str], list[str]]:
     return all_errors, all_warnings
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover — pre-commit entry point (orchestrates tested helpers)
     """CLI entry point for pre-commit and manual validation."""
     paths = [Path(p) for p in sys.argv[1:]]
     if not paths:

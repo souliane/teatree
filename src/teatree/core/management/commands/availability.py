@@ -1,13 +1,13 @@
-"""``t3 availability`` — manage the 24/7 dual question-mode (#58, §17.3 C3).
+"""``t3 teatree availability`` — manage the 24/7 dual question-mode (#58, §17.3 C3).
 
 Three subcommands manipulate the durable override file that takes
 priority over the cron schedule (BLUEPRINT §17.1 invariant 9 / §5.6.3):
 
-* ``t3 availability away [--until ISO8601]`` — force the agent into
+* ``t3 teatree availability away [--until ISO8601]`` — force the agent into
     away-mode (deferred questions) until the optional expiry.
-* ``t3 availability present [--until ISO8601]`` — force the agent
+* ``t3 teatree availability present [--until ISO8601]`` — force the agent
     into present-mode (interactive questions).
-* ``t3 availability auto`` — clear the override; the cron schedule
+* ``t3 teatree availability auto`` — clear the override; the cron schedule
     decides again.
 
 The command also prints the current resolution (mode + source) so
@@ -45,7 +45,7 @@ def _render(prefix: str = "") -> str:
 class Command(TyperCommand):
     @initialize()
     def init(self) -> None:
-        """``t3 availability`` group root."""
+        """``t3 teatree availability`` group root."""
 
     @command()
     def away(

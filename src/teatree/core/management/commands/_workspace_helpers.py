@@ -1,4 +1,4 @@
-"""Helpers for ``t3 workspace`` subcommands (#1306, #1310).
+"""Helpers for ``t3 teatree workspace`` subcommands (#1306, #1310).
 
 Split from :mod:`workspace` to keep the command module under the per-
 module LOC cap. Covers the DSLR-snapshot-in-use guard shared by

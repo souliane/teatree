@@ -1,14 +1,14 @@
-"""``t3 questions`` — manage the away-mode deferred-question backlog (#58).
+"""``t3 teatree questions`` — manage the away-mode deferred-question backlog (#58).
 
 Three subcommands operate on the durable :class:`DeferredQuestion` queue
 populated when availability=away (BLUEPRINT §17.1 invariant 9):
 
-* ``t3 questions list`` — print pending questions, oldest first.
-* ``t3 questions answer <id> <answer>`` — resolve a question with a
+* ``t3 teatree questions list`` — print pending questions, oldest first.
+* ``t3 teatree questions answer <id> <answer>`` — resolve a question with a
     user answer; writes a :class:`DeferredQuestionAudit` row.
-* ``t3 questions dismiss <id> [--reason ...]`` — dismiss a question
+* ``t3 teatree questions dismiss <id> [--reason ...]`` — dismiss a question
     the user no longer wants to answer; writes an audit row.
-* ``t3 questions resurface`` — re-post the pending backlog to the
+* ``t3 teatree questions resurface`` — re-post the pending backlog to the
     user's Slack DM (the away→present drain): returning from away never
     silently swallows questions. Reuses :func:`teatree.core.notify.notify_user`
     so each question is delivered at-most-once (idempotent ``BotPing``
@@ -38,7 +38,7 @@ def _format_row(row: DeferredQuestion) -> str:
 class Command(TyperCommand):
     @initialize()
     def init(self) -> None:
-        """``t3 questions`` group root."""
+        """``t3 teatree questions`` group root."""
 
     @command()
     def record(
