@@ -193,7 +193,7 @@ class TestAwayModeMirrorsToSlack:
     ) -> None:
         monkeypatch.setattr(router, "STATE_DIR", tmp_path)
         with (
-            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
             result = handle_route_away_mode_question(
@@ -212,7 +212,7 @@ class TestAwayModeMirrorsToSlack:
     ) -> None:
         monkeypatch.setattr(router, "STATE_DIR", tmp_path)
         with (
-            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
             handle_route_away_mode_question(_ask_payload("Ship it?", session_id="s-1", tool_use_id="t-9"))
@@ -249,7 +249,7 @@ class TestAwayModeMirrorsToSlack:
             "session_id": "s-1",
         }
         with (
-            patch.object(router, "_perform_slack_post") as mock_post,
+            patch.object(router, "_perform_slack_post", return_value="1700.0001") as mock_post,
             patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
         ):
             handle_route_away_mode_question(payload)
@@ -257,6 +257,30 @@ class TestAwayModeMirrorsToSlack:
         _slack_cfg, questions = mock_post.call_args.args
         assert [q["question"] for q in questions] == ["Answerable?"]
         assert DeferredQuestion.objects.count() == 1
+
+
+class TestAwayCaptureStoresMirrorFields:
+    """Away-mode capture stores the mirror fields the #1174 matcher binds on."""
+
+    def test_records_slack_ts_channel_generation_and_run(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(router, "STATE_DIR", tmp_path)
+        with (
+            patch.object(router, "_perform_slack_post", return_value="1700.0009"),
+            patch.object(router, "_slack_config_from_toml", return_value=("tok/ref", "U1")),
+            patch.object(router, "_read_dm_channel_cache", return_value="D-away"),
+        ):
+            handle_route_away_mode_question(
+                _ask_payload("Ship?", options=[{"label": "Yes"}], session_id="s-9", run_id="run-9")
+            )
+        capsys.readouterr()
+        row = DeferredQuestion.objects.latest("created_at")
+        assert row.slack_ts == "1700.0009"
+        assert row.slack_channel == "D-away"
+        assert row.generation == 1
+        assert row.run_id == "run-9"
+        assert row.options_hash != ""
 
 
 class TestSection807InteropGate:

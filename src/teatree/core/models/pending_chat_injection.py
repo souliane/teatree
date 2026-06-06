@@ -85,6 +85,7 @@ class PendingChatInjection(models.Model):
         ACK = "ack", "Ack"
         SIMPLE = "simple", "Simple"
         DELEGATED = "delegated", "Delegated"
+        QUESTION_REPLY = "question_reply", "Question reply"
 
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
