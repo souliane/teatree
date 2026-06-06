@@ -83,3 +83,36 @@ class TestReviewContract:
     def test_contract_uses_named_overlay(self) -> None:
         contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL, overlay="teatree")
         assert "t3 teatree review record" in contract
+
+
+class TestDispatchedTaskReachesTerminalState:
+    """The auto-created Ticket + reviewing Task reach DELIVERED on the happy path.
+
+    The whole point of arming the dispatch is that the enqueued unit can run
+    to completion: the reviewer claims the ``Task(phase=reviewing)``, records
+    its verdict (stamping ``reviewed_sha`` on the reviewer-role ticket), and
+    completing the task short-circuits the ticket to ``DELIVERED`` via
+    ``mark_reviewed_externally``. An armed dispatch that never reached a
+    terminal state would re-pump the same review forever.
+    """
+
+    def test_reviewer_completing_task_short_circuits_ticket_to_delivered(self) -> None:
+        row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        assert row is not None
+        assert row.task is not None
+        task = row.task
+        ticket = task.ticket
+        assert ticket.role == Ticket.Role.REVIEWER
+        assert ticket.state == Ticket.State.NOT_STARTED
+
+        # The reviewer records the verdict bound to the reviewed head — the
+        # ``review record`` CLI stamps ``reviewed_sha`` on the ticket, which
+        # ``mark_reviewed_externally`` persists into ``last_review_state``.
+        ticket.merge_extra(set_keys={"reviewed_sha": HEAD})
+
+        task.complete()
+
+        ticket.refresh_from_db()
+        task.refresh_from_db()
+        assert ticket.state == Ticket.State.DELIVERED
+        assert task.status == Task.Status.COMPLETED
