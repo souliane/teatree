@@ -28,7 +28,7 @@ plugins/
 
 # Large generated artifacts (committed but noise for agents — the source
 # that produces them is what an agent should read instead)
-sbom.json
+dist/sbom.json
 uv.lock
 docs/generated/cli-reference.md
 *.min.js
