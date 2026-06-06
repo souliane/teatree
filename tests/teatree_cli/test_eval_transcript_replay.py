@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.claude_sessions import SessionInfo
-from teatree.cli.eval_transcript_replay import resolve_transcript
+from teatree.cli.eval_transcript_replay import replay_transcript_for_all, resolve_transcript
 
 _MODULE = "teatree.cli.eval_transcript_replay"
 
@@ -74,3 +74,18 @@ class TestResolveTranscript:
             patch("pathlib.Path.home", return_value=tmp_path),
         ):
             assert resolve_transcript(latest=False, session="s1", file=None) is None
+
+
+class TestReplayTranscriptForAll:
+    def test_returns_none_when_no_transcript_in_scope(self) -> None:
+        with patch(f"{_MODULE}.resolve_transcript", return_value=None):
+            assert replay_transcript_for_all() is None
+
+    def test_replays_present_transcript(self, tmp_path: Path) -> None:
+        fixture = Path(__file__).parents[1] / "fixtures" / "transcripts" / "all_pass.session.jsonl"
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+        with patch(f"{_MODULE}.resolve_transcript", return_value=transcript):
+            results = replay_transcript_for_all()
+        assert results is not None
+        assert all(r.ok for r in results)
