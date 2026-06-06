@@ -668,7 +668,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def reconcile_merged(self) -> None:
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343).
 
-        The merge keystone (``merge_execution.record_merge_and_advance``)
+        The merge keystone (``merge.execution.record_merge_and_advance``)
         calls this from its post hook: an authorised, audited PR-merge is
         the authority — whatever pre-merged state the ticket sat in, the
         FSM must follow. Mirrors ``reconcile_reviewed`` (#808) — the source

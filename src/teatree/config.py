@@ -124,7 +124,7 @@ class Autonomy(StrEnum):
     *   :attr:`FULL` — autonomous with no after-the-fact DM; the single-author
         ``solo_overlay`` merge bypass is reachable here only, and the substrate
         per-PR sign-off is satisfied by this standing grant (the §17.4.3 step 5
-        carve-out — see :func:`teatree.core.merge_execution.assert_merge_preconditions`)
+        carve-out — see :func:`teatree.core.merge.execution.assert_merge_preconditions`)
         so a substrate CLEAR needs no per-CLEAR ``human_authorizer``.
 
     Both autonomous tiers collapse the three gates and pin ``mode = auto`` (see

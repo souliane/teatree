@@ -34,7 +34,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.merge_execution import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 
 pytestmark = pytest.mark.django_db

@@ -12,7 +12,7 @@ from django_typer.management import TyperCommand, command, group
 from teatree.core.gates.e2e_mandatory_gate import check_clear_e2e_mandatory
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 

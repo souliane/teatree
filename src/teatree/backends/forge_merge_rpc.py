@@ -6,7 +6,7 @@ here, each holding its forge's allow-to-fail runner. This keeps the gh and glab
 argv in one focused module — the chokepoint home the argv-ban rule (#1890) will
 point at — while the methods stay on the host classes so the ``CodeHostBackend``
 Protocol is satisfied. Raw I/O only: every verdict / transient / head-moved
-classification stays in ``teatree.core.merge_execution`` for byte-for-byte error
+classification stays in ``teatree.core.merge.execution`` for byte-for-byte error
 parity on the keystone path.
 """
 

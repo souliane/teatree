@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
 

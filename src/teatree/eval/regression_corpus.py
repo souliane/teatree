@@ -213,7 +213,7 @@ def _check_merge_precondition_substrate_full_autonomy() -> bool:
 
 
 def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
-    from teatree.core.merge_execution import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
     from teatree.core.models import MergeClear  # noqa: PLC0415
     from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415
     from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
@@ -257,7 +257,7 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
     the merge-time ``_assert_clear_authorized`` re-check is the last line of
     defence — it must refuse a CLEAR whose reviewer equals the executing loop.
     """
-    from teatree.core.merge_execution import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
+    from teatree.core.merge import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
     slug, pr_id, identity = "souliane/teatree", 4343, "loop-session"
