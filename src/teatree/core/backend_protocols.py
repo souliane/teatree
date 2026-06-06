@@ -92,6 +92,58 @@ class MessageSpec:
     thread_ts: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class PrMergeState:
+    """The PR/MR's merge state from the forge — used for the §928 reconciliation.
+
+    ``state`` is the forge's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``, always
+    upper-cased so ``is_merged`` works across GitHub and GitLab);
+    ``merge_commit_oid`` is the resulting squash/merge commit when the PR is
+    already merged (else ``""``).
+    """
+
+    state: str
+    merge_commit_oid: str
+
+    @property
+    def is_merged(self) -> bool:
+        return self.state.upper() == "MERGED"
+
+
+_ROLLUP_QUERY_FAILED_KEY = "_teatree_rollup_query_failed"
+ROLLUP_QUERY_FAILED: "RawAPIDict" = {_ROLLUP_QUERY_FAILED_KEY: True}
+"""Sentinel rollup entry — the backend could not read the live checks rollup.
+
+``fetch_required_checks_rollup`` returns ``[ROLLUP_QUERY_FAILED]`` when the forge
+query itself failed (non-zero rc / malformed / non-list payload), distinct from
+an empty list (no required checks → green). Core's classifier treats the sentinel
+as ``failed`` so a transport failure is never mistaken for "no checks to satisfy".
+"""
+
+
+def rollup_query_failed(rollup: "list[RawAPIDict]") -> bool:
+    """True iff *rollup* carries the :data:`ROLLUP_QUERY_FAILED` sentinel."""
+    return any(entry.get(_ROLLUP_QUERY_FAILED_KEY) is True for entry in rollup)
+
+
+@dataclass(frozen=True, slots=True)
+class ForgeMergeResult:
+    """Raw outcome of a backend bound-squash-merge — core does the classification.
+
+    The backend performs the I/O and returns the unclassified
+    ``(returncode, stdout, stderr)`` plus the ``merged_sha`` it parsed from a
+    successful response. Core's :mod:`teatree.core.merge_execution` runs the
+    transient / head-moved / policy-refusal classification on these fields and
+    raises the typed errors with the exact f-strings — keeping byte-for-byte
+    error parity while the transport lives in the backend.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
+    merged_sha: str = ""
+
+
 @runtime_checkable
 class CodeHostBackend(Protocol):
     """Pull/merge requests + issue fetch — the canonical code-host concern.
@@ -178,6 +230,28 @@ class CodeHostBackend(Protocol):
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
+
+    # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge_execution``
+    # keeps every verdict/transient/head-moved classification and error
+    # f-string so the keystone path stays byte-for-byte identical across
+    # forges. The raw ``gh``/``glab`` argv is the canonical chokepoint home
+    # here (the argv-ban chokepoint itself awaits the #1890 match-kind).
+
+    def fetch_live_head_sha(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
+
+    def fetch_pr_merge_state(self, *, slug: str, pr_id: int) -> PrMergeState: ...  # pragma: no branch
+
+    def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no branch
+
+    def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def merge_pr_squash_bound(
+        self,
+        *,
+        slug: str,
+        pr_id: int,
+        expected_head_oid: str,
+    ) -> ForgeMergeResult: ...  # pragma: no branch
 
 
 @runtime_checkable

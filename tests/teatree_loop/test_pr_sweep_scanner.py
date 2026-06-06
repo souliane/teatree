@@ -111,7 +111,7 @@ class FakePrApiClient:
     prs_by_slug: dict[str, list[PrSummary]] = field(default_factory=dict)
     main_uv_audit_red: bool = False
     fallback_succeeds: bool = True
-    merge_pr_calls: list[tuple[str, int]] = field(default_factory=list)
+    merge_pr_calls: list[tuple[str, int, str]] = field(default_factory=list)
     main_check_calls: list[tuple[str, str]] = field(default_factory=list)
 
     def list_open_prs(self, *, slug: str) -> list[PrSummary]:
@@ -121,8 +121,8 @@ class FakePrApiClient:
         self.main_check_calls.append((slug, check_name))
         return self.main_uv_audit_red
 
-    def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]:
-        self.merge_pr_calls.append((slug, pr_id))
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+        self.merge_pr_calls.append((slug, pr_id, expected_head_oid))
         return self.fallback_succeeds, MAIN_SHA if self.fallback_succeeds else ""
 
 
@@ -323,7 +323,7 @@ class TestUvAuditFallback:
 
         signals = scanner.scan()
 
-        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
         assert signals[0].kind == "pr_sweep.merged"
         assert signals[0].payload["reason"] == "fallback_uv_audit_gh"
@@ -390,7 +390,7 @@ class TestSoloOverlayBypassesClearGate:
         signals = scanner.scan()
 
         assert keystone.calls == []  # CLEAR-keystone never invoked
-        assert api.merge_pr_calls == [(SLUG, 6230)]  # direct gh fallback fired
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # direct gh fallback fired
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, False)]
         assert notifier.flag_calls == []
         assert [s.kind for s in signals] == ["pr_sweep.merged"]
@@ -455,7 +455,7 @@ class TestSoloOverlayBypassesClearGate:
         signals = scanner.scan()
 
         assert keystone.calls == []
-        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert notifier.calls == []
         assert signals[0].kind == "pr_sweep.blocked"
         assert signals[0].payload["reason"] == "solo_overlay_gh_fallback_failed"
@@ -696,7 +696,7 @@ class TestAutoReviewDispatch:
         second = scanner.scan()
 
         assert second[0].kind == "pr_sweep.merged"
-        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         # No second dispatch row — the verdict path merged instead of re-arming.
         assert AutoReviewDispatch.objects.count() == 1
 
@@ -846,7 +846,9 @@ class TestErrorIsolation:
             def main_check_failed(self, *, slug: str, check_name: str) -> bool:  # pragma: no cover
                 return False
 
-            def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]:  # pragma: no cover
+            def merge_pr_squash_bound(  # pragma: no cover
+                self, *, slug: str, pr_id: int, expected_head_oid: str
+            ) -> tuple[bool, str]:
                 return False, ""
 
         api = _BoomApi()
@@ -958,7 +960,7 @@ class TestEvaluateOne:
 
         assert attempt is not None
         assert attempt.merged is True
-        assert api.merge_pr_calls == [(SLUG, 6230)]
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert attempt.reason == "solo_overlay_no_clear"
 
     def test_evaluate_one_returns_none_when_pr_no_longer_open(self) -> None:
@@ -983,7 +985,7 @@ class TestEvaluateOne:
 
         assert attempt is not None
         assert attempt.pr_id == 6230
-        assert api.merge_pr_calls == [(SLUG, 6230)]  # 9999 (no cold review) untouched
+        assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # 9999 (no cold review) untouched
 
     def test_evaluate_one_does_not_merge_without_cold_review(self) -> None:
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})

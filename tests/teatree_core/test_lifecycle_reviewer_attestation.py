@@ -107,7 +107,7 @@ class TestTicketMergeKeystoneCli(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=self._gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_stub):
             result = cast(
                 "dict[str, object]", call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop")
             )
@@ -131,7 +131,7 @@ class TestTicketMergeKeystoneCli(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.SUBSTRATE,
         )
-        with patch("teatree.core.merge_execution._run_gh", side_effect=self._gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_stub):
             result = cast("dict[str, object]", call_command("ticket", "merge", str(clear.pk)))
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW

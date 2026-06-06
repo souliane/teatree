@@ -187,17 +187,23 @@ class GhPrApiClient:
             return False
         return out.strip().lower() not in {"success", "neutral", "skipped", ""}
 
-    def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]:
-        argv = ["pr", "merge", str(pr_id), "--repo", slug, "--squash"]
-        rc, _out, _err = self._run_gh(argv)
-        if rc != 0:
+    def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:  # noqa: PLR6301 — PrApiClient port; the bound merge is a stateless keystone delegate.
+        """SHA-bound squash merge (#1985) — delegates to the keystone primitive.
+
+        Replaces the former unbound ``gh pr merge --squash``: ``execute_bound_merge``
+        binds the merge to ``expected_head_oid`` so a force-push in the TOCTOU
+        window is rejected (the §17.4.3 SHA-bind), runs the transient-retry +
+        head-moved classification, and never merges an unreviewed head. A merge
+        precondition failure (head moved, policy refusal, transient exhaustion)
+        returns ``(False, "")`` to preserve the caller's ``(ok, sha)`` contract.
+        """
+        from teatree.core.merge_execution import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
+
+        try:
+            merged_sha = execute_bound_merge(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+        except MergePreconditionError:
             return False, ""
-        rc, out, _ = self._run_gh(
-            ["pr", "view", str(pr_id), "--repo", slug, "--json", "mergeCommit", "--jq", ".mergeCommit.oid"],
-        )
-        if rc == 0 and out.strip():
-            return True, out.strip()
-        return True, "sha-unavailable"
+        return True, merged_sha
 
     def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
         gh = shutil.which("gh") or "gh"
