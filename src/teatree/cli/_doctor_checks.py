@@ -100,6 +100,39 @@ def _check_skills() -> bool:
     return ok
 
 
+def _check_account_switch() -> bool:
+    """Detect a mid-session ``/login`` switch and report connector recovery (#1916).
+
+    Runs the detect-invalidate-reprobe cycle. A clean run (no switch, or a
+    switch where every connector re-probed reachable) is OK. A switch that
+    leaves a connector unreachable is a hard FAIL — the stale bridge would
+    otherwise route DMs silently to the old workspace. Crash-proof: any error
+    degrades to a WARN so a doctor run never aborts on this check.
+    """
+    try:
+        from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415
+
+        outcome = detect_and_recover_account_switch()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Account-switch check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if not outcome.switched:
+        return True
+    if outcome.all_reachable:
+        typer.echo(
+            f"OK    Claude account switch recovered ({outcome.previous_fingerprint[:8]}… → "
+            f"{outcome.current_fingerprint[:8]}…); backend cache reinvalidated, connectors reachable.",
+        )
+        return True
+    unreachable = ", ".join(f"{p.name} ({p.detail})" for p in outcome.probes if not p.reachable)
+    typer.echo(
+        f"FAIL  Claude account switch detected ({outcome.previous_fingerprint[:8]}… → "
+        f"{outcome.current_fingerprint[:8]}…) but connectors are unreachable: {unreachable}. "
+        "Re-auth the MCP connector(s) in the Claude.ai UI, then re-run `t3 doctor check`.",
+    )
+    return False
+
+
 def _check_legacy_overlay_alias() -> None:
     """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
 

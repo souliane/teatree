@@ -58,6 +58,7 @@ class TestRegressionCorpusGreen(TestCase):
             "maker≠checker",
             "loop-owner hijack",
             "migration-fork",
+            "account-switch",
         ):
             assert any(needle in c for c in classes), f"no regression check covers {needle!r}"
 
@@ -115,6 +116,17 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("migration-fork" in r.check.failure_class for r in report.failures)
+
+    def test_account_switch_check_fails_when_detection_is_reverted(self) -> None:
+        from teatree.core.account_switch import AccountSwitchOutcome, AccountSwitchRecovery  # noqa: PLC0415
+
+        def _never_switches(self, *, home=None):
+            return AccountSwitchOutcome(current_fingerprint="uuid-B", previous_fingerprint="", switched=False)
+
+        with patch.object(AccountSwitchRecovery, "run", _never_switches):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("account-switch" in r.check.failure_class for r in report.failures)
 
     def test_skips_db_checks_when_django_not_configured(self) -> None:
         with patch.object(regression_corpus, "_django_ready", return_value=False):
