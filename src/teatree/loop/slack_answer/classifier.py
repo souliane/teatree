@@ -108,6 +108,8 @@ _INVESTIGATION_RE = re.compile(
 
 _EMOJI_ONLY_RE = re.compile(r"^[\W_]+$", re.UNICODE)
 
+_URL_RE = re.compile(r"<?https?://\S+")
+
 
 class AnswerRoute(StrEnum):
     """The three cheap paths a classified Slack message can take."""
@@ -115,6 +117,10 @@ class AnswerRoute(StrEnum):
     ACK_ONLY = "ack_only"
     SIMPLE = "simple"
     NEEDS_WORK = "needs_work"
+
+
+def strip_urls(text: str) -> str:
+    return _URL_RE.sub(" ", text)
 
 
 def _normalized(text: str) -> str:
@@ -170,9 +176,9 @@ def classify(text: str) -> AnswerRoute:
         return AnswerRoute.NEEDS_WORK
     if _is_ack(text, lowered):
         return AnswerRoute.ACK_ONLY
-    if _is_simple(lowered):
+    if _is_simple(strip_urls(lowered)):
         return AnswerRoute.SIMPLE
     return AnswerRoute.NEEDS_WORK
 
 
-__all__ = ["AnswerRoute", "classify"]
+__all__ = ["AnswerRoute", "classify", "strip_urls"]

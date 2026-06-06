@@ -188,6 +188,33 @@ class TestNeedsWorkDelegation:
         assert Task.objects.filter(phase="answering").count() == 1
 
 
+class TestLinkOnlyDmDoesNotMisfireStatusline:
+    """A link-only inbound DM must NOT get the default statusline reply.
+
+    An X.com status link contains the substring "status", which used to
+    mis-classify the DM as a SIMPLE status request, so the cycle posted
+    the statusline content threaded under the unrelated link DM. A bare
+    URL has no status intent → delegate, never a threaded statusline.
+    """
+
+    def test_x_link_only_dm_posts_no_statusline_and_no_threaded_reply(self) -> None:
+        row = _row("https://x.com/user/status/1780726427261379")
+        backend = RecordingBackend()
+
+        with patch(
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="self-improve 10m · tick 11m\nstarted · coded · tested\n",
+        ):
+            report = run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert backend.replies == []  # no statusline dump, no threaded reply
+        row.refresh_from_db()
+        assert row.answer_kind != "simple"
+        assert report.answered_simple == 0
+        tasks = Task.objects.filter(phase="answering", status=Task.Status.PENDING)
+        assert tasks.count() == 1  # left for the real handler (delegated)
+
+
 class TestRowIsolation:
     def test_one_bad_row_does_not_block_others(self) -> None:
         bad = _row("thanks", ts="1.0")
