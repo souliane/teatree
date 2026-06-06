@@ -17,7 +17,7 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.config import load_config
-from teatree.core.local_stack_gate import refuse_if_limit_exceeded
+from teatree.core.gates.local_stack_gate import refuse_if_limit_exceeded
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay

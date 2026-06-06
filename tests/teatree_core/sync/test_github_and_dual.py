@@ -381,7 +381,7 @@ class TestSyncGitHub(TestCase):
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
-        from teatree.core import dod_gate  # noqa: PLC0415
+        from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
         Ticket.objects.create(
@@ -413,7 +413,7 @@ class TestSyncGitHub(TestCase):
     def test_done_board_move_no_violation_when_not_ui_visible(self) -> None:
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
-        from teatree.core import dod_gate  # noqa: PLC0415
+        from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
         Ticket.objects.create(
@@ -451,7 +451,7 @@ class TestSyncGitHub(TestCase):
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
-        from teatree.core import dod_gate  # noqa: PLC0415
+        from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()  # github_owner="souliane"
         item = ProjectItem(
@@ -485,7 +485,7 @@ class TestSyncGitHub(TestCase):
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
         from teatree.backends.github_sync import GitHubSyncBackend  # noqa: PLC0415
-        from teatree.core import dod_gate  # noqa: PLC0415
+        from teatree.core.gates import dod_gate  # noqa: PLC0415
 
         overlay = self._make_overlay()
         # Pre-existing ticket: already DELIVERED, mis-scoped to the owner slug,

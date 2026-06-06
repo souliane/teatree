@@ -1,4 +1,4 @@
-"""Tests for teatree.core.fix_dod_gate — the fix-ticket FixRecord DoD merge gate.
+"""Tests for teatree.core.gates.fix_dod_gate — the fix-ticket FixRecord DoD merge gate.
 
 The gate's pure helpers (``is_fix``, ``override_reason``,
 ``missing_fix_record_fields``, ``has_valid_fix_record``, ``check_fix_record_dod``)
@@ -10,7 +10,7 @@ DELIVERED.
 import pytest
 from django.test import TestCase
 
-from teatree.core.fix_dod_gate import (
+from teatree.core.gates.fix_dod_gate import (
     FixRecordDodError,
     check_fix_record_dod,
     has_valid_fix_record,

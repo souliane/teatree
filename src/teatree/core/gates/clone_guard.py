@@ -7,7 +7,7 @@ root-cause hypothesis on phantom symptoms. :mod:`teatree.core.branch_currency`
 exit-point). This module covers the earlier point: **before any bug
 investigation reads repo files**.
 
-The gate mirrors :mod:`teatree.core.schema_guard` (#869). For each
+The gate mirrors :mod:`teatree.core.gates.schema_guard` (#869). For each
 in-scope clone it runs ``git fetch origin``, then asserts
 ``origin/<default>`` is an ancestor of ``HEAD``. If a clone is behind it
 raises :class:`StaleCloneError` with an actionable message — not a

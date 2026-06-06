@@ -6,10 +6,10 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
-from teatree.core.orphan_guard import BranchReport, BranchStatus
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY

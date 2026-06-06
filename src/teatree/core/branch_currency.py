@@ -1,6 +1,6 @@
 """Pre-cold-review / pre-ship branch-currency auto-merge gate (#940).
 
-The exit-point sibling of :mod:`teatree.core.clone_guard` (#948, the
+The exit-point sibling of :mod:`teatree.core.gates.clone_guard` (#948, the
 entry-point pre-investigation gate). #948 covers "do not begin
 investigating against a stale repo"; #940 covers "do not let the cold
 reviewer attest, or ``ship`` push, a feature branch whose target has

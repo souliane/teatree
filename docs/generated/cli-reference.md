@@ -4057,7 +4057,7 @@ Usage: t3 teatree db migrate [OPTIONS]
  The always-available self-rescue for a stale runtime control DB —
  the exact gap that locks out the sanctioned merge path
  (``ticket clear``/``merge`` refuse on ANY pending migration). It
- delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+ delegates to :func:`teatree.core.gates.schema_guard.migrate_self_db`, which
  runs ``migrate --no-input`` *in this process* against the same
  connection the merge gate reads, so "migrate then re-check"
  converges on one DB.
@@ -4973,7 +4973,7 @@ Usage: t3 teatree lifecycle record-anti-vacuity [OPTIONS] TICKET_ID
  (#1829).
 
  Stamps ``ticket.extra['anti_vacuity_attestation']`` so the anti-vacuity
- gate (``teatree.core.anti_vacuity_gate``) can attest, before the
+ gate (``teatree.core.gates.anti_vacuity_gate``) can attest, before the
  ``request review`` / merge transition, that the diff was mapped to the
  acceptance criteria AND every new regression test was proven
  anti-vacuous (revert the production fix -> the test goes RED). The

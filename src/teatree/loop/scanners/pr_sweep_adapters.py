@@ -197,7 +197,7 @@ class GhPrApiClient:
         precondition failure (head moved, policy refusal, transient exhaustion)
         returns ``(False, "")`` to preserve the caller's ``(ok, sha)`` contract.
         """
-        from teatree.core.merge_execution import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
+        from teatree.core.merge import MergePreconditionError, execute_bound_merge  # noqa: PLC0415
 
         try:
             merged_sha = execute_bound_merge(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)

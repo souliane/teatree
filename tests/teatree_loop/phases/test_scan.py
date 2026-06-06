@@ -2,9 +2,9 @@
 
 from dataclasses import dataclass
 
+from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.phases.scan import scan_phase
 from teatree.loop.scanners.base import ScanSignal
-from teatree.loop.tick_jobs import _ScannerJob
 
 
 @dataclass(slots=True)

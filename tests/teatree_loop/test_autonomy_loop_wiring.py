@@ -27,7 +27,7 @@ from teatree.backends.protocols import CodeHostBackend
 from teatree.config import Autonomy, Mode
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
-from teatree.loop.tick_jobs import _effective_settings_for_overlay, _pr_sweep_scanner_for
+from teatree.loop.scanner_factories import _effective_settings_for_overlay, _pr_sweep_scanner_for
 
 
 def _stage_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, toml: str) -> None:

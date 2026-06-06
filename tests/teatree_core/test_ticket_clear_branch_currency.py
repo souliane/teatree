@@ -129,7 +129,7 @@ class TestTicketClearBranchCurrency(TestCase):
         # The #1967 mandatory-E2E gate also runs at `ticket clear`; pin a
         # non-impacting overlay so these branch-currency tests exercise only
         # the #940 currency behaviour they are about.
-        monkeypatch.setattr("teatree.core.e2e_mandatory_gate.get_overlay", lambda *_a, **_k: _SafeOverlay())
+        monkeypatch.setattr("teatree.core.gates.e2e_mandatory_gate.get_overlay", lambda *_a, **_k: _SafeOverlay())
 
     def _attach_ticket(self, clone: Path, branch: str) -> Ticket:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)

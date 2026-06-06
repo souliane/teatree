@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
 from teatree.cli.review_run import _open_discussion_count
-from teatree.core.merge_guard import MergeGuard
+from teatree.core.gates.merge_guard import MergeGuard
 from teatree.loop.scanners.gitlab_approvals import _signal_for
 
 # ---------------------------------------------------------------------------

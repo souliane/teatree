@@ -17,7 +17,7 @@ removed BLOCKs, so the satisfier is what flips the verdict.
 import pytest
 from django.test import TestCase
 
-from teatree.core.e2e_mandatory_gate import E2EMandatoryGateError, GateInputs, check_e2e_mandatory
+from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, GateInputs, check_e2e_mandatory
 from teatree.core.models import E2EBypassApproval, E2EBypassAudit, E2eMandatoryRun, Ticket
 
 _SHA = "e" * 40
@@ -151,13 +151,13 @@ class TestNonConsumingPeek(TestCase):
         self.ticket = Ticket.objects.create(issue_url="https://example.com/i/24")
 
     def test_peek_returns_message_when_blocked(self) -> None:
-        from teatree.core.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
+        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
 
         message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
         assert "record-e2e-run" in message
 
     def test_peek_does_not_consume_bypass(self) -> None:
-        from teatree.core.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
+        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
 
         E2EBypassApproval.record(ticket=self.ticket, head_sha=_SHA, approver_id=_USER)
         message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_IMPACTING_DIFF, display_impacting=True))
@@ -169,7 +169,7 @@ class TestNonConsumingPeek(TestCase):
     def test_peek_returns_empty_when_gate_would_pass(self) -> None:
         # A non-impacting change passes via the cheap short-circuit, so the peek
         # reports "" without reaching the bypass lookup at all.
-        from teatree.core.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
+        from teatree.core.gates.e2e_mandatory_gate import e2e_mandatory_block_message  # noqa: PLC0415
 
         message = e2e_mandatory_block_message(_inputs(self.ticket, diff=_NON_IMPACTING_DIFF, display_impacting=False))
         assert message == ""
@@ -179,6 +179,6 @@ class TestClearWithoutTicket(TestCase):
     """An out-of-FSM CLEAR (no resolved ticket) is not gated — nothing to bind to."""
 
     def test_clear_with_no_ticket_returns_empty(self) -> None:
-        from teatree.core.e2e_mandatory_gate import check_clear_e2e_mandatory  # noqa: PLC0415
+        from teatree.core.gates.e2e_mandatory_gate import check_clear_e2e_mandatory  # noqa: PLC0415
 
         assert check_clear_e2e_mandatory(None, _SHA, _IMPACTING_DIFF) == ""

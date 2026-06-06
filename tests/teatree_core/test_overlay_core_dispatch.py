@@ -105,7 +105,7 @@ class TestTicketGroupCoreDispatch:
     """``ticket clear/merge`` route through ``python -m teatree`` (core), not the overlay manage.py.
 
     ``ticket`` subcommands live in ``teatree.core.management.commands.ticket``
-    (delegating to ``teatree.core.merge_execution``) — teatree CORE, not any
+    (delegating to ``teatree.core.merge``) — teatree CORE, not any
     overlay-owned ``manage.py``. A non-core overlay clone has its own
     ``manage.py`` with no ``ticket`` command, so without the ``core_dispatch``
     marker the sanctioned merge path crashes with ``Unknown command: 'ticket'``

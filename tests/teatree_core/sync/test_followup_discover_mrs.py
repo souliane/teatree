@@ -123,17 +123,17 @@ class TestDiscoverMrs(TestCase):
         ]
         self._monkeypatch.setattr(followup_command, "code_host_from_overlay", lambda: host)
 
-        from teatree.core.review_request_guard import GuardTarget  # noqa: PLC0415
+        from teatree.core.gates.review_request_guard import GuardTarget  # noqa: PLC0415
 
         target = GuardTarget(channel_id="C1", channel_name="rev", token="xoxb")
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch(
-                "teatree.core.review_request_guard.resolve_guard_target",
+                "teatree.core.gates.review_request_guard.resolve_guard_target",
                 return_value=target,
             ),
             patch(
-                "teatree.core.review_request_guard.reconcile_out_of_band",
+                "teatree.core.gates.review_request_guard.reconcile_out_of_band",
                 return_value="https://team.slack.com/archives/C1/p1",
             ),
         ):
@@ -154,7 +154,7 @@ class TestDiscoverMrs(TestCase):
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch(
-                "teatree.core.review_request_guard.resolve_guard_target",
+                "teatree.core.gates.review_request_guard.resolve_guard_target",
                 return_value=None,
             ),
         ):

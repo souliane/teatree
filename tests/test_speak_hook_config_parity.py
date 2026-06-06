@@ -1,4 +1,4 @@
-"""Hook-side ``_speak_settings`` and config-side ``_resolve_speak`` agree (#2050).
+"""Hook-side ``_speak_settings`` and config-side ``resolve_speak`` agree (#2050).
 
 The Stop hook reads ``[teatree.speak]`` directly from toml (it cannot
 cheaply import the Django config), so it carries a small pure-Python
@@ -51,6 +51,6 @@ def test_hook_and_config_legacy_map_parity(toml_body: str, tmp_path: Path, monke
 
 
 def test_resolve_speak_is_the_config_source_of_truth() -> None:
-    # The hook map mirrors _resolve_speak; pin that the config helper exists
+    # The hook map mirrors resolve_speak; pin that the config helper exists
     # and produces the legacy mapping the hook duplicates.
     assert resolve_speak({"speak_mode": "all", "speak_target": "both"}).scope.value == "all"

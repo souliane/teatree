@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core import review_request_guard
+from teatree.core.gates import review_request_guard
 
 
 class _Config:

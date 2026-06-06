@@ -1,6 +1,6 @@
 """``Ticket.reconcile_merged`` — state-complete FSM catch-up for PR-merge (#1343).
 
-When the keystone merges a PR (``merge_execution.record_merge_and_advance``),
+When the keystone merges a PR (``merge.execution.record_merge_and_advance``),
 the linked ticket's FSM must advance to ``MERGED`` regardless of which
 pre-merge state it sat in. The original guard only fired ``mark_merged()``
 when the ticket was already at ``IN_REVIEW``/``MERGED``, so a ticket whose

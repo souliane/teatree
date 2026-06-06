@@ -54,7 +54,7 @@ def pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: 
 
 def resolved_repo_slug(clear: MergeClear) -> str:
     """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable."""
-    from teatree.core.merge_execution import MergePreconditionError, resolve_pr_repo_slug  # noqa: PLC0415
+    from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug  # noqa: PLC0415
 
     try:
         return resolve_pr_repo_slug(clear)

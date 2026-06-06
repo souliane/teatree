@@ -18,7 +18,8 @@ from unittest.mock import patch
 from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
-from teatree.core import branch_currency, merge_execution
+from teatree.core import branch_currency
+from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
 from teatree.eval import regression_corpus
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus

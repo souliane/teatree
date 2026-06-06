@@ -21,7 +21,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear
 from tests.factories import _FORTY_HEX, MergeClearFactory, TicketFactory
 

@@ -264,8 +264,8 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
-    monkeypatch.setattr("teatree.loop.tick_jobs.discover_overlays", list)
+    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factories.discover_overlays", list)
     monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
     backends = [
@@ -291,7 +291,7 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
         msg = "toml parse failure"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", _boom)
+    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", _boom)
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
@@ -307,9 +307,9 @@ def test_user_identity_aliases_no_override_inherits_global(
     config_path.write_text('[teatree]\nuser_identity_aliases = ["a", "b"]\n', encoding="utf-8")
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick_jobs.discover_overlays",
+        "teatree.loop.scanner_factories.discover_overlays",
         lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
     )
     assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
@@ -339,9 +339,9 @@ def test_build_default_jobs_per_overlay_alias_override(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.tick_jobs.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.tick_jobs.discover_overlays",
+        "teatree.loop.scanner_factories.discover_overlays",
         lambda: [
             OverlayEntry(
                 name="scoped",
@@ -1431,7 +1431,7 @@ def test_build_default_jobs_wires_codex_review_when_fleet_doctrine_applies() -> 
 
     backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
     auto_settings = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=False)
-    with patch("teatree.loop.tick_jobs._effective_settings_for_overlay", return_value=auto_settings):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=auto_settings):
         jobs = build_default_jobs(backends=[backend])
     codex_jobs = [j for j in jobs if j.scanner.name == "codex_review"]
     assert len(codex_jobs) == 1
@@ -1448,7 +1448,7 @@ def test_build_default_jobs_skips_codex_review_when_interactive_mode() -> None:
 
     backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
     interactive_settings = UserSettings(mode=Mode.INTERACTIVE)
-    with patch("teatree.loop.tick_jobs._effective_settings_for_overlay", return_value=interactive_settings):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=interactive_settings):
         jobs = build_default_jobs(backends=[backend])
     assert not [j for j in jobs if j.scanner.name == "codex_review"]
 
@@ -1468,7 +1468,7 @@ def test_build_default_jobs_skips_codex_review_when_human_approval_required() ->
 
     backend = _backend_with_overlay(name="teatree", repos=["souliane/teatree"])
     half_auto = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=True)
-    with patch("teatree.loop.tick_jobs._effective_settings_for_overlay", return_value=half_auto):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=half_auto):
         jobs = build_default_jobs(backends=[backend])
     assert not [j for j in jobs if j.scanner.name == "codex_review"]
 
@@ -1482,7 +1482,7 @@ def test_build_default_jobs_skips_codex_review_when_overlay_has_no_repos() -> No
 
     backend = _backend_with_overlay(name="empty", repos=[])
     auto_settings = UserSettings(mode=Mode.AUTO, require_human_approval_to_merge=False)
-    with patch("teatree.loop.tick_jobs._effective_settings_for_overlay", return_value=auto_settings):
+    with patch("teatree.loop.scanner_factories._effective_settings_for_overlay", return_value=auto_settings):
         jobs = build_default_jobs(backends=[backend])
     assert not [j for j in jobs if j.scanner.name == "codex_review"]
 

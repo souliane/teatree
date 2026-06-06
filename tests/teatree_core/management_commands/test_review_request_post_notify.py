@@ -20,8 +20,8 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import BotPing, OnBehalfApproval
-from teatree.core.review_request_guard import GuardDecision, GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")

@@ -246,7 +246,7 @@ class TestDbApprovalScopeHint(TestCase):
 
     def test_require_approval_non_tty_no_record_names_scope(self) -> None:
         """A non-TTY refusal with no recorded approval names op+tenant in the message."""
-        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+        from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
         from teatree.utils.approval import ApprovalRefusedError  # noqa: PLC0415
 
         stdin = _FakeStream(tty=False, content="yes\n")
@@ -265,7 +265,7 @@ class TestDbApprovalScopeHint(TestCase):
 
     def test_require_approval_non_tty_matching_record_proceeds(self) -> None:
         """A non-TTY caller WITH a matching recorded approval proceeds (no refusal)."""
-        from teatree.core.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
+        from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval  # noqa: PLC0415
 
         DbApproval.record(_OP, _TENANT, _USER)
         stdin = _FakeStream(tty=False, content="")

@@ -2,7 +2,7 @@
 
 `MergeClear.slug` is a *workstream* slug (e.g. ``statusline-stale-wakeup``),
 not a GitHub ``owner/repo``. Before #871 every ``gh`` call in
-``merge_execution`` passed ``clear.slug`` as ``--repo``, so a production
+``merge.execution`` passed ``clear.slug`` as ``--repo``, so a production
 CLEAR issued via ``t3 teatree ticket clear 866 statusline-stale-wakeup …``
 made ``gh pr view 866 --repo statusline-stale-wakeup`` fail, ``fetch_live_head_sha``
 return ``""``, and §17.4.3 step 2 raise the opaque "could not resolve the
@@ -21,11 +21,11 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import merge_execution
-from teatree.core.merge_execution import (
+from teatree.core.merge import (
     _GIT_BRANCH_PREFIXES,
     MergePreconditionError,
     merge_ticket_pr,
+    pr_slug_resolution,
     resolve_pr_repo_slug,
 )
 from teatree.core.models import MergeClear, Ticket
@@ -68,7 +68,7 @@ class TestResolvePrRepoSlug(TestCase):
         clear = _workstream_clear(ticket)
 
         with patch(
-            "teatree.core.merge_execution._project_repo_slug",
+            "teatree.core.merge.pr_slug_resolution._project_repo_slug",
             return_value="souliane/teatree",
         ):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"
@@ -78,7 +78,7 @@ class TestResolvePrRepoSlug(TestCase):
         clear = _workstream_clear(ticket)
 
         with (
-            patch("teatree.core.merge_execution._project_repo_slug", return_value=""),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=""),
             pytest.raises(MergePreconditionError, match="could not resolve the GitHub repo"),
         ):
             resolve_pr_repo_slug(clear)
@@ -106,7 +106,7 @@ class TestMergeUsesResolvedRepo(TestCase):
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
             patch(
-                "teatree.core.merge_execution._project_repo_slug",
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
                 return_value="souliane/teatree",
             ),
         ):
@@ -126,7 +126,7 @@ class TestMergeUsesResolvedRepo(TestCase):
         clear = _workstream_clear(ticket)
 
         with (
-            patch("teatree.core.merge_execution._project_repo_slug", return_value=""),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=""),
             pytest.raises(MergePreconditionError) as exc,
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -209,7 +209,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
 
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_keyed_by_repo(calls)),
-            patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value="souliane/teatree"),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
@@ -224,7 +224,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
     def test_resolve_pr_repo_slug_prefers_ticket_issue_url_over_clone_origin(self) -> None:
         clear = self._overlay_clear()
 
-        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value="souliane/teatree"):
             assert resolve_pr_repo_slug(clear) == self._OVERLAY_REPO
 
     def test_ticketless_clear_falls_through_to_clone_origin(self) -> None:
@@ -239,7 +239,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
             blast_class=MergeClear.BlastClass.LOGIC,
         )
 
-        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value="souliane/teatree"):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"
 
     def test_clear_with_blank_issue_url_falls_through_to_clone_origin(self) -> None:
@@ -255,7 +255,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
             blast_class=MergeClear.BlastClass.LOGIC,
         )
 
-        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value="souliane/teatree"):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"
 
     def test_clear_with_non_github_issue_url_falls_through_to_clone_origin(self) -> None:
@@ -275,7 +275,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
             blast_class=MergeClear.BlastClass.LOGIC,
         )
 
-        with patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"):
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value="souliane/teatree"):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"
 
 
@@ -283,20 +283,20 @@ class TestProjectRepoSlugHelper(TestCase):
     def test_project_repo_slug_uses_project_root_git_remote(self) -> None:
         with (
             patch(
-                "teatree.core.merge_execution.find_project_root",
+                "teatree.core.merge.pr_slug_resolution.find_project_root",
                 return_value=Path("/clone/teatree"),
             ),
             patch(
-                "teatree.core.merge_execution.git.remote_slug",
+                "teatree.core.merge.pr_slug_resolution.git.remote_slug",
                 return_value="souliane/teatree",
             ) as remote_slug,
         ):
-            assert merge_execution._project_repo_slug() == "souliane/teatree"
+            assert pr_slug_resolution._project_repo_slug() == "souliane/teatree"
         remote_slug.assert_called_once_with(repo="/clone/teatree")
 
     def test_project_repo_slug_empty_when_no_project_root(self) -> None:
-        with patch("teatree.core.merge_execution.find_project_root", return_value=None):
-            assert merge_execution._project_repo_slug() == ""
+        with patch("teatree.core.merge.pr_slug_resolution.find_project_root", return_value=None):
+            assert pr_slug_resolution._project_repo_slug() == ""
 
 
 class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
@@ -350,7 +350,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         clear = self._branch_slug_clear(self._BRANCH_SLUG)
 
         with patch(
-            "teatree.core.merge_execution._project_repo_slug",
+            "teatree.core.merge.pr_slug_resolution._project_repo_slug",
             return_value="souliane/teatree",
         ):
             resolved = resolve_pr_repo_slug(clear)
@@ -379,7 +379,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
                 # the per-ticket UNIQUE issue_url constraint satisfied.
                 clear = self._branch_slug_clear(slug, pr_id=2000 + index)
                 with patch(
-                    "teatree.core.merge_execution._project_repo_slug",
+                    "teatree.core.merge.pr_slug_resolution._project_repo_slug",
                     return_value="souliane/teatree",
                 ):
                     assert resolve_pr_repo_slug(clear) == "souliane/teatree"
@@ -404,7 +404,7 @@ class TestGitBranchPrefixSlugNotMistakenAsOwnerRepo(TestCase):
         clear = self._branch_slug_clear("Fix/Some-Branch")
 
         with patch(
-            "teatree.core.merge_execution._project_repo_slug",
+            "teatree.core.merge.pr_slug_resolution._project_repo_slug",
             return_value="souliane/teatree",
         ):
             assert resolve_pr_repo_slug(clear) == "souliane/teatree"

@@ -491,17 +491,17 @@ class SelfUpdateScannerWiringTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.config import UserSettings  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
         from teatree.loop.scanners.self_update_ci import GhMainCiStatus  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _self_update_scanner  # noqa: PLC0415
 
         settings = UserSettings(auto_update_reinstall=True, auto_update_require_green_main=False)
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": settings})(),
             ),
             patch(
-                "teatree.loop.tick_jobs._collect_self_update_repos",
+                "teatree.loop.global_scanner_factories._collect_self_update_repos",
                 return_value=[("teatree", Path("/x/teatree"))],
             ),
         ):
@@ -516,15 +516,15 @@ class SelfUpdateScannerWiringTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _self_update_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
 
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": UserSettings(self_update_cadence_hours=3)})(),
             ),
             patch(
-                "teatree.loop.tick_jobs._collect_self_update_repos",
+                "teatree.loop.global_scanner_factories._collect_self_update_repos",
                 return_value=[("teatree", Path("/x/teatree"))],
             ),
         ):
@@ -538,10 +538,10 @@ class SelfUpdateScannerWiringTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _self_update_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": UserSettings(self_update_disabled=True)})(),
         ):
             scanner = _self_update_scanner()
@@ -552,15 +552,15 @@ class SelfUpdateScannerWiringTests(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _self_update_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _self_update_scanner  # noqa: PLC0415
 
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": UserSettings()})(),
             ),
             patch(
-                "teatree.loop.tick_jobs._collect_self_update_repos",
+                "teatree.loop.global_scanner_factories._collect_self_update_repos",
                 return_value=[],
             ),
         ):
@@ -571,12 +571,12 @@ class SelfUpdateScannerWiringTests(TestCase):
         """``build_default_jobs`` wires the self-update scanner as a global job."""
         from unittest.mock import patch  # noqa: PLC0415
 
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
         from teatree.loop.scanners.self_update import SelfUpdateScanner  # noqa: PLC0415
-        from teatree.loop.tick_jobs import build_default_jobs  # noqa: PLC0415
 
         fake_scanner = SelfUpdateScanner(repos=(("teatree", Path("/x")),), cadence_hours=1)
         with patch(
-            "teatree.loop.tick_jobs._self_update_scanner",
+            "teatree.loop.global_scanner_factories._self_update_scanner",
             return_value=fake_scanner,
         ):
             jobs = build_default_jobs()

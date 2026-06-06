@@ -147,7 +147,7 @@ class Session(models.Model):
         Both sides are normalized at this read boundary (#782):
         ``visited`` may carry legacy raw spellings (rows written before
         #782, or by a path that bypassed :meth:`visit_phase` such as
-        ``merge_execution``); ``_REQUIRED_PHASES`` is keyed canonically.
+        ``merge.execution``); ``_REQUIRED_PHASES`` is keyed canonically.
         Normalizing membership here means a legacy ``review`` row still
         satisfies the canonical ``reviewing`` requirement instead of the
         gate falsely blocking shipping forever.

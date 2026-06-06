@@ -16,15 +16,16 @@ from django.db import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core import merge_execution
-from teatree.core.merge_execution import (
+from teatree.core.merge import (
     MergeHeadMovedError,
     MergeOutcome,
     MergePreconditionError,
     MergeReplayError,
     MergeTransientError,
     assert_merge_preconditions,
+    ci_rollup,
     execute_bound_merge,
+    execution,
     merge_ticket_pr,
     record_merge_and_advance,
 )
@@ -547,7 +548,7 @@ class TestLostPostHookRecoverable(TestCase):
         boom = RuntimeError("post hook lost (process killed between execute and record)")
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
-            patch("teatree.core.merge_execution.record_merge_and_advance", side_effect=boom),
+            patch("teatree.core.merge.execution.record_merge_and_advance", side_effect=boom),
             pytest.raises(RuntimeError, match="post hook lost"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -701,7 +702,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (1, "", "api error"),
         ):
-            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
         assert state.is_merged is False
 
@@ -710,7 +711,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "{not json", ""),
         ):
-            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
 
     def test_non_dict_json_returns_empty_state(self) -> None:
@@ -718,7 +719,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, "[1, 2, 3]", ""),
         ):
-            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
 
     def test_merged_without_merge_commit_object(self) -> None:
@@ -726,7 +727,7 @@ class TestFetchPrMergeState(TestCase):
             "teatree.backends.forge_merge_rpc.gh_runner",
             return_value=lambda *_a, **_k: (0, '{"state": "MERGED", "mergeCommit": null}', ""),
         ):
-            state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
+            state = ci_rollup.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.is_merged is True
         assert state.merge_commit_oid == ""
 
@@ -866,26 +867,26 @@ class TestIsTransientMergeResponse(TestCase):
     """The pure classifier separating a transient forge response from a refusal."""
 
     def test_zero_rc_is_never_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(0, '{"sha": "x"}', "") is False
+        assert execution._is_transient_merge_response(0, '{"sha": "x"}', "") is False
 
     def test_empty_body_failure_is_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(1, "", "") is True
+        assert execution._is_transient_merge_response(1, "", "") is True
 
     def test_truncated_json_marker_is_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
+        assert execution._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
 
     def test_5xx_marker_is_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(1, "", "503 Service Unavailable") is True
+        assert execution._is_transient_merge_response(1, "", "503 Service Unavailable") is True
 
     def test_policy_refusal_is_not_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
+        assert execution._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
 
     def test_policy_marker_wins_over_a_transient_token(self) -> None:
         # A refusal mentioning a transient-looking token is still a refusal.
-        assert merge_execution._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
+        assert execution._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
 
     def test_explicit_non_transient_message_is_not_transient(self) -> None:
-        assert merge_execution._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
+        assert execution._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
 
 
 def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, str] | None:
@@ -957,7 +958,7 @@ class TestTransientMergeRetry(TestCase):
         stub = _TransientThenSuccessGhStub(fail_times=2)
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -977,7 +978,7 @@ class TestTransientMergeRetry(TestCase):
         stub = _TransientThenSuccessGhStub(fail_times=99)
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergeTransientError, match="transient"),
         ):
@@ -1011,7 +1012,7 @@ class TestTransientMergeRetry(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution.time.sleep") as sleep,
+            patch("teatree.core.merge.execution.time.sleep") as sleep,
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_policy_refusal),
             pytest.raises(MergePreconditionError, match="failed"),
         ):
@@ -1042,7 +1043,7 @@ class TestTransientMergeRetry(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_head_moved),
             pytest.raises(MergeHeadMovedError),
         ):
@@ -1075,7 +1076,7 @@ class TestTransientMergeRetry(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_transient_but_landed),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -1102,7 +1103,7 @@ class TestTransientMergeRetry(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_empty_then_fail),
             pytest.raises(MergeTransientError, match="transient"),
         ):

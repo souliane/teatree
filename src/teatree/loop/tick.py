@@ -5,7 +5,8 @@ slot itself just calls this function on a cadence; everything that needs
 testing lives here as plain Python.
 
 Per-concern helpers live in sibling modules to keep this orchestrator
-under the module-health LOC gate. ``tick_jobs`` builds scanner jobs,
+under the module-health LOC gate. ``scanner_factories`` / ``domain_jobs``
+/ ``global_scanner_factories`` build scanner jobs,
 ``tick_recovery`` runs boot/tick recovery and post-dispatch
 side-effects (mechanical handlers, agent dispatch persistence), and
 ``tick_freshness`` captures the repo-freshness snapshot for the
@@ -24,15 +25,25 @@ from pathlib import Path
 
 # Re-exported for downstream importers. Tests monkeypatch
 # ``teatree.loop.tick.load_config``/``discover_overlays``; keep the
-# binding here so the legacy patch path stays live (the tick_jobs
-# module has its own binding patched by the test setup that exercises
-# the moved functions).
+# binding here so the legacy patch path stays live (the
+# ``scanner_factories`` / ``global_scanner_factories`` modules have
+# their own bindings patched by the test setup that exercises the moved
+# functions).
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
 from teatree.core.backend_factory import OverlayBackends
 from teatree.loop.dispatch import DispatchAction
+from teatree.loop.domain_jobs import _identity_groups_for_overlay, _run_job, jobs_for_domain
+from teatree.loop.global_scanner_factories import build_default_jobs, build_default_scanners
+from teatree.loop.job_identity import Domain, _ScannerJob
 from teatree.loop.phases import act_phase, orchestrate_phase, scan_phase, sweep_phase
 from teatree.loop.rendering import zones_for
+from teatree.loop.scanner_factories import (
+    _gitlab_approvals_enabled,
+    _jobs_for_backend_hosts,
+    _user_identity_aliases_for_overlay,
+    _user_slack_id_for_overlay,
+)
 from teatree.loop.scanners.base import Scanner, ScanSignal
 from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.statusline import StatuslineZones, render
@@ -42,19 +53,6 @@ from teatree.loop.tick_freshness import (
     _repo_freshness,
     _repos_from_toml,
     _write_tick_meta,
-)
-from teatree.loop.tick_jobs import (
-    Domain,
-    _gitlab_approvals_enabled,
-    _identity_groups_for_overlay,
-    _jobs_for_backend_hosts,
-    _run_job,
-    _ScannerJob,
-    _user_identity_aliases_for_overlay,
-    _user_slack_id_for_overlay,
-    build_default_jobs,
-    build_default_scanners,
-    jobs_for_domain,
 )
 from teatree.loop.tick_recovery import _execute_mechanical, _persist_agent_dispatches, _reap_stale_task_claims
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay

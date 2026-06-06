@@ -12,7 +12,7 @@ from teatree.loops.base import MiniLoop
 if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend
     from teatree.core.backend_factory import OverlayBackends
-    from teatree.loop.tick_jobs import _ScannerJob
+    from teatree.loop.job_identity import _ScannerJob
 
 
 def _build_jobs(
@@ -22,8 +22,9 @@ def _build_jobs(
     **_: object,
 ) -> "list[_ScannerJob]":
     """Build per-overlay reviewer-PR + companion review-related scanners."""
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
     from teatree.loop.scanners import ReviewerPrsScanner  # noqa: PLC0415
-    from teatree.loop.tick_jobs import Domain, _ScannerJob, jobs_for_domain  # noqa: PLC0415
 
     if backends:
         all_backends = tuple(backends)

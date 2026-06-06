@@ -19,8 +19,7 @@ from django.utils import timezone
 
 from teatree.backends import slack
 from teatree.backends.slack_bot import SlackBotBackend
-from teatree.core.models import PullRequest, ReviewRequestPost, Ticket
-from teatree.core.review_request_guard import (
+from teatree.core.gates.review_request_guard import (
     GuardDecision,
     GuardOptions,
     GuardTarget,
@@ -29,6 +28,7 @@ from teatree.core.review_request_guard import (
     resolve_guard_target,
     should_post_review_request,
 )
+from teatree.core.models import PullRequest, ReviewRequestPost, Ticket
 
 if TYPE_CHECKING:
     from tests.teatree_core.conftest import CommandOverlay

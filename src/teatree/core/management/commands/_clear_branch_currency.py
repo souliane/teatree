@@ -24,7 +24,7 @@ def check_clear_branch_currency(reviewed_sha: str, ticket: Ticket | None) -> str
     row when present, falling back to the first attached worktree).
     Without a ticket or worktree the check is skipped: the
     branch-currency posture is "if we can verify, refuse; if we can't,
-    don't block" — same posture as :mod:`teatree.core.clone_guard`.
+    don't block" — same posture as :mod:`teatree.core.gates.clone_guard`.
     Returns an actionable error string on a real conflict, or ``None``
     to proceed (including the behind-but-mergeable case).
     """

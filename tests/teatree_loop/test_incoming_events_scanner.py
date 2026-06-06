@@ -5,7 +5,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.core.merge_guard import MergeGuard
+from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 

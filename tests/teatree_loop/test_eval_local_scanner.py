@@ -158,10 +158,10 @@ class EvalLocalWiringTests(TestCase):
         return UserSettings(**overrides)
 
     def test_default_core_config_builds_scanner(self) -> None:
-        from teatree.loop.tick_jobs import _eval_local_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": self._settings()})(),
         ):
             scanner = _eval_local_scanner()
@@ -170,20 +170,20 @@ class EvalLocalWiringTests(TestCase):
         assert scanner.cadence_hours == 168
 
     def test_disabled_in_core_config_skips_wiring(self) -> None:
-        from teatree.loop.tick_jobs import _eval_local_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": self._settings(eval_local_disabled=True)})(),
         ):
             scanner = _eval_local_scanner()
         assert scanner is None
 
     def test_tuned_core_config_propagates_to_scanner_kwargs(self) -> None:
-        from teatree.loop.tick_jobs import _eval_local_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),
@@ -197,29 +197,29 @@ class EvalLocalWiringTests(TestCase):
 
     def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
         from teatree.config import OverlayEntry  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _eval_local_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": self._settings()})(),
             ),
-            patch("teatree.loop.tick_jobs.discover_active_overlay", return_value=discovered),
+            patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=discovered),
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
         assert scanner.overlay_name == "t3-teatree"
 
     def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
-        from teatree.loop.tick_jobs import _eval_local_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _eval_local_scanner  # noqa: PLC0415
 
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": self._settings()})(),
             ),
-            patch("teatree.loop.tick_jobs.discover_active_overlay", return_value=None),
+            patch("teatree.loop.global_scanner_factories.discover_active_overlay", return_value=None),
         ):
             scanner = _eval_local_scanner()
         assert scanner is not None
@@ -227,7 +227,7 @@ class EvalLocalWiringTests(TestCase):
 
     def test_default_jobs_includes_eval_local_global_scanner(self) -> None:
         """The global build wires the eval-local scanner as overlay='' by default."""
-        from teatree.loop.tick_jobs import build_default_jobs  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
 
         jobs = build_default_jobs()
         assert any(job.scanner.name == "eval_local" and job.overlay == "" for job in jobs)

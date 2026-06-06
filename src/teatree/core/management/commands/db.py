@@ -9,10 +9,10 @@ from django.core.management import call_command
 from django.db import DatabaseError, connection, transaction
 from django_typer.management import TyperCommand, command
 
-from teatree.core.db_approval_gate import ApprovalScope, require_approval
+from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval
+from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
-from teatree.core.schema_guard import SelfDbMigrationError, migrate_self_db
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
 
@@ -114,7 +114,7 @@ class Command(TyperCommand):
         The always-available self-rescue for a stale runtime control DB —
         the exact gap that locks out the sanctioned merge path
         (``ticket clear``/``merge`` refuse on ANY pending migration). It
-        delegates to :func:`teatree.core.schema_guard.migrate_self_db`, which
+        delegates to :func:`teatree.core.gates.schema_guard.migrate_self_db`, which
         runs ``migrate --no-input`` *in this process* against the same
         connection the merge gate reads, so "migrate then re-check"
         converges on one DB.

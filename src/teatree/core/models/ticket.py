@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def _check_plan_artifact(ticket: object) -> bool:
-    from teatree.core.plan_gate import check_plan_artifact  # noqa: PLC0415
+    from teatree.core.gates.plan_gate import check_plan_artifact  # noqa: PLC0415
 
     return check_plan_artifact(ticket)  # type: ignore[arg-type]
 
@@ -627,7 +627,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         raise a :class:`InvalidTransitionError` subclass so the loop's outer
         atomic rolls the advance back and the FSM stays put.
         """
-        from teatree.core.dod_gate import check_local_e2e_dod  # noqa: PLC0415
+        from teatree.core.gates.dod_gate import check_local_e2e_dod  # noqa: PLC0415
         from teatree.core.tasks import execute_ship  # noqa: PLC0415
 
         self._refuse_if_worktree_dirty("shipping")
@@ -668,7 +668,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def reconcile_merged(self) -> None:
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343).
 
-        The merge keystone (``merge_execution.record_merge_and_advance``)
+        The merge keystone (``merge.execution.record_merge_and_advance``)
         calls this from its post hook: an authorised, audited PR-merge is
         the authority — whatever pre-merged state the ticket sat in, the
         FSM must follow. Mirrors ``reconcile_reviewed`` (#808) — the source
@@ -718,7 +718,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         the forge, but not yet *done*. A manifestation patch with no stated
         root cause cannot reach DELIVERED. Feature tickets pass unconditionally.
         """
-        from teatree.core.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
+        from teatree.core.gates.fix_dod_gate import check_fix_record_dod  # noqa: PLC0415
 
         check_fix_record_dod(self)
 
@@ -970,7 +970,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Stamp durable evidence the referenced context was retrieved + analyzed.
 
         Reviewing carries the same responsibility as implementing: the
-        ``-> reviewing`` deep-retrieval gate (``teatree.core.review_context_gate``)
+        ``-> reviewing`` deep-retrieval gate (``teatree.core.gates.review_context_gate``)
         reads this to refuse a verdict formed from the diff alone. ``work_item``
         is the fetched ticket / work-item source, ``documents`` the downloaded
         references, ``analysis`` how the implementation was checked against the
@@ -997,7 +997,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Stamp the SHA-bound anti-vacuity attestation backing review-request/merge (#1829).
 
         ``head_sha`` binds the attestation to the exact tree the maker
-        self-reviewed; the anti-vacuity gate (``teatree.core.anti_vacuity_gate``)
+        self-reviewed; the anti-vacuity gate (``teatree.core.gates.anti_vacuity_gate``)
         drops it when the live head moves. ``ac_coverage`` records how the diff
         was mapped to the acceptance criteria. ``proven_tests`` lists every new
         regression test proven anti-vacuous (revert fix -> RED); ``no_new_tests``
@@ -1025,7 +1025,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         the FSM regardless of entry path. NO-OP (returns ``True``) when the knob
         is off (opt-in default preserved).
         """
-        from teatree.core.review_context_gate import (  # noqa: PLC0415
+        from teatree.core.gates.review_context_gate import (  # noqa: PLC0415
             is_complete,
             recorded_review_context,
             review_context_required,

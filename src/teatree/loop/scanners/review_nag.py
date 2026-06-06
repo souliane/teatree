@@ -237,7 +237,7 @@ def _consult_guard_before_nag(post: ReviewRequestPost) -> ScanSignal | None:
     returns ``None`` and the nag proceeds as before — the guard must
     never wedge the loop on a Slack read.
     """
-    from teatree.core.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
+    from teatree.core.gates.review_request_guard import reconcile_out_of_band, resolve_guard_target  # noqa: PLC0415
 
     target = resolve_guard_target(channel_id=post.slack_channel_id)
     if target is None:

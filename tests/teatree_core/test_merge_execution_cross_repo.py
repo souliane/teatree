@@ -25,7 +25,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import OverlayEntry
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear
 
 pytestmark = pytest.mark.django_db
@@ -113,15 +113,15 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return_value=_gh_keyed_by_repo(calls),
             ),
             patch(
-                "teatree.core.merge_execution._project_repo_slug",
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
                 return_value=_CLONE_ORIGIN,
             ),
             patch(
-                "teatree.core.merge_execution.discover_overlays",
+                "teatree.core.merge.pr_slug_resolution.discover_overlays",
                 return_value=candidate_entries,
             ),
             patch(
-                "teatree.core.merge_execution.git.remote_slug",
+                "teatree.core.merge.pr_slug_resolution.git.remote_slug",
                 side_effect=_remote_slug_for_path,
             ),
         ):
@@ -179,15 +179,15 @@ class TestCrossRepoCandidateProbe(TestCase):
         with (
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_all_wrong),
             patch(
-                "teatree.core.merge_execution._project_repo_slug",
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
                 return_value=_CLONE_ORIGIN,
             ),
             patch(
-                "teatree.core.merge_execution.discover_overlays",
+                "teatree.core.merge.pr_slug_resolution.discover_overlays",
                 return_value=candidate_entries,
             ),
             patch(
-                "teatree.core.merge_execution.git.remote_slug",
+                "teatree.core.merge.pr_slug_resolution.git.remote_slug",
                 side_effect=_remote_slug_for_path,
             ),
             pytest.raises(MergePreconditionError) as exc,
@@ -225,15 +225,15 @@ class TestCrossRepoCandidateProbe(TestCase):
                 return_value=_gh_keyed_by_repo(calls, right_repo=_CLONE_ORIGIN),
             ),
             patch(
-                "teatree.core.merge_execution._project_repo_slug",
+                "teatree.core.merge.pr_slug_resolution._project_repo_slug",
                 return_value=_CLONE_ORIGIN,
             ),
             patch(
-                "teatree.core.merge_execution.discover_overlays",
+                "teatree.core.merge.pr_slug_resolution.discover_overlays",
                 return_value=candidate_entries,
             ),
             patch(
-                "teatree.core.merge_execution.git.remote_slug",
+                "teatree.core.merge.pr_slug_resolution.git.remote_slug",
                 side_effect=_remote_slug_for_path,
             ),
         ):

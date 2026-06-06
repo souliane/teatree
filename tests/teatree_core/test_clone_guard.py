@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 from teatree.cli import doctor as doctor_mod
-from teatree.core import clone_guard
-from teatree.core.clone_guard import (
+from teatree.core.gates import clone_guard
+from teatree.core.gates.clone_guard import (
     StaleCloneError,
     clones_behind_default,
     doctor_check_clone_currency,

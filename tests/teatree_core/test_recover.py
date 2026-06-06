@@ -17,8 +17,8 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.orphan_guard import BranchReport, BranchStatus
 from teatree.core.recover import RecoverReport, _collect_stranded_snapshots, gather_recover_report, requeue_failed_tasks
 from teatree.core.recovery_sweeps import BootSweepCounts
 

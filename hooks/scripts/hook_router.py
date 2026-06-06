@@ -7443,7 +7443,7 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
 def _speak_settings() -> tuple[bool, bool, str]:
     """Read ``[teatree.speak]`` from ``~/.teatree.toml`` → ``(local, slack_audio, scope)`` (#2050).
 
-    The hook-side mirror of :func:`teatree.config._resolve_speak` (the hook
+    The hook-side mirror of :func:`teatree.config_speak.resolve_speak` (the hook
     cannot cheaply import the Django config, so it re-reads the toml with the
     SAME precedence + legacy map — a parity test pins the two in agreement):
     (1) an explicit ``[teatree.speak]`` sub-table wins; (2) else legacy
@@ -7481,7 +7481,7 @@ def _speak_settings() -> tuple[bool, bool, str]:
 def _speak_settings_from_legacy(teatree: dict) -> tuple[bool, bool, str]:
     """Map legacy ``speak_mode`` / ``speak_target`` to ``(local, slack_audio, scope)``.
 
-    Mirrors :func:`teatree.config._speak_from_legacy` exactly: ``off`` forces
+    Mirrors :func:`teatree.config_speak.speak_from_legacy` exactly: ``off`` forces
     both destinations false; otherwise ``speak_mode`` drives the scope and
     ``speak_target`` drives the destination booleans.
     """

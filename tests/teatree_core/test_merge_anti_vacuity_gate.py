@@ -19,7 +19,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config import UserSettings
-from teatree.core.merge_execution import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from tests.teatree_core.test_merge_execution import _GhStub
 
@@ -44,7 +44,7 @@ def _clear(ticket: Ticket) -> MergeClear:
 @contextmanager
 def _gate(*, required: bool) -> Iterator[None]:
     with patch(
-        "teatree.core.anti_vacuity_gate.get_effective_settings",
+        "teatree.core.gates.anti_vacuity_gate.get_effective_settings",
         return_value=UserSettings(require_anti_vacuity_attestation=required),
     ):
         yield
