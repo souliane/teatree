@@ -97,12 +97,12 @@ class JobsForDomainPartitionTestCase(TestCase):
             owned |= {_signature(j) for j in jobs_for_domain(domain, backend, all_backends=(backend,))}
         assert not legacy <= owned
 
-    def test_dispatch_domain_returns_global_triad(self) -> None:
+    def test_dispatch_domain_returns_global_set(self) -> None:
         backend = self._backend()
-        triad = jobs_for_domain(Domain.DISPATCH, backend)
-        names = {job.scanner.name for job in triad}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit"}
-        assert all(job.overlay == "" for job in triad)
+        dispatch_jobs = jobs_for_domain(Domain.DISPATCH, backend)
+        names = {job.scanner.name for job in dispatch_jobs}
+        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
+        assert all(job.overlay == "" for job in dispatch_jobs)
 
     def test_dispatch_excluded_from_per_overlay_domains(self) -> None:
         assert Domain.DISPATCH not in PER_OVERLAY_DOMAINS

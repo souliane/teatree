@@ -2,7 +2,7 @@
 
 The teatree-CORE global scanners (news / provision-smoke / eval / self-update /
 resource-pressure) plus ``build_default_jobs`` / ``build_default_scanners`` that
-fan the global triad + per-overlay slices into the tick. Depends DOWN on
+fan the global dispatch set + per-overlay slices into the tick. Depends DOWN on
 ``domain_jobs`` (``jobs_for_domain`` / ``_jobs_for_overlay_backend``). Carved out
 of the loop tick fan-out to stay under the module-health LOC cap.
 """

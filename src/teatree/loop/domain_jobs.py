@@ -46,6 +46,7 @@ from teatree.loop.scanners import (
     StaleTicketsScanner,
     TicketCompletionScanner,
     TicketDispositionScanner,
+    UndeliveredNotifyScanner,
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -56,11 +57,12 @@ logger = logging.getLogger(__name__)
 
 
 def _global_dispatch_jobs() -> list[_ScannerJob]:
-    """The always-on global triad ``build_default_jobs`` fans out once per tick."""
+    """The always-on global set ``build_default_jobs`` fans out once per tick."""
     return [
         _ScannerJob(scanner=PendingTasksScanner(), overlay=""),
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(), overlay=""),
+        _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
     ]
 
 
@@ -336,8 +338,8 @@ def jobs_for_domain(
     into the loop fan-out's privates. The per-overlay members
     (:data:`PER_OVERLAY_DOMAINS`) partition :func:`_jobs_for_overlay_backend`
     — disjoint and exhaustive — and require *backend*. ``Domain.DISPATCH``
-    is the global triad and ignores *backend* (it carries no per-overlay
-    state), so callers with no overlay context pass none.
+    is the global dispatch set and ignores *backend* (it carries no
+    per-overlay state), so callers with no overlay context pass none.
 
     *all_backends* threads sibling URL claims into the PR scanners so a
     less-specific claim yields to a more specific sibling (#1324).
