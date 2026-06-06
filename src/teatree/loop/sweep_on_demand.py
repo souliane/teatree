@@ -1,4 +1,4 @@
-"""On-demand pr_sweep trigger for a freshly recorded merge_safe verdict (#2017).
+"""On-demand pr_sweep trigger for a freshly recorded merge_safe verdict (#2026).
 
 The periodic :class:`~teatree.loop.scanners.pr_sweep.PrSweepScanner` merges an
 own PR only on its next tick after a ``merge_safe``

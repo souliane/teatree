@@ -940,7 +940,7 @@ class TestErrorIsolation:
 
 
 class TestEvaluateOne:
-    """On-demand single-PR evaluation — the event-driven sweep complement (#2017).
+    """On-demand single-PR evaluation — the event-driven sweep complement (#2026).
 
     ``evaluate_one`` is what a freshly recorded ``merge_safe`` verdict triggers so
     the merge does not idle a full tick cadence. It must reuse the identical
