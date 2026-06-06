@@ -22,6 +22,7 @@ import os
 from typing import TYPE_CHECKING
 
 from teatree.loop.self_improve.budget import precheck_budget
+from teatree.loop.slack_answer.classifier import strip_urls
 from teatree.loop.statusline import statusline_for_slack
 from teatree.utils.run import CommandFailedError, run_checked
 
@@ -78,7 +79,7 @@ def _stage_a(text: str) -> str | None:
     dashboard table (#1121). When the statusline file is empty/missing,
     return ``None`` so the cycle falls through to Stage B or delegation.
     """
-    lowered = text.lower()
+    lowered = strip_urls(text.lower())
     if not any(tok in lowered for tok in _DASHBOARD_TOKENS):
         return None
     rendered = statusline_for_slack().strip()
