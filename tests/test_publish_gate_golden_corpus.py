@@ -112,6 +112,20 @@ def private_repos_only_config(tmp_path: Path) -> Path:
     return cfg
 
 
+@pytest.fixture
+def host_qualified_config(tmp_path: Path) -> Path:
+    # #2067: the allowlist entries are HOST-QUALIFIED (``host/owner/repo`` -- the
+    # form the carve-out doc states and ``slug_for_cwd`` emits), while
+    # ``gh pr create --repo`` supplies a BARE ``owner/repo`` slug. The carve-out
+    # must recognise the bare flag slug as the same private repo.
+    cfg = tmp_path / ".teatree.toml"
+    cfg.write_text(
+        '[teatree]\nprivate_repos = ["github.com/internalcorp/private-svc"]\nbanned_terms = ["acmecorp"]\n',
+        encoding="utf-8",
+    )
+    return cfg
+
+
 def _verdict(command: str, cwd: Path | None, config_path: Path) -> str:
     """Return ``"allow"`` or ``"block"`` for a Bash ``command`` under ``config``.
 
@@ -196,6 +210,12 @@ class TestMustAllow:
         cmd = 'gh pr create -R internalcorp/svc --body "acmecorp internal" && git push origin main'
         assert _verdict(cmd, None, config) == "allow"
 
+    def test_host_qualified_allowlist_allows_bare_repo_flag_private_post(self, host_qualified_config: Path) -> None:
+        # #2067: a host-qualified allowlist entry must downgrade a bare
+        # ``--repo owner/name`` post (the gh pr create flag form).
+        cmd = 'gh pr create --repo internalcorp/private-svc --title fix --body "acmecorp rollout"'
+        assert _verdict(cmd, None, host_qualified_config) == "allow"
+
 
 class TestMustDeny:
     """Real leak boundaries the gate must scan/block."""
@@ -227,6 +247,12 @@ class TestMustDeny:
         # runs before any skip short-circuit.
         cmd = f'gh pr create -R acme-internal/x --title "feat: acmecorp" --body "token {_FAKE_SECRET}"'
         assert _verdict(cmd, None, config) == "block"
+
+    def test_host_qualified_allowlist_still_blocks_public_repo_post(self, host_qualified_config: Path) -> None:
+        # #2067 must-DENY: a host-qualified private allowlist must NOT weaken the
+        # public surface -- a banned term toward the public repo still blocks.
+        cmd = 'gh pr create --repo souliane/teatree --title fix --body "acmecorp leak"'
+        assert _verdict(cmd, None, host_qualified_config) == "block"
 
     def test_secret_on_public_post_blocks(self, config: Path) -> None:
         cmd = f'gh pr create -R souliane/teatree --title "x" --body "token {_FAKE_SECRET}"'
