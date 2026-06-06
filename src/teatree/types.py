@@ -133,7 +133,7 @@ class ScannerError(RuntimeError):
     Raised by a scanner (or by a backend method a scanner calls) when an
     auth / rate-limit / missing-scope / network failure prevents it from
     returning a meaningful signal list this tick. The dispatcher
-    (:func:`teatree.loop.tick_jobs._run_job`) catches it, records the
+    (:func:`teatree.loop.domain_jobs._run_job`) catches it, records the
     error on the tick report, DMs the user once per day per
     ``(scanner, error_class)``, and skips THAT scanner for one tick —
     the rest of the tick continues. The next tick re-tries the failing

@@ -26,7 +26,7 @@ from typing import Final
 import pytest
 
 import hooks.scripts.hook_router as router
-from teatree.core.privacy_gate import scan_for_publication
+from teatree.core.gates.privacy_gate import scan_for_publication
 from teatree.eval import transcript_conformance as tc
 from teatree.eval.session_transcript import parse_session_jsonl
 from teatree.eval.transcript_conformance import INVARIANT_REGISTRY, Invariant, render_report, render_report_json, replay

@@ -6,7 +6,7 @@ these constants via :func:`teatree.loops.registry.iter_loops` and routes
 each tick through the enabled subset on its configured cadence.
 
 The ``build_jobs`` callable returns the list of :class:`_ScannerJob`
-records (the legacy :mod:`teatree.loop.tick_jobs` shape) that the
+records (the legacy :mod:`teatree.loop.job_identity` shape) that the
 orchestrator hands off to the existing :func:`teatree.loop.dispatch.dispatch`
 pipeline. This preserves wire compatibility — the loop's plumbing under
 the orchestrator is unchanged, only the *grouping* is new.
@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend, MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
+    from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.notion_view import NotionLike
-    from teatree.loop.tick_jobs import _ScannerJob
 
 
 class BuildJobsContext(TypedDict, total=False):

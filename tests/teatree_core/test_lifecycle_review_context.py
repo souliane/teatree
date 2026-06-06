@@ -25,17 +25,17 @@ from django.test import TestCase
 from django_fsm import TransitionNotAllowed
 
 from teatree.config import UserSettings
+from teatree.core.gates.review_context_gate import is_complete, recorded_review_context, review_context_required
 from teatree.core.management.commands.lifecycle import ReviewContextError
 from teatree.core.models import Session, Ticket
 from teatree.core.models.task import Task
-from teatree.core.review_context_gate import is_complete, recorded_review_context, review_context_required
 
 pytestmark = pytest.mark.django_db
 
 
 @contextmanager
 def _gate(*, required: bool) -> Iterator[None]:
-    with patch("teatree.core.review_context_gate.review_context_required", return_value=required):
+    with patch("teatree.core.gates.review_context_gate.review_context_required", return_value=required):
         yield
 
 
@@ -225,7 +225,7 @@ class TestRecordReviewContext(TestCase):
 class TestReviewContextResolvers(TestCase):
     def test_review_context_required_reads_effective_settings(self) -> None:
         with patch(
-            "teatree.core.review_context_gate.get_effective_settings",
+            "teatree.core.gates.review_context_gate.get_effective_settings",
             return_value=UserSettings(require_review_context=True),
         ):
             assert review_context_required() is True

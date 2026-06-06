@@ -315,7 +315,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
     (``acme-gh → souliane``) rendered as ``reassigned`` churn. The fix
     unions ``backend.identities`` into the alias groups passed to the
     disposition scanner. This drives the real
-    ``tick_jobs._jobs_for_backend_hosts`` builder → scan → dispatch →
+    ``scanner_factories._jobs_for_backend_hosts`` builder → scan → dispatch →
     render pipeline (integration, not a hand-rolled comparator).
     """
 
@@ -324,7 +324,7 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
     IDENTITIES: tuple[str, ...] = ("acme-gh", "souliane", "acme.work")
 
     def _disposition_scanner(self, backend: _FakeBackend) -> TicketDispositionScanner:
-        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _jobs_for_backend_hosts  # noqa: PLC0415
 
         jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)
         scanner = next(j.scanner for j in jobs if j.scanner.name == "ticket_dispositions")
@@ -389,12 +389,12 @@ class TicketDispositionBackendIdentitySelfGroupTests(TestCase):
         """
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.loop.tick_jobs import _jobs_for_backend_hosts  # noqa: PLC0415
+        from teatree.loop.scanner_factories import _jobs_for_backend_hosts  # noqa: PLC0415
 
         # An explicit non-empty groups tuple skips the union branch entirely.
         backend = _FakeBackend(_Host(user="acme-gh"), name=self.OVERLAY, identities=("acme-gh",))
         with patch(
-            "teatree.loop.tick_jobs._identity_alias_groups_for_overlay",
+            "teatree.loop.scanner_factories._identity_alias_groups_for_overlay",
             return_value=(("explicit", "group"),),
         ):
             jobs = _jobs_for_backend_hosts(backend, self.OVERLAY)

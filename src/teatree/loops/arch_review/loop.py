@@ -6,7 +6,7 @@ from teatree.loops.base import MiniLoop
 
 if TYPE_CHECKING:
     from teatree.core.backend_factory import OverlayBackends
-    from teatree.loop.tick_jobs import _ScannerJob
+    from teatree.loop.job_identity import _ScannerJob
 
 
 def _build_jobs(
@@ -14,7 +14,8 @@ def _build_jobs(
     backends: "list[OverlayBackends] | None" = None,
     **_: object,
 ) -> "list[_ScannerJob]":
-    from teatree.loop.tick_jobs import Domain, jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.job_identity import Domain  # noqa: PLC0415
 
     if not backends:
         return []

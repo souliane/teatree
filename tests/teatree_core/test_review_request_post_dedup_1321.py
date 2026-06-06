@@ -22,7 +22,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.backends import slack
-from teatree.core.review_request_guard import GuardTarget
+from teatree.core.gates.review_request_guard import GuardTarget
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _CHANNEL_ID = "C0_REVIEW"

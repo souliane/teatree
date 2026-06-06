@@ -18,8 +18,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import merge_execution
-from teatree.core.merge_execution import (
+from teatree.core.merge import (
     MergeHeadMovedError,
     MergeOutcome,
     MergePreconditionError,
@@ -28,6 +27,7 @@ from teatree.core.merge_execution import (
     fetch_pr_is_draft,
     fetch_required_checks_status,
     merge_ticket_pr,
+    pr_slug_resolution,
 )
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 
@@ -128,7 +128,7 @@ class TestHostKindDetection(TestCase):
     def test_gitlab_com_issue_url_resolves_to_gitlab(self) -> None:
         ticket = _make_ticket(gitlab=True)
         clear = _clear(ticket)
-        assert merge_execution._resolve_host_kind(clear) == "gitlab"
+        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
 
     def test_self_hosted_gitlab_issue_url_resolves_to_gitlab(self) -> None:
         ticket = Ticket.objects.create(
@@ -137,12 +137,12 @@ class TestHostKindDetection(TestCase):
             issue_url=_GITLAB_SELF_HOSTED_URL,
         )
         clear = _clear(ticket)
-        assert merge_execution._resolve_host_kind(clear) == "gitlab"
+        assert pr_slug_resolution._resolve_host_kind(clear) == "gitlab"
 
     def test_github_issue_url_resolves_to_github(self) -> None:
         ticket = _make_ticket(gitlab=False)
         clear = _clear(ticket, slug="souliane/teatree", pr_id=1)
-        assert merge_execution._resolve_host_kind(clear) == "github"
+        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
 
     def test_missing_issue_url_defaults_to_github(self) -> None:
         # Back-compat: a CLEAR without a ticket / without an issue_url
@@ -157,7 +157,7 @@ class TestHostKindDetection(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
-        assert merge_execution._resolve_host_kind(clear) == "github"
+        assert pr_slug_resolution._resolve_host_kind(clear) == "github"
 
 
 class TestFetchLiveHeadShaGitLab(TestCase):
@@ -334,7 +334,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution.time.sleep"),
+            patch("teatree.core.merge.execution.time.sleep"),
             patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_transient_then_ok),
         ):
             result = execute_bound_merge(

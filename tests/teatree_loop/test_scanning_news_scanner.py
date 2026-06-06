@@ -8,7 +8,7 @@ once-a-day platform behaviour, not coupled to delivery velocity.
 
 The scanner is teatree-CORE and overlay-agnostic in its module: the
 overlay-anchor identity is injected at construction time by the wiring
-layer (``loop.tick_jobs._scanning_news_scanner``), which resolves
+layer (``loop.global_scanner_factories._scanning_news_scanner``), which resolves
 :func:`teatree.config.discover_active_overlay`. The queued
 :class:`Task` is anchored at a placeholder Ticket carrying that
 resolved overlay name so the dispatcher routes through the standard
@@ -252,10 +252,10 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_default_core_config_builds_scanner(self) -> None:
         """Default core config (disabled=False) → wiring produces a scanner."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": self._patched_settings()})(),
         ):
             scanner = _scanning_news_scanner()
@@ -265,10 +265,10 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_disabled_in_core_config_skips_wiring(self) -> None:
         """Escape hatch: ``scanning_news_disabled = True`` → no scanner."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),
@@ -280,10 +280,10 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
         """Tuned core config flows through to the scanner kwargs."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),
@@ -302,10 +302,10 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_ask_gate_defaults_on_in_wiring(self) -> None:
         """#1391 — default core config wires the scanner with require_approval=True."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": self._patched_settings()})(),
         ):
             scanner = _scanning_news_scanner()
@@ -314,10 +314,10 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_ask_gate_opt_out_propagates_in_wiring(self) -> None:
         """#1391 — ask_before_creating_news_tickets=false flows to require_approval=False."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),
@@ -331,16 +331,16 @@ class ScanningNewsWiringTests(TestCase):
     def test_wiring_resolves_overlay_name_from_discovery(self) -> None:
         """#1267 — wiring layer reads overlay name from ``discover_active_overlay``."""
         from teatree.config import OverlayEntry  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         discovered = OverlayEntry(name="t3-teatree", overlay_class="")
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": self._patched_settings()})(),
             ),
             patch(
-                "teatree.loop.tick_jobs.discover_active_overlay",
+                "teatree.loop.global_scanner_factories.discover_active_overlay",
                 return_value=discovered,
             ),
         ):
@@ -350,15 +350,15 @@ class ScanningNewsWiringTests(TestCase):
 
     def test_wiring_falls_back_to_canonical_when_no_overlay_discovered(self) -> None:
         """Defensive default — no installed overlay still queues against the canonical name."""
-        from teatree.loop.tick_jobs import _scanning_news_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _scanning_news_scanner  # noqa: PLC0415
 
         with (
             patch(
-                "teatree.loop.tick_jobs.load_config",
+                "teatree.loop.global_scanner_factories.load_config",
                 return_value=type("Cfg", (), {"user": self._patched_settings()})(),
             ),
             patch(
-                "teatree.loop.tick_jobs.discover_active_overlay",
+                "teatree.loop.global_scanner_factories.discover_active_overlay",
                 return_value=None,
             ),
         ):

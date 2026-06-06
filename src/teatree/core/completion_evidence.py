@@ -8,7 +8,7 @@ The phantom-completion then surfaces later as a "done-but-not-done" bug.
 
 A remembered rule ("done claims require artifact evidence") did not hold under
 load; this module is the deterministic substitute, mirroring the
-:mod:`teatree.core.dod_gate` shape: a pure function over the completion note,
+:mod:`teatree.core.gates.dod_gate` shape: a pure function over the completion note,
 a dedicated error subclass, and a clear message naming exactly what is missing.
 
 Scope is deliberately narrow — it is NON-breaking by construction. Two separate

@@ -1,0 +1,263 @@
+"""TeaTree config loading — ``load_config`` + the toml/logging/dir entry points.
+
+``CONFIG_PATH``, ``load_config`` (builds ``UserSettings`` from ``~/.teatree.toml``),
+the toml loader, the default Django LOGGING dict, ``load_e2e_repos``, and the
+``workspace_dir`` / ``worktrees_dir`` / ``check_for_updates`` resolvers. Split out
+of the package facade for the RUF067 init-is-re-exports-only rule; re-exported
+from ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
+per-setting resolvers live in ``resolution`` and are reached through the package
+facade at call-time (the partition's loader -> resolution edge, deferred to avoid
+the loader/resolution/discovery import cycle).
+"""
+
+import tomllib
+from pathlib import Path
+
+import teatree.config as _facade
+from teatree.config.enums import Autonomy, Mode, Speed
+from teatree.config.resolution import (
+    _resolve_enum_setting,
+    _resolve_on_behalf_post_mode,
+    _resolve_slack_voice_classifier_mode,
+)
+from teatree.config.settings import (
+    E2ERepo,
+    TeaTreeConfig,
+    UserSettings,
+    _default_handover_mirror_path,
+    _parse_disk_cache_allowlist,
+    _parse_excluded_skills,
+    _parse_user_identity_aliases,
+)
+from teatree.config_speak import resolve_speak
+from teatree.paths import DATA_DIR, get_data_dir
+from teatree.types import DEFAULT_MR_TITLE_REGEX
+from teatree.update_check import run_update_check
+
+CONFIG_PATH = Path.home() / ".teatree.toml"
+
+
+def default_logging(namespace: str) -> dict:
+    """Return a default Django LOGGING dict that writes to ``<data_dir>/logs/teatree.log``.
+
+    Usage in settings::
+
+        from teatree.config import default_logging
+        LOGGING = default_logging("my_overlay")
+    """
+    log_dir = get_data_dir(namespace) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "verbose": {
+                "format": "{asctime} {levelname} {name} {message}",
+                "style": "{",
+            },
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": str(log_dir / "teatree.log"),
+                "maxBytes": 5_000_000,
+                "backupCount": 3,
+                "formatter": "verbose",
+            },
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "verbose",
+            },
+        },
+        "root": {
+            "handlers": ["console", "file"],
+            "level": "INFO",
+        },
+        "loggers": {
+            "django.request": {"level": "INFO", "propagate": True},
+            "teatree": {"level": "DEBUG", "propagate": True},
+        },
+    }
+
+
+def _load_toml(path: Path) -> dict:
+    """Parse ``path`` as TOML, re-raising a syntax error as a named config error.
+
+    A raw ``tomllib.TOMLDecodeError`` would propagate a parser traceback
+    through ``main()`` on every ``t3`` command (even ``--help``); instead it
+    becomes a typed, message-bearing ``ValueError`` naming the file and the
+    parser's position — the same error shape the intentional invalid-``mode``
+    path raises.
+    """
+    with path.open("rb") as f:
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as exc:
+            msg = f"Malformed TOML in config file {path}: {exc}"
+            raise ValueError(msg) from exc
+
+
+def load_config(path: Path | None = None) -> TeaTreeConfig:
+    if path is None:
+        path = _facade.CONFIG_PATH
+    if not path.is_file():
+        return TeaTreeConfig()
+
+    raw = _load_toml(path)
+
+    teatree = raw.get("teatree", {})
+    workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
+    worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
+
+    raw_excluded = teatree.get("excluded_skills", [])
+    excluded_skills = [str(s) for s in raw_excluded] if isinstance(raw_excluded, list) else []
+
+    toml_mode = teatree.get("mode")
+    mode = Mode.parse(toml_mode) if toml_mode is not None else Mode.INTERACTIVE
+
+    on_behalf_post_mode, ask_before_post_on_behalf = _resolve_on_behalf_post_mode(teatree)
+
+    publish_gates = teatree.get("publish_gates", {}) if isinstance(teatree, dict) else {}
+    raw_ban = publish_gates.get("ban_close_trailers_on_namespaces", []) if isinstance(publish_gates, dict) else []
+    ban_close_trailers_on_namespaces = (
+        [str(p) for p in raw_ban if isinstance(p, str) and p] if isinstance(raw_ban, list) else []
+    )
+
+    user = UserSettings(
+        workspace_dir=workspace_dir,
+        worktrees_dir=worktrees_dir,
+        branch_prefix=teatree.get("branch_prefix", ""),
+        privacy=teatree.get("privacy", ""),
+        check_updates=teatree.get("check_updates", True),
+        timezone=teatree.get("timezone", ""),
+        contribute=bool(teatree.get("contribute", False)),
+        excluded_skills=excluded_skills,
+        redis_db_count=int(teatree.get("redis_db_count", 16)),
+        mode=mode,
+        autonomy=_resolve_enum_setting(teatree, "autonomy", Autonomy, Autonomy.BABYSIT),
+        speed=_resolve_enum_setting(teatree, "speed", Speed, Speed.MEDIUM),
+        loop_cadence_seconds=int(teatree.get("loop_cadence_seconds", 720)),
+        require_human_approval_to_merge=bool(teatree.get("require_human_approval_to_merge", True)),
+        require_human_approval_to_answer=bool(teatree.get("require_human_approval_to_answer", True)),
+        ask_before_post_on_behalf=ask_before_post_on_behalf,
+        on_behalf_post_mode=on_behalf_post_mode,
+        notify_user_via_bot=bool(teatree.get("notify_user_via_bot", True)),
+        notify_on_post_on_behalf=bool(teatree.get("notify_on_post_on_behalf", True)),
+        claude_chrome=bool(teatree.get("claude_chrome", True)),
+        agent_signature=bool(teatree.get("agent_signature", False)),
+        statusline_chain=[str(s) for s in teatree.get("statusline_chain", [])],
+        user_identity_aliases=_parse_user_identity_aliases(teatree.get("user_identity_aliases", [])),
+        repo_mode=str(teatree.get("repo_mode", "")),
+        architectural_review_disabled=bool(teatree.get("architectural_review_disabled", False)),
+        architectural_review_skill=str(teatree.get("architectural_review_skill", "ac-reviewing-codebase")),
+        architectural_review_cadence_hours=int(teatree.get("architectural_review_cadence_hours", 168)),
+        architectural_review_after_merge_count=int(teatree.get("architectural_review_after_merge_count", 25)),
+        review_skill=str(teatree.get("review_skill", "")),
+        require_review_context=bool(teatree.get("require_review_context", False)),
+        require_anti_vacuity_attestation=bool(teatree.get("require_anti_vacuity_attestation", False)),
+        scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
+        scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
+        scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+        ask_before_creating_news_tickets=bool(teatree.get("ask_before_creating_news_tickets", True)),
+        eval_local_disabled=bool(teatree.get("eval_local_disabled", False)),
+        eval_local_skill=str(teatree.get("eval_local_skill", "eval")),
+        eval_local_cadence_hours=int(teatree.get("eval_local_cadence_hours", 168)),
+        dogfood_smoke_disabled=bool(teatree.get("dogfood_smoke_disabled", False)),
+        dogfood_smoke_skill=str(teatree.get("dogfood_smoke_skill", "dogfood-smoke")),
+        dogfood_smoke_cadence_hours=int(teatree.get("dogfood_smoke_cadence_hours", 24)),
+        dogfood_smoke_overlay=str(teatree.get("dogfood_smoke_overlay", "")),
+        self_update_disabled=bool(teatree.get("self_update_disabled", False)),
+        self_update_cadence_hours=int(teatree.get("self_update_cadence_hours", 1)),
+        auto_update_reinstall=bool(teatree.get("auto_update_reinstall", False)),
+        auto_update_require_green_main=bool(teatree.get("auto_update_require_green_main", True)),
+        resource_pressure_disabled=bool(teatree.get("resource_pressure_disabled", False)),
+        resource_pressure_cadence_minutes=int(teatree.get("resource_pressure_cadence_minutes", 5)),
+        resource_pressure_min_free_interval_minutes=int(
+            teatree.get("resource_pressure_min_free_interval_minutes", 30),
+        ),
+        disk_warn_free_gb=float(teatree.get("disk_warn_free_gb", 25.0)),
+        disk_crit_free_gb=float(teatree.get("disk_crit_free_gb", 10.0)),
+        ram_warn_avail_gb=float(teatree.get("ram_warn_avail_gb", 3.0)),
+        ram_crit_avail_gb=float(teatree.get("ram_crit_avail_gb", 1.5)),
+        disk_cache_allowlist=_parse_disk_cache_allowlist(teatree.get("disk_cache_allowlist")),
+        allow_destructive_disk=bool(teatree.get("allow_destructive_disk", False)),
+        worktree_stale_days=int(teatree.get("worktree_stale_days", 30)),
+        max_worktree_gc_per_tick=int(teatree.get("max_worktree_gc_per_tick", 3)),
+        allow_destructive_ram=bool(teatree.get("allow_destructive_ram", False)),
+        ram_kill_allowlist=_parse_excluded_skills(teatree.get("ram_kill_allowlist", [])),
+        todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
+        todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
+        max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
+        clean_ignore=_parse_excluded_skills(teatree.get("clean_ignore", [])),
+        slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
+        speak=resolve_speak(teatree),
+        ban_close_trailers_on_namespaces=ban_close_trailers_on_namespaces,
+        pull_main_clone_disabled=bool(teatree.get("pull_main_clone_disabled", False)),
+        pull_main_clone_cadence_hours=int(teatree.get("pull_main_clone_cadence_hours", 1)),
+        review_nag_enabled=bool(teatree.get("review_nag_enabled", False)),
+        orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
+        e2e_mandatory_gate_enabled=bool(teatree.get("e2e_mandatory_gate_enabled", True)),
+        mr_title_regex=str(teatree.get("mr_title_regex", DEFAULT_MR_TITLE_REGEX)),
+        issue_implementer_enabled=bool(teatree.get("issue_implementer_enabled", False)),
+        issue_implementer_label=str(teatree.get("issue_implementer_label", "")),
+        issue_implementer_max_concurrent=int(teatree.get("issue_implementer_max_concurrent", 1)),
+        issue_implementer_cadence_hours=int(teatree.get("issue_implementer_cadence_hours", 1)),
+        handover_mirror_path=(
+            Path(str(teatree["handover_mirror_path"])).expanduser()
+            if teatree.get("handover_mirror_path")
+            else _default_handover_mirror_path()
+        ),
+        billing_cycle_anchor_day=int(teatree.get("billing_cycle_anchor_day", 0)),
+        sdk_monthly_credit_usd=float(teatree.get("sdk_monthly_credit_usd", 200.0)),
+    )
+
+    return TeaTreeConfig(user=user, raw=raw)
+
+
+def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
+    """Load named E2E repos from ``[e2e_repos.<name>]`` sections in ``~/.teatree.toml``.
+
+    Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir``
+    (the subdirectory containing ``playwright.config.ts``, default ``"e2e"``).
+    """
+    config = _facade.load_config(path)
+    repos = []
+    for name, entry in config.raw.get("e2e_repos", {}).items():
+        repos.append(
+            E2ERepo(
+                name=name,
+                url=entry.get("url", ""),
+                branch=entry.get("branch", "main"),
+                e2e_dir=entry.get("e2e_dir", "e2e"),
+            )
+        )
+    return repos
+
+
+def workspace_dir() -> Path:
+    """Canonical workspace directory (where main repo clones live)."""
+    from django.conf import settings  # noqa: PLC0415
+
+    if hasattr(settings, "T3_WORKSPACE_DIR"):
+        return Path(settings.T3_WORKSPACE_DIR)
+    return _facade.load_config().user.workspace_dir
+
+
+def worktrees_dir() -> Path:
+    """Canonical worktrees directory (where ticket worktrees are created)."""
+    from django.conf import settings  # noqa: PLC0415
+
+    if hasattr(settings, "T3_WORKTREES_DIR"):
+        return Path(settings.T3_WORKTREES_DIR)
+    return _facade.load_config().user.worktrees_dir
+
+
+def check_for_updates(*, force: bool = False) -> str | None:
+    """Resolve a "new release available" notice from config + update_check.
+
+    Reads ``check_updates`` from user config and delegates to
+    :func:`teatree.update_check.run_update_check`. The implementation
+    lives in :mod:`teatree.update_check` (split out for module-health
+    LOC); this wrapper is the config-aware entry point.
+    """
+    return run_update_check(check_updates=_facade.load_config().user.check_updates, force=force)

@@ -140,7 +140,7 @@ class TestVisitPhaseDodRefusalIsGraceful(TestCase):
         self._assert_graceful(DirtyWorktreeError("worktree has uncommitted changes"))
 
     def test_missing_local_e2e_refusal_is_logged_no_op(self) -> None:
-        from teatree.core.dod_gate import DodLocalE2EError  # noqa: PLC0415
+        from teatree.core.gates.dod_gate import DodLocalE2EError  # noqa: PLC0415
 
         self._assert_graceful(DodLocalE2EError("UI-visible ticket has no local-stack E2E"))
 

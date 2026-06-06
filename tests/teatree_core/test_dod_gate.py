@@ -21,15 +21,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import dod_gate
-from teatree.core.dod_gate import (
+from teatree.core.e2e_workitem import record_run
+from teatree.core.gates import dod_gate
+from teatree.core.gates.dod_gate import (
     DodLocalE2EError,
     check_local_e2e_dod,
     has_local_e2e_artifact,
     is_ui_visible,
     override_reason,
 )
-from teatree.core.e2e_workitem import record_run
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.models._shared import _advance_ticket_to_tested, _complete_phase_task, _init_repo_with_branch
 

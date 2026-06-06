@@ -1,29 +1,17 @@
-"""Overlay merge-guard verdict (#654).
+"""Re-export shim for :class:`MergeGuard`, now owned by :mod:`teatree.core.gates.merge_guard`.
 
-``MergeGuard`` is the return type of ``OverlayBase.can_auto_merge``.  It is an
-immutable value object — overlays construct one and return it; the scanner reads
-it and acts.
+The campaign PR5 god-module splits moved the 17 phase/ship gates into the
+``teatree.core.gates`` package. A registered overlay consumer imports
+``MergeGuard`` from the old flat ``teatree.core.merge_guard`` path; this shim
+keeps that import resolving so the split lands with no cross-repo lockstep —
+the overlay repoints to ``teatree.core.gates.merge_guard`` in its own follow-up
+after this PR merges, and this shim is deleted then.
 
-Semantics
----------
-* ``allowed=True``  → proceed with the automatic merge signal (default).
-* ``allowed=False, escalate=False`` → record a blocked signal; no merge action.
-* ``allowed=False, escalate=True``  → emit an escalation signal so the operator
-    can intervene.
+Same shape as :mod:`teatree.backends.protocols` (the PR3 re-export shim, also
+PR7-deletable). SCHEDULED FOR DELETION once every registered overlay consumer
+has repointed to ``teatree.core.gates.merge_guard``.
 """
 
-from dataclasses import dataclass
+from teatree.core.gates.merge_guard import MergeGuard
 
-
-@dataclass(frozen=True, slots=True)
-class MergeGuard:
-    """Verdict returned by ``OverlayBase.can_auto_merge``."""
-
-    allowed: bool
-    reason: str = ""
-    escalate: bool = False
-
-    @classmethod
-    def allow(cls) -> "MergeGuard":
-        """Convenience constructor for the permissive (allowed) case."""
-        return cls(allowed=True)
+__all__ = ["MergeGuard"]

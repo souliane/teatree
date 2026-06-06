@@ -224,14 +224,14 @@ def build_pr_url(*, slug: str, pr_id: int, code_host: str) -> str:
 
     GitLab uses ``/-/merge_requests/<id>``; GitHub (and the default) uses
     ``/pull/<id>``. Returns ``""`` unless *slug* is a genuine ``owner/repo``
-    identifier (per :func:`merge_execution._looks_like_owner_repo`): a CLEAR's
+    identifier (per :func:`merge.pr_slug_resolution._looks_like_owner_repo`): a CLEAR's
     ``slug`` is a *workstream* slug (e.g. ``statusline-stale-wakeup``) or a
     branch name (``fix/foo``), never a repo, so emitting
     ``github.com/<workstream>/pull/<id>`` would be a wrong-host, unclickable
     link (#1559). A caller with no real repo slug falls back to the stored PR
     URL or the ticket's issue URL instead.
     """
-    from teatree.core.merge_execution import _looks_like_owner_repo  # noqa: PLC0415
+    from teatree.core.merge import _looks_like_owner_repo  # noqa: PLC0415
 
     clean = slug.strip().strip("/")
     if not _looks_like_owner_repo(clean):

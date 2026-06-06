@@ -144,11 +144,11 @@ class BuilderTests(TestCase):
 
     def test_builds_scanner_from_settings(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _resource_pressure_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415
 
         settings = UserSettings(disk_crit_free_gb=8.0, allow_destructive_disk=True)
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": settings})(),
         ):
             scanner = _resource_pressure_scanner()
@@ -158,27 +158,27 @@ class BuilderTests(TestCase):
 
     def test_kill_switch_returns_none(self) -> None:
         from teatree.config import UserSettings  # noqa: PLC0415
-        from teatree.loop.tick_jobs import _resource_pressure_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _resource_pressure_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": UserSettings(resource_pressure_disabled=True)})(),
         ):
             assert _resource_pressure_scanner() is None
 
     def test_build_default_jobs_wires_global_scanner(self) -> None:
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
         from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
-        from teatree.loop.tick_jobs import build_default_jobs  # noqa: PLC0415
 
         fake = ResourcePressureScanner()
-        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=fake):
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=fake):
             jobs = build_default_jobs()
         assert any(j.scanner is fake and j.overlay == "" for j in jobs)
 
     def test_build_default_jobs_omits_scanner_when_disabled(self) -> None:
+        from teatree.loop.global_scanner_factories import build_default_jobs  # noqa: PLC0415
         from teatree.loop.scanners.resource_pressure import ResourcePressureScanner  # noqa: PLC0415
-        from teatree.loop.tick_jobs import build_default_jobs  # noqa: PLC0415
 
-        with patch("teatree.loop.tick_jobs._resource_pressure_scanner", return_value=None):
+        with patch("teatree.loop.global_scanner_factories._resource_pressure_scanner", return_value=None):
             jobs = build_default_jobs()
         assert not any(isinstance(j.scanner, ResourcePressureScanner) for j in jobs)

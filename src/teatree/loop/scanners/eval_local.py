@@ -14,7 +14,7 @@ The scanner mirrors :mod:`teatree.loop.scanners.scanning_news`:
     delivery velocity.
 * **Overlay anchor is injected, not baked.** A core scanner that does
     not know any overlay's name; the wiring layer
-    (``teatree.loop.tick_jobs._eval_local_scanner``) resolves the active
+    (``teatree.loop.global_scanner_factories._eval_local_scanner``) resolves the active
     overlay via :func:`teatree.config.discover_active_overlay`.
 * **Same dedup contract.** A pending or claimed ``eval_local`` task acts
     as the lock — completion (or failure) unlocks the next cadence

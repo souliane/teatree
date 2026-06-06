@@ -1,9 +1,9 @@
 """``jobs_for_domain`` partitions the per-overlay fan-out exhaustively and disjointly (#1482).
 
-The per-overlay scanner fan-out (:func:`teatree.loop.tick_jobs._jobs_for_overlay_backend`)
+The per-overlay scanner fan-out (:func:`teatree.loop.domain_jobs._jobs_for_overlay_backend`)
 is the single source of which scanners run for one overlay. ``jobs_for_domain``
 slices it by :class:`Domain` so the mini-loops consume one typed seam instead of
-reaching into ``tick_jobs`` privates. These tests pin the seam's two structural
+reaching into ``domain_jobs`` privates. These tests pin the seam's two structural
 invariants: every legacy per-overlay scanner is owned by exactly one domain
 (EXHAUSTIVE), and no scanner is owned by two domains (DISJOINT). A dropped domain
 turns the exhaustiveness assertion RED.
@@ -20,7 +20,8 @@ from django.test import TestCase
 from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
-from teatree.loop.tick_jobs import PER_OVERLAY_DOMAINS, Domain, _jobs_for_overlay_backend, jobs_for_domain
+from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
+from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain
 
 
 def _signature(job: Any) -> tuple[Any, ...]:
@@ -115,7 +116,7 @@ class JobsForDomainTodoSweepTestCase(TestCase):
     """``todo_sweep`` — emitted by the legacy per-overlay builder — is owned by a domain (#1482).
 
     The pre-seam mini-loops dropped ``todo_sweep`` (no mini-loop reproduced
-    :func:`teatree.loop.tick_jobs._todo_sweep_scanner_for`). The exhaustive
+    :func:`teatree.loop.scanner_factories._todo_sweep_scanner_for`). The exhaustive
     partition assigns it to ``Domain.TICKETS`` (it verifies overlay-scoped Task
     rows, the same surface as the active/stale ticket scanners).
     """
@@ -140,7 +141,7 @@ class JobsForDomainTodoSweepTestCase(TestCase):
         assert "todo_sweep" in tickets_names
 
 
-_SETTINGS_PATCH_TARGET = "teatree.loop.tick_jobs._effective_settings_for_overlay"
+_SETTINGS_PATCH_TARGET = "teatree.loop.scanner_factories._effective_settings_for_overlay"
 
 
 class IssueImplementerDomainPartitionTestCase(TestCase):

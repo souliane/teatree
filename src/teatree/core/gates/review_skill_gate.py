@@ -19,7 +19,7 @@ Satisfying evidence
     does not satisfy the gate — the artifact must attest the skill in force.
 
 The gate is a pure function over durable ``extra`` state, mirroring
-``teatree.core.dod_gate``. On a block it raises
+``teatree.core.gates.dod_gate``. On a block it raises
 :class:`ReviewSkillEvidenceError` with a remediation message naming the
 expected evidence; the ``visit-phase`` command surfaces it as a non-zero exit.
 """

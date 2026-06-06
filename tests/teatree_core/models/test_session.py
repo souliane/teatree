@@ -161,7 +161,7 @@ class TestSession(TestCase):
     def test_check_phases_normalizes_legacy_raw_rows_at_read_boundary(self) -> None:
         """#782: the read boundary tolerates pre-existing raw-spelling rows.
 
-        Rows written before #782 (or by ``merge_execution`` / any path
+        Rows written before #782 (or by ``merge.execution`` / any path
         that bypassed ``visit_phase``) may already hold a raw ``review``.
         ``_check_phases`` must normalize membership so a legacy row still
         satisfies the canonical ``reviewing`` requirement instead of

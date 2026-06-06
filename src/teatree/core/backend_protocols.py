@@ -132,7 +132,7 @@ class ForgeMergeResult:
 
     The backend performs the I/O and returns the unclassified
     ``(returncode, stdout, stderr)`` plus the ``merged_sha`` it parsed from a
-    successful response. Core's :mod:`teatree.core.merge_execution` runs the
+    successful response. Core's :mod:`teatree.core.merge.execution` runs the
     transient / head-moved / policy-refusal classification on these fields and
     raises the typed errors with the exact f-strings — keeping byte-for-byte
     error parity while the transport lives in the backend.
@@ -231,7 +231,7 @@ class CodeHostBackend(Protocol):
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 
-    # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge_execution``
+    # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge.execution``
     # keeps every verdict/transient/head-moved classification and error
     # f-string so the keystone path stays byte-for-byte identical across
     # forges. The raw ``gh``/``glab`` argv is the canonical chokepoint home

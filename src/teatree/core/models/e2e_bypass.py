@@ -1,6 +1,6 @@
 """Single-use user-approval channel for the mandatory-E2E gate bypass (#1967).
 
-The mandatory-E2E gate (``teatree.core.e2e_mandatory_gate``) refuses to ship or
+The mandatory-E2E gate (``teatree.core.gates.e2e_mandatory_gate``) refuses to ship or
 CLEAR a customer-display-impacting change without recorded green E2E evidence.
 Its only bypass must require **explicit user approval** — never the implementing
 agent's own judgment — so it mirrors the already-validated ``OnBehalfApproval``

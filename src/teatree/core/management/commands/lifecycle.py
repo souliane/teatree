@@ -9,12 +9,12 @@ from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
+from teatree.core.gates.review_context_gate import ReviewContextError, check_review_context
+from teatree.core.gates.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.phases import normalize_phase, phase_transition
-from teatree.core.review_context_gate import ReviewContextError, check_review_context
-from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +291,7 @@ class Command(TyperCommand):
         """Record the SHA-bound anti-vacuity attestation backing review-request/merge (#1829).
 
         Stamps ``ticket.extra['anti_vacuity_attestation']`` so the anti-vacuity
-        gate (``teatree.core.anti_vacuity_gate``) can attest, before the
+        gate (``teatree.core.gates.anti_vacuity_gate``) can attest, before the
         ``request review`` / merge transition, that the diff was mapped to the
         acceptance criteria AND every new regression test was proven
         anti-vacuous (revert the production fix -> the test goes RED). The

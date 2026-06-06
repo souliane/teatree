@@ -232,7 +232,7 @@ class PrSweepScanner:
     #: reviewing task so the loop dispatches the cold review whose recorded
     #: verdict the next sweep merges on. Only meaningful on the solo-overlay
     #: path (full autonomy + ``require_human_approval_to_merge=false``) — set
-    #: by ``tick_jobs`` exactly there; a human-approval overlay never enters
+    #: by ``scanner_factories`` exactly there; a human-approval overlay never enters
     #: ``_evaluate_solo_overlay`` so it is never armed here in practice.
     auto_review_dispatch: bool = False
     review_dispatcher: "ReviewDispatcher | None" = None

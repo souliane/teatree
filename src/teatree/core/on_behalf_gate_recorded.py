@@ -8,7 +8,7 @@ channel needs the :class:`~teatree.core.models.on_behalf_approval.OnBehalfApprov
 so its orchestration lives here in ``teatree.core`` (which legitimately
 depends on both ``teatree.on_behalf_gate`` and ``teatree.core.models``),
 exactly as #953 split ``teatree.utils.approval`` (pure) from
-``teatree.core.db_approval_gate`` (ORM-backed).
+``teatree.core.gates.db_approval_gate`` (ORM-backed).
 
 :func:`require_on_behalf_approval` is the single chokepoint helper every
 on-behalf publish path calls *before* it publishes. Its outcome depends

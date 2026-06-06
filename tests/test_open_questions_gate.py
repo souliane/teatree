@@ -15,14 +15,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
-from teatree.core.management.commands._ensure_pr import create_or_defer_pr
-from teatree.core.models import Ticket, Worktree
-from teatree.core.open_questions_gate import (
+from teatree.core.gates.open_questions_gate import (
     OPEN_QUESTIONS_HINT,
     has_open_questions_section,
     warn_if_open_questions_missing,
 )
+from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
+from teatree.core.management.commands._ensure_pr import create_or_defer_pr
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import reset_overlay_cache
 from teatree.core.runners.ship import ShipExecutor
 from tests.teatree_core.conftest import CommandOverlay
@@ -57,14 +57,14 @@ class TestHasOpenQuestionsSection:
 
 class TestWarnIfMissing:
     def test_warns_and_returns_message_when_missing(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.core.open_questions_gate"):
+        with caplog.at_level(logging.WARNING, logger="teatree.core.gates.open_questions_gate"):
             message = warn_if_open_questions_missing("feat: x\n\nplain body")
         assert message is not None
         assert OPEN_QUESTIONS_HINT in message
         assert any(OPEN_QUESTIONS_HINT in record.message for record in caplog.records)
 
     def test_silent_when_section_present(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.core.open_questions_gate"):
+        with caplog.at_level(logging.WARNING, logger="teatree.core.gates.open_questions_gate"):
             message = warn_if_open_questions_missing("feat: x\n\n## Open questions & assumptions\n- none")
         assert message is None
         assert caplog.records == []
@@ -105,13 +105,13 @@ class TestShipExecutorEmitsWarn(TestCase):
         return host
 
     def test_warns_when_pr_body_lacks_section(self) -> None:
-        with self.assertLogs("teatree.core.open_questions_gate", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.gates.open_questions_gate", level="WARNING") as logs:
             host = self._run_ship("Plain body, no section.")
         host.create_pr.assert_called_once()
         assert any(OPEN_QUESTIONS_HINT in line for line in logs.output)
 
     def test_silent_when_pr_body_has_section(self) -> None:
-        logger = logging.getLogger("teatree.core.open_questions_gate")
+        logger = logging.getLogger("teatree.core.gates.open_questions_gate")
         with patch.object(logger, "warning") as mock_warning:
             host = self._run_ship("## Open questions & assumptions\n\n- none")
         host.create_pr.assert_called_once()
@@ -138,13 +138,13 @@ class TestOrphanPathEmitsWarn(TestCase):
         return host
 
     def test_warns_when_orphan_pr_body_lacks_section(self) -> None:
-        with self.assertLogs("teatree.core.open_questions_gate", level="WARNING") as logs:
+        with self.assertLogs("teatree.core.gates.open_questions_gate", level="WARNING") as logs:
             host = self._create_orphan_pr("plain body, no section")
         host.create_pr.assert_called_once()
         assert any(OPEN_QUESTIONS_HINT in line for line in logs.output)
 
     def test_silent_when_orphan_pr_body_has_section(self) -> None:
-        logger = logging.getLogger("teatree.core.open_questions_gate")
+        logger = logging.getLogger("teatree.core.gates.open_questions_gate")
         with patch.object(logger, "warning") as mock_warning:
             host = self._create_orphan_pr("## Open questions & assumptions\n- none")
         host.create_pr.assert_called_once()

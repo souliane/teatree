@@ -1108,7 +1108,7 @@ class TestValidateOverlayKnownList:
             patch("teatree.cli.slack_setup.CONFIG_PATH", config_path),
             patch("teatree.config.CONFIG_PATH", config_path),
             patch("importlib.metadata.entry_points", return_value=[real_ep]),
-            patch("teatree.config._resolve_ep_project_path", return_value=None),
+            patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
             pytest.raises(typer.Exit),
             redirect_stdout(out),
         ):

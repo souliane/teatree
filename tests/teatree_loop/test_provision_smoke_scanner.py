@@ -126,10 +126,10 @@ class AcmeProvisionSmokeWiringTests(TestCase):
         return UserSettings(**overrides)
 
     def test_default_core_config_builds_scanner(self) -> None:
-        from teatree.loop.tick_jobs import _dogfood_smoke_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type("Cfg", (), {"user": self._patched_settings()})(),
         ):
             scanner = _dogfood_smoke_scanner()
@@ -138,10 +138,10 @@ class AcmeProvisionSmokeWiringTests(TestCase):
         assert scanner.cadence_hours == 24
 
     def test_disabled_in_core_config_skips_wiring(self) -> None:
-        from teatree.loop.tick_jobs import _dogfood_smoke_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),
@@ -153,10 +153,10 @@ class AcmeProvisionSmokeWiringTests(TestCase):
         assert scanner is None
 
     def test_custom_cadence_propagates_through_wiring(self) -> None:
-        from teatree.loop.tick_jobs import _dogfood_smoke_scanner  # noqa: PLC0415
+        from teatree.loop.global_scanner_factories import _dogfood_smoke_scanner  # noqa: PLC0415
 
         with patch(
-            "teatree.loop.tick_jobs.load_config",
+            "teatree.loop.global_scanner_factories.load_config",
             return_value=type(
                 "Cfg",
                 (),

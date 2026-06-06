@@ -14,9 +14,9 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core import local_stack_gate as gate_mod
 from teatree.core import reconcile as reconcile_mod
 from teatree.core import worktree_env as worktree_env_mod
+from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import compose_project
 
