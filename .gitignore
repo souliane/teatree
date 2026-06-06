@@ -10,6 +10,7 @@ e2e/snapshot_tests_failures/
 .coverage
 *.egg-info/
 dist/
+!dist/sbom.json
 build/
 node_modules/
 .claude/

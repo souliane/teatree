@@ -373,12 +373,12 @@ jobs:
           python-version: "3.13"
       - run: uv sync
       - run: scripts/hooks/generate_sbom.sh
-      - run: git diff --exit-code sbom.json
+      - run: git diff --exit-code dist/sbom.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: sbom
-          path: sbom.json
+          path: dist/sbom.json
 
   test:
     # Heavy lane. Skipped ONLY on a provably pure-docs/markdown PR diff
