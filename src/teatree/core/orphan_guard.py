@@ -9,7 +9,7 @@ between weekly cleanups and are easy to miss when closing a session.
 This module is the single source of truth used by the three enforcement
 points that keep the no-orphan invariant:
 
-- pre-push CLI (``t3 pr ensure-pr``) — auto-create a PR before pushing an
+- pre-push CLI (``t3 teatree pr ensure-pr``) — auto-create a PR before pushing an
     orphan so the branch has a tracking artifact from the first push.
 - session-end hook — surface orphans in ``additionalContext`` so the agent
     sees them before the session closes.

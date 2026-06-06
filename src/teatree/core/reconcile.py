@@ -5,7 +5,7 @@ Postgres DBs, docker containers, redis slot, env cache files — and returns
 a ``Drift`` bundle enumerating what's out of sync.
 
 Drift objects are typed (per-finding dataclass) so callers can inspect and
-act without string-parsing a log.  ``t3 workspace doctor`` is the primary
+act without string-parsing a log.  ``t3 teatree workspace doctor`` is the primary
 consumer; ``worktree start`` calls ``reconcile_ticket`` before provisioning
 and refuses when drift is present.
 """

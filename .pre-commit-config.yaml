@@ -109,7 +109,7 @@ repos:
         pass_filenames: false
         always_run: true
       - id: jscpd
-        name: jscpd (copy/paste duplication in src/teatree — threshold 0)
+        name: jscpd (copy/paste duplication in src/teatree — minLines 6 / warn-tolerance 2%)
         entry: jscpd --config .jscpd.json src/teatree
         language: node
         additional_dependencies: ["jscpd@4.2.4"]
@@ -273,6 +273,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
+      - id: broad-except-must-observe
+        name: Broad-except must log/raise (warn-first, manual stage)
+        language: system
+        entry: uv run python scripts/hooks/check_broad_except.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
       - id: skill-prose-ban
         name: Ban new imperative rules in skill MD without companion code (#140)
         language: system

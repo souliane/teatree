@@ -585,7 +585,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         Unlike ``mark_reviewed_externally`` (fired *from* an
         already-COMPLETED task) this transition is driven directly via
-        ``t3 ticket transition <id> mark_review_no_action`` while the
+        ``t3 teatree ticket transition <id> mark_review_no_action`` while the
         reviewing task is still PENDING, so it consumes that task itself.
         It records ``last_review_state = REVIEWED_NO_ACTION`` (NEVER
         APPROVED): the dedup's APPROVED-only suppression therefore does not

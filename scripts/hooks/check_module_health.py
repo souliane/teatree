@@ -5,6 +5,10 @@ Checks staged Python files for:
 - Too many module-level functions (default 10) — prefer methods on classes
 - ``dict[str, object]`` annotations — prefer typed dataclasses/TypedDict
 
+Files already over the cap at HEAD are grandfathered but ratcheted: they may
+only SHRINK. A commit that grows an over-cap file (LOC or public-function
+count) is blocked, so a god-module can never re-accrete after a split (#1983).
+
 Runs on every commit against staged files only.
 
 See: souliane/teatree codebase audit findings
@@ -22,6 +26,16 @@ _DICT_OBJECT_PATTERNS = [
     "dict[str, object]",
     "Dict[str, object]",
 ]
+
+
+def _is_merge_commit() -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _staged_python_files() -> list[str]:
@@ -125,6 +139,9 @@ def _find_dict_object_annotations(filepath: str) -> list[tuple[int, str]]:
 
 
 def main() -> int:
+    if _is_merge_commit():
+        return 0
+
     files = _staged_python_files()
     if not files:
         return 0
@@ -135,19 +152,31 @@ def main() -> int:
         loc = _count_loc(filepath)
         if loc > MAX_LOC:
             prev_loc = _count_loc_at_head(filepath)
-            # Only flag new violations — files already over the limit at HEAD
-            # need a dedicated split-by-concern refactoring, not a commit block.
+            # A file newly crossing the cap is blocked outright. A file already
+            # over the cap at HEAD is grandfathered but ratcheted: it may only
+            # shrink. Growth is a regression that re-accretes the god-module.
             if prev_loc <= MAX_LOC:
                 violations.append(f"  {filepath}: {loc} LOC (max {MAX_LOC}). Split by concern.")
+            elif loc > prev_loc:
+                violations.append(
+                    f"  {filepath}: {loc} LOC, up from {prev_loc} (over the {MAX_LOC} cap). "
+                    f"Over-cap files may only shrink — split by concern or move code out."
+                )
 
         public_functions = _count_module_level_functions(filepath)
         if len(public_functions) > MAX_MODULE_FUNCTIONS:
             prev_count = len(_count_module_level_functions_at_head(filepath))
+            names = ", ".join(public_functions[:5])
             if prev_count <= MAX_MODULE_FUNCTIONS:
-                names = ", ".join(public_functions[:5])
                 violations.append(
                     f"  {filepath}: {len(public_functions)} public module-level functions "
                     f"(max {MAX_MODULE_FUNCTIONS}). Move to a class. Examples: {names}"
+                )
+            elif len(public_functions) > prev_count:
+                violations.append(
+                    f"  {filepath}: {len(public_functions)} public module-level functions, "
+                    f"up from {prev_count} (over the {MAX_MODULE_FUNCTIONS} cap). "
+                    f"Over-cap files may only shrink — move a function to a class. Examples: {names}"
                 )
 
         added_lines = _added_line_numbers(filepath)

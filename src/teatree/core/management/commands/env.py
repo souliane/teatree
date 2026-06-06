@@ -1,4 +1,4 @@
-"""``t3 env`` — inspect and mutate worktree env via the DB.
+"""``t3 teatree env`` — inspect and mutate worktree env via the DB.
 
 The env cache on disk is a derived artifact.  These subcommands read
 from / write to the authoritative source (Django models + overlay
@@ -219,6 +219,6 @@ class _MigrationOutcome:
     message: str
 
 
-def main() -> int:
+def main() -> int:  # pragma: no cover — module entry point (Django dispatch glue)
     execute_from_command_line([sys.argv[0], "env", *sys.argv[1:]])
     return 0

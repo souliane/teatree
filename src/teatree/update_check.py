@@ -27,7 +27,7 @@ def run_update_check(*, check_updates: bool, force: bool = False) -> str | None:
     :class:`teatree.config.UserSettings`); the caller resolves it from
     config and passes it in so this module stays config-free. *force*
     bypasses both the opt-out and the cache (used by ``t3 config
-    check-updates`` to refresh on demand).
+    check-update`` to refresh on demand).
     """
     if not force and not check_updates:
         return None

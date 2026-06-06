@@ -1,6 +1,6 @@
 """Idempotency ledger for ac-reviewing-codebase auto-fix sweep (#1295 capability H).
 
-The ``t3 loop review`` slot's nightly assess sweep enumerates registered
+The loop's review slot's nightly assess sweep enumerates registered
 skill repos, runs ``t3 assess run`` against each, and emits one
 ``skill_drift_detected`` signal per *new* finding. :class:`AssessFinding`
 is the dedup ledger keyed on ``(repo, file_path, finding_fingerprint)``;

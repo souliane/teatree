@@ -100,6 +100,13 @@ def test_only_deterministic_invariants_ship() -> None:
 # ── privacy ──────────────────────────────────────────────────────────────────
 
 
+# Floor on a fixture payload string before it counts as a leak-check token. A
+# >= 4 floor let a 1-3 char sensitive payload slip the report-privacy check; the
+# floor is 1 (every non-empty payload). The current fixtures are the must-ALLOW
+# corpus and stay clean at this floor — the report echoes no payload substring.
+_MIN_PAYLOAD_TOKEN_LEN = 1
+
+
 def _fixture_payload_tokens() -> set[str]:
     """Sensitive substrings from EVERY fixture the report must never echo."""
     tokens: set[str] = set()
@@ -107,7 +114,7 @@ def _fixture_payload_tokens() -> set[str]:
         events = parse_session_jsonl(fixture.read_text(encoding="utf-8"))
         for event in events:
             for value in (event.tool_input or {}).values():
-                if isinstance(value, str) and len(value) >= 4:
+                if isinstance(value, str) and len(value) >= _MIN_PAYLOAD_TOKEN_LEN:
                     tokens.add(value)
     return tokens
 
