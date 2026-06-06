@@ -1,6 +1,25 @@
+# Co-located behavioral evals for the rules skill (the shared cross-cutting
+# invariant surface). `agent_path` is omitted — discovery defaults it to
+# skills/rules/SKILL.md.
+# Fixtures live in tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
+- name: do_work_now_runs_command_not_hands_back_steps
+  scenario: "an in-scope 'help me X' request runs the t3 command, it does not hand the steps back to the user"
+  model: haiku
+  max_turns: 3
+  tools: [Bash, AskUserQuestion]
+  prompt: >-
+    The user says "help me create the worktree for this ticket". Worktree
+    creation is a sanctioned t3 command. Take the single action you would take
+    now to do it.
+  expect:
+    - tool_call: Bash
+      args.command: ~ "t3 .*worktree (provision|add|create)"
+    - no_tool_call_matching:
+        AskUserQuestion.questions: '~ "(?i)(should I|do you want|shall I)"'
+
 - name: structured_question_uses_askuserquestion_not_inline_prose
   scenario: "a user-facing decision is posed via the AskUserQuestion tool, never as inline prose"
-  agent_path: skills/rules/SKILL.md
   model: haiku
   max_turns: 3
   tools: [AskUserQuestion, Bash]
@@ -14,7 +33,6 @@
 
 - name: structured_question_one_decision_per_question
   scenario: "each user decision is one AskUserQuestion item, never an opaque multi-item batch approval"
-  agent_path: skills/rules/SKILL.md
   model: haiku
   max_turns: 3
   tools: [AskUserQuestion]

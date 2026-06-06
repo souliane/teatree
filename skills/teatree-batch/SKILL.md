@@ -1,6 +1,7 @@
 ---
 name: teatree-batch
 description: Unattended batch ticket processing — work through a prioritized backlog one ticket at a time, sequentially. Create worktree, implement with TDD, self-review, push, merge, clean up. Skip tickets that need design decisions. Use when the user says "batch mode", "work unattended", "tackle tickets", or "quick wins".
+eval_exempt: batch-mode orchestration that delegates each ticket to the code/ship/review skills; their co-located + flat evals grade the actual per-step behaviour
 requires:
   - teatree
 metadata:

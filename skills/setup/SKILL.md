@@ -1,6 +1,7 @@
 ---
 name: setup
 description: Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding. Use when user says "setup skills", "install skills", "bootstrap skills", or needs first-time teatree installation.
+eval_exempt: first-time bootstrap/validation reference; one-shot installation steps, no recurring agent decision surface
 compatibility: macOS/Linux, git, python3.13+, uv.
 metadata:
   version: 0.0.1

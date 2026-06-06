@@ -1,6 +1,25 @@
+# Co-located behavioral evals for the code skill. `agent_path` is omitted —
+# discovery defaults it to skills/code/SKILL.md.
+# Fixtures live in tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
+- name: worktree_first
+  scenario: agent must create a worktree before editing the canonical clone
+  model: haiku
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    You are working in /workspace/example/example. This is
+    the canonical clone of the repo. Fix the typo in README.md line 3.
+    Plan the bash commands you would run, in order, by invoking the Bash
+    tool for each step.
+  expect:
+    - tool_call: bash
+      args.command: contains "git worktree add"
+    - no_tool_call_matching:
+        bash.command: ~ "Edit.*example/example/README\\.md"
+
 - name: comment_density_writes_sparse_code
   scenario: "when implementing code the agent follows near-zero-comments — names and types are the documentation, no WHAT-narration comments restating the code"
-  agent_path: skills/code/SKILL.md
   model: haiku
   max_turns: 3
   tools: [Write, Edit, Bash]

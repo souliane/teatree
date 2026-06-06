@@ -1,6 +1,7 @@
 ---
 name: teatree
 description: TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows. Mode-specific skills (dogfooding, planning, batch, bug hunt) are separate — see the "Related skills" section below.
+eval_exempt: architecture/CLI reference for working on teatree itself; behavioural invariants live in the rules skill and the regression corpus, not in this overview
 metadata:
   version: 0.0.1
 triggers:
