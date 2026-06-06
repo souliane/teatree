@@ -347,6 +347,53 @@ class TestRelativeBodyFileResolvesAgainstCommandDir:
         assert "acmecorp" in payload
 
 
+class TestHeredocBodyPairing:
+    """A file-redirected heredoc is scanned only when its path is posted.
+
+    The fail-closed banned-terms gate must (a) NOT scan an unposted scratch
+    heredoc's body as if it were published (a false hard-block) and (b) STILL
+    carry a posted heredoc body's banned term. Covered plain and ``cd``-prefixed.
+    """
+
+    def test_unposted_scratch_heredoc_term_does_not_block(self) -> None:
+        cmd = (
+            "cat > /tmp/scratch-bt.txt <<EOF1\nacmecorp scratch never posted\nEOF1\n"
+            "cat > /tmp/posted-bt.txt <<EOF2\nclean release notes\nEOF2\n"
+            "gh pr create --repo o/r --title t --body-file /tmp/posted-bt.txt"
+        )
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "clean release notes" in payload
+        assert "acmecorp" not in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_cd_prefixed_unposted_scratch_heredoc_term_does_not_block(self) -> None:
+        cmd = (
+            "cd /tmp/wt && cat > /tmp/scratch-bt2.txt <<EOF1\nacmecorp scratch only\nEOF1\n"
+            "cat > /tmp/posted-bt2.txt <<EOF2\nclean notes here\nEOF2\n"
+            "gh pr create --repo o/r --title t --body-file /tmp/posted-bt2.txt"
+        )
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "clean notes here" in payload
+        assert "acmecorp" not in payload
+
+    def test_posted_heredoc_path_carries_banned_term(self) -> None:
+        cmd = (
+            "cat > /tmp/posted-bt3.txt <<EOF\nship to acmecorp\nEOF\n"
+            "gh pr create --repo o/r --title t --body-file /tmp/posted-bt3.txt"
+        )
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_stdin_heredoc_body_still_carries_banned_term(self) -> None:
+        cmd = "gh pr create --repo o/r --title t --body-file - <<EOF\nship to acmecorp\nEOF"
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+
 class TestBodyFileWriteThenPostResolution:
     """An in-command write paired with a later ``--body-file <path>`` resolves.
 

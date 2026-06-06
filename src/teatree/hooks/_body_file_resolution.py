@@ -21,15 +21,144 @@ one-directionally. ``_command_parser`` calls back into here via a lazy import
 (at call time, not module load) so no cycle forms.
 """
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
 from teatree.hooks._command_parser import FAIL_CLOSED_SENTINEL, attached_value, read_file_arg
+from teatree.hooks._shell_lexer import Token, TokenKind, split_commands
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
 _BODY_FILE_FLAG_NAMES: Final[frozenset[str]] = frozenset({"--body-file", "--description-file", "--file"})
+
+_HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    re.DOTALL,
+)
+
+# A redirect (``> path`` / ``>| path`` / ``>> path``) that writes a heredoc
+# body to a file, e.g. ``cat > /tmp/msg.txt <<'EOF' … EOF``. The common agent
+# idiom is to write a body to a temp file then ``git commit -F /tmp/msg.txt`` /
+# ``gh ... --body-file /tmp/msg.txt`` -- at PreToolUse scan time that file does
+# NOT exist yet (the hook runs BEFORE the command), so the only place the body
+# lives is the in-command heredoc. This regex pairs the redirect target path
+# with the heredoc delimiter so a later ``-F``/``--body-file <path>`` reference
+# resolves to the body the command is about to write there (#126).
+_HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    re.DOTALL,
+)
+
+# Commands whose operands ARE the body content when redirected to a file
+# (an agent's two idioms for materialising a body temp file before a post).
+_REDIRECT_WRITER_COMMANDS: Final[frozenset[str]] = frozenset({"printf", "echo"})
+# Output-redirect operator prefixes, longest-first so ``>>`` precedes ``>``;
+# matched as a prefix to also catch the unspaced glued ``>$f`` lexer token.
+_REDIRECT_OPERATOR_PREFIXES: Final[tuple[str, ...]] = (">>", ">|", ">")
+
+
+def _heredoc_file_bodies(command: str) -> dict[str, str]:
+    """Map each ``> path <<EOF … EOF`` redirect target to its heredoc body.
+
+    Resolves the agent idiom of writing a body to a temp file and then
+    referencing it via ``git commit -F <path>`` / ``--body-file <path>``. The
+    path is normalised (surrounding quotes stripped) so a quoted redirect target
+    matches the later bare reference (#126).
+    """
+    bodies: dict[str, str] = {}
+    for match in _HEREDOC_TO_FILE_RE.finditer(command):
+        bodies[match.group("path").strip("'\"")] = match.group("body")
+    return bodies
+
+
+def _split_redirect_token(word: str) -> str | None:
+    """Return the redirect target if ``word`` is/begins a write redirect, else None.
+
+    A bare operator (``>``/``>>``/``>|``) returns ``""`` — the target is the
+    NEXT word. An unspaced glued form (``>$f``, ``>/tmp/x``) returns the target
+    suffix. A word that does not start with a redirect operator returns ``None``.
+    """
+    for prefix in _REDIRECT_OPERATOR_PREFIXES:
+        if word.startswith(prefix):
+            return word[len(prefix) :]
+    return None
+
+
+def _redirect_target_and_operands(words: list[str]) -> tuple[str, list[str]]:
+    """Return the write-redirect target token and the writer operands preceding it.
+
+    Returns ``("", [])`` when the segment carries no output redirect. The target
+    is the glued suffix of an unspaced ``>$f`` token, or the next word after a
+    bare ``>`` operator. Operands are every WORD between the command name and the
+    redirect (the body content the writer emits).
+    """
+    for i in range(1, len(words)):
+        suffix = _split_redirect_token(words[i])
+        if suffix is None:
+            continue
+        operands = words[1:i]
+        if suffix:
+            return suffix, operands
+        if i + 1 < len(words):
+            return words[i + 1], operands
+        return "", operands
+    return "", []
+
+
+def _redirect_written_bodies(tokens: list[Token]) -> dict[str, str]:
+    r"""Map each ``printf``/``echo`` ``> path`` redirect target token to its body.
+
+    Resolves the body-via-indirection idiom the heredoc map misses: an agent
+    materialises a body into a temp file with ``printf``/``echo`` and then posts
+    it with ``--body-file <path>``/``-F <path>`` in the SAME command
+    (``f=$(mktemp); printf '%s' 'text' > "$f"; gh ... --body-file "$f"``). At
+    PreToolUse scan time the file does NOT exist yet, so the only place the body
+    lives is the writer's own operands.
+
+    The map is keyed by the **lexer token value** of the redirect target so a
+    shell-variable / command-substitution path (``$f``, ``$(mktemp)``) pairs
+    with the textually-identical ``--body-file`` argument token even though
+    neither is expanded at scan time. A literal path keys by its own value.
+    Both the spaced (``> "$f"``) and unspaced (``>"$f"``) spellings are handled.
+
+    Conservative by construction: a redirect with no preceding writer operands
+    contributes no entry, so a genuinely-unresolvable target still fails closed.
+    """
+    bodies: dict[str, str] = {}
+    for segment in split_commands(tokens):
+        words = [tok.value for tok in segment if tok.kind is TokenKind.WORD]
+        if not words or words[0] not in _REDIRECT_WRITER_COMMANDS:
+            continue
+        target, operands = _redirect_target_and_operands(words)
+        if target and operands:
+            bodies[target] = " ".join(operands)
+    return bodies
+
+
+def heredoc_files_map(command: str, tokens: list[Token]) -> dict[str, str]:
+    """Map every in-command body-file target (heredoc or redirect) to its body."""
+    return {**_heredoc_file_bodies(command), **_redirect_written_bodies(tokens)}
+
+
+def unredirected_heredoc_bodies(command: str) -> list[str]:
+    """Return heredoc bodies fed to a CONSUMER, not redirected to a file.
+
+    A bare ``<<EOF`` / ``--body-file - <<EOF`` heredoc pipes its body straight
+    into the command (stdin, or a ``$(cat <<EOF)`` substitution), so it is part
+    of the published payload and must be scanned. A ``> path <<EOF`` heredoc
+    writes to a file resolved by path-pairing through the body-file flag
+    (:func:`_heredoc_file_bodies`), so emitting it blanket would scan an unposted
+    scratch body as if published and double-count a posted one; it is excluded
+    here when its body span sits inside a file-redirect match.
+    """
+    file_spans = [m.span("body") for m in _HEREDOC_TO_FILE_RE.finditer(command)]
+    return [
+        m.group(2)
+        for m in _HEREDOC_RE.finditer(command)
+        if not any(fs <= m.start(2) and m.end(2) <= fe for fs, fe in file_spans)
+    ]
 
 
 @dataclass(frozen=True)
