@@ -25,15 +25,19 @@ from teatree.quality.test_shape import (
     RatioMeasurement,
     RatioRegression,
     TestShapeConfig,
+    autouse_fixture_names,
     build_report,
     collect_source_files,
     collect_test_files,
     detect_ratio_regression,
     find_duplicate_clusters,
+    find_shadowed_autouse_fixtures,
     load_config,
     loosens_baseline,
     measure_ratio,
 )
+
+_AUTOUSE_FIXTURE = "import pytest\n@pytest.fixture(autouse=True)\ndef clear_overlay_cache():\n    reset()\n    yield\n"
 
 runner = CliRunner()
 
@@ -375,3 +379,80 @@ class TestRobustness:
         report = build_report(test_files=[test_file], source_files=[source_file], config=config)
         assert report.ratio_regression is not None
         assert any("regressed" in line for line in report.summary_lines())
+
+
+class TestAutouseFixtureNames:
+    def test_extracts_autouse_fixture_name(self) -> None:
+        assert autouse_fixture_names(_AUTOUSE_FIXTURE) == {"clear_overlay_cache"}
+
+    def test_ignores_non_autouse_fixture(self) -> None:
+        source = "import pytest\n@pytest.fixture\ndef thing():\n    yield\n"
+        assert autouse_fixture_names(source) == set()
+
+    def test_ignores_explicit_autouse_false(self) -> None:
+        source = "import pytest\n@pytest.fixture(autouse=False)\ndef thing():\n    yield\n"
+        assert autouse_fixture_names(source) == set()
+
+    def test_syntax_error_yields_no_names(self) -> None:
+        assert autouse_fixture_names("def broken(:\n") == set()
+
+
+class TestShadowedAutouseFixtures:
+    def _make_tree(self, root: Path) -> None:
+        (root / "conftest.py").write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+
+    def test_flags_test_file_shadowing_ancestor_conftest(self, tmp_path: Path) -> None:
+        self._make_tree(tmp_path)
+        shadow = tmp_path / "test_thing.py"
+        shadow.write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        findings = find_shadowed_autouse_fixtures(test_files=[shadow], root=tmp_path)
+        assert len(findings) == 1
+        assert findings[0].name == "clear_overlay_cache"
+        assert findings[0].ancestor_conftest == str(tmp_path / "conftest.py")
+
+    def test_flags_deeper_conftest_shadowing_ancestor(self, tmp_path: Path) -> None:
+        self._make_tree(tmp_path)
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        deeper = sub / "conftest.py"
+        deeper.write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        findings = find_shadowed_autouse_fixtures(test_files=[deeper], root=tmp_path)
+        assert [f.name for f in findings] == ["clear_overlay_cache"]
+
+    def test_does_not_flag_unique_fixture_name(self, tmp_path: Path) -> None:
+        self._make_tree(tmp_path)
+        other = tmp_path / "test_other.py"
+        other.write_text(
+            "import pytest\n@pytest.fixture(autouse=True)\ndef distinct_cache():\n    yield\n",
+            encoding="utf-8",
+        )
+        assert find_shadowed_autouse_fixtures(test_files=[other], root=tmp_path) == []
+
+    def test_does_not_flag_when_no_ancestor_defines_it(self, tmp_path: Path) -> None:
+        lone = tmp_path / "test_lone.py"
+        lone.write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        assert find_shadowed_autouse_fixtures(test_files=[lone], root=tmp_path) == []
+
+    def test_build_report_surfaces_shadowed_fixture(self, tmp_path: Path) -> None:
+        self._make_tree(tmp_path)
+        shadow = tmp_path / "test_thing.py"
+        shadow.write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        report = build_report(
+            test_files=[shadow],
+            source_files=[],
+            config=TestShapeConfig(mode=Mode.WARN),
+            root=tmp_path,
+        )
+        assert report.has_findings
+        assert any("shadows" in line for line in report.summary_lines())
+
+    def test_build_report_without_root_skips_shadow_check(self, tmp_path: Path) -> None:
+        self._make_tree(tmp_path)
+        shadow = tmp_path / "test_thing.py"
+        shadow.write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        report = build_report(
+            test_files=[shadow],
+            source_files=[],
+            config=TestShapeConfig(mode=Mode.WARN),
+        )
+        assert report.shadowed_fixtures == ()

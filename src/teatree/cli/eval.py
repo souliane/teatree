@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from teatree.cli._format_opts import require_valid_format
 from teatree.cli.eval_all import (
     build_scenarios_table,
     build_summary_table,
@@ -47,14 +48,6 @@ eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
 eval_app.command("capture-subagent")(capture_subagent)
 eval_app.command("transcript-replay")(transcript_replay)
-
-_VALID_FORMATS = ("text", "json")
-
-
-def _require_valid_format(output_format: str) -> None:
-    if output_format not in _VALID_FORMATS:
-        typer.echo(f"unknown --format {output_format!r}; use 'text' or 'json'", err=True)
-        raise typer.Exit(code=2)
 
 
 @eval_app.command("list")
@@ -163,7 +156,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     subscription backend's legitimate pre-transcript all-skip stays green.
     """
     ensure_django()
-    _require_valid_format(output_format)
+    require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
@@ -241,7 +234,7 @@ def prepare_subscription(
     ``t3 eval run --backend subscription``.
     """
     ensure_django()
-    _require_valid_format(output_format)
+    require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
     typer.echo(json.dumps(manifest, indent=2) if output_format == "json" else render_subscription_text(manifest))
@@ -270,7 +263,7 @@ def history(
     baseline (demoting the prior baseline for that model).
     """
     ensure_django()
-    _require_valid_format(output_format)
+    require_valid_format(output_format)
     from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415
 
@@ -316,7 +309,7 @@ def regression(
     a must-allow input. Any violated invariant exits non-zero.
     """
     ensure_django()
-    _require_valid_format(output_format)
+    require_valid_format(output_format)
     report = run_regression_corpus()
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
     if not report.ok:

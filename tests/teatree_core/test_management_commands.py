@@ -1,7 +1,6 @@
 import io
 import json
 import tempfile
-from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import cast
@@ -19,7 +18,6 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
-from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
@@ -57,13 +55,6 @@ class SingleRepoOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
-
-@pytest.fixture(autouse=True)
-def clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
