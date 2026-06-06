@@ -1952,6 +1952,94 @@ class TestPruneBranchesPassOneAndTwo(TestCase):
         mock_del.assert_not_called()
 
 
+class TestPruneBranchesHonorsCleanIgnore(TestCase):
+    """clean_ignore must be honored on the branch-deletion paths, not only the row reaper.
+
+    Pre-fix ``prune_branches`` consulted clean_ignore nowhere, so a
+    clean_ignore-matching branch that classified as squash-merged was deleted
+    despite being a never-merge dev override. The shared predicate now protects
+    it across every deletion pass.
+    """
+
+    def _patch_clean_ignore(self, patterns: list[str]) -> AbstractContextManager[object]:
+        patched = replace(load_config().user, clean_ignore=patterns)
+        return patch.object(ws_cleanup_mod, "get_effective_settings", return_value=patched)
+
+    def test_clean_ignore_squash_merged_branch_survives(self) -> None:
+        def fake_run(*, repo: str = ".", args: list[str]) -> str:
+            if args == ["branch", "-v", "--no-color"]:
+                return ""
+            if args == ["branch", "--merged", "origin/main", "--no-color"]:
+                return ""
+            if args == ["branch", "--no-color"]:
+                return "* main\n  dev-override"
+            if "diff" in args:
+                return ""  # empty diff => is_squash_merged True via fallback
+            if "rev-list" in args:
+                return "3"
+            return ""
+
+        with (
+            self._patch_clean_ignore(["dev-override"]),
+            patch.object(git_mod, "run", side_effect=fake_run),
+            patch.object(git_mod, "current_branch", return_value="main"),
+            patch.object(git_mod, "default_branch", return_value="main"),
+            patch.object(git_mod, "branch_delete") as mock_del,
+            patch.object(ws_cleanup_mod, "worktree_branches", return_value=set()),
+            patch.object(ws_cleanup_mod, "worktree_map", return_value={}),
+        ):
+            cleaned = ws_cleanup_mod.prune_branches("/repo")
+
+        mock_del.assert_not_called()
+        assert not any("dev-override" in c and "WARNING" in c for c in cleaned)
+
+
+class TestReapHonorsPerOverlayCleanIgnore(TestCase):
+    """The row reaper must resolve clean_ignore per the worktree's own overlay.
+
+    Pre-fix it read the raw global ``load_config().user.clean_ignore``, so a
+    pattern set only under ``[overlays.<name>]`` was dead — the per-overlay
+    override never reached the keep decision. The fix resolves
+    ``get_effective_settings(worktree.overlay).clean_ignore`` per row.
+    """
+
+    def _make_row(self, work: Path, wt_dir: Path, *, overlay: str, branch: str) -> Worktree:
+        ticket = Ticket.objects.create(overlay=overlay, issue_url="https://example.com/issues/1")
+        return Worktree.objects.create(
+            overlay=overlay,
+            ticket=ticket,
+            repo_path="work",
+            branch=branch,
+            state=Worktree.State.PROVISIONED,
+            extra={"worktree_path": str(wt_dir), "clone_path": str(work)},
+        )
+
+    def test_per_overlay_pattern_keeps_matching_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+            work, _tip = _squash_merge_into_main(workspace, subject="feat: shipped (#1)")
+            wt_dir = workspace / "spike" / "work"
+            _git(work, "branch", "-m", "feature", "spike-x")
+            _git(work, "worktree", "add", "-q", str(wt_dir), "spike-x")
+            row = self._make_row(work, wt_dir, overlay="heavy", branch="spike-x")
+
+            def fake_effective(name: str | None = None) -> object:
+                base = load_config().user
+                patterns = ["spike-*"] if name == "heavy" else []
+                return replace(base, clean_ignore=patterns)
+
+            with patch.object(ws_cleanup_mod, "get_effective_settings", side_effect=fake_effective):
+                cleaned = ws_cleanup_mod.WorktreeReaper(workspace).reap_squash_merged_worktrees(interactive=False)
+
+            assert Worktree.objects.filter(pk=row.pk).exists(), (
+                f"per-overlay clean_ignore must keep the row; got: {cleaned!r}"
+            )
+            assert wt_dir.is_dir()
+            assert any("SKIP" in c and "spike-x" in c for c in cleaned)
+
+
 class TestDropOrphanedStashes(TestCase):
     def test_drops_stash_for_deleted_branch(self) -> None:
         stash_output = "stash@{0}: WIP on deleted-branch: abc123 some work"
@@ -2264,7 +2352,7 @@ def _init_repo_with_remote(tmp: Path) -> tuple[Path, Path]:
 
 
 class TestPruneSquashMergedDataLossGuard(TestCase):
-    """#710 — ``prune_squash_merged`` must honor the #706 data-loss guard.
+    """#710 — ``_prune_squash_merged`` must honor the #706 data-loss guard.
 
     Uses a real on-disk git repo (no git mocks) so the guard is exercised
     against actual ``git log ... --not --remotes`` behaviour.
@@ -2276,7 +2364,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
         The branch tip tree is fed (via a mocked PR merge SHA) to the
         ``_branch_tree_matches_squash`` heuristic so it is wrongly classified as
         squash-merged — the exact path that bypasses the existing ``unsynced``
-        SKIP guard in ``prune_squash_merged``. Returns ``(work, worktree_path)``.
+        SKIP guard in ``_prune_squash_merged``. Returns ``(work, worktree_path)``.
         """
         _remote, work = _init_repo_with_remote(tmp)
 
@@ -2303,13 +2391,13 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # `_branch_tree_matches_squash` (diff --quiet tip feature) is True
             # and the existing unsynced SKIP guard is bypassed.
             with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=tip):
-                result = ws_cleanup_mod.prune_squash_merged(repo, "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
 
             # DATA-LOSS ASSERTION: the unique commit must still exist.
             branches = _git(work, "branch", "--format=%(refname:short)")
             assert "feature" in branches.split(), (
                 f"DATA LOSS: branch 'feature' (unpushed unique work {tip}) was deleted. "
-                f"prune_squash_merged result: {result!r}"
+                f"_prune_squash_merged result: {result!r}"
             )
             assert wt_path.is_dir(), "DATA LOSS: worktree directory was removed"
             assert "unique.py" in _git(work, "show", "--stat", "--format=", tip)
@@ -2366,7 +2454,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # construction, so `_branch_tree_matches_squash` is True and the
             # branch is correctly classified squash-merged regardless of SHA.
             with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
-                result = ws_cleanup_mod.prune_squash_merged(repo, "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(repo, "feature", wt_map)
 
             branches = _git(work, "branch", "--format=%(refname:short)").split()
             assert "feature" not in branches, f"squash-merged branch should be pruned, got: {result!r}"
@@ -2394,7 +2482,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
             # classified squash-merged via the tree match, not via an accidental
             # SHA collision — hermetic regardless of commit timestamps (#915).
             with patch.object(cleanup_mod, "_pr_merge_commit_sha", return_value=squash_sha):
-                result = ws_cleanup_mod.prune_squash_merged(str(work), "feature", {})
+                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", {})
 
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
             assert result == "Pruned squash-merged branch: feature"
@@ -2425,7 +2513,7 @@ class TestPruneSquashMergedDataLossGuard(TestCase):
                     side_effect=utils_run_mod.CommandFailedError(["git", "log"], 128, "", "fatal: bad revision"),
                 ),
             ):
-                result = ws_cleanup_mod.prune_squash_merged(str(work), "feature", wt_map)
+                result = ws_cleanup_mod._prune_squash_merged(str(work), "feature", wt_map)
 
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split(), (
                 f"DATA LOSS: branch deleted despite an inconclusive probe: {result!r}"
@@ -2704,9 +2792,8 @@ class TestReapSquashMergedWorktreeRows(TestCase):
             assert any("SKIP" in c and "keepme" in c for c in cleaned)
 
     def _patch_clean_ignore(self, patterns: list[str]) -> AbstractContextManager[object]:
-        base = load_config()
-        patched = replace(base, user=replace(base.user, clean_ignore=patterns))
-        return patch.object(ws_cleanup_mod, "load_config", return_value=patched)
+        patched = replace(load_config().user, clean_ignore=patterns)
+        return patch.object(ws_cleanup_mod, "get_effective_settings", return_value=patched)
 
     def test_uncertain_classification_is_skipped_not_deleted(self) -> None:
         """A row whose branch is genuinely ahead (not merged) is kept, warn-not-fail."""

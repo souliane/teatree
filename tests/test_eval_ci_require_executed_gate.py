@@ -33,7 +33,8 @@ def _gh_eval_run_command() -> str:
 
 def _gitlab_eval_script() -> list[str]:
     config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
-    return cast("list[str]", config["eval-weekly"]["script"])
+    # The script is the shared `.eval-suite` body extended by eval-weekly.
+    return cast("list[str]", config[".eval-suite"]["script"])
 
 
 class TestGitHubRequireExecuted:

@@ -515,7 +515,7 @@ class GitLabCodeHost:
         """Edit an existing note on a GitLab issue or work item in place.
 
         Used by ``e2e post-evidence`` to keep a single evidence comment
-        per ``(ticket, env, commit)`` rather than appending a new one on
+        per ``(ticket, env)`` rather than appending a new one on
         re-run. Returns ``{"error": ...}`` when the URL is not a recognised
         GitLab issue URL or the project cannot be resolved.
         """

@@ -20,15 +20,24 @@ Three entry points:
 import re
 import subprocess
 import sys
+from collections import deque
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from subprocess import DEVNULL, PIPE, STDOUT, CompletedProcess, Popen, TimeoutExpired
 from typing import IO, cast
 
+# A long-lived ``check=False`` caller (uvicorn / runserver via service_launch)
+# emits stderr for the whole process lifetime; retaining every line leaks memory
+# without bound. Only the tail is ever read back — ``CommandFailedError`` shows
+# ``_last_lines`` n=20 — so a tail this size keeps the diagnostic while capping
+# retention. ``run_streamed`` keeps only the last this-many stderr lines.
+STREAMED_STDERR_RETAINED_LINES = 200
+
 __all__ = [
     "DEVNULL",
     "PIPE",
     "STDOUT",
+    "STREAMED_STDERR_RETAINED_LINES",
     "CommandFailedError",
     "CompletedProcess",
     "Popen",
@@ -147,8 +156,15 @@ def run_streamed(
     capture, a wrapped failure surfaces as a bare ``command failed (rc=1)``
     with no clue *why* (the #1750 ``--thread-ts`` breakage was invisible for
     exactly this reason).
+
+    The captured stderr is bounded to the last
+    :data:`STREAMED_STDERR_RETAINED_LINES` lines via a fixed-size deque. A
+    long-lived ``check=False`` server (uvicorn / runserver) would otherwise
+    accumulate stderr for its whole lifetime; only the tail is ever read back
+    (the error shows ``_last_lines`` n=20), so capping retention keeps the
+    diagnostic without the unbounded growth.
     """
-    captured: list[str] = []
+    captured: deque[str] = deque(maxlen=STREAMED_STDERR_RETAINED_LINES)
     with Popen(
         list(cmd),
         env=env,

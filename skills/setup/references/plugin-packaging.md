@@ -9,15 +9,21 @@ Verified failures from issue #3 shipping. Every item below caused a real breakag
 - Plugin agents are NOT slash commands — they're `subagent_type` values for the Agent tool
 - `claude plugin validate <path>` checks the manifest — always run before shipping
 
-## Plugin Install: Local Symlink
+## Plugin Install: installed_plugins.json Registration
 
-Teatree requires a local clone. `t3 setup` creates a symlink:
+Teatree requires a local clone. `t3 setup` registers the plugin in
+`~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
+main clone:
 
+```json
+{"plugins": {"t3@souliane": [{"installPath": "<teatree-clone>", ...}]}}
 ```
-~/.claude/plugins/t3 → <teatree-clone>
-```
 
-Claude Code reads hooks, skills, and agents directly from the clone — no cache, no version pinning, always live. This replaced the old marketplace approach (which copied to `~/.claude/plugins/cache/` and went stale).
+Claude Code reads hooks, skills, and agents directly from the clone — no cache,
+no version pinning, always live. There is **no** `~/.claude/plugins/t3` symlink;
+`t3 setup`'s `_cleanup_legacy_plugin` removes any leftover one from the old
+symlink model. This replaced both the symlink approach and the older marketplace
+approach (which copied to `~/.claude/plugins/cache/` and went stale).
 
 ## Post-Rename Verification
 
@@ -33,4 +39,4 @@ Changes that affect external state (outside the git repo) require manual verific
 
 - `~/.claude/settings.json` hook paths
 - `~/.claude/skills/` symlinks
-- `~/.claude/plugins/t3` symlink target
+- `~/.claude/plugins/installed_plugins.json` — the `t3@souliane` `installPath`

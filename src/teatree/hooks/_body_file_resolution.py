@@ -69,6 +69,23 @@ def commit_body_file_base(command: str) -> Path | None:
     return _commit_repo_dir.git_root_for_dir(Path(repo_dir))
 
 
+def command_body_file_base(command: str) -> Path | None:
+    """Return the working dir a non-git command's ``--body-file`` resolves against.
+
+    A ``cd <dir> && gh pr create --body-file <relpath>`` body file is resolved
+    with the cold PreToolUse hook's cwd, which has reset away from the worktree,
+    so the relative path is unreadable as given — the gate would fail closed and
+    block a clean post. The command's own leading ``cd``/``pushd`` dir
+    (:func:`_commit_repo_dir.leading_cd_dir`) is the dir the forge command would
+    actually run in, so resolving the body file against it lets the gate scan the
+    real body. ``None`` when the command has no leading ``cd``.
+    """
+    from teatree.hooks._commit_repo_dir import leading_cd_dir  # noqa: PLC0415
+
+    cd_dir = leading_cd_dir(command)
+    return Path(cd_dir) if cd_dir is not None else None
+
+
 @dataclass(frozen=True)
 class _ShortFileFlag:
     """Resolved value of a short ``-F`` body-file reference, with its token span.

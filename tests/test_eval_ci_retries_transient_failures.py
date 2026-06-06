@@ -29,7 +29,18 @@ def _gh_eval_steps() -> list[dict[str, Any]]:
 def _gitlab_eval_job() -> dict[str, Any]:
     config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
     assert "eval-weekly" in config, "GitLab CI must define the weekly behavioral-eval job."
-    return cast("dict[str, Any]", config["eval-weekly"])
+    return _resolve_extends(config, "eval-weekly")
+
+
+def _resolve_extends(config: dict[str, Any], job: str) -> dict[str, Any]:
+    # Mirror GitLab's `extends` merge so the test asserts the job's effective
+    # config (retry/script now live in the shared `.eval-suite` template).
+    resolved: dict[str, Any] = {}
+    parent = config[job].get("extends")
+    if parent:
+        resolved.update(config[parent])
+    resolved.update(config[job])
+    return resolved
 
 
 def _step_using_retry_for(command_fragment: str) -> dict[str, Any]:

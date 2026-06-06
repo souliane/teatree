@@ -579,19 +579,25 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
 
     A ``git commit -F <relpath>`` body file is resolved against the dir whose
     repo the commit LANDS in (the command's own ``cd``/``-C``/``--git-dir``,
-    via :func:`_body_file_resolution.commit_body_file_base`), else the
-    harness-provided ``cwd``, when it is unreadable from the cold hook's reset
-    cwd — so the gate scans the real body and applies the private-repo carve-out
-    instead of fail-closing on an unread body.
+    via :func:`_body_file_resolution.commit_body_file_base`); a ``cd <dir> && gh
+    pr create --body-file <relpath>`` body file is resolved against the command's
+    leading ``cd`` dir (:func:`_body_file_resolution.command_body_file_base`);
+    else the harness-provided ``cwd``. This handles the cold hook's reset cwd, so
+    the gate scans the real body and applies the private-repo carve-out instead
+    of fail-closing on a clean post whose body it could not read.
     """
-    from teatree.hooks._body_file_resolution import BodyFileContext, commit_body_file_base  # noqa: PLC0415
+    from teatree.hooks._body_file_resolution import (  # noqa: PLC0415
+        BodyFileContext,
+        command_body_file_base,
+        commit_body_file_base,
+    )
 
     parts: list[str] = []
     tokens = tokenize(command)
     ctx = BodyFileContext(
         heredoc_files={**_heredoc_file_bodies(command), **_redirect_written_bodies(tokens)},
         fail_closed_body_file=fail_closed_body_file,
-        base=commit_body_file_base(command) or cwd,
+        base=commit_body_file_base(command) or command_body_file_base(command) or cwd,
     )
     for segment in split_commands(tokens):
         _walk_command_segment(segment, parts, ctx)
