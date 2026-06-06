@@ -18,12 +18,15 @@ idempotent re-fire of ``start`` against an already-running worktree
 does not refuse against itself.
 
 The DB FSM state alone is not trusted: a ``SERVICES_UP`` / ``READY``
-row whose docker stack is gone (a docker restart, a manual
-``compose down``, an OOM kill) is a phantom that would otherwise refuse
-every legitimate start forever. Before counting, each blocker is
-reconciled against live ``docker ps`` — a counted row with zero running
-containers is demoted to ``PROVISIONED`` (with a log line) and excluded.
-A docker binary that cannot be queried fails safe: the row stays counted.
+row whose docker stack is gone (an OOM kill, a manual ``compose down``)
+is a phantom that would otherwise refuse every legitimate start forever.
+Before counting, each blocker is reconciled against docker — a row whose
+compose project has zero running **and** zero existing containers is
+demoted to ``PROVISIONED`` (with a log line) and excluded. A row with
+zero running but existing containers is mid-restart (``docker compose
+restart``, a Docker-daemon reboot), not gone: it stays counted so the
+gate never corrupts a live stack's FSM during a restart window. A docker
+binary that cannot be queried also fails safe: the row stays counted.
 """
 
 import logging
@@ -31,6 +34,7 @@ from collections.abc import Callable
 
 from teatree.config import get_effective_settings
 from teatree.core.models import Worktree
+from teatree.core.worktree_env import compose_project
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -43,54 +47,65 @@ class LocalStackLimitExceededError(RuntimeError):
 _BLOCKING_STATES: tuple[str, ...] = (Worktree.State.SERVICES_UP, Worktree.State.READY)
 
 
-def _running_container_count(compose_project: str) -> int:
-    """Count *running* docker containers belonging to *compose_project*.
+def _container_count(project: str, *, include_stopped: bool) -> int:
+    """Count docker containers belonging to *project*.
 
-    ``docker ps`` (no ``-a``) lists only running containers, so a stack
-    whose containers were stopped or removed (a docker restart, a manual
-    ``compose down``, an OOM kill) reports zero — the signal that a
-    ``SERVICES_UP`` / ``READY`` row is a phantom holding no real stack.
-    A docker binary that is missing or erroring yields ``-1`` so the
-    caller can distinguish "verified empty" from "could not verify" and
-    fail safe (keep the row counted) on the latter.
+    With *include_stopped* false (``docker ps``) only running containers
+    are counted; with it true (``docker ps -a``) stopped/restarting ones
+    count too. A docker binary that is missing or erroring yields ``-1``
+    so the caller can distinguish "verified empty" from "could not verify"
+    and fail safe (keep the row counted) on the latter.
     """
-    if not compose_project:
+    if not project:
         return -1
-    result = run_allowed_to_fail(
-        [
-            "docker",
-            "ps",
-            "--filter",
-            f"label=com.docker.compose.project={compose_project}",
-            "--format",
-            "{{.Names}}",
-        ],
-        expected_codes=None,
-    )
+    cmd = ["docker", "ps"]
+    if include_stopped:
+        cmd.append("-a")
+    cmd += ["--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Names}}"]
+    result = run_allowed_to_fail(cmd, expected_codes=None)
     if result.returncode != 0:
         return -1
     return sum(1 for name in result.stdout.splitlines() if name.strip())
 
 
+def _running_container_count(project: str) -> int:
+    """Count *running* docker containers belonging to *project*."""
+    return _container_count(project, include_stopped=False)
+
+
+def _existing_container_count(project: str) -> int:
+    """Count *all* docker containers (running or stopped) belonging to *project*.
+
+    A worktree mid-restart (``docker compose restart``, a Docker-daemon
+    reboot) reports zero running containers while its containers still
+    exist; ``docker ps -a`` distinguishes that live-but-restarting stack
+    from a genuinely-gone one.
+    """
+    return _container_count(project, include_stopped=True)
+
+
 def _reconcile_phantom_blocker(worktree: Worktree) -> bool:
     """Demote *worktree* to ``PROVISIONED`` when its compose stack is gone.
 
-    Returns ``True`` when the row is a verified phantom (state says a
-    stack is up but docker reports zero running containers) and was
-    demoted, so the gate must not count it. Returns ``False`` when the
-    stack is genuinely live or its liveness could not be verified — both
-    keep the row counted (fail safe).
+    Returns ``True`` only when the row is a *verified-gone* phantom — zero
+    running **and** zero existing containers — and was demoted, so the gate
+    must not count it. A stack with zero running but existing containers is
+    mid-restart, not gone: it stays counted (``False``) so the gate never
+    corrupts a live stack's FSM by demoting it during a restart window. A
+    stack that is genuinely live, or whose container existence could not be
+    verified, also stays counted (fail safe).
     """
-    ticket = worktree.ticket
-    compose_project = f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
-    if _running_container_count(compose_project) != 0:
+    project = compose_project(worktree)
+    if _running_container_count(project) != 0:
+        return False
+    if _existing_container_count(project) != 0:
         return False
     logger.warning(
-        "Demoting phantom worktree %s (%s): state=%s but compose project %r has zero live containers",
+        "Demoting phantom worktree %s (%s): state=%s but compose project %r has zero containers",
         worktree.repo_path,
         worktree.branch,
         worktree.state,
-        compose_project,
+        project,
     )
     worktree.state = Worktree.State.PROVISIONED
     worktree.save(update_fields=["state"])

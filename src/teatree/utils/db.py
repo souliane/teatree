@@ -38,10 +38,10 @@ def _check_truncation(stderr: str, db_name: str, dump_path: str) -> None:
             raise RuntimeError(msg)
 
 
-def drop_db(db_name: str, *, user: str = "") -> None:
+def drop_db(db_name: str, *, user: str = "", host: str = "", env: dict[str, str] | None = None) -> None:
     run_checked(
-        ["dropdb", "-h", pg_host(), "-U", user or pg_user(), "--if-exists", db_name],
-        env=pg_env(),
+        ["dropdb", "-h", host or pg_host(), "-U", user or pg_user(), "--if-exists", db_name],
+        env=env if env is not None else pg_env(),
     )
 
 

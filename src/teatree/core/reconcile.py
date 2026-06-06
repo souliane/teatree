@@ -16,7 +16,7 @@ from pathlib import Path
 from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree_env import detect_drift, render_env_cache, worktree_pg_connection
+from teatree.core.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
 from teatree.utils import git
 from teatree.utils.db import db_exists
 from teatree.utils.run import run_allowed_to_fail
@@ -161,7 +161,7 @@ def _find_worktree_paths_on_disk(repo_main: Path) -> set[str]:
 # ── Reconciler ───────────────────────────────────────────────────────
 
 
-def _reconcile_worktree_row(drift: Drift, wt: Worktree, ticket_number: str) -> None:
+def _reconcile_worktree_row(drift: Drift, wt: Worktree) -> None:
     """Append findings for a single ``Worktree`` row to *drift*."""
     extra = wt.extra or {}
     wt_path_str = extra.get("worktree_path", "")
@@ -184,8 +184,7 @@ def _reconcile_worktree_row(drift: Drift, wt: Worktree, ticket_number: str) -> N
             drift.missing_dbs.append(MissingDB(worktree_pk=wt.pk, db_name=wt.db_name))
 
     if wt.state == Worktree.State.CREATED:
-        compose_project = f"{wt.repo_path}-wt{ticket_number}"
-        drift.orphan_containers.extend(OrphanContainer(name=n) for n in _find_docker_containers(compose_project))
+        drift.orphan_containers.extend(OrphanContainer(name=n) for n in _find_docker_containers(compose_project(wt)))
 
 
 def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket: Ticket, workspace: Path) -> None:
@@ -213,7 +212,7 @@ def reconcile_ticket(ticket: Ticket) -> Drift:
     worktrees = list(Worktree.objects.filter(ticket=ticket))
 
     for wt in worktrees:
-        _reconcile_worktree_row(drift, wt, ticket.ticket_number)
+        _reconcile_worktree_row(drift, wt)
     _collect_stale_worktree_dirs(drift, worktrees, ticket, workspace)
     return drift
 

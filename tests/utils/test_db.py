@@ -39,6 +39,74 @@ def test_db_restore_uses_pg_restore_when_supported(monkeypatch: pytest.MonkeyPat
     assert commands[3][0] == "pg_restore"
 
 
+def test_drop_db_forwards_host_and_env_like_db_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``drop_db`` must accept and forward ``host``/``env`` symmetrically with ``db_exists``.
+
+    The create/import counterpart (``db_exists``) connects with the
+    worktree's resolved host and env; ``drop_db`` connected only with the
+    resolved user and fell back to the bare process-env host/env. On a
+    host where the worktree's postgres is not on ``localhost`` (or needs a
+    distinct PGPORT/PGPASSWORD), that asymmetry makes the drop target the
+    wrong server.
+    """
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.setenv("POSTGRES_HOST", "default.localhost")
+
+    commands: list[list[str]] = []
+    seen_env: list[dict[str, str] | None] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
+    ) -> CompletedProcess[str]:
+        commands.append(args)
+        seen_env.append(env)
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
+
+    db.drop_db("wt_88", user="db_superuser", host="db.internal", env={"PGPORT": "5544"})
+
+    assert commands[0][0] == "dropdb"
+    assert commands[0][2] == "db.internal"
+    assert commands[0][4] == "db_superuser"
+    assert seen_env[0] == {"PGPORT": "5544"}
+
+
+def test_drop_db_defaults_to_process_env_host_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no ``host``/``env`` passed, ``drop_db`` keeps the legacy default behavior."""
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
+    monkeypatch.setenv("POSTGRES_HOST", "default.localhost")
+    monkeypatch.setenv("POSTGRES_USER", "postgres")
+
+    commands: list[list[str]] = []
+
+    def fake_run(
+        args: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        capture_output: bool = False,
+        text: bool = False,
+        check: bool = False,
+        **_kwargs: object,
+    ) -> CompletedProcess[str]:
+        commands.append(args)
+        return CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(utils_run_mod.subprocess, "run", fake_run)
+
+    db.drop_db("wt_89")
+
+    assert commands[0][2] == "default.localhost"
+    assert commands[0][4] == "postgres"
+
+
 def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
     monkeypatch.delenv("POSTGRES_PORT", raising=False)

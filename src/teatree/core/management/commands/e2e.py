@@ -17,7 +17,7 @@ from teatree.core.models import Ticket
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
-from teatree.core.runners.worktree_start import compose_project
+from teatree.core.worktree_env import compose_project
 from teatree.utils.run import run_streamed
 
 # Re-exports for back-compat with tests and external callers (#1322 split).
