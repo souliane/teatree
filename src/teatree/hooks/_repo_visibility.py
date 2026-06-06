@@ -69,8 +69,12 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
     """Return the ``[teatree] private_repos`` slug-substring allowlist.
 
     Each entry is matched as a case-insensitive substring against the repo's
-    ``origin`` slug (``host/owner/repo``), so a single organisation-namespace
-    entry covers every repo under that namespace. Reads the TOML directly (no
+    slug, so a single organisation-namespace entry covers every repo under that
+    namespace. Entries may be written bare (``owner/repo``) or host-qualified
+    (``host/owner/repo`` -- the form a repo URL carries); the match is
+    host-qualification-symmetric (see :func:`slug_is_allowlisted_private`), so
+    either form covers the commit surface (host-qualified cwd slug) and the
+    pr-create surface (bare ``--repo`` slug) alike. Reads the TOML directly (no
     Django/config import) to stay importable from the hook process.
     """
     import tomllib  # noqa: PLC0415
@@ -279,10 +283,42 @@ def slug_is_private(slug: str) -> bool:
     return verdict == "PRIVATE"
 
 
+def _strip_host_prefix(slug: str) -> str:
+    """Drop a leading ``host/`` segment (a first part containing a ``.``).
+
+    A repo identity has two equivalent forms: host-qualified
+    (``host/owner/repo``, the origin-remote / ``slug_for_cwd`` / config-doc
+    form) and bare (``owner/repo``, the ``gh pr create --repo`` form). The
+    host segment is the only difference, and it is recognised the same way the
+    visibility probe recognises it -- a first ``/``-segment containing a dot.
+    Stripping it yields the form-independent ``owner/repo`` key.
+    """
+    head, sep, rest = slug.partition("/")
+    if sep and "." in head:
+        return rest
+    return slug
+
+
 def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the offline allowlist."""
-    lowered = slug.lower()
-    return any(entry in lowered for entry in _private_repo_allowlist(config_path))
+    """Return True iff ``slug`` matches the offline allowlist.
+
+    Each entry is matched as a case-insensitive substring against the repo
+    slug. The match is HOST-QUALIFICATION-SYMMETRIC: a host-qualified entry
+    (``host/owner/repo`` -- the form the config doc states and ``slug_for_cwd``
+    emits) must also match a BARE ``owner/repo`` slug, which is what
+    ``gh pr create --repo`` supplies. Without the symmetry, the same private
+    repo downgrades on commit (cwd slug is host-qualified) yet hard-blocks on
+    pr-create (the bare ``--repo`` slug) -- #2067. Both the slug and each entry
+    are compared in their original and host-stripped forms, so a host-qualified
+    entry matches a bare slug, a bare entry matches a host-qualified slug, and a
+    bare-org entry keeps matching both -- while no public repo gains a match.
+    """
+    slug_forms = {slug.lower(), _strip_host_prefix(slug.lower())}
+    for entry in _private_repo_allowlist(config_path):
+        entry_forms = {entry, _strip_host_prefix(entry)}
+        if any(e in s for e in entry_forms for s in slug_forms):
+            return True
+    return False
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
