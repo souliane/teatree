@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from teatree.core.account_fingerprint import fingerprint_switched
 from teatree.core.account_switch import (
     AccountSwitchOutcome,
     AccountSwitchRecovery,
@@ -145,6 +146,29 @@ class TestDetectAndRecover:
         assert outcome.switched is True
         assert outcome.all_reachable is False
         assert any(not p.reachable for p in outcome.probes)
+
+    def test_failed_recovery_does_not_record_new_fingerprint(self, tmp_path: Path) -> None:
+        self.backends[:] = [_FakeBackend(ok=False, name="slack")]
+        _write_active_account(tmp_path, "uuid-B")
+        record_fingerprint("uuid-A", home=tmp_path)
+        self._run(tmp_path)
+        assert load_recorded_fingerprint(home=tmp_path) == "uuid-A"
+
+    def test_failed_recovery_keeps_surfacing_next_session(self, tmp_path: Path) -> None:
+        self.backends[:] = [_FakeBackend(ok=False, name="slack")]
+        _write_active_account(tmp_path, "uuid-B")
+        record_fingerprint("uuid-A", home=tmp_path)
+        self._run(tmp_path)
+        assert fingerprint_switched(home=tmp_path) is True
+        second = self._run(tmp_path)
+        assert second.switched is True
+
+    def test_successful_recovery_records_and_clears_next_session(self, tmp_path: Path) -> None:
+        _write_active_account(tmp_path, "uuid-B")
+        record_fingerprint("uuid-A", home=tmp_path)
+        self._run(tmp_path)
+        assert load_recorded_fingerprint(home=tmp_path) == "uuid-B"
+        assert fingerprint_switched(home=tmp_path) is False
 
     def test_outcome_is_account_switch_outcome(self, tmp_path: Path) -> None:
         _write_active_account(tmp_path, "uuid-A")
