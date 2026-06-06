@@ -153,13 +153,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         return infer_overlay_for_url(self.issue_url)
 
     def apply_inferred_overlay(self, inferred: str) -> bool:
-        """Persist ``inferred`` as the overlay when it is a conclusive change.
+        """Persist ``inferred`` overlay on a conclusive change (True when changed).
 
-        Returns ``True`` when the row's overlay was changed. An inconclusive
-        (empty) inference leaves the existing value untouched — a blank result
-        must never blank out a manually-set or previously-correct attribution.
-        Callers that already computed the inference reuse it here rather than
-        re-walking the overlay registry.
+        A blank inference never blanks out a manually-set attribution.
         """
         if not inferred or inferred == self.overlay:
             return False
@@ -170,6 +166,12 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def reconcile_overlay(self) -> bool:
         """Re-infer ``overlay`` from ``issue_url`` and persist a correction."""
         return self.apply_inferred_overlay(self._infer_overlay())
+
+    def has_dispatchable_overlay(self) -> bool:
+        """False only for a non-empty overlay that no longer resolves (#1959 poison-pill)."""
+        from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
+
+        return not (self.overlay and resolve_overlay_name(self.overlay) is None)
 
     @property
     def is_terminal(self) -> bool:
