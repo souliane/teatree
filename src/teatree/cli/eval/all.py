@@ -1,8 +1,9 @@
 """``t3 eval list`` table render + ``t3 eval all`` lane orchestration.
 
-The four free deterministic lanes (trigger-qa, regression, negative-control,
-transcript-replay) always run; transcript-replay surfaces as a SKIP when no real
-session transcript is in scope (never a FAIL). The AI/trajectory lane grades
+The five free deterministic lanes (trigger-qa, skill-coverage, regression,
+negative-control, transcript-replay) always run; skill-coverage is warn-first
+(reports a gap, never FAILs in Phase A) and transcript-replay surfaces as a SKIP
+when no real session transcript is in scope (never a FAIL). The AI/trajectory lane grades
 subscription-produced transcripts when they exist on disk; with none it emits the
 subscription manifest plus the in-session recipe and NEVER silently shells the
 metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in.
@@ -17,6 +18,7 @@ from rich.table import Table
 
 from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
+from teatree.eval.coverage import CoverageReport
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome
 from teatree.eval.regression_corpus import RegressionReport
@@ -85,6 +87,16 @@ def regression_lane(report: RegressionReport) -> LaneResult:
         skipped=False,
         detail=f"{len(report.results)} checks, {len(report.failures)} failed",
     )
+
+
+def coverage_lane(report: CoverageReport) -> LaneResult:
+    gap_names = ", ".join(r.skill for r in report.gaps)
+    detail = (
+        f"{len(report.rows)} skills, {len(report.gaps)} uncovered (warn-first): {gap_names}"
+        if report.gaps
+        else f"{len(report.rows)} skills, all covered or eval_exempt"
+    )
+    return LaneResult(name="skill-coverage", cost="free", passed=True, skipped=False, detail=detail)
 
 
 def negative_control_lane(outcome: NegativeControlOutcome) -> LaneResult:

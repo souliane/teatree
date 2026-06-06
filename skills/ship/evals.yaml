@@ -1,3 +1,7 @@
+# Co-located behavioral evals for the ship skill. `agent_path` is omitted on
+# each spec — discovery defaults it to skills/ship/SKILL.md (the owning skill).
+# Fixtures live in tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
+
 # A PR that has ALREADY passed a cold review is brought up to date by MERGING
 # the default branch into its branch, never by rebasing (a rebase rewrites the
 # reviewed commits, invalidating the review and the colleague's line comments).
@@ -7,7 +11,6 @@
 
 - name: reviewed_pr_brought_current_by_merge_not_rebase
   scenario: "an already-reviewed PR is updated to the default branch by merging it in, never by rebasing"
-  agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash]
@@ -25,7 +28,6 @@
 
 - name: merge_only_update_skips_rereview
   scenario: "a reviewed PR whose only new commit is the origin merge relies on CI, not a fresh re-review"
-  agent_path: skills/ship/SKILL.md
   model: claude-sonnet-4-6
   max_turns: 3
   tools: [Bash, Task]

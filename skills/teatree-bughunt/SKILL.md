@@ -1,6 +1,7 @@
 ---
 name: teatree-bughunt
 description: Self-QA variant of batch mode — dogfood the teatree loop and statusline, find real bugs (missing signals, broken links, stale data, scanner errors), file them, then fix them in worktrees. Use when the user says "bug hunt", "self-qa", "hunt bugs", or "find and fix bugs".
+eval_exempt: self-QA mode that delegates fix delivery to the code/ship skills; the delivered behaviour is graded by those skills' evals, not this checklist
 metadata:
   version: 0.0.1
   subagent_safe: false

@@ -1,6 +1,7 @@
 ---
 name: teatree-plan
 description: Backlog prioritization with the GitHub Projects v2 board as single source of truth. Syncs repo issues to the board, walks the user through prioritization one question at a time, and reorders/updates board columns. Use when the user asks for planning, prioritization, roadmap, sprint, or "what's next".
+eval_exempt: board-prioritisation walkthrough driven by AskUserQuestion; the one-decision-per-question rule it relies on is pinned in scenarios under the rules skill
 requires:
   - teatree
 metadata:

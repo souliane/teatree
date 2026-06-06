@@ -1,6 +1,7 @@
 ---
 name: retro
 description: Conversation retrospective and skill improvement. Use when user says "retro", "retrospective", "lessons learned", "improve skills", "what went wrong", "auto-improve", or at the end of a non-trivial work session.
+eval_exempt: orchestrator-only synthesis methodology (#837); sub-agents emit signal and never self-retro, so there is no per-turn trajectory to grade
 requires:
   - rules
   - workspace

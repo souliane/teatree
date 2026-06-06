@@ -15,7 +15,7 @@ operate on plain captured tool calls.
 
 This file is the dedicated evals-architecture doc: where the parts live,
 the tech stack, how runs are triggered (local default, CI manual + weekly),
-and the per-skill coverage map.
+and the per-skill coverage gate (`t3 eval coverage`).
 
 ## Architecture
 
@@ -24,7 +24,7 @@ and the per-skill coverage map.
 | Concern | Location |
 |---|---|
 | CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring; `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
-| Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
+| Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
 | Transcript readers | `src/teatree/eval/transcript.py` (stream-json), `session_transcript.py` + `subagent_transcript.py` (on-disk session schema) |
@@ -62,8 +62,8 @@ installed editable from a clone; the eval harness ships inside it.
 
 ```bash
 t3 eval list                                # show available scenarios as a rich table
-t3 eval all                                  # all five lanes (trigger-qa + regression + negative-control + transcript-replay + AI) in one summary table
-t3 eval all --free-only                       # the four free deterministic lanes only (no AI lane) — the pre-push gate
+t3 eval all                                  # all lanes (trigger-qa + skill-coverage + regression + negative-control + transcript-replay + AI) in one summary table
+t3 eval all --free-only                       # the five free deterministic lanes only (no AI lane) — the pre-push gate
 t3 eval all --docker                          # run the gate inside the CI image (dev/Dockerfile.test) for parity; host-run is the default
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
@@ -85,16 +85,19 @@ t3 eval run --backend sdk                       # metered claude -p path (CI; AN
 t3 eval prepare-subscription                  # emit prompts/paths for a subscription run
 t3 eval transcript-replay                     # replay a real session against invariants
 t3 eval trigger-qa                            # deterministic skill-activation eval (no claude run)
+t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
+t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
 t3 eval regression                            # deterministic real-code-path regression corpus (no claude run)
 t3 eval regression --format json              # JSON: per-class ok/skipped/origin/detail
 t3 eval negative-control                      # harness self-test: plant a violation, assert it is caught (no claude run)
 t3 eval negative-control --format json        # JSON: caught / violated_rule / offending_tool_call
 ```
 
-The `eval-agent-behavior` prek hook runs the four free deterministic lanes
+The `eval-agent-behavior` prek hook runs the five free deterministic lanes
 (`t3 eval all --free-only`) at the **pre-push** stage — token-free, no model,
 no spec discovery, ~2–3 s. It fails the push on any real deterministic
-violation; the transcript-replay lane SKIPs (never FAILs) when no in-scope
+violation; the skill-coverage lane is warn-first (reports a gap, never FAILs in
+Phase A) and the transcript-replay lane SKIPs (never FAILs) when no in-scope
 session transcript exists. Run it on demand with:
 
 ```bash
@@ -115,11 +118,12 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 The free, no-model commands — `trigger-qa`, `regression`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
-### `t3 eval all` — the combined five-lane surface (#1781)
+### `t3 eval all` — the combined multi-lane surface (#1781)
 
-`t3 eval all` runs every lane in one summary table: the four free deterministic
-lanes (`trigger-qa`, `regression`, `negative-control`, `transcript-replay`) plus
-the metered AI lane. The AI lane never meters silently — `--backend sdk` opts in.
+`t3 eval all` runs every lane in one summary table: the five free deterministic
+lanes (`trigger-qa`, `skill-coverage`, `regression`, `negative-control`,
+`transcript-replay`) plus the metered AI lane. The `skill-coverage` lane is
+warn-first (reports a gap, exit 0). The AI lane never meters silently — `--backend sdk` opts in.
 A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
 command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
 
@@ -300,11 +304,11 @@ class, where it is pinned, and the originating fix:
 | loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
 | account-switch detect-invalidate-reprobe (`/login`) | `regression_corpus` (full switch-and-verify cycle) | [#1916](https://github.com/souliane/teatree/issues/1916) |
 | orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
-| structured-question — AskUserQuestion, one decision | `scenarios/structured_question.yaml` | [#1622](https://github.com/souliane/teatree/pull/1622) |
+| structured-question — AskUserQuestion, one decision | `skills/rules/evals.yaml` (co-located) | [#1622](https://github.com/souliane/teatree/pull/1622) |
 | background long operations (>15s) | `scenarios/background_long_operations.yaml` | [#1701](https://github.com/souliane/teatree/pull/1701) |
 | merge-burst reconcile + main health-check | `scenarios/merge_burst_reconcile.yaml` | [#1721](https://github.com/souliane/teatree/pull/1721) |
 | never-edit-main-clone + ff-not-reset | `scenarios/main_clone_protected.yaml` | [#1662](https://github.com/souliane/teatree/pull/1662) |
-| do-work-now (run the command, don't hand back) | `scenarios/do_work_now.yaml` | [#1623](https://github.com/souliane/teatree/pull/1623) |
+| do-work-now (run the command, don't hand back) | `skills/rules/evals.yaml` (co-located) | [#1623](https://github.com/souliane/teatree/pull/1623) |
 | BLUEPRINT size-budget headroom (trim, don't override) | `scenarios/blueprint_size_budget.yaml` | [#1723](https://github.com/souliane/teatree/pull/1723) |
 | CLI read-vs-write effective-flag (`-X GET` is a read) | `regression_corpus` (bare-ref path) + `scenarios/review.yaml` | [#1589](https://github.com/souliane/teatree/pull/1589) |
 | overlay-defined skill set loaded — reviewing / coding / planning, regression + generalization (incl. dynamic-workflow reviews) | `scenarios/skill_routing.yaml` | review ran without the overlay skill + legal-entity skill (null review); [#1160](https://github.com/souliane/teatree/issues/1160), [#1640](https://github.com/souliane/teatree/issues/1640) |
@@ -325,33 +329,37 @@ The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
 ticket, …) cover the remaining classes already shipped on this branch.
 
-### Per-skill coverage map
+### Co-located evals (`skills/<name>/evals.yaml`)
 
-Behavioral scenarios pin an `agent_path` (a `SKILL.md`). This map shows how
-many scenarios target each skill, so a coverage gap is a skill with no
-behavioral guard. The count is the number of scenario specs whose `agent_path`
-is that skill (cross-skill rules concentrate on `rules`).
+A skill ships its behavioral evals beside its `SKILL.md`, the way a unit's
+tests live next to the unit (the Anthropic skill-authoring convention). A
+co-located `evals.yaml` is the **same `EvalSpec` schema** as a flat-catalog
+scenario; the only convenience is that a spec which omits `agent_path` defaults
+to its owning `skills/<name>/SKILL.md`, so authors don't repeat the path.
+Discovery (`discover_specs()`) walks the flat catalog, then `skills/*/evals.yaml`,
+then overlays — and rejects a duplicate scenario name across all three sources
+with a hard `EvalSpecError`. Co-located specs flow through every lane (`t3 eval
+list/run/all`, the anti-vacuity gate, the weekly paid lane) with zero extra
+wiring. The flat catalog stays valid — co-location is additive, not a migration.
 
-| Skill | Scenarios | Notes |
-|---|---|---|
-| rules | 39 | cross-cutting agent rules (the shared invariant surface) |
-| ship | 23 | delivery, merge keystone, MR-first-line, on-behalf, sweep |
-| review | 16 | cold-review depth, reaction discipline, claim-means-review-now |
-| code | 16 | worktree-first, root-cause, do-work-now, anti-vacuous self-review |
-| workspace | 12 | lifecycle, never-edit-main-clone, full-suite discipline |
-| test | 9 | test quality, never-local-full-suite, e2e-is-part-of-done |
-| debug | 9 | systematic-debugging discipline |
-| sweeping-prs | 7 | sweep-merge-never-rebase, review-branch-current |
-| ticket | 5 | intake, stale-open-issue gate |
-| e2e | 2 | mandatory-E2E gate, evidence source |
-| architecture-design | 2 | design-first pre-check |
-| answerer, checking, contribute, followup, next, review-request, scanning-news, speed, todos, update | 1 each | per-phase coverage |
+### Per-skill coverage gate (`t3 eval coverage`)
 
-Skills with **no behavioral scenario yet** (deterministic gates or
-docs-driven, lower behavioral-regression risk): availability, handover, loops,
-platforms, retro, running-evals, setup, teatree, teatree-batch, teatree-bughunt,
-teatree-dogfood, teatree-plan, typer. Adding a scenario for one of these is the
-unit of work that closes a per-skill gap.
+The per-skill coverage map is **generated, not hand-maintained** — run
+`t3 eval coverage` (add `--format json` for a machine read). A skill is
+**covered** when ≥1 discovered scenario targets its `SKILL.md` (flat catalog OR
+co-located), or **exempt** when its frontmatter carries a non-empty
+`eval_exempt: <reason>` (pure-doc / methodology skills). A skill that is neither
+is a **gap**. `coverage.py` (`skill_eval_coverage`) is a pure function over
+`discover_specs()` + frontmatter — deterministic, free, no model.
+
+The gate is general and declarative: a new `skills/<name>/` with no eval and no
+`eval_exempt` trips it by default, and a new skill is covered-or-exempt with a
+one-line frontmatter key. It is **warn-first** in Phase A — the coverage lane in
+`t3 eval all` and the `tests/eval/test_skill_eval_coverage.py` gate report a gap
+but exit 0 (never red-blocking an unrelated push); `t3 eval coverage
+--fail-on-gap` is the Phase-B enforcement (a follow-up flip once the team is
+ready). The shipped corpus is gap-free today (the 4 co-located seeds — ship,
+review, rules, code — plus the pure-doc exemptions).
 
 ### Generated catalog (`scripts/eval/corpus_gen`)
 
@@ -642,7 +650,7 @@ agent editing the canonical clone without `git worktree add` first), drives it
 through the *public* report path, and exits 0 only when the harness reports the
 violation — naming the violated rule and the offending tool call. It is
 token-free and deterministic (it never shells `claude -p`), so it runs as one of
-the four lanes the `eval-agent-behavior` prek pre-push hook gates on. A non-zero
+the free lanes the `eval-agent-behavior` prek pre-push hook gates on. A non-zero
 exit means the harness went green on a genuine violation, i.e. the harness
 itself is broken.
 

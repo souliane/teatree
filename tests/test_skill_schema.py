@@ -50,6 +50,25 @@ class TestValidateSkillMd:
         assert errors == []
         assert not any("'companions'" in w for w in warnings)
 
+    def test_eval_exempt_field_is_recognised(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\neval_exempt: pure-doc, no behaviour\n---\n")
+        errors, warnings = validate_skill_md(skill_md)
+        assert errors == []
+        assert not any("'eval_exempt'" in w for w in warnings)
+
+    def test_eval_exempt_empty_is_error(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\neval_exempt: ''\n---\n")
+        errors, _ = validate_skill_md(skill_md)
+        assert any("eval_exempt" in e and "non-empty" in e for e in errors)
+
+    def test_eval_exempt_bare_key_is_error(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\neval_exempt:\n---\n")
+        errors, _ = validate_skill_md(skill_md)
+        assert any("eval_exempt" in e and "non-empty" in e for e in errors)
+
     def test_invalid_regex_in_keywords(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("---\nname: test\ndescription: d\ntriggers:\n  keywords:\n    - '[invalid'\n---\n")
