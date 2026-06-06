@@ -724,7 +724,7 @@ class SlackBotBackend:
 
         The three-step modern Slack upload flow (``files.upload`` is
         deprecated): ``files.getUploadURLExternal`` reserves an off-Slack
-        one-shot ``upload_url`` + file ``id``; the bytes are PUT there;
+        one-shot ``upload_url`` + file ``id``; the bytes are POSTed there;
         ``files.completeUploadExternal`` finalises the file and shares it
         into ``channel_id``. Slack renders an inline audio player for an
         ``.m4a`` / ``.mp3``, which is what surfaces the spoken reply on the
@@ -765,7 +765,7 @@ class SlackBotBackend:
         file_id = reserve.get("file_id")
         if not isinstance(upload_url, str) or not isinstance(file_id, str):
             return reserve
-        self._http.put_external(upload_url, content=content)
+        self._http.post_external(upload_url, content=content)
         file_entry: RawAPIDict = {"id": file_id}
         if title:
             file_entry["title"] = title
