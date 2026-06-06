@@ -25,11 +25,35 @@ import dataclasses
 import json
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import run_checked
+
+
+@contextmanager
+def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]:
+    """Run the block with a hermetic ``~/.teatree.toml`` pinning *overlay_name* to *autonomy*.
+
+    An eval-isolation helper for assertions whose outcome depends on the
+    overlay's effective autonomy (the substrate-merge carve-out). Swaps
+    ``teatree.config.CONFIG_PATH`` at the single seam ``get_effective_settings``
+    reads, so the resolved autonomy is deterministic regardless of the
+    developer's live config, and restores it on exit.
+    """
+    from teatree import config as config_module  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as raw:
+        cfg = Path(raw) / ".teatree.toml"
+        cfg.write_text(f'[teatree]\n[overlays.{overlay_name}]\nautonomy = "{autonomy}"\n', encoding="utf-8")
+        original = config_module.CONFIG_PATH
+        config_module.CONFIG_PATH = cfg
+        try:
+            yield
+        finally:
+            config_module.CONFIG_PATH = original
 
 
 @dataclasses.dataclass(frozen=True)
@@ -192,7 +216,7 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
     from teatree.core.merge_execution import MergePreconditionError, _assert_clear_authorized  # noqa: PLC0415
     from teatree.core.models import MergeClear  # noqa: PLC0415
     from teatree.core.models.merge_clear import ClearRequest  # noqa: PLC0415
-    from teatree.core.overlay_loader import infer_overlay_for_url, staged_overlay_autonomy  # noqa: PLC0415
+    from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
     slug, pr_id, reviewer, executor = "souliane/teatree", 4242, "cold-reviewer", "loop-session"
     overlay_name = infer_overlay_for_url(slug) or "t3-teatree"
@@ -209,7 +233,7 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
         )
     )
 
-    with staged_overlay_autonomy(overlay_name, autonomy):
+    with _staged_overlay_autonomy(overlay_name, autonomy):
         try:
             _assert_clear_authorized(
                 clear=clear,
