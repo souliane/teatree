@@ -17,9 +17,9 @@ maintenance action, not a last-resort escape hatch.
 
 Budget (bytes):
 
-- Top-level ``BLUEPRINT.md``:     88 000  (~86 KB)
+- Top-level ``BLUEPRINT.md``:     90 000  (~88 KB)
 - ``docs/blueprint/`` corpus:    116 000  (~113 KB)
-- Combined corpus total:         204 000  (~199 KB)
+- Combined corpus total:         206 000  (~201 KB)
 
 BLUEPRINT.md is a SINGLE file by user decision — never split, never
 consolidate-by-splitting. The top-level budget sits comfortably above
@@ -59,7 +59,12 @@ _APPENDIX_DIR = "docs/blueprint"
 # load-bearing safety fact (a new merge/review-request gate); the trimmed
 # paragraph took the live file to ~84 KB, under the 4 KB headroom guard. Raised
 # to 88,000 B to restore the invariant.
-_BUDGET_TOP_LEVEL_BYTES = 88_000
+# Reviewed bump (#2064 + #2070): the bounded undelivered-notify drain contract
+# and the cli/eval subpackage + protocols-shim deletion (gate split, package
+# layout) are load-bearing architecture-contract growth; the merged top-level
+# corpus (~84.5 KB) left under the 4 KB headroom guard. Raised to 90,000 B
+# (user-authorized) to absorb both with honest headroom.
+_BUDGET_TOP_LEVEL_BYTES = 90_000
 # Reviewed bump (#1570): the full-tree banned-brand backstop scan
 # (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
 # `banned-terms-tree` CI job) is the same class of load-bearing
@@ -204,7 +209,12 @@ _BUDGET_APPENDICES_BYTES = 116_000
 # `TestRealCorpusFitsWithHeadroom` guard. Raised one minimal step to 204,000 to
 # restore the >=4 KB headroom. Coupling invariant holds: total minus top-level
 # (204,000 minus 88,000) stays within the unchanged appendices cap of 116,000.
-_BUDGET_TOTAL_BYTES = 204_000
+# Reviewed bump (#2064 + #2070): tracks the top-level raise to 90,000 for the
+# bounded-drain + cli/eval-layout architecture growth. The merged corpus
+# (~199,115 B) sat under the 4 KB headroom guard after the top-level raise.
+# Raised to 206,000 to restore >=4 KB total headroom (user-authorized). Coupling
+# invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
+_BUDGET_TOTAL_BYTES = 206_000
 
 
 def _repo_root() -> pathlib.Path:
