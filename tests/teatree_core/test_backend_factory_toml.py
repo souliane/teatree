@@ -38,6 +38,29 @@ class _Overlay:
     config: _Cfg
 
 
+class _StubProvider:
+    """Backend provider double — drives ``iter_overlay_backends``' collaborator.
+
+    ``hosts`` / ``messaging`` are either a value to return or an exception
+    instance to raise, so a single stub covers the credentials-resolve and
+    per-backend-error branches.
+    """
+
+    def __init__(self, *, hosts: object = (), messaging: object = None):
+        self._hosts = hosts
+        self._messaging = messaging
+
+    def get_code_hosts(self, overlay: object) -> object:
+        if isinstance(self._hosts, Exception):
+            raise self._hosts
+        return self._hosts
+
+    def get_messaging(self, overlay: object) -> object:
+        if isinstance(self._messaging, Exception):
+            raise self._messaging
+        return self._messaging
+
+
 def _config_with(overlays: dict[str, Any]) -> object:
     return type("Cfg", (), {"raw": {"overlays": overlays}})()
 
@@ -54,8 +77,11 @@ class TestIterOverlayBackendsEntryPoints:
         overlay = _Overlay("foo", _Cfg(ready_labels=("ready",), exclude_labels=("wip",)))
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"foo": overlay}),
-            patch.object(backend_factory, "get_code_hosts", return_value=["HOST"]),
-            patch.object(backend_factory, "get_messaging", return_value="MSG"),
+            patch.object(
+                backend_factory,
+                "get_backend_provider",
+                return_value=_StubProvider(hosts=["HOST"], messaging="MSG"),
+            ),
             patch.object(backend_factory, "_backends_from_toml", return_value=[]),
         ):
             out = backend_factory.iter_overlay_backends()
@@ -74,8 +100,11 @@ class TestIterOverlayBackendsEntryPoints:
         overlay = _Overlay("foo", _Cfg())
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"foo": overlay}),
-            patch.object(backend_factory, "get_code_hosts", side_effect=ImproperlyConfigured),
-            patch.object(backend_factory, "get_messaging", side_effect=ValueError),
+            patch.object(
+                backend_factory,
+                "get_backend_provider",
+                return_value=_StubProvider(hosts=ImproperlyConfigured(), messaging=ValueError()),
+            ),
             patch.object(backend_factory, "_backends_from_toml", return_value=[]),
         ):
             out = backend_factory.iter_overlay_backends()
@@ -88,8 +117,11 @@ class TestIterOverlayBackendsEntryPoints:
         toml_backend = backend_factory.OverlayBackends(name="toml-only", hosts=(), messaging=None, ready_labels=())
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"py": py_overlay}),
-            patch.object(backend_factory, "get_code_hosts", return_value=[]),
-            patch.object(backend_factory, "get_messaging", return_value=None),
+            patch.object(
+                backend_factory,
+                "get_backend_provider",
+                return_value=_StubProvider(hosts=[], messaging=None),
+            ),
             patch.object(backend_factory, "_backends_from_toml", return_value=[toml_backend]) as mock_toml,
         ):
             out = backend_factory.iter_overlay_backends()

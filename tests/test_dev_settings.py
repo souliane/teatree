@@ -17,6 +17,7 @@ def test_settings_importable():
     assert mod.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
     assert "teatree.core" in mod.INSTALLED_APPS
     assert "teatree.agents" in mod.INSTALLED_APPS
+    assert "teatree.backends" in mod.INSTALLED_APPS
     assert isinstance(mod.LOGGING, dict)
     assert mod.LOGGING["version"] == 1
     assert mod.STATIC_URL == "static/"

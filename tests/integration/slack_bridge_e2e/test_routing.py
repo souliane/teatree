@@ -94,14 +94,23 @@ class TestPerOverlayBotRouting:
         }
         pass_lookup = {"ref-bot": "xoxb-toml", "ref-app": "xapp-toml"}
 
+        from teatree.backends.backend_provider import SlackBackendProvider  # noqa: PLC0415
+
+        # A real provider keeps ``build_slack_messaging`` live (so the TOML
+        # overlay builds a real ``SlackBotBackend``); only the entry-point
+        # credential resolution is neutralised — the synthetic ``py-overlay``
+        # has no live backends.
+        provider = SlackBackendProvider()
+
         # Justified scaffolding (#1066 nit 2): synthetic entry-point + TOML
         # overlays injected via patched ``get_all_overlays`` /
         # ``load_config`` + a ``read_pass`` stub. See the conftest module
         # docstring; the network (``httpx``) stays real.
         with (
             patch.object(backend_factory, "get_all_overlays", return_value={"py-overlay": py_overlay}),
-            patch.object(backend_factory, "get_code_hosts", return_value=[]),
-            patch.object(backend_factory, "get_messaging", return_value=None),
+            patch.object(backend_factory, "get_backend_provider", return_value=provider),
+            patch.object(provider, "get_code_hosts", return_value=[]),
+            patch.object(provider, "get_messaging", return_value=None),
             patch("teatree.config.load_config", return_value=_FakeConfig(raw={"overlays": cfg_overlays})),
             patch("teatree.utils.secrets.read_pass", side_effect=lambda k: pass_lookup.get(k, "")),
         ):
