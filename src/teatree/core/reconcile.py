@@ -16,7 +16,7 @@ from pathlib import Path
 from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree_env import detect_drift, render_env_cache
+from teatree.core.worktree_env import detect_drift, render_env_cache, worktree_pg_connection
 from teatree.utils import git
 from teatree.utils.db import db_exists
 from teatree.utils.run import run_allowed_to_fail
@@ -178,8 +178,10 @@ def _reconcile_worktree_row(drift: Drift, wt: Worktree, ticket_number: str) -> N
             else:
                 drift.missing_env_caches.append(MissingEnvCache(worktree_pk=wt.pk, cache_path=cache_path))
 
-    if wt.db_name and wt.state != Worktree.State.CREATED and not db_exists(wt.db_name):
-        drift.missing_dbs.append(MissingDB(worktree_pk=wt.pk, db_name=wt.db_name))
+    if wt.db_name and wt.state != Worktree.State.CREATED:
+        user, host, env = worktree_pg_connection(wt)
+        if not db_exists(wt.db_name, user=user, host=host, env=env or None):
+            drift.missing_dbs.append(MissingDB(worktree_pk=wt.pk, db_name=wt.db_name))
 
     if wt.state == Worktree.State.CREATED:
         compose_project = f"{wt.repo_path}-wt{ticket_number}"

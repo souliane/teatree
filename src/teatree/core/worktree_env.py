@@ -11,6 +11,7 @@ this module makes the file actively inhospitable to being treated as
 truth.
 """
 
+import os
 import platform
 import shutil
 import stat
@@ -188,6 +189,36 @@ def write_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None)
     shutil.copy2(spec.path, repo_copy)
 
     return spec
+
+
+def worktree_pg_connection(
+    worktree: Worktree, *, overlay: "OverlayBase | None" = None
+) -> tuple[str, str, dict[str, str]]:
+    """Resolve ``(user, host, env)`` for connecting to *worktree*'s postgres.
+
+    The worktree's overlay decides the connecting role, host and port
+    via ``get_env_extra`` (an overlay may connect as a non-default
+    superuser role on ``localhost``). The bare process-env defaults in
+    ``utils.db`` fall back to ``postgres`` / ``localhost`` — a role that
+    need not exist on the host — so a per-worktree existence check must
+    connect with the overlay's resolved params, not the defaults.
+
+    Returns ``("", "", {})`` for an unprovisioned worktree so callers fall
+    back to the plain ``db_exists`` defaults.
+    """
+    from teatree.utils.db import pg_env  # noqa: PLC0415
+
+    extra: WorktreeExtra = validated_worktree_extra(worktree.extra)
+    if not extra.get("worktree_path"):
+        return "", "", {}
+
+    if overlay is None:
+        overlay = get_overlay_for_worktree(worktree)
+    resolved = dict(overlay.get_env_extra(worktree))
+
+    env = {**os.environ, **resolved}
+    env.pop("VIRTUAL_ENV", None)
+    return resolved.get("POSTGRES_USER", ""), resolved.get("POSTGRES_HOST", ""), pg_env(env)
 
 
 def detect_drift(worktree: Worktree, *, overlay: "OverlayBase | None" = None) -> tuple[bool, Path | None]:

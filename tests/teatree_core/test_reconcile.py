@@ -3,17 +3,26 @@
 import shutil
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayBase
 from teatree.core.reconcile import Drift, EnvCacheDrift, MissingEnvCache, MissingWorktreeDir, reconcile_ticket
 from teatree.core.worktree_env import write_env_cache
 from tests.teatree_core.conftest import CommandOverlay
 
 _COMMAND = {"test": CommandOverlay()}
+
+
+class _PgUserOverlay(CommandOverlay):
+    """Overlay that connects to postgres as a non-default superuser role."""
+
+    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "localhost"}
 
 
 def _make(tmp: str, *, db_name: str = "wt_99") -> tuple[Ticket, Worktree, Path]:
@@ -124,3 +133,48 @@ class TestReconcileTicket(TestCase):
             write_env_cache(wt)
             drift = reconcile_ticket(ticket)
         assert not drift.has_drift
+
+
+class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
+    """An existing DB reachable only as the overlay's role must not read as missing.
+
+    The bug: ``db_exists`` connected with the bare process-env default
+    ``POSTGRES_USER`` (``postgres`` — a role that need not exist), so a
+    DB owned by a non-default superuser role reported missing for many
+    tickets. ``doctor --fix`` then nudges a re-provision that drops the
+    good DB. The reconciler must connect with the worktree's resolved role.
+    """
+
+    _OVERLAYS: ClassVar[dict[str, OverlayBase]] = {"test": _PgUserOverlay()}
+
+    def _existing_only_as_superuser(self, db_name: str, *, user: str = "", **_: object) -> bool:
+        # Mirrors the host: the DB exists, but only the overlay's role can see it.
+        # The default ``postgres`` connection fails and yields no rows -> False.
+        return user == "db_superuser" and db_name == "wt_99"
+
+    def test_existing_db_not_reported_missing_when_owned_by_overlay_role(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
+            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.reconcile.db_exists", side_effect=self._existing_only_as_superuser),
+        ):
+            ticket, wt, _ = _make(tmp)
+            write_env_cache(wt)
+            drift = reconcile_ticket(ticket)
+        assert drift.missing_dbs == []
+
+    def test_genuinely_absent_db_still_reported_missing(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
+            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.reconcile.db_exists", return_value=False),
+        ):
+            ticket, wt, _ = _make(tmp)
+            write_env_cache(wt)
+            drift = reconcile_ticket(ticket)
+        assert len(drift.missing_dbs) == 1
+        assert drift.missing_dbs[0].db_name == "wt_99"
