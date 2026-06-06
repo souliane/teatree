@@ -167,8 +167,25 @@ depends_on = [
   "teatree.outbound_claim",
   "teatree.messaging",
   "teatree.quality",
-  "teatree.hooks"
+  "teatree.hooks",
+  "teatree.cli.eval"
 ]
+
+[[modules]]
+path = "teatree.cli.eval"
+layer = "interface"
+depends_on = [
+  "teatree.cli._format_opts",
+  "teatree.core",
+  "teatree.eval",
+  "teatree.utils",
+  "teatree.claude_sessions"
+]
+
+[[modules]]
+path = "teatree.cli._format_opts"
+layer = "interface"
+depends_on = []
 
 [[modules]]
 path = "teatree.eval"

@@ -70,6 +70,12 @@ graph TD
     teatree.cli --> teatree.messaging
     teatree.cli --> teatree.quality
     teatree.cli --> teatree.hooks
+    teatree.cli --> teatree.cli.eval
+    teatree.cli.eval --> teatree.cli._format_opts
+    teatree.cli.eval --> teatree.core
+    teatree.cli.eval --> teatree.eval
+    teatree.cli.eval --> teatree.utils
+    teatree.cli.eval --> teatree.claude_sessions
     teatree.eval --> teatree.core
     teatree.eval --> teatree.hooks
     teatree.eval --> teatree.utils
@@ -128,6 +134,7 @@ graph TD
     teatree.overlay_init
     teatree.skill_schema
     teatree.skill_ref_validator
+    teatree.cli._format_opts
     teatree.slack_mrkdwn
     teatree.skill_deps
     teatree.skill_map

@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import cast
 
-from teatree.backends.protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict

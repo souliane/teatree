@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.backends.protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import ImplementedIssueMarker
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task

@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHostBackend, MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
+    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
     from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.notion_view import NotionLike
 

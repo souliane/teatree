@@ -23,15 +23,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
+from teatree.core.backend_factory import OverlayBackends
+
 # Re-exported for downstream importers. Tests monkeypatch
 # ``teatree.loop.tick.load_config``/``discover_overlays``; keep the
 # binding here so the legacy patch path stays live (the
 # ``scanner_factories`` / ``global_scanner_factories`` modules have
 # their own bindings patched by the test setup that exercises the moved
 # functions).
-from teatree.backends.protocols import CodeHostBackend, MessagingBackend
-from teatree.config import discover_overlays, load_config  # noqa: F401 — re-export kept live for test monkeypatch
-from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.domain_jobs import _identity_groups_for_overlay, _run_job, jobs_for_domain
 from teatree.loop.global_scanner_factories import build_default_jobs, build_default_scanners

@@ -37,7 +37,7 @@ import re
 from dataclasses import dataclass
 from typing import cast
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import RedCardIntent, RedCardSignal
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict

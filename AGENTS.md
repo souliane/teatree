@@ -184,9 +184,9 @@ Overlays should hard-fail at import (no shim, no deprecation warning) when the r
 
 ## Backend Architecture
 
-### API Protocols (`backends/protocols.py`)
+### API Protocols (`core/backend_protocols.py`)
 
-Each external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`:
+Each external API concern is a `@runtime_checkable Protocol` in `teatree.core.backend_protocols`:
 
 | Protocol | Purpose |
 |---|---|

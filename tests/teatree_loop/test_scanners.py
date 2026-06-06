@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from django.test import TestCase
 
-from teatree.backends.protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models import Ticket
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner

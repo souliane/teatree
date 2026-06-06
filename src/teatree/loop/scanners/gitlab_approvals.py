@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, cast
 import httpx
 
 import teatree.core.overlay_loader as _overlay_loader
-from teatree.backends.protocols import ApprovalState, CodeHostBackend
+from teatree.core.backend_protocols import ApprovalState, CodeHostBackend
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass, ScanSignal, SignalPayload
 from teatree.types import RawAPIDict
 from teatree.url_classify import is_gitlab_mr_url, pr_ref

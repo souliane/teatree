@@ -19,7 +19,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.backends.protocols import PrOpenState
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import BotPing, OnBehalfApproval, OutboundClaim, ReviewRequestPost
 from teatree.loop.review_claim import emit_review_done_reactions
 from teatree.loop.scanners.review_nag import _post_thread_nag

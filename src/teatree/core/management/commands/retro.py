@@ -3,7 +3,7 @@
 The deterministic scaffold behind the retro skill's enforcement-retrospective
 (``skills/retro/SKILL.md`` § "Recurrence → Escalation", #1573). It fetches a
 PR's review comments through the existing
-:class:`~teatree.backends.protocols.CodeHostBackend`, fingerprints each finding
+:class:`~teatree.core.backend_protocols.CodeHostBackend`, fingerprints each finding
 for dedup, records the agent-supplied A/B/C verdicts to a durable per-PR JSON
 store, and files one scoped, deduped enforcement issue per class-C finding.
 
@@ -42,7 +42,7 @@ from teatree.types import RawAPIDict
 from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHostBackend
+    from teatree.core.backend_protocols import CodeHostBackend
 
 
 class FindingView(TypedDict):

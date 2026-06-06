@@ -31,7 +31,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress

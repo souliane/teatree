@@ -43,8 +43,8 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.backends.protocols import MessagingBackend
 from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.types import RawAPIDict

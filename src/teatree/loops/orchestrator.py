@@ -36,8 +36,8 @@ from teatree.loops.registry import iter_loops
 from teatree.loops.summary import OrchestratorReport, build_summary_dm
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHostBackend, MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
+    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
     from teatree.loop.dispatch import DispatchAction
     from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.base import ScanSignal

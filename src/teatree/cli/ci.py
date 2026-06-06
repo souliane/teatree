@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from teatree.backends.protocols import CIService
+from teatree.core.backend_protocols import CIService
 from teatree.utils.coverage_floor import measure_coverage
 from teatree.utils.django_bootstrap import ensure_django
 

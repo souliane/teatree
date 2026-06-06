@@ -534,7 +534,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         )
 
     def test_merged_mr_is_not_nagged_but_reacted_and_row_closed(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_post()
         slack = FakeSlack()
@@ -554,7 +554,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         assert [s.kind for s in signals] == ["review_request_merge_react.reacted"]
 
     def test_self_authored_merged_mr_via_nag_path_never_reacts(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_post()
         slack = FakeSlack()
@@ -573,7 +573,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         assert [s.kind for s in signals] == ["review_request_merge_react.self_authored"]
 
     def test_closed_mr_is_not_nagged_not_reacted_and_row_closed(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_post()
         slack = FakeSlack()
@@ -587,7 +587,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         assert [s.kind for s in signals] == ["review_nag.mr_closed"]
 
     def test_open_mr_still_nags(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         self._due_post()
         slack = FakeSlack()
@@ -598,7 +598,7 @@ class TestNeverNagMergedOrClosedMr(_EnableReviewNagMixin, TestCase):
         assert [s.kind for s in signals] == ["review_nag.ping"]
 
     def test_unknown_state_fails_open_and_nags(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         self._due_post()
         slack = FakeSlack()
@@ -643,7 +643,7 @@ class TestNagDiscoveredMergeStillReactsExactlyOnce(_EnableReviewNagMixin, TestCa
         )
 
     def test_nag_due_and_merged_reacts_exactly_one_merge(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
         post = self._due_merged_post()
         slack = FakeSlack()
@@ -657,7 +657,7 @@ class TestNagDiscoveredMergeStillReactsExactlyOnce(_EnableReviewNagMixin, TestCa
         assert post.done_at is not None
 
     def test_react_scanner_after_nag_does_not_double_react(self) -> None:
-        from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+        from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
         from teatree.loop.scanners.review_request_merge_react import ReviewRequestMergeReactScanner  # noqa: PLC0415
 
         self._due_merged_post()

@@ -27,7 +27,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.backends.protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
