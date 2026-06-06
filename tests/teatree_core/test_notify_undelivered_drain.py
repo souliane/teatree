@@ -69,6 +69,87 @@ class TestRecoverableInfo(TestCase):
         )
         assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["crashed-claim"]
 
+    def test_row_older_than_age_cutoff_is_not_recoverable(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="weeks-stale",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="recorded weeks ago",
+        )
+        BotPing.objects.filter(pk=row.pk).update(
+            posted_at=timezone.now() - BotPing.REDELIVERY_AGE_CUTOFF - timedelta(hours=1),
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+    def test_attempt_exhausted_row_is_not_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="exhausted",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="never delivers",
+            attempts=BotPing.MAX_REDELIVERY_ATTEMPTS,
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+    def test_expired_row_is_not_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="abandoned",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.EXPIRED,
+            text="given up on",
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+
+class TestExpireStaleInfo(TestCase):
+    def test_aged_row_is_expired_terminally(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="aged",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="old noise",
+        )
+        BotPing.objects.filter(pk=row.pk).update(
+            posted_at=timezone.now() - BotPing.REDELIVERY_AGE_CUTOFF - timedelta(hours=1),
+        )
+        assert BotPing.expire_stale_info() == 1
+        assert BotPing.objects.get(pk=row.pk).status == BotPing.Status.EXPIRED
+
+    def test_attempt_exhausted_row_is_expired_terminally(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="capped",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="hit the cap",
+            attempts=BotPing.MAX_REDELIVERY_ATTEMPTS,
+        )
+        assert BotPing.expire_stale_info() == 1
+        assert BotPing.objects.get(pk=row.pk).status == BotPing.Status.EXPIRED
+
+    def test_fresh_under_cap_row_is_left_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="fresh",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="still worth retrying",
+            attempts=1,
+        )
+        assert BotPing.expire_stale_info() == 0
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["fresh"]
+
+    def test_sent_row_is_never_expired(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="delivered",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT,
+            text="already gone",
+        )
+        BotPing.objects.filter(pk=row.pk).update(
+            posted_at=timezone.now() - BotPing.REDELIVERY_AGE_CUTOFF - timedelta(hours=1),
+        )
+        assert BotPing.expire_stale_info() == 0
+        assert BotPing.objects.get(pk=row.pk).status == BotPing.Status.SENT
+
 
 class TestDrainUndeliveredNotifies(TestCase):
     def test_redelivers_stranded_info_dm_when_backend_now_available(self) -> None:
@@ -95,7 +176,7 @@ class TestDrainUndeliveredNotifies(TestCase):
             assert drain_undelivered_notifies(user_id="U_ME") == (0, 0)
         backend.post_message.assert_not_called()
 
-    def test_still_no_backend_leaves_row_recoverable(self) -> None:
+    def test_still_no_backend_bumps_attempt_and_keeps_row_recoverable_under_cap(self) -> None:
         BotPing.objects.create(
             idempotency_key="subagent-dm-3",
             kind=BotPing.Kind.INFO,
@@ -108,7 +189,46 @@ class TestDrainUndeliveredNotifies(TestCase):
         assert (delivered, total) == (0, 1)
         row = BotPing.objects.get(idempotency_key="subagent-dm-3")
         assert row.status == BotPing.Status.NOOP
+        assert row.attempts == 1
         assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["subagent-dm-3"]
+
+    def test_repeated_no_backend_drains_eventually_expire_the_row(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="never-deliverable",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="backend never resolves",
+        )
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
+            for _ in range(BotPing.MAX_REDELIVERY_ATTEMPTS + 1):
+                drain_undelivered_notifies(user_id="U_ME")
+
+        row = BotPing.objects.get(idempotency_key="never-deliverable")
+        assert row.status == BotPing.Status.EXPIRED
+        assert list(BotPing.recoverable_info()) == []
+
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            assert drain_undelivered_notifies(user_id="U_ME") == (0, 0)
+        backend.post_message.assert_not_called()
+
+    def test_aged_row_is_expired_without_any_delivery_attempt(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="weeks-old",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="recorded weeks ago",
+        )
+        BotPing.objects.filter(pk=row.pk).update(
+            posted_at=timezone.now() - BotPing.REDELIVERY_AGE_CUTOFF - timedelta(hours=1),
+        )
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            delivered, total = drain_undelivered_notifies(user_id="U_ME")
+
+        assert (delivered, total) == (0, 0)
+        backend.post_message.assert_not_called()
+        assert BotPing.objects.get(pk=row.pk).status == BotPing.Status.EXPIRED
 
     def test_one_failure_does_not_abort_the_drain(self) -> None:
         for key in ("strand-a", "strand-b"):

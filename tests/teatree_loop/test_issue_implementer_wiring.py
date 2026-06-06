@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.backends.protocols import CodeHostBackend
 from teatree.config import UserSettings
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import jobs_for_domain
 from teatree.loop.job_identity import Domain

@@ -10,9 +10,9 @@ of the loop tick fan-out to stay under the module-health LOC cap.
 import os
 from pathlib import Path
 
-from teatree.backends.protocols import CodeHostBackend, MessagingBackend
 from teatree.config import discover_active_overlay, discover_overlays, load_config
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
 from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
 from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (

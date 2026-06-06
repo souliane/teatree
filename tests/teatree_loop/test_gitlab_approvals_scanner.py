@@ -15,7 +15,7 @@ import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.backends.protocols import ApprovalState, ReviewState
+from teatree.core.backend_protocols import ApprovalState, ReviewState
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import Ticket
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass

@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.cli.eval_docker import DOCKER_IMAGE, DockerUnavailableError, _image_present, run_eval_in_docker
+from teatree.cli.eval.docker import DOCKER_IMAGE, DockerUnavailableError, _image_present, run_eval_in_docker
 
-_MODULE = "teatree.cli.eval_docker"
+_MODULE = "teatree.cli.eval.docker"
 
 
 def _completed(returncode: int) -> MagicMock:

@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 
 from teatree.cli._format_opts import require_valid_format
-from teatree.cli.eval_all import (
+from teatree.cli.eval.all import (
     build_scenarios_table,
     build_summary_table,
     coverage_lane,
@@ -19,11 +19,11 @@ from teatree.cli.eval_all import (
     transcript_replay_lane,
     trigger_lane,
 )
-from teatree.cli.eval_capture_subagent import capture_subagent
-from teatree.cli.eval_docker import DockerUnavailableError, run_eval_in_docker
-from teatree.cli.eval_multi_trial import run_model_matrix_lane, run_pass_at_k_lane
-from teatree.cli.eval_negative_control import negative_control
-from teatree.cli.eval_run_modes import (
+from teatree.cli.eval.capture_subagent import capture_subagent
+from teatree.cli.eval.docker import DockerUnavailableError, run_eval_in_docker
+from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
+from teatree.cli.eval.negative_control import negative_control
+from teatree.cli.eval.run_modes import (
     build_subscription_manifest,
     gate_run_regressions,
     guard_executed,
@@ -31,7 +31,7 @@ from teatree.cli.eval_run_modes import (
     persist_single,
     render_subscription_text,
 )
-from teatree.cli.eval_transcript_replay import replay_transcript_for_all, transcript_replay
+from teatree.cli.eval.transcript_replay import replay_transcript_for_all, transcript_replay
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.coverage import render_json as render_coverage_json
 from teatree.eval.coverage import render_text as render_coverage_text
@@ -268,7 +268,7 @@ def history(
     """
     ensure_django()
     require_valid_format(output_format)
-    from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
+    from teatree.cli.eval.history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415
 
     if mark_baseline is not None and not mark_run_baseline(mark_baseline):

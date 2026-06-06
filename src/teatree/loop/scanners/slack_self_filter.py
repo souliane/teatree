@@ -32,7 +32,7 @@ row that turn — better silent for one tick than spam-spawning
 import logging
 from dataclasses import dataclass
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)

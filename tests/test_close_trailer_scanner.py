@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.backends.protocols import PullRequestSpec
 from teatree.config import load_config
+from teatree.core.backend_protocols import PullRequestSpec
 from teatree.core.close_trailer_scanner import apply_publish_gate, namespace_is_banned, strip_close_trailers
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.ship import ShipExecutor

@@ -21,7 +21,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.backends.protocols import PrOpenState
+from teatree.core.backend_protocols import PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.loop.scanners.review_request_merge_react import MERGE_REACTION_EMOJI, ReviewRequestMergeReactScanner
 from teatree.types import RawAPIDict

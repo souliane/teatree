@@ -20,7 +20,7 @@ from typing import Any
 
 from django.test import TestCase
 
-from teatree.backends.protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.loop.scanners.reviewer_prs import ReviewerPrsScanner
 from teatree.types import RawAPIDict
 

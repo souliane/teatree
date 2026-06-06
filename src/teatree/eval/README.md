@@ -23,7 +23,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval*.py` (`eval.py` wiring; `eval_multi_trial.py` pass@k/matrix; `eval_transcript_replay.py` replay command + resolver; `eval_docker.py` CI-image run; `eval_all.py` lane orchestration + table; `eval_run_modes.py` persist/grade/manifest helpers) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`app.py` command wiring; `__init__.py` re-exports `eval_app`; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core flat catalog) + co-located `skills/<name>/evals.yaml` (a skill ships its own evals beside `SKILL.md`) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
@@ -302,6 +302,7 @@ class, where it is pinned, and the originating fix:
 | substrate-merge full-autonomy carve-out | `regression_corpus` (merge precondition) | [#1748](https://github.com/souliane/teatree/issues/1748) |
 | maker≠checker at merge time | `regression_corpus` (merge precondition) | [#1601](https://github.com/souliane/teatree/pull/1601) |
 | loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
+| account-switch detect-invalidate-reprobe (`/login`) | `regression_corpus` (full switch-and-verify cycle) | [#1916](https://github.com/souliane/teatree/issues/1916) |
 | orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
 | structured-question — AskUserQuestion, one decision | `skills/rules/evals.yaml` (co-located) | [#1622](https://github.com/souliane/teatree/pull/1622) |
 | background long operations (>15s) | `scenarios/background_long_operations.yaml` | [#1701](https://github.com/souliane/teatree/pull/1701) |

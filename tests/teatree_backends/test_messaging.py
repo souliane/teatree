@@ -9,8 +9,8 @@ import pytest
 
 from teatree.backends import slack_http, slack_scopes
 from teatree.backends.messaging_noop import NoopMessagingBackend
-from teatree.backends.protocols import MessagingBackend
 from teatree.backends.slack_bot import SlackBotBackend
+from teatree.core.backend_protocols import MessagingBackend
 
 
 def test_noop_satisfies_messaging_protocol() -> None:

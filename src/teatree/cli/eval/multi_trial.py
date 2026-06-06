@@ -1,6 +1,6 @@
 """``t3 eval run`` multi-trial (pass@k) and model-matrix execution paths.
 
-Held apart from the single-trial ``run`` body in :mod:`teatree.cli.eval`: a
+Held apart from the single-trial ``run`` body in :mod:`teatree.cli.eval.app`: a
 multi-trial / matrix run always shells the metered sdk runner and aggregates
 across trials/models, a distinct concern from the default single-pass grade.
 """
@@ -10,7 +10,7 @@ import sys
 
 import typer
 
-from teatree.cli.eval_run_modes import (
+from teatree.cli.eval.run_modes import (
     gate_run_regressions,
     guard_executed,
     persist_matrix_run,

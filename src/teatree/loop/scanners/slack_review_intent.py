@@ -33,7 +33,7 @@ import logging
 from dataclasses import dataclass
 from typing import cast
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ReviewAssignment, ReviewIntent
 from teatree.loop.review_claim import filter_review_intent_signals
 from teatree.loop.scanners.base import ScanSignal

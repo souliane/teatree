@@ -28,7 +28,7 @@ class Domain(StrEnum):
     The per-overlay members own disjoint, exhaustive slices of
     :func:`_jobs_for_overlay_backend`; :data:`PER_OVERLAY_DOMAINS`
     summed reproduces it exactly. ``DISPATCH`` is the global
-    (non-overlay) triad ``build_default_jobs`` hard-codes — it is the
+    (non-overlay) dispatch set ``build_default_jobs`` hard-codes — it is the
     one member excluded from the per-overlay sum.
     """
 

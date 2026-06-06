@@ -140,7 +140,7 @@ def test_build_default_scanners_starts_with_pending_tasks_incoming_events_outbou
 def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
 
     host = MagicMock(spec=CodeHostBackend)
     scanners = build_default_scanners(host=host, messaging=None)
@@ -151,7 +151,7 @@ def test_build_default_scanners_adds_host_scanners(monkeypatch: pytest.MonkeyPat
 def test_build_default_scanners_adds_messaging_and_notion_scanners() -> None:
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import MessagingBackend  # noqa: PLC0415
+    from teatree.core.backend_protocols import MessagingBackend  # noqa: PLC0415
 
     messaging = MagicMock(spec=MessagingBackend)
     notion = MagicMock()
@@ -213,8 +213,8 @@ def test_build_default_jobs_tags_per_overlay() -> None:
     """Each overlay-scoped scanner gets its overlay name attached to ``_run_job``'s label."""
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
     from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
 
     backends = [
@@ -253,8 +253,8 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
 
     config_path = tmp_path / ".teatree.toml"
@@ -327,9 +327,9 @@ def test_build_default_jobs_per_overlay_alias_override(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.config import OverlayEntry  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.loop.tick import build_default_jobs  # noqa: PLC0415
 
     config_path = tmp_path / ".teatree.toml"
@@ -376,8 +376,8 @@ def test_identity_alias_groups_reads_overlay_config_first(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415
     from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
 
@@ -413,8 +413,8 @@ def test_identity_aliases_for_request_unions_across_backends(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415
     from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
 
@@ -456,8 +456,8 @@ def test_identity_aliases_for_request_falls_back_to_operator_identities(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.overlay import OverlayBase  # noqa: PLC0415
     from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
 
@@ -487,8 +487,8 @@ def test_identity_aliases_for_request_fails_open_on_config_error(
 ) -> None:
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.loop import tick as tick_mod  # noqa: PLC0415
     from teatree.loop.tick import TickRequest, _identity_aliases_for_request  # noqa: PLC0415
 
@@ -868,14 +868,14 @@ class TestTickReapsOrphanedReviewingTask(django.test.TransactionTestCase):
                 return []
 
             def get_review_state(self, *, pr_url: str, reviewer: str):
-                from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+                from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
                 return ReviewState.NONE
 
             def get_pr_open_state(self, *, pr_url: str):
                 # #1074: the forge confirms the MR is genuinely merged, so
                 # the orphan sweep is allowed to reap the stale task.
-                from teatree.backends.protocols import PrOpenState  # noqa: PLC0415
+                from teatree.core.backend_protocols import PrOpenState  # noqa: PLC0415
 
                 return PrOpenState.MERGED
 
@@ -1060,8 +1060,8 @@ def test_tick_multi_overlay_prefixes_summary(tmp_path: Path) -> None:
     """Signals collected via the multi-overlay path get an ``[overlay]`` prefix in the rendered line."""
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend  # noqa: PLC0415
 
     fake_host = MagicMock(spec=CodeHostBackend)
     fake_host.current_user.return_value = "souliane"
@@ -1338,8 +1338,8 @@ def _backend_with_overlay(
     """
     from unittest.mock import MagicMock  # noqa: PLC0415
 
-    from teatree.backends.protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
     from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+    from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend  # noqa: PLC0415
     from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata  # noqa: PLC0415
 
     config = MagicMock(spec=OverlayConfig)

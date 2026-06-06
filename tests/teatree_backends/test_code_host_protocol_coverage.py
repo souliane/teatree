@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, cast
 
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend
 
 if TYPE_CHECKING:
     from collections.abc import Callable

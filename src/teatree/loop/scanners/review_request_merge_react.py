@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 
 from django.utils import timezone
 
-from teatree.backends.protocols import CodeHostBackend, MessagingBackend, PrOpenState
+from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.core.review_candidate import author_is_self
