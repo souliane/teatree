@@ -337,7 +337,7 @@ def write_override(
     canonical away→present transition: it auto-drains the deferred-question
     backlog to the user's Slack DM (the user reads Slack, not the CLI), so
     returning never silently swallows questions and never depends on the
-    agent remembering to run ``t3 questions resurface``. The drain only
+    agent remembering to run ``t3 teatree questions resurface``. The drain only
     fires on an actual transition — setting present while already present
     is a no-op — and is fully fail-open: a Slack failure is swallowed and
     never blocks the availability flip. ``user_id`` / ``overlay`` are
@@ -373,7 +373,7 @@ def _drain_on_return(*, user_id: str, overlay: str) -> None:
     """Auto-fire the away→present deferred-question drain, fail-open.
 
     Reuses the canonical :func:`teatree.core.notify.drain_deferred_questions`
-    egress (the same code path ``t3 questions resurface`` runs). Any
+    egress (the same code path ``t3 teatree questions resurface`` runs). Any
     failure — a Slack outage, a missing backend, an import error — is
     swallowed so the availability flip that already landed on disk is never
     rolled back or made to raise.

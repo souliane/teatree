@@ -259,7 +259,7 @@ def _ensure_editable_if_contributing() -> None:
         logger.debug("editable check skipped", exc_info=True)
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover — console-script entry point (Typer dispatch glue)
     """Entry point for the ``t3`` console script."""
     _ensure_editable_if_contributing()
     register_overlay_commands()

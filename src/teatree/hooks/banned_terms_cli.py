@@ -52,7 +52,7 @@ def _load_terms(config: Path) -> tuple[str, ...]:
     return ()
 
 
-def main(argv: list[str]) -> int:
+def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orchestrates tested helpers)
     parser = argparse.ArgumentParser(description="Reject files containing banned terms.")
     parser.add_argument("--config", required=True, help="TOML file with a banned_terms array.")
     parser.add_argument("files", nargs="*", help="Files to scan.")

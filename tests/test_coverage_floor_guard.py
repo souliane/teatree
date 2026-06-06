@@ -14,6 +14,7 @@ codified floor, the same drift would happen again. New uncovered code must
 ship with tests.
 """
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -76,6 +77,32 @@ class TestCoverageFloor:
         omit = set(pyproject["tool"]["coverage"]["report"].get("omit", []))
         unexpected = omit - ALLOWED_OMIT_PATTERNS
         assert not unexpected, f"New report-level omit patterns added: {unexpected}"
+
+
+# A coverage ``exclude_lines`` pattern that matches a clause opener (``def`` /
+# ``class``) excludes the WHOLE block body from measurement, not one line —
+# ``def main\(`` silently hid every ``main()`` body. Excludes must be
+# line-scoped pragmas, never clause-level.
+_CLAUSE_LEVEL_EXCLUDE = re.compile(r"\bdef\b|\bclass\b")
+
+
+class TestExcludeLinesAreNotClauseLevel:
+    def test_def_main_exclude_removed(self, pyproject: dict) -> None:
+        excludes = pyproject["tool"]["coverage"]["report"]["exclude_lines"]
+        assert "def main\\(" not in excludes, (
+            "``def main\\(`` excludes every main() body from coverage. Removed in "
+            "favor of per-line ``# pragma: no cover`` on genuinely untestable "
+            "entry points (E11)."
+        )
+
+    def test_no_clause_level_exclude_patterns(self, pyproject: dict) -> None:
+        excludes = pyproject["tool"]["coverage"]["report"]["exclude_lines"]
+        offenders = [e for e in excludes if _CLAUSE_LEVEL_EXCLUDE.search(e)]
+        assert not offenders, (
+            f"Coverage exclude_lines contains clause-level pattern(s) {offenders} that "
+            f"hide whole function/class bodies. Use a per-line ``# pragma: no cover`` on "
+            f"the specific untestable line instead."
+        )
 
 
 class TestPytestConfigNotBypassed:

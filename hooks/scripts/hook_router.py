@@ -2082,7 +2082,7 @@ def handle_protect_default_branch(data: dict) -> bool:
     return _fail_open_or_deny(
         data,
         f"BLOCKED: file is on protected branch '{branch}' in a teatree-managed repo. "
-        "Create a worktree first with `t3 workspace ticket`.",
+        "Create a worktree first with `t3 teatree workspace ticket`.",
     )
 
 
@@ -6843,7 +6843,7 @@ def _mirror_away_question_to_slack(question: dict, session_id: str) -> None:
     The away-mode handler runs FIRST and denies, short-circuiting the
     PreToolUse chain before ``handle_mirror_question_to_slack`` would
     run — so without this the away-mode question never reaches Slack
-    (the user reads Slack, not ``t3 questions list``). Mirrors only the
+    (the user reads Slack, not ``t3 teatree questions list``). Mirrors only the
     single recorded question (the one ``_record_deferred_question`` stored
     and the user can answer), not the full payload — so the DM never shows
     more rows than are answerable. Idempotent by a stable hash of that
@@ -6953,7 +6953,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
     ``handle_mirror_question_to_slack`` (the last handler) would run. So
     this handler is the only place that can mirror an away-mode question
     to the user's Slack DM — and it does, between recording the row and
-    emitting the deny (the user reads Slack, not ``t3 questions list``).
+    emitting the deny (the user reads Slack, not ``t3 teatree questions list``).
     Returns ``True`` with a ``permissionDecision=deny`` and a friendly
     reason that names the recorded row so the agent narrates the
     conversion correctly. The denied tool_use block still appears in the
@@ -6998,7 +6998,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
         _mirror_away_question_to_slack(first, str(data.get("session_id", "")))
     reason = (
         f"availability=away — your question was captured durably as DeferredQuestion #{queue_id} "
-        f"and the user will answer it via `t3 questions answer {queue_id} <text>`. "
+        f"and the user will answer it via `t3 teatree questions answer {queue_id} <text>`. "
         "Proceed with any work that does not depend on the answer; the response will surface "
         "in a future turn's additionalContext when the user resolves it."
     )

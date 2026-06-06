@@ -23,9 +23,10 @@ _SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 _T3_IN_BACKTICKS = re.compile(r"`(t3 [^`]+)`")
 
 # Tokens that terminate the command path: an option/flag, a shell
-# placeholder, a redirect/pipe, an ellipsis ("`t3 ...`" = a generic
-# mention of the CLI, not a specific command), or an argument value.
-_PLACEHOLDER = re.compile(r"^(\.\.\.|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\|.*|>.*|\".*|'.*)$")
+# placeholder, a redirect/pipe, an ASCII or unicode ellipsis ("`t3 ...`" /
+# "`t3 …`" = a generic mention of the CLI, not a specific command), or an
+# argument value.
+_PLACEHOLDER = re.compile(r"^(\.\.\.|…|<.*>|\$.*|--.*|-[A-Za-z]|\{.*\}|\|.*|>.*|\".*|'.*)$")
 
 
 def _resolvable_path(raw: str, valid: set[str], groups: set[str]) -> str | None:
@@ -60,7 +61,7 @@ def _resolvable_path(raw: str, valid: set[str], groups: set[str]) -> str | None:
 
 def _iter_skill_invocations() -> list[tuple[Path, str]]:
     found: list[tuple[Path, str]] = []
-    for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
+    for skill_md in sorted(_SKILLS_DIR.glob("*/**/*.md")):
         text = skill_md.read_text(encoding="utf-8")
         found.extend((skill_md, m.group(1).strip()) for m in _T3_IN_BACKTICKS.finditer(text))
     return found

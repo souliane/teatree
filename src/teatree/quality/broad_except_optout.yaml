@@ -1,0 +1,20 @@
+# Auditable opt-out registry for the broad-except hook (#1987).
+#
+# A broad-except handler (``except Exception`` / ``except BaseException`` /
+# bare ``except:``) whose body neither logs (``logger.*`` / ``log.*`` /
+# ``logging.*``) nor re-raises nor returns a gate success sentinel is a
+# silent swallow — the hook flags it. Genuine tick-safety-net / resolve-or-skip
+# seams that intentionally degrade to a neutral value declare an entry here so
+# the exemption is reviewed in one place rather than scattered ``# noqa``.
+#
+# Each entry: file (path under src/teatree) + reason. The hook exempts every
+# broad handler in a listed file.
+
+optouts:
+  - file: src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py
+    reason: >
+      Resolve-or-skip audit verifiers — an unresolvable overlay/import/token
+      degrades to None/empty so the scanner skips the row; a reachability
+      failure is intentionally not drift.
+    refs:
+      - souliane/teatree#1987

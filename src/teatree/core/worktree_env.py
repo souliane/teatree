@@ -113,7 +113,7 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
     """Render the env cache content for *worktree* without touching disk.
 
     Returns ``None`` when the worktree has no ``worktree_path`` yet (not
-    provisioned).  Used by drift detection and ``t3 env show``.
+    provisioned).  Used by drift detection and ``t3 teatree env show``.
 
     The overlay is resolved from the worktree's own ``overlay`` field
     (``get_overlay_for_worktree``) so this works on a multi-overlay host

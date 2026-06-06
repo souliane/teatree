@@ -480,7 +480,7 @@ def _resurface_text(row: DeferredQuestion) -> str:
         label = opt.get("label", "")
         desc = opt.get("description", "")
         lines.append(f"  {i}. {label}" + (f" — {desc}" if desc else ""))
-    lines.append(f"\n_Answer with_ `t3 questions answer {row.pk} <text>`")
+    lines.append(f"\n_Answer with_ `t3 teatree questions answer {row.pk} <text>`")
     return "\n".join(lines)
 
 
@@ -488,7 +488,7 @@ def drain_deferred_questions(*, user_id: str = "", overlay: str = "") -> tuple[i
     """Re-post the pending :class:`DeferredQuestion` backlog to the user's Slack DM.
 
     The single canonical away→present drain. Both the manual
-    ``t3 questions resurface`` command and the automatic
+    ``t3 teatree questions resurface`` command and the automatic
     ``write_override(MODE_PRESENT)`` away→present transition call this —
     one code path, no duplicated egress logic.
 

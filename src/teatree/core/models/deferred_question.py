@@ -5,7 +5,7 @@ the ``AskUserQuestion`` PreToolUse hook converts the tool call into a
 :class:`DeferredQuestion` row instead of waiting on a TTY answer. The
 question is *captured*, never silently dropped — exactly the §17.1
 invariant 9 guarantee — and the user later answers it via
-``t3 questions list|answer|dismiss``.
+``t3 teatree questions list|answer|dismiss``.
 
 This model mirrors the ``OnBehalfApproval`` shape (#960, mirrored from
 #953 ``DbApproval`` and §17.4 ``MergeClear``):
@@ -113,7 +113,7 @@ class DeferredQuestion(models.Model):
     def pending(cls, *, using: str | None = None) -> models.QuerySet["DeferredQuestion"]:
         """Return the unanswered, undismissed queue, oldest first.
 
-        The statusline and ``t3 questions list`` use this — a row whose
+        The statusline and ``t3 teatree questions list`` use this — a row whose
         ``answered_at`` or ``dismissed_at`` is set is excluded.
         """
         manager = cls.objects.using(using) if using else cls.objects

@@ -15,7 +15,8 @@ from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
-from django.db import OperationalError, connection
+from django.db import OperationalError, ProgrammingError, connection
+from django.db.utils import ConnectionDoesNotExist
 from django.test import TransactionTestCase
 
 from teatree.cli.doctor import check as doctor_check
@@ -193,3 +194,35 @@ class DoctorCheckCurrentSchemaTest(TransactionTestCase):
             result = doctor_check_self_db_migrations()
         assert result is True
         assert "Could not inspect self-DB migrations" in buffer.getvalue()
+
+    def test_doctor_check_fails_on_misconfigured_connection(self) -> None:
+        # A wrong alias raises ConnectionDoesNotExist (not a DatabaseError) —
+        # a real misconfiguration, not a legit DB-absent state. The check
+        # must fail CLOSED (FAIL/False), never report the schema current by
+        # swallowing the error (#1987 fail-open).
+        buffer = io.StringIO()
+        with (
+            patch(
+                "teatree.core.schema_guard.pending_migrations",
+                side_effect=ConnectionDoesNotExist("The connection 'bogus' doesn't exist."),
+            ),
+            redirect_stdout(buffer),
+        ):
+            result = doctor_check_self_db_migrations()
+        assert result is False
+        assert "FAIL" in buffer.getvalue()
+
+    def test_doctor_check_fails_on_orm_programming_error(self) -> None:
+        # A ProgrammingError (ORM regression / bad query) is a real defect,
+        # not a benign DB-absent state — the check must fail CLOSED.
+        buffer = io.StringIO()
+        with (
+            patch(
+                "teatree.core.schema_guard.pending_migrations",
+                side_effect=ProgrammingError("relation does not exist"),
+            ),
+            redirect_stdout(buffer),
+        ):
+            result = doctor_check_self_db_migrations()
+        assert result is False
+        assert "FAIL" in buffer.getvalue()

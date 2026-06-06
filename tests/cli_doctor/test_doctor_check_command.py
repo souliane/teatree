@@ -93,6 +93,7 @@ class TestDoctorCheckCommand:
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
             patch.object(IntrospectionHelpers, "editable_info", return_value=(False, "")),
             patch.object(teatree_overlay_loader, "get_all_overlays", return_value={}),
+            patch("teatree.core.schema_guard.pending_migrations", return_value=[]),
         ):
             result = runner.invoke(app, ["doctor", "check"])
 

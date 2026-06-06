@@ -5,7 +5,7 @@ Writes the active overlay's skill metadata + trigger index to
 cache to resolve overlay matching and the trigger index without paying
 the cost of Django bootstrap on every prompt.
 
-Called from `t3 config write-skill-metadata` and from the loop tick
+Called from `t3 config write-skill-cache` and from the loop tick
 when its scanners notice a SKILL.md mtime change. The dashboard's
 "sync now" entry point that previously called this is gone in #541.
 """
