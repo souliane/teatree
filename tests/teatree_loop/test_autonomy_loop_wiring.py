@@ -169,3 +169,46 @@ class TestPrSweepSoloOverlayGate:
         scanner = _pr_sweep_scanner_for(_backend(name="careful"), slack_user_id="")
         assert scanner is not None
         assert scanner.solo_overlay is False
+
+    def test_full_overlay_arms_auto_review_dispatch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``full`` autonomy collapses ``require_human_approval_to_merge`` → arms #68."""
+        _stage_config(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\n',
+        )
+        scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
+        assert scanner is not None
+        assert scanner.solo_overlay is True
+        assert scanner.auto_review_dispatch is True
+        assert scanner.review_dispatcher is not None
+
+    def test_full_overlay_with_pinned_human_approval_disarms_auto_review_dispatch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit ``require_human_approval_to_merge = true`` survives the collapse.
+
+        ``full`` autonomy would collapse the merge gate to ``false``, but a
+        hard-pinned per-overlay value wins (``_global_pinned_fields`` /
+        ``_apply_autonomy``). The single-author bypass still arms
+        (``solo_overlay``) yet the cold-review auto-dispatch must NOT — the
+        human stays in the merge loop, so the agent must not auto-dispatch its
+        own review. This is the case that catches a future collapse-precedence
+        regression silently arming a human-approval overlay.
+        """
+        _stage_config(
+            tmp_path,
+            monkeypatch,
+            '[teatree]\n[overlays.t3-teatree]\nautonomy = "full"\nrequire_human_approval_to_merge = true\n',
+        )
+        scanner = _pr_sweep_scanner_for(_backend(name="t3-teatree"), slack_user_id="")
+        assert scanner is not None
+        assert scanner.solo_overlay is True
+        assert scanner.auto_review_dispatch is False
+        assert scanner.review_dispatcher is None

@@ -24,6 +24,7 @@ from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
 from teatree.loop.scanners.pr_sweep import PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
+    AutoReviewTaskDispatcher,
     CallCommandMergeKeystone,
     GhPrApiClient,
     NullMergeNotifier,
@@ -55,6 +56,7 @@ __all__ = [
     "ActiveTicketsScanner",
     "ArchitecturalReviewScanner",
     "AssignedIssuesScanner",
+    "AutoReviewTaskDispatcher",
     "BackendChannelHistoryFetcher",
     "CallCommandMergeKeystone",
     "CodexReviewScanner",
