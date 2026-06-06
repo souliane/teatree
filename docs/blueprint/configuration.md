@@ -156,8 +156,9 @@ speak_target = "both"       # local (default, say → speakers) | slack-audio (u
 Stop-hook handler spawning a detached `t3 speak`. `slack-audio`/`both`
 upload an `.m4a` to the user's DM via `SlackBotBackend.upload_audio_to_dm`,
 which needs the token's **`files:write`** scope (else `ok:false` /
-`missing_scope`, logged — local leg still plays; add the scope and re-run
-`t3 setup slack-bot`).
+`missing_scope` — the local leg still plays, and the failure is surfaced
+once per error class to the user's DM with the scope-fix hint instead of
+being silently dropped; add the scope and re-run `t3 setup slack-bot`).
 
 Callers use `get_effective_settings()` (returns a `UserSettings` with the
 active overlay's overrides applied) instead of reaching into

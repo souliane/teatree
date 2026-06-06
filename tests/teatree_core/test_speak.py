@@ -316,13 +316,61 @@ class TestUploadToSlack:
             speak_mod._upload_to_slack(audio)
         backend.upload_audio_to_dm.assert_not_called()
 
-    def test_missing_scope_body_is_logged_not_raised(self, tmp_path: Path) -> None:
+    def test_ok_body_does_not_surface_failure(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = self._backend(ok=True)
+        with (
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify._resolve_user_id", return_value="U_ME"),
+            patch.object(speak_mod, "_surface_upload_failure") as surface,
+        ):
+            speak_mod._upload_to_slack(audio)
+        surface.assert_not_called()
+
+    def test_missing_scope_surfaces_failure_to_user(self, tmp_path: Path) -> None:
         audio = tmp_path / "speech.m4a"
         audio.write_bytes(b"x")
         backend = self._backend(ok=False, error="missing_scope")
         with (
             patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
             patch("teatree.core.notify._resolve_user_id", return_value="U_ME"),
+            patch.object(speak_mod, "_surface_upload_failure") as surface,
         ):
-            speak_mod._upload_to_slack(audio)  # must not raise
-        backend.upload_audio_to_dm.assert_called_once()
+            speak_mod._upload_to_slack(audio)
+        surface.assert_called_once_with("missing_scope")
+
+    def test_no_response_body_surfaces_default_error(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = self._backend(ok=False)
+        with (
+            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify._resolve_user_id", return_value="U_ME"),
+            patch.object(speak_mod, "_surface_upload_failure") as surface,
+        ):
+            speak_mod._upload_to_slack(audio)
+        surface.assert_called_once_with("no response")
+
+
+class TestSurfaceUploadFailure:
+    def test_missing_scope_dm_carries_files_write_hint(self) -> None:
+        with patch("teatree.core.notify.notify_user") as notify:
+            speak_mod._surface_upload_failure("missing_scope")
+        notify.assert_called_once()
+        message = notify.call_args.args[0]
+        assert "files:write" in message
+        assert "t3 setup slack-bot" in message
+        assert notify.call_args.kwargs["idempotency_key"] == "speak-upload-failed-missing_scope"
+
+    def test_other_error_dm_has_no_hint_and_per_error_key(self) -> None:
+        with patch("teatree.core.notify.notify_user") as notify:
+            speak_mod._surface_upload_failure("channel_not_found")
+        message = notify.call_args.args[0]
+        assert "channel_not_found" in message
+        assert "files:write" not in message
+        assert notify.call_args.kwargs["idempotency_key"] == "speak-upload-failed-channel_not_found"
+
+    def test_notify_failure_is_swallowed(self) -> None:
+        with patch("teatree.core.notify.notify_user", side_effect=RuntimeError("boom")):
+            speak_mod._surface_upload_failure("missing_scope")  # must not raise
