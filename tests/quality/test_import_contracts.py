@@ -23,7 +23,6 @@ _CONFIG = str(_REPO_ROOT / "pyproject.toml")
 _EXPECTED_CONTRACTS = {
     "Substrate must not import a concrete overlay",
     "Mini-loops are mutually independent",
-    "Domain core must not import the messaging layer",
 }
 
 
@@ -53,14 +52,6 @@ class TestConfig:
     def test_shipped_contract_set(self, contracts: tuple[dict[str, object], ...]) -> None:
         names = {contract["name"] for contract in contracts}
         assert names == _EXPECTED_CONTRACTS
-
-    def test_core_messaging_scopes_out_only_the_interface_subtree(
-        self, contracts: tuple[dict[str, object], ...]
-    ) -> None:
-        contract = next(c for c in contracts if c["name"] == "Domain core must not import the messaging layer")
-        ignored = contract["ignore_imports"]
-        assert isinstance(ignored, list)
-        assert all(str(expr).startswith("teatree.core.management.") for expr in ignored), ignored
 
 
 class TestGreenOnTree:

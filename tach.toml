@@ -1,4 +1,5 @@
 interfaces = []
+forbid_circular_dependencies = true
 exclude = [
   "**/*__pycache__",
   "**/*egg-info",
@@ -104,8 +105,6 @@ depends_on = [
   "teatree.skill_deps",
   "teatree.skill_map",
   "teatree.trigger_parser",
-  "teatree.agents",
-  "teatree.backends",
   "teatree.hooks",
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn"

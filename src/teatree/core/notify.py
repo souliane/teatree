@@ -25,9 +25,9 @@ import re
 
 from django.db import DatabaseError, IntegrityError, transaction
 
-from teatree.backends.protocols import MessagingBackend
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing, DeferredQuestion, DeliveryClaim, OutboundClaim
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify

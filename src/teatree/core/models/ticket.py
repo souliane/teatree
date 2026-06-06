@@ -550,7 +550,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         won't re-spawn the reviewer agent for the same PR until either the
         SHA moves or the forge dismisses the approval.
         """
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:
@@ -597,7 +597,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         drops ``last_review_state`` (the existing #959 reset) so a new
         revision is still reviewed — no lost obligation.
         """
-        from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+        from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
         sha = str(self._extra().get("reviewed_sha", ""))
         if self.issue_url and sha:

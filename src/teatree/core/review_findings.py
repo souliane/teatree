@@ -7,7 +7,7 @@ with no enforcement). That classification was prose-only — nothing recorded
 the verdicts or filed the tracking issue, so class-C findings kept recurring.
 
 This module is the reliable, deterministic half: it fetches a PR's review
-comments through the existing :class:`~teatree.backends.protocols.CodeHostBackend`,
+comments through the existing :class:`~teatree.core.backend_protocols.CodeHostBackend`,
 computes a stable fingerprint per finding for dedup, records each finding +
 its supplied classification to a durable per-PR JSON store, and — for
 class-C findings only — files a scoped enforcement issue via the same backend
@@ -35,7 +35,7 @@ from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import CodeHostBackend
+    from teatree.core.backend_protocols import CodeHostBackend
 
 _FINGERPRINT_MARKER = "retro-finding-fingerprint:"
 """Prefix of the hidden marker line embedded in every filed enforcement issue.

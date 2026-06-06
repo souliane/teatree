@@ -68,10 +68,10 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
     if task_obj.status == Task.Status.PENDING:
         task_obj.claim(claimed_by="headless-worker")
     try:
-        from teatree.agents.headless import run_headless  # noqa: PLC0415
+        from teatree.core.headless_dispatch import get_headless_runner  # noqa: PLC0415
 
         overlay = get_overlay_for_ticket(task_obj.ticket)
-        attempt = run_headless(
+        attempt = get_headless_runner()(
             task_obj,
             phase=phase,
             overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
