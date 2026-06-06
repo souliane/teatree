@@ -2008,12 +2008,14 @@ Usage: t3 setup [OPTIONS] COMMAND [ARGS]...
 │ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ slack-bot         Register or update a per-overlay Slack bot and store its   │
-│                   tokens via ``pass``.                                       │
-│ slack-user-token  Re-authorize the personal Slack xoxp token and store it    │
-│                   via ``pass``.                                              │
-│ slack-provision   Run the full Slack app lifecycle (manifest, scopes,        │
-│                   channels, tokens) idempotently.                            │
+│ slack-bot               Register or update a per-overlay Slack bot and store │
+│                         its tokens via ``pass``.                             │
+│ slack-user-token        Re-authorize the personal Slack xoxp token and store │
+│                         it via ``pass``.                                     │
+│ slack-provision         Run the full Slack app lifecycle (manifest, scopes,  │
+│                         channels, tokens) idempotently.                      │
+│ recover-account-switch  Detect a Claude account switch, invalidate the       │
+│                         backend cache, re-probe connectors.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2075,6 +2077,19 @@ Usage: t3 setup slack-provision [OPTIONS]
 │                                              in the browser.                 │
 │                                              [default: open-browser]         │
 │ --help                                       Show this message and exit.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 setup recover-account-switch`
+
+```
+Usage: t3 setup recover-account-switch [OPTIONS]
+
+ Detect a Claude account switch, invalidate the backend cache, re-probe
+ connectors.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

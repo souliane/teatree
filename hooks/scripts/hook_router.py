@@ -4906,6 +4906,19 @@ _TICK_DISPATCH_OWNER_DIRECTIVE = (
     "the `t3 loop tick` cron is registered for this session." + _RENAME_REMINDER
 )
 
+_ACCOUNT_SWITCH_DIRECTIVE = (
+    "TEATREE — Claude account switch detected (`/login`).\n\n"
+    "The active Claude account changed since teatree last recovered the "
+    "connectors, so the in-process MCP/backend token cache may still route "
+    "Slack/Notion calls to the OLD workspace (delivery returns ok but the new "
+    "account sees nothing — souliane/teatree#1176). Run `t3 doctor check` now: "
+    "it invalidates the backend cache, re-probes each connector's live "
+    "reachability, and records the new account so this notice clears. If a "
+    "connector probes unreachable, re-auth that MCP connector in the Claude.ai "
+    "UI (and reconnect the Claude-in-Chrome extension per /t3:e2e) before "
+    "relying on any outbound message."
+)
+
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
@@ -5136,6 +5149,33 @@ def _autocompact_kill_switch_advisory() -> str | None:
                 sys.path.remove(str(src_dir))
 
 
+def _account_switch_advisory() -> str | None:
+    """Return the #1916 advisory when a `/login` account switch is pending.
+
+    Uses the pure, Django-free fingerprint reader so the SessionStart hot path
+    stays fast and crash-proof: compares the active ``oauthAccount.accountUuid``
+    against the last-recovered one. Pure-read — does NOT record the new
+    fingerprint or reset the cache (the network-bound recovery is `t3 doctor
+    check`), so the directive keeps firing every session until recovery runs.
+    Any import / read failure returns None so the directive never blocks.
+    """
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    added = False
+    try:
+        if str(src_dir) not in sys.path:
+            sys.path.insert(0, str(src_dir))
+            added = True
+        from teatree.core.account_fingerprint import fingerprint_switched  # noqa: PLC0415
+
+        return _ACCOUNT_SWITCH_DIRECTIVE if fingerprint_switched() else None
+    except Exception:  # noqa: BLE001 — never block SessionStart on a fingerprint read hiccup
+        return None
+    finally:
+        if added:
+            with contextlib.suppress(ValueError):
+                sys.path.remove(str(src_dir))
+
+
 def _merge_session_start_context(context: str, session_id: str, source: str) -> str:
     """Prepend recovery snapshot + session hand-off, append the autocompact advisory.
 
@@ -5163,6 +5203,10 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     advisory = _autocompact_kill_switch_advisory()
     if advisory:
         context = f"{context}\n\n---\n\n{advisory}"
+
+    switch_advisory = _account_switch_advisory()
+    if switch_advisory:
+        context = f"{switch_advisory}\n\n---\n\n{context}"
     return context
 
 
