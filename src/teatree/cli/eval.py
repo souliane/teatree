@@ -19,6 +19,7 @@ from teatree.cli.eval_all import (
     trigger_lane,
 )
 from teatree.cli.eval_capture_subagent import capture_subagent
+from teatree.cli.eval_docker import DockerUnavailableError, run_eval_in_docker
 from teatree.cli.eval_multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.cli.eval_negative_control import negative_control
 from teatree.cli.eval_run_modes import (
@@ -355,6 +356,16 @@ def all_lanes(
         "--transcript-dir",
         help="Directory of <scenario>.jsonl subscription transcripts for the AI lane (default: cwd).",
     ),
+    free_only: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--free-only",
+        help="Run only the free deterministic lanes (drop the AI lane) — the fast pre-push gate.",
+    ),
+    docker: bool = typer.Option(  # noqa: FBT001 — typer boolean flag, not a positional bool foot-gun.
+        False,
+        "--docker",
+        help="Run inside the exact CI image (dev/Dockerfile.test) for parity; host-run is the default.",
+    ),
 ) -> None:
     """Run every eval lane in sequence and render one unified summary table.
 
@@ -364,8 +375,22 @@ def all_lanes(
     subscription-produced transcripts when present; with none on disk it emits the
     subscription manifest plus the in-session recipe and NEVER silently shells the
     metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
-    (CI's path). A SKIP never fails the run; only a real FAIL exits non-zero.
+    (CI's path). ``--free-only`` drops the AI lane entirely — the deterministic,
+    token-free, spec-discovery-free gate the pre-push hook runs. ``--docker`` runs
+    the same gate inside the exact CI image for environment parity (host-run is the
+    default). A SKIP never fails the run; only a real FAIL exits non-zero.
     """
+    if docker:
+        passthrough = ["all"]
+        if free_only:
+            passthrough.append("--free-only")
+        if backend != SUBSCRIPTION_BACKEND:
+            passthrough += ["--backend", backend]
+        try:
+            raise typer.Exit(code=run_eval_in_docker(passthrough))
+        except DockerUnavailableError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2) from None
     _bootstrap_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
@@ -373,8 +398,9 @@ def all_lanes(
         regression_lane(run_regression_corpus()),
         negative_control_lane(run_negative_control()),
         transcript_replay_lane(replay_transcript_for_all()),
-        run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir),
     ]
+    if not free_only:
+        lanes.append(run_ai_lane(discover_specs(), backend=backend, target_dir=target_dir))
     Console().print(build_summary_table(lanes))
     if any(not lane.passed and not lane.skipped for lane in lanes):
         sys.exit(1)

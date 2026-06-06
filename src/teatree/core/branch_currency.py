@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TypedDict
 
+from teatree.utils.git import git_env_without_overrides
 from teatree.utils.run import run_allowed_to_fail
 
 
@@ -77,10 +78,16 @@ class BranchCurrencyResult(TypedDict):
 
 
 def _git(repo: str, *args: str) -> tuple[int, str]:
-    """``(returncode, stdout)`` for ``git -C <repo> <args>`` — never raises."""
+    """``(returncode, stdout)`` for ``git -C <repo> <args>`` — never raises.
+
+    Runs with the inherited ``GIT_*`` env stripped so a call from inside a git
+    hook (which exports ``GIT_DIR``/``GIT_INDEX_FILE`` for the outer repo) still
+    targets ``repo``, not the ambient one.
+    """
     result = run_allowed_to_fail(
         ["git", "-C", repo, *args],
         expected_codes=None,
+        env=git_env_without_overrides(),
     )
     return result.returncode, result.stdout.strip()
 
