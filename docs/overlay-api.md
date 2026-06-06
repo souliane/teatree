@@ -176,7 +176,7 @@ Repo paths relative to `workspace_dir`. Supports nested paths (e.g., `souliane/t
 
 ## Supporting types
 
-Most of these are defined in `teatree/types.py` (the Django-free shared types module). `HealthCheck` lives in `teatree/core/health.py` and `MergeGuard` in `teatree/core/merge_guard.py`:
+Most of these are defined in `teatree/types.py` (the Django-free shared types module). `HealthCheck` lives in `teatree/core/health.py` and `MergeGuard` in `teatree/core/gates/merge_guard.py`:
 
 | Type | Kind | Fields |
 |------|------|--------|
