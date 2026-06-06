@@ -55,11 +55,12 @@ Package name: `teatree` (double-e). Repo/CLI: `teatree` / `t3`. Python: 3.13+. L
 Top-level layout under `src/teatree/`:
 
 ```
-cli/         # Typer CLI — bootstrap commands (no Django needed)
-core/        # Django app — models, FSM, managers, sync, runners, management commands
+cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive groups are subpackages (cli/eval/)
+core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols + merge/ + gates/ packages
 agents/      # Headless executor runtime (claude -p swap point)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
 backends/    # Pluggable external service integrations (GitHub, GitLab, Slack, Notion, Sentry)
+config/      # Settings load + overlay discovery
 utils/       # Pure utilities (git, ports, db, secrets, compose contract, ...)
 overlay_init/, contrib/, docker/, templates/overlay/
 ```
@@ -202,7 +203,7 @@ Optional hooks cover env, services, Docker base images, DB import strategy, post
 
 ## 7. Backend Protocols and ABCs
 
-Every external API concern is a `@runtime_checkable Protocol` in `teatree.backends.protocols`. PR is the canonical term in core; GitLab MRs are translated at the API edge.
+Every external API concern is a `@runtime_checkable Protocol` in `teatree.core.backend_protocols` (the domain owns the abstractions it consumes; `backends` implements them). PR is the canonical term in core; GitLab MRs are translated at the API edge.
 
 | Protocol | Implementations |
 |---|---|

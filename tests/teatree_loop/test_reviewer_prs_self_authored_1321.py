@@ -29,7 +29,7 @@ from typing import Any
 
 from django.test import TestCase
 
-from teatree.backends.protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket, schedule_external_review
 from teatree.loop.dispatch import dispatch

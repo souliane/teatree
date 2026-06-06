@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.backends.protocols import ReviewState
+from teatree.core.backend_protocols import ReviewState
 from teatree.core.models import Task, Ticket
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.persistence import persist_agent_actions

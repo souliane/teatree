@@ -3,7 +3,7 @@
 A bot→user INFO DM fired from a sub-agent shell whose restricted PATH
 cannot read ``pass`` resolves no messaging backend, so ``notify_user``
 parks a recoverable NOOP :class:`BotPing` row instead of losing the DM.
-This scanner runs in the global DISPATCH triad — once per tick in the
+This scanner runs in the global DISPATCH dispatch set — once per tick in the
 orchestrator loop, which *does* have a working backend — and re-attempts
 each parked row via :func:`teatree.core.notify.drain_undelivered_notifies`.
 

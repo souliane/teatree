@@ -15,7 +15,7 @@ from pathlib import Path
 import typer
 from rich.table import Table
 
-from teatree.cli.eval_run_modes import build_subscription_manifest, render_subscription_text
+from teatree.cli.eval.run_modes import build_subscription_manifest, render_subscription_text
 from teatree.eval.backends import SUBSCRIPTION_BACKEND, SubscriptionTranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec
 from teatree.eval.negative_control import NegativeControlOutcome

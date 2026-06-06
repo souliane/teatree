@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from django.db import OperationalError, ProgrammingError
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import ScannedFailedE2E
 from teatree.core.overlay import FailedE2EWatcher
 from teatree.loop.scanners.base import ScanSignal

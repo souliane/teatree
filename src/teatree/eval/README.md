@@ -23,7 +23,7 @@ and the per-skill coverage map.
 
 | Concern | Location |
 |---|---|
-| CLI surface (`t3 eval *`) | `src/teatree/cli/eval*.py` (`eval.py` wiring; `eval_multi_trial.py` pass@k/matrix; `eval_transcript_replay.py` replay command + resolver; `eval_docker.py` CI-image run; `eval_all.py` lane orchestration + table; `eval_run_modes.py` persist/grade/manifest helpers) |
+| CLI surface (`t3 eval *`) | `src/teatree/cli/eval/` (`__init__.py` wiring; `multi_trial.py` pass@k/matrix; `transcript_replay.py` replay command + resolver; `docker.py` CI-image run; `all.py` lane orchestration + table; `run_modes.py` persist/grade/manifest helpers; `negative_control.py` + `capture_subagent.py` + `history.py` commands) |
 | Scenario specs | `src/teatree/eval/scenarios/*.yaml` (core) + each overlay's `eval/scenarios/` (`OverlayBase.get_eval_scenarios_dir()`) |
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |

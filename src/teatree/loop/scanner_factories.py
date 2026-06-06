@@ -11,7 +11,6 @@ import os
 import tomllib
 from pathlib import Path
 
-from teatree.backends.protocols import CodeHostBackend
 from teatree.config import (
     Autonomy,
     Mode,
@@ -22,6 +21,7 @@ from teatree.config import (
     workspace_dir,
 )
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import ImplementedIssueMarker
 from teatree.loop.job_identity import _TUPLE_PAIR, _ScannerJob

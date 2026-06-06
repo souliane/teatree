@@ -20,7 +20,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.loop.self_improve.detectors.base import ActionRung, DetectorReport, fresh_or_escalated
 from teatree.loop.self_improve.persistence import (

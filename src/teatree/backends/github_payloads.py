@@ -7,7 +7,7 @@ enum. No subprocess here — the I/O lives in :mod:`teatree.backends.github`.
 
 from typing import TypedDict, cast
 
-from teatree.backends.protocols import PrOpenState, ReviewState
+from teatree.core.backend_protocols import PrOpenState, ReviewState
 
 _GH_REVIEW_STATE_MAP: dict[str, ReviewState] = {
     "APPROVED": ReviewState.APPROVED,

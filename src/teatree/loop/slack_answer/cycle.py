@@ -40,7 +40,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection, Session, Task, Ticket
 from teatree.loop.slack_answer.classifier import AnswerRoute, classify
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
