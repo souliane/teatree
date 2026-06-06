@@ -22,9 +22,12 @@ agent text. Two distinct deliveries share one config:
 The whole feature is gated on the macOS ``say`` binary being on ``PATH``
 (:func:`binary_available`): when it is absent :func:`resolve_speak` forces
 both destinations off, so the feature is simply inert off macOS — no error,
-no nag. A failed ``slack_audio`` attach (``files:write`` scope missing) is
-surfaced once per error class via a text DM (:func:`_surface_upload_failure`),
-so a missing scope can't silently masquerade as working audio delivery.
+no nag. The ``slack_audio`` arm additionally needs ``afconvert`` (the macOS
+AIFF→m4a transcoder) to build the audio attachment; when ``afconvert`` is
+absent synthesis returns ``None`` and the DM degrades to text-only. A failed
+``slack_audio`` attach (``files:write`` scope missing) is surfaced once per
+error class via a text DM (:func:`_surface_upload_failure`), so a missing
+scope can't silently masquerade as working audio delivery.
 """
 
 import logging

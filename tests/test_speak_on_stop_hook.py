@@ -3,8 +3,8 @@
 The Stop-hook arm fires its detached ``t3 speak`` IFF ``scope == all`` AND
 ``local`` AND NOT ``slack_audio`` — so when ``slack_audio`` is on the canonical
 spoken delivery is the DM-with-audio and the Stop hook stands down (exclusivity
-by construction, no DB). It NEVER blocks/denies (returns None), reads
-``[teatree.speak]`` (with the same legacy map as the config loader), and is
+by construction, no DB). It NEVER blocks/denies (returns None), reads the
+``[teatree.speak]`` sub-table (same precedence as the config loader), and is
 crash-proof. Only the toml file, PATH lookup, and the detached subprocess are
 faked.
 """
@@ -50,16 +50,12 @@ class TestSpeakSettings:
         _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n')
         assert router._speak_settings() == (True, True, "all")
 
-    def test_legacy_im_only_both_maps(self, home: Path) -> None:
-        _write_speak_table(home, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "both"\n')
-        assert router._speak_settings() == (True, True, "dm")
+    def test_partial_table_defaults_the_rest(self, home: Path) -> None:
+        _write_speak_table(home, "[teatree.speak]\nslack_audio = true\n")
+        assert router._speak_settings() == (False, True, "dm")
 
-    def test_legacy_all_local_maps(self, home: Path) -> None:
-        _write_speak_table(home, '[teatree]\nspeak_mode = "all"\nspeak_target = "local"\n')
-        assert router._speak_settings() == (True, False, "all")
-
-    def test_legacy_off_maps_both_destinations_false(self, home: Path) -> None:
-        _write_speak_table(home, '[teatree]\nspeak_mode = "off"\nspeak_target = "both"\n')
+    def test_only_sub_table_read_unknown_keys_ignored(self, home: Path) -> None:
+        _write_speak_table(home, '[teatree]\nworkspace_dir = "~/workspace"\n')
         assert router._speak_settings() == (False, False, "dm")
 
     def test_defaults_on_malformed_toml(self, home: Path) -> None:
@@ -84,9 +80,6 @@ class TestHandleSpeakAllOnStop:
         assert popen.call_args.kwargs["start_new_session"] is True
 
     def test_suppressed_when_slack_audio_on(self, home: Path, tmp_path: Path) -> None:
-        # #2021 no-double-speak: slack_audio on → the DM carries the canonical
-        # audio, so the Stop hook must NOT also read the same content on the
-        # speakers. RED on the pre-#2050 code (which only checked speak_mode==all).
         _write_speak_table(home, '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n')
         transcript = _write_transcript(tmp_path, "all green")
         with (
