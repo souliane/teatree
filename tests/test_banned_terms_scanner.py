@@ -847,6 +847,27 @@ class TestLeadingEnvOverride:
         cmd = 'gh issue create --body "acmecorp"; ALLOW_BANNED_TERM=1 echo done'
         assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
 
+    def test_leading_env_assignment_behind_cd_prefix_bypasses(self) -> None:
+        # The common sub-agent shape: cd into the worktree, THEN commit with the
+        # override. Bash applies the assignment to the second segment's command,
+        # so the override leads the segment that actually carries the publish.
+        cmd = 'cd /work/ticket && ALLOW_BANNED_TERM=1 git commit -m "ship to acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
+
+    def test_leading_env_assignment_behind_env_nav_prefix_bypasses(self) -> None:
+        cmd = 'GIT_PAGER=cat ALLOW_BANNED_TERM=1 git commit -m "acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is True
+
+    def test_override_segment_zero_value_does_not_bypass(self) -> None:
+        cmd = 'cd /work && ALLOW_BANNED_TERM=0 git commit -m "acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
+    def test_chained_segment_without_override_does_not_bypass(self) -> None:
+        # The override leads ONLY the first (harmless echo) segment; the publish
+        # segment carries no override, so the gate must still fire on it.
+        cmd = 'ALLOW_BANNED_TERM=1 echo hi && gh issue create --body "acmecorp"'
+        assert banned_terms_scanner.has_override("Bash", {"command": cmd}) is False
+
     @pytest.mark.integration
     def test_leading_env_assignment_bypasses_block_end_to_end(self, capsys: pytest.CaptureFixture[str]) -> None:
         cmd = 'ALLOW_BANNED_TERM=1 gh issue create --title t --body "ship to acmecorp"'
@@ -1050,3 +1071,74 @@ class TestPrivateRepoCarveOut:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_repo_commit_with_cd_prefixed_override_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The escape hatch behind the common cd-prefixed shape: even on a PUBLIC
+        # repo the operator's explicit ALLOW_BANNED_TERM=1 must bypass the gate,
+        # exactly as the leading form already does. Before the fix the override
+        # on the second segment was dropped and the commit hard-blocked.
+        repo = tmp_path / "pub"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "remote", "add", "origin", "https://github.com/some/public.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f'cd {repo} && ALLOW_BANNED_TERM=1 git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_slug_for_cwd_fails_safe_when_git_binary_is_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The cold hook subprocess can inherit a restricted PATH where ``git``
+        # does not resolve, so ``git remote get-url`` raises FileNotFoundError.
+        # An uncaught error would propagate out of the carve-out and crash the
+        # whole gate; the slug resolver must fail SAFE to an empty slug exactly
+        # as it already does for a CommandFailedError.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(
+            _repo_visibility.git,
+            "remote_url",
+            lambda repo=".", remote="origin": (_ for _ in ()).throw(FileNotFoundError("git")),
+        )
+        assert _repo_visibility.slug_for_cwd(repo) == ""
+
+    def test_private_repo_commit_downgrades_when_probe_binary_is_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The offline allowlist is the mechanism that exists precisely because the
+        # live gh/glab visibility probe is unreliable in-hook (restricted PATH).
+        # With the probe disabled, the slug still resolves from git and the
+        # allowlist alone must downgrade the private repo's own-domain commit.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'git commit -m "fix the acmecorp refinery"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn via the offline allowlist
+        assert capsys.readouterr().out == ""
+
+    def test_private_repo_commit_with_cd_prefixed_override_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The exact reported shape: cd into the private worktree, then commit
+        # with the override. The override leads the SECOND (publish) segment, so
+        # it must bypass the gate just like the leading form does.
+        repo = _private_repo(tmp_path)
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": f'cd {repo} && ALLOW_BANNED_TERM=1 git commit -m "ship to acmecorp"'},
+            "cwd": str(repo),
+        }
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
