@@ -94,6 +94,22 @@ def segment_word_lists(command: str) -> list[list[str]]:
     return segments
 
 
+def segment_word_lists_raw(command: str) -> list[list[str]]:
+    """Return every top-level segment's WORD values WITHOUT stripping env prefixes.
+
+    The sibling :func:`segment_word_lists` strips leading ``KEY=value`` env
+    assignments; this keeps them so an override detector can inspect the
+    assignment bash applies to that segment's command. A leading inline
+    env-assignment (``ENV=1 git commit``) leads ONLY the command of its own
+    segment, so checking each segment's own leading run is what honours a
+    ``cd <dir> && ENV=1 git commit`` override without letting a chained second
+    command that lacks the override bypass the gate.
+    """
+    return [
+        [tok.value for tok in segment if tok.kind is TokenKind.WORD] for segment in split_commands(tokenize(command))
+    ]
+
+
 def segment_is_api_call(words: list[str]) -> bool:
     """Return True iff ``words`` is a ``gh``/``glab`` raw-REST call.
 
