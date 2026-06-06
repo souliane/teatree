@@ -7,23 +7,31 @@ through this re-export — ``backends → core`` is the allowed direction.
 """
 
 from teatree.core.backend_protocols import (
+    ROLLUP_QUERY_FAILED,
     ApprovalState,
     CIService,
     CodeHostBackend,
+    ForgeMergeResult,
     MessageSpec,
     MessagingBackend,
+    PrMergeState,
     PrOpenState,
     PullRequestSpec,
     ReviewState,
+    rollup_query_failed,
 )
 
 __all__ = [
+    "ROLLUP_QUERY_FAILED",
     "ApprovalState",
     "CIService",
     "CodeHostBackend",
+    "ForgeMergeResult",
     "MessageSpec",
     "MessagingBackend",
+    "PrMergeState",
     "PrOpenState",
     "PullRequestSpec",
     "ReviewState",
+    "rollup_query_failed",
 ]

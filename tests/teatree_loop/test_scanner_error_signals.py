@@ -133,8 +133,8 @@ class TestPrSweepScannerPropagatesError:
                 _ = (slug, check_name)
                 return False
 
-            def merge_pr_squash(self, *, slug: str, pr_id: int) -> tuple[bool, str]:
-                _ = (slug, pr_id)
+            def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> tuple[bool, str]:
+                _ = (slug, pr_id, expected_head_oid)
                 return False, ""
 
         class _NullKeystone:

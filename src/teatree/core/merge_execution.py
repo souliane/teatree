@@ -9,16 +9,18 @@ module is the coherent replacement.
 
 Transport dispatch (GitHub + GitLab) — the §17.4.3 fetch helpers
 (``fetch_live_head_sha``, ``fetch_pr_is_draft``, ``fetch_required_checks_status``)
-and ``execute_bound_merge`` dispatch on the CLEAR's host kind, resolved from the
-ticket's ``issue_url`` (``github.com/...`` → GitHub, ``gitlab*/...`` → GitLab).
-GitHub uses ``gh pr view`` / ``gh api PUT pulls/N/merge``; GitLab uses ``glab
-api projects/<encoded>/merge_requests/<iid>`` and ``glab api -X PUT
-.../merge``. A CLEAR without a resolvable ``issue_url`` defaults to GitHub for
-back-compat. The host-kind switch is the only branch — every other §17.4.3
-guard (substrate refusal, reviewer≠loop, SHA-bind, single-use replay) is shape
-identical across forges. GitLab MRs still require colleague approval upstream;
-this transport only makes the sanctioned ``t3 <overlay> ticket merge`` capable
-of driving the merge once approvals are in.
+and ``execute_bound_merge`` delegate to a :class:`CodeHostBackend` resolved on
+the CLEAR's host kind (from the ticket's ``issue_url``: ``github.com/...`` →
+GitHub, ``gitlab*/...`` → GitLab) through ``core.backend_registry`` — core never
+imports ``teatree.backends`` (§17.6.2). The gh/glab argv lives on the backend
+impls; this module keeps every verdict / transient / head-moved / policy-refusal
+classification and the exact error f-strings, so the keystone error parity is
+unchanged while the transport is the backend's. The residual host-kind switch
+selects only the verdict classifier (GitHub rollup vs GitLab pipeline), never the
+transport. A CLEAR without a resolvable ``issue_url`` defaults to GitHub for
+back-compat. GitLab MRs still require colleague approval upstream; this transport
+only makes the sanctioned ``t3 <overlay> ticket merge`` capable of driving the
+merge once approvals are in.
 
 Flow (orchestrator-decides / loop-executes, §17.4.1):
 
@@ -74,9 +76,7 @@ now 405. A policy refusal (not-mergeable / required-checks / 405 / 422) and a
 head-moved are never retried — they are verdicts, not transient failures.
 """
 
-import json
 import logging
-import shutil
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict, cast
@@ -88,12 +88,14 @@ from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
 from teatree.config import discover_overlays
+from teatree.core.backend_protocols import ForgeMergeResult, PrMergeState, rollup_query_failed
+from teatree.core.backend_registry import get_backend_provider
 from teatree.project import find_project_root
 from teatree.utils import git
-from teatree.utils.run import run_allowed_to_fail
 from teatree.utils.url_slug import slug_from_issue_or_pr_url
 
 if TYPE_CHECKING:
+    from teatree.core.backend_protocols import CodeHostBackend
     from teatree.core.models import MergeClear
 
 logger = logging.getLogger(__name__)
@@ -232,24 +234,23 @@ class MergePrecheck:
         return bool(self.already_merged_sha)
 
 
-def _run_gh(argv: list[str]) -> tuple[int, str, str]:
-    gh = shutil.which("gh") or "gh"
-    result = run_allowed_to_fail([gh, *argv], expected_codes=None)
-    return result.returncode, result.stdout, result.stderr
+def _code_host_for(host_kind: str) -> "CodeHostBackend":
+    """The merge-transport backend for *host_kind*, resolved via the registry.
 
-
-def _run_glab(argv: list[str]) -> tuple[int, str, str]:
-    """Sibling of :func:`_run_gh` for the GitLab transport.
-
-    Mirrors the ``_run_gh`` shape — resolve the binary via ``shutil.which``,
-    forward argv to :func:`run_allowed_to_fail`, return ``(rc, stdout,
-    stderr)``. Kept intentionally thin so tests stub at this seam (the same
-    seam ``_run_gh`` callers use) without depending on a live GitLab HTTP
-    client or pass-resolved token.
+    Core never imports ``teatree.backends`` (the §17.6.2 ``core ↛ backends``
+    edge); it reaches a built backend ONLY through
+    :func:`core.backend_registry.get_backend_provider`. The token/base_url are
+    left empty — the merge-RPC runners use ambient ``gh``/``glab`` auth, the
+    same as the former in-module ``_run_gh``/``_run_glab`` did. When the
+    backends app is not installed the provider is the fail-safe
+    ``_UnconfiguredProvider``, whose ``build_*`` RAISE a clear ``RuntimeError``
+    (loud-failure: a merge in an unconfigured context fails visibly rather than
+    silently shelling out).
     """
-    glab = shutil.which("glab") or "glab"
-    result = run_allowed_to_fail([glab, *argv], expected_codes=None)
-    return result.returncode, result.stdout, result.stderr
+    provider = get_backend_provider()
+    if host_kind == "gitlab":
+        return provider.build_gitlab_host(token="", base_url="")
+    return provider.build_github_host(token="")
 
 
 def _resolve_host_kind(clear: object) -> str:
@@ -279,17 +280,6 @@ def _resolve_host_kind(clear: object) -> str:
     if "gitlab" in host:
         return "gitlab"
     return "github"
-
-
-def _glab_project_path(slug: str) -> str:
-    """URL-encode a project slug for ``glab api projects/<encoded>/...``.
-
-    GitLab's REST API requires the project identifier ``group/repo`` (or
-    ``group/subgroup/repo``) to be URL-encoded — the slashes become
-    ``%2F``. Encoding is local to the GitLab branch so the GitHub
-    transport keeps its raw ``owner/repo`` form.
-    """
-    return slug.replace("/", "%2F")
 
 
 _GIT_BRANCH_PREFIXES = frozenset(
@@ -569,48 +559,10 @@ def _probe_candidate_repos(
 def fetch_live_head_sha(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
     """The PR/MR's current head SHA from the forge (never a branch ref) — §17.4.3 step 2.
 
-    Dispatches on *host_kind*: GitHub uses ``gh pr view --json headRefOid``;
-    GitLab uses ``glab api projects/<encoded>/merge_requests/<iid>`` and reads
-    ``.sha`` off the JSON payload.
+    Delegates to the registry-resolved :class:`CodeHostBackend`
+    (:func:`_code_host_for`); the gh/glab argv lives in the backend.
     """
-    if host_kind == "gitlab":
-        return _fetch_live_head_sha_gitlab(slug, pr_id)
-    rc, out, _ = _run_gh(
-        ["pr", "view", str(pr_id), "--repo", slug, "--json", "headRefOid", "--jq", ".headRefOid"],
-    )
-    return out.strip() if rc == 0 else ""
-
-
-def _fetch_live_head_sha_gitlab(slug: str, pr_id: int) -> str:
-    rc, out, _ = _run_glab(
-        ["api", f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}"],
-    )
-    if rc != 0 or not out.strip():
-        return ""
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return ""
-    if not isinstance(data, dict):
-        return ""
-    return str(data.get("sha") or "")
-
-
-@dataclass(frozen=True, slots=True)
-class PrMergeState:
-    """The PR's merge state from GitHub — used for the §928 reconciliation.
-
-    ``state`` is GitHub's PR state (``OPEN`` / ``MERGED`` / ``CLOSED``);
-    ``merge_commit_oid`` is the resulting squash/merge commit when the PR
-    is already merged (else ``""``).
-    """
-
-    state: str
-    merge_commit_oid: str
-
-    @property
-    def is_merged(self) -> bool:
-        return self.state.upper() == "MERGED"
+    return _code_host_for(host_kind).fetch_live_head_sha(slug=slug, pr_id=pr_id)
 
 
 def fetch_pr_merge_state(slug: str, pr_id: int, *, host_kind: str = "github") -> PrMergeState:
@@ -623,82 +575,20 @@ def fetch_pr_merge_state(slug: str, pr_id: int, *, host_kind: str = "github") ->
     by us" and run the post hook idempotently rather than re-issuing the
     irreversible merge (which both forges refuse — GitHub 405, GitLab 405
     / 406 — a permanent brick) or failing the SHA precondition forever.
-    Returns an empty state on any ``gh``/``glab`` error so the caller
-    falls through to the normal (fail-closed) precondition path.
-
-    GitHub reports ``state == "MERGED"`` and ``mergeCommit.oid``; GitLab
-    reports ``state == "merged"`` and ``merge_commit_sha`` — normalised
-    here to the same uppercase ``"MERGED"`` so ``PrMergeState.is_merged``
-    works on both.
+    Returns an empty state on any forge error so the caller falls through to
+    the normal (fail-closed) precondition path. The backend normalises both
+    forges' state to the uppercase ``"MERGED"`` ``PrMergeState.is_merged`` reads.
     """
-    if host_kind == "gitlab":
-        return _fetch_pr_merge_state_gitlab(slug, pr_id)
-    rc, out, _ = _run_gh(
-        ["pr", "view", str(pr_id), "--repo", slug, "--json", "state,mergeCommit"],
-    )
-    if rc != 0 or not out.strip():
-        return PrMergeState(state="", merge_commit_oid="")
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return PrMergeState(state="", merge_commit_oid="")
-    if not isinstance(data, dict):
-        return PrMergeState(state="", merge_commit_oid="")
-    state = str(data.get("state") or "")
-    merge_commit = data.get("mergeCommit")
-    oid = str(merge_commit.get("oid") or "") if isinstance(merge_commit, dict) else ""
-    return PrMergeState(state=state, merge_commit_oid=oid)
-
-
-def _fetch_pr_merge_state_gitlab(slug: str, pr_id: int) -> PrMergeState:
-    rc, out, _ = _run_glab(
-        ["api", f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}"],
-    )
-    if rc != 0 or not out.strip():
-        return PrMergeState(state="", merge_commit_oid="")
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return PrMergeState(state="", merge_commit_oid="")
-    if not isinstance(data, dict):
-        return PrMergeState(state="", merge_commit_oid="")
-    state = str(data.get("state") or "").upper()  # "merged" → "MERGED" (parity with GitHub)
-    oid = str(data.get("merge_commit_sha") or data.get("squash_commit_sha") or "")
-    return PrMergeState(state=state, merge_commit_oid=oid)
+    return _code_host_for(host_kind).fetch_pr_merge_state(slug=slug, pr_id=pr_id)
 
 
 def fetch_pr_is_draft(slug: str, pr_id: int, *, host_kind: str = "github") -> bool:
     """Whether the PR/MR is in draft state — §17.4.3 step 4.
 
-    Dispatches on *host_kind*: GitHub reads ``isDraft`` via ``gh pr view``;
-    GitLab reads ``.draft`` from the ``glab api projects/<encoded>/
-    merge_requests/<iid>`` payload (GitLab exposes both ``draft`` and the
-    older ``work_in_progress`` field; the canonical form on modern
-    versions is ``draft``).
+    Delegates to the registry-resolved :class:`CodeHostBackend`; GitLab reads
+    ``draft``/``work_in_progress`` and GitHub ``isDraft`` inside the backend.
     """
-    if host_kind == "gitlab":
-        return _fetch_pr_is_draft_gitlab(slug, pr_id)
-    rc, out, _ = _run_gh(
-        ["pr", "view", str(pr_id), "--repo", slug, "--json", "isDraft", "--jq", ".isDraft"],
-    )
-    return rc == 0 and out.strip().lower() == "true"
-
-
-def _fetch_pr_is_draft_gitlab(slug: str, pr_id: int) -> bool:
-    rc, out, _ = _run_glab(
-        ["api", f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}"],
-    )
-    if rc != 0 or not out.strip():
-        return False
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(data, dict):
-        return False
-    # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the
-    # legacy field kept for compatibility — accept either.
-    return bool(data.get("draft") or data.get("work_in_progress"))
+    return _code_host_for(host_kind).fetch_pr_is_draft(slug=slug, pr_id=pr_id)
 
 
 class _RollupEntry(TypedDict, total=False):
@@ -739,44 +629,33 @@ def _rollup_verdict(statuses: list[str]) -> str:
 
 
 def fetch_required_checks_status(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
-    """Live required-checks rollup for the PR/MR head — §17.4.3 step 3.
+    """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
 
     Evaluated against the forge's live rollup at merge time (the authoritative
     set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
     ``"green"`` only when every reported check concluded successfully;
     ``"pending"`` while any is still running; otherwise the failing state.
 
-    Dispatches on *host_kind*: GitHub uses ``gh pr view --json
-    statusCheckRollup``; GitLab uses ``glab api .../merge_requests/<iid>/
-    pipelines`` and reads the status of the pipeline whose ``sha`` matches the
-    MR head SHA — merge-train pipelines (interleaved ahead on transient train
-    SHAs, frequently canceled) are ignored. An MR with no pipeline at all is
-    "green" (no required checks to satisfy), mirroring the GitHub
-    rollup-empty path.
+    The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
+    GitLab pipeline entries); core does the verdict classification here so the
+    §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A
+    backend query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel
+    → ``failed``; an empty rollup means no required checks → ``green``. GitLab
+    needs the head SHA to pick the right (non-merge-train) pipeline, fetched via
+    :func:`fetch_live_head_sha`.
     """
+    backend = _code_host_for(host_kind)
+    rollup = backend.fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(rollup):
+        return "failed"
     if host_kind == "gitlab":
-        return _fetch_required_checks_status_gitlab(slug, pr_id)
-    rc, out, _ = _run_gh(
-        [
-            "pr",
-            "view",
-            str(pr_id),
-            "--repo",
-            slug,
-            "--json",
-            "statusCheckRollup",
-            "--jq",
-            ".statusCheckRollup",
-        ],
-    )
-    if rc != 0:
-        return "failed"
-    try:
-        rollup = json.loads(out) if out.strip() else []
-    except json.JSONDecodeError:
-        return "failed"
-    if not isinstance(rollup, list):
-        return "failed"
+        if not rollup:
+            return "green"
+        head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
+        head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
+        if head is None:
+            return "failed"
+        return _classify_gitlab_pipeline(str(head.get("status") or ""))
     statuses = [verdict for check in rollup if (verdict := _classify_check(check))]
     return _rollup_verdict(statuses) if statuses else "green"
 
@@ -859,29 +738,6 @@ def _select_gitlab_head_pipeline(
         pr_id,
     )
     return candidates[0] if candidates else None
-
-
-def _fetch_required_checks_status_gitlab(slug: str, pr_id: int) -> str:
-    rc, out, _ = _run_glab(
-        ["api", f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"],
-    )
-    if rc != 0:
-        return "failed"
-    try:
-        pipelines = json.loads(out) if out.strip() else []
-    except json.JSONDecodeError:
-        return "failed"
-    if not isinstance(pipelines, list):
-        return "failed"
-    # MR with no pipeline at all => no required checks => green (mirrors
-    # the GitHub empty-rollup branch).
-    if not pipelines:
-        return "green"
-    head_sha = _fetch_live_head_sha_gitlab(slug, pr_id)
-    head = _select_gitlab_head_pipeline(pipelines, head_sha, slug=slug, pr_id=pr_id)
-    if head is None:
-        return "failed"
-    return _classify_gitlab_pipeline(str(head.get("status") or ""))
 
 
 def _assert_clear_authorized(
@@ -1284,67 +1140,46 @@ def _already_merged_at(*, slug: str, pr_id: int, expected_head_oid: str, host_ki
 
 
 def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_kind: str) -> str:
-    """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response."""
+    """One bound-merge attempt; raises :class:`MergeTransientError` on a retryable response.
+
+    The backend's :meth:`CodeHostBackend.merge_pr_squash_bound` runs the
+    PUT and returns the raw :class:`ForgeMergeResult`; core classifies it
+    (head-moved / transient / policy refusal) and raises the typed error with
+    the forge-specific f-string here, so the byte-for-byte error parity the
+    keystone tests pin is unchanged while the transport lives in the backend.
+    """
+    result = _code_host_for(host_kind).merge_pr_squash_bound(
+        slug=slug,
+        pr_id=pr_id,
+        expected_head_oid=expected_head_oid,
+    )
+    if result.returncode != 0:
+        _raise_bound_merge_failure(
+            result=result,
+            slug=slug,
+            pr_id=pr_id,
+            expected_head_oid=expected_head_oid,
+            host_kind=host_kind,
+        )
+    return result.merged_sha or expected_head_oid
+
+
+def _raise_bound_merge_failure(
+    *,
+    result: ForgeMergeResult,
+    slug: str,
+    pr_id: int,
+    expected_head_oid: str,
+    host_kind: str,
+) -> None:
+    """Classify a non-zero merge response and raise the typed forge-specific error.
+
+    GitLab and GitHub have distinct head-moved sniffs and distinct error
+    f-strings (``!`` vs ``#``, ``glab`` vs ``gh``); both are preserved verbatim.
+    """
+    out, err = result.stdout, result.stderr
+    combined = f"{out}\n{err}".lower()
     if host_kind == "gitlab":
-        return _attempt_bound_merge_gitlab(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
-    endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
-    rc, out, err = _run_gh(
-        [
-            "api",
-            "--method",
-            "PUT",
-            endpoint,
-            "-f",
-            "merge_method=squash",
-            "-f",
-            f"sha={expected_head_oid}",
-        ],
-    )
-    if rc != 0:
-        combined = f"{out}\n{err}".lower()
-        if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
-            # Print the full ``expected_head_oid`` so a length mismatch can never
-            # masquerade as a value mismatch (#1162).
-            msg = (
-                f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
-                f"{expected_head_oid} (length={len(expected_head_oid)}, "
-                f"expected_head_oid mismatch). Treated as a failed check — "
-                f"NOT retried with a new head (§17.4.3)"
-            )
-            raise MergeHeadMovedError(msg)
-        if _is_transient_merge_response(rc, out, err):
-            msg = (
-                f"merge of {slug}#{pr_id} hit a transient forge response: "
-                f"{err.strip() or out.strip() or 'empty gh api response'} — retrying (#1813)"
-            )
-            raise MergeTransientError(msg)
-        msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
-        raise MergePreconditionError(msg)
-
-    try:
-        merged = json.loads(out) if out.strip() else {}
-    except json.JSONDecodeError:
-        merged = {}
-    merged_sha = str(merged.get("sha") or "") if isinstance(merged, dict) else ""
-    return merged_sha or expected_head_oid
-
-
-def _attempt_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str) -> str:
-    endpoint = f"projects/{_glab_project_path(slug)}/merge_requests/{pr_id}/merge"
-    rc, out, err = _run_glab(
-        [
-            "api",
-            "-X",
-            "PUT",
-            endpoint,
-            "-f",
-            f"sha={expected_head_oid}",
-            "-f",
-            "squash=true",
-        ],
-    )
-    if rc != 0:
-        combined = f"{out}\n{err}".lower()
         if "sha" in combined and ("does not match" in combined or "409" in combined or "conflict" in combined):
             msg = (
                 f"GitLab refused the merge of {slug}!{pr_id}: head moved off "
@@ -1353,7 +1188,7 @@ def _attempt_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str
                 f"NOT retried with a new head (§17.4.3)"
             )
             raise MergeHeadMovedError(msg)
-        if _is_transient_merge_response(rc, out, err):
+        if _is_transient_merge_response(result.returncode, out, err):
             msg = (
                 f"merge of {slug}!{pr_id} hit a transient forge response: "
                 f"{err.strip() or out.strip() or 'empty glab api response'} — retrying (#1813)"
@@ -1361,16 +1196,24 @@ def _attempt_bound_merge_gitlab(*, slug: str, pr_id: int, expected_head_oid: str
             raise MergeTransientError(msg)
         msg = f"merge of {slug}!{pr_id} failed: {err.strip() or out.strip() or 'glab api non-zero'}"
         raise MergePreconditionError(msg)
-    try:
-        merged = json.loads(out) if out.strip() else {}
-    except json.JSONDecodeError:
-        merged = {}
-    if not isinstance(merged, dict):
-        return expected_head_oid
-    # GitLab returns ``merge_commit_sha`` (squashed merge commit) or ``sha``
-    # depending on merge_method; prefer the dedicated commit field.
-    merged_sha = str(merged.get("merge_commit_sha") or merged.get("sha") or "")
-    return merged_sha or expected_head_oid
+    if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
+        # Print the full ``expected_head_oid`` so a length mismatch can never
+        # masquerade as a value mismatch (#1162).
+        msg = (
+            f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
+            f"{expected_head_oid} (length={len(expected_head_oid)}, "
+            f"expected_head_oid mismatch). Treated as a failed check — "
+            f"NOT retried with a new head (§17.4.3)"
+        )
+        raise MergeHeadMovedError(msg)
+    if _is_transient_merge_response(result.returncode, out, err):
+        msg = (
+            f"merge of {slug}#{pr_id} hit a transient forge response: "
+            f"{err.strip() or out.strip() or 'empty gh api response'} — retrying (#1813)"
+        )
+        raise MergeTransientError(msg)
+    msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
+    raise MergePreconditionError(msg)
 
 
 def record_merge_and_advance(

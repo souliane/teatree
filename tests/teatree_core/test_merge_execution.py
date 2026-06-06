@@ -78,7 +78,7 @@ class _GhStub:
 
 
 def _run(clear: MergeClear, stub: _GhStub, identity: str = "merge-loop") -> MergeOutcome:
-    with patch("teatree.core.merge_execution._run_gh", side_effect=stub):
+    with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
         return merge_ticket_pr(clear=clear, executing_loop_identity=identity)
 
 
@@ -170,7 +170,7 @@ class TestMergeKeystonePreconditions(TestCase):
         clear = _clear(ticket, blast_class=MergeClear.BlastClass.LOGIC)
         stub = _GhStub()
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="substrate-only"),
         ):
             merge_ticket_pr(
@@ -252,7 +252,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_no_head),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_no_head),
             pytest.raises(MergePreconditionError, match="could not resolve the live head"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -274,7 +274,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_merge_500),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merge_500),
             pytest.raises(MergePreconditionError, match="failed"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -322,13 +322,15 @@ class TestMergeExecutionEdgeCases(TestCase):
                 pr_id=1,
             )
 
-    def test_run_gh_resolves_binary_and_forwards_argv(self) -> None:
-        # ``_run_gh`` resolves the ``gh`` binary via shutil.which and
-        # forwards argv to the run helper. The subprocess itself is the
-        # unstoppable external and is stubbed (sandboxed pre-push has no
-        # executable ``gh``); the binary-resolution + argv-forwarding
+    def test_gh_runner_resolves_binary_and_forwards_argv(self) -> None:
+        # The merge transport's gh runner resolves the ``gh`` binary via
+        # shutil.which and forwards argv to the run helper. The subprocess
+        # itself is the unstoppable external and is stubbed (sandboxed pre-push
+        # has no executable ``gh``); the binary-resolution + argv-forwarding
         # branch is what this exercises.
         from types import SimpleNamespace  # noqa: PLC0415
+
+        from teatree.backends import forge_merge_rpc  # noqa: PLC0415
 
         captured: list[list[str]] = []
 
@@ -337,13 +339,29 @@ class TestMergeExecutionEdgeCases(TestCase):
             return SimpleNamespace(returncode=0, stdout="ok", stderr="")
 
         with (
-            patch("teatree.core.merge_execution.shutil.which", return_value="/usr/bin/gh"),
-            patch("teatree.core.merge_execution.run_allowed_to_fail", side_effect=_fake_run),
+            patch("teatree.backends.forge_merge_rpc.shutil.which", return_value="/usr/bin/gh"),
+            patch("teatree.backends.forge_merge_rpc.run_allowed_to_fail", side_effect=_fake_run),
         ):
-            rc, out, _err = merge_execution._run_gh(["pr", "view", "1"])
+            rc, out, _err = forge_merge_rpc.gh_runner(token="")(["pr", "view", "1"])
         assert rc == 0
         assert out == "ok"
         assert captured == [["/usr/bin/gh", "pr", "view", "1"]]
+
+    def test_merge_in_unconfigured_provider_context_fails_loudly(self) -> None:
+        # The §9 risk: a merge in a context where the backends app is not
+        # registered must RAISE loudly (the fail-safe _UnconfiguredProvider's
+        # build_* raise RuntimeError), never silently no-op or shell out.
+        from teatree.core import backend_registry  # noqa: PLC0415
+
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        real = backend_registry.get_backend_provider()
+        backend_registry.register_backend_provider(backend_registry._UNCONFIGURED)
+        try:
+            with pytest.raises(RuntimeError, match="no backend provider registered"):
+                merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
+        finally:
+            backend_registry.register_backend_provider(real)
 
     def test_status_rollup_query_failure_is_not_green(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -360,7 +378,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_rollup_rc1),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_rollup_rc1),
             pytest.raises(MergePreconditionError, match="not green"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -436,7 +454,7 @@ class TestMergeExecutionEdgeCases(TestCase):
                 return (0, "not-json-at-all", "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_bad_merge_json):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_bad_merge_json):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         # Falls back to the verified expected_head_oid when the merge
         # response body is not parseable.
@@ -528,7 +546,7 @@ class TestLostPostHookRecoverable(TestCase):
         # between execute_bound_merge and record_merge_and_advance).
         boom = RuntimeError("post hook lost (process killed between execute and record)")
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             patch("teatree.core.merge_execution.record_merge_and_advance", side_effect=boom),
             pytest.raises(RuntimeError, match="post hook lost"),
         ):
@@ -544,7 +562,7 @@ class TestLostPostHookRecoverable(TestCase):
         assert not MergeAudit.objects.filter(clear=clear).exists()
 
         # Retry tick: a correct keystone reconciles instead of bricking.
-        with patch("teatree.core.merge_execution._run_gh", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
         ticket.refresh_from_db()
@@ -579,7 +597,7 @@ class TestLostPostHookRecoverable(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_merged_other_head),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_other_head),
             pytest.raises(MergePreconditionError, match="head moved"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -607,7 +625,7 @@ class TestLostPostHookRecoverable(TestCase):
                 return (0, '{"state": "MERGED", "mergeCommit": null}', "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_merged_no_commit):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_merged_no_commit):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
@@ -624,7 +642,7 @@ class TestLostPostHookRecoverable(TestCase):
         stub = _LostPostHookGhStub()
         stub.merged = True  # PR already merged by us (lost post-hook earlier)
 
-        with patch("teatree.core.merge_execution._run_gh", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         clear.refresh_from_db()
         assert clear.consumed_at is not None
@@ -632,7 +650,7 @@ class TestLostPostHookRecoverable(TestCase):
 
         # A redundant reconcile tick must not consume / audit again.
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="not actionable"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -649,7 +667,7 @@ class TestLostPostHookRecoverable(TestCase):
         stub.merged = True
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="substrate"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -667,7 +685,7 @@ class TestLostPostHookRecoverable(TestCase):
         stub.merged = True
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergePreconditionError, match="independent"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -680,8 +698,8 @@ class TestFetchPrMergeState(TestCase):
 
     def test_gh_error_returns_empty_state(self) -> None:
         with patch(
-            "teatree.core.merge_execution._run_gh",
-            return_value=(1, "", "api error"),
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=lambda *_a, **_k: (1, "", "api error"),
         ):
             state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
@@ -689,24 +707,24 @@ class TestFetchPrMergeState(TestCase):
 
     def test_malformed_json_returns_empty_state(self) -> None:
         with patch(
-            "teatree.core.merge_execution._run_gh",
-            return_value=(0, "{not json", ""),
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=lambda *_a, **_k: (0, "{not json", ""),
         ):
             state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
 
     def test_non_dict_json_returns_empty_state(self) -> None:
         with patch(
-            "teatree.core.merge_execution._run_gh",
-            return_value=(0, "[1, 2, 3]", ""),
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=lambda *_a, **_k: (0, "[1, 2, 3]", ""),
         ):
             state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.state == ""
 
     def test_merged_without_merge_commit_object(self) -> None:
         with patch(
-            "teatree.core.merge_execution._run_gh",
-            return_value=(0, '{"state": "MERGED", "mergeCommit": null}', ""),
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=lambda *_a, **_k: (0, '{"state": "MERGED", "mergeCommit": null}', ""),
         ):
             state = merge_execution.fetch_pr_merge_state("souliane/teatree", 1)
         assert state.is_merged is True
@@ -940,7 +958,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
@@ -960,7 +978,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
             pytest.raises(MergeTransientError, match="transient"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -994,7 +1012,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep") as sleep,
-            patch("teatree.core.merge_execution._run_gh", side_effect=_policy_refusal),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_policy_refusal),
             pytest.raises(MergePreconditionError, match="failed"),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -1025,7 +1043,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=_head_moved),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_head_moved),
             pytest.raises(MergeHeadMovedError),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
@@ -1058,7 +1076,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=_transient_but_landed),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_transient_but_landed),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 
@@ -1085,7 +1103,7 @@ class TestTransientMergeRetry(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_gh", side_effect=_empty_then_fail),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_empty_then_fail),
             pytest.raises(MergeTransientError, match="transient"),
         ):
             execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)

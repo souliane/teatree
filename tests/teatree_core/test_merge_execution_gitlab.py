@@ -163,7 +163,7 @@ class TestHostKindDetection(TestCase):
 class TestFetchLiveHeadShaGitLab(TestCase):
     def test_uses_glab_api_merge_request_endpoint(self) -> None:
         stub = _GlabStub(sha=_SHA)
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             result = fetch_live_head_sha(_GITLAB_SLUG, _PR_IID, host_kind="gitlab")
         assert result == _SHA
         assert any(f"merge_requests/{_PR_IID}" in " ".join(call) for call in stub.calls), (
@@ -177,50 +177,50 @@ class TestFetchLiveHeadShaGitLab(TestCase):
         def _boom(argv: list[str]) -> tuple[int, str, str]:
             return (1, "", "auth error")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_boom):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_boom):
             assert fetch_live_head_sha(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == ""
 
     def test_returns_empty_on_malformed_json(self) -> None:
         def _bad(argv: list[str]) -> tuple[int, str, str]:
             return (0, "{not json", "")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_bad):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_bad):
             assert fetch_live_head_sha(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == ""
 
 
 class TestFetchPrIsDraftGitLab(TestCase):
     def test_draft_true_when_mr_draft(self) -> None:
         stub = _GlabStub(draft=True)
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert fetch_pr_is_draft(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") is True
 
     def test_draft_false_when_mr_not_draft(self) -> None:
         stub = _GlabStub(draft=False)
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert fetch_pr_is_draft(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") is False
 
     def test_draft_false_on_api_failure(self) -> None:
         def _boom(argv: list[str]) -> tuple[int, str, str]:
             return (1, "", "boom")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_boom):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_boom):
             assert fetch_pr_is_draft(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") is False
 
 
 class TestFetchRequiredChecksGitLab(TestCase):
     def test_pipeline_success_maps_to_green(self) -> None:
         stub = _GlabStub(pipeline_status="success")
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "green"
 
     def test_pipeline_running_maps_to_pending(self) -> None:
         stub = _GlabStub(pipeline_status="running")
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "pending"
 
     def test_pipeline_failed_maps_to_failed(self) -> None:
         stub = _GlabStub(pipeline_status="failed")
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "failed"
 
     def test_no_pipeline_is_green(self) -> None:
@@ -230,7 +230,7 @@ class TestFetchRequiredChecksGitLab(TestCase):
                 return (0, "[]", "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_no_pipeline):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_no_pipeline):
             # No pipelines => no required checks => green (mirrors GitHub
             # rollup-empty behaviour which the GitHub branch returns).
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "green"
@@ -239,7 +239,7 @@ class TestFetchRequiredChecksGitLab(TestCase):
         def _boom(argv: list[str]) -> tuple[int, str, str]:
             return (1, "", "auth error")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_boom):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_boom):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "failed"
 
     def test_selects_head_sha_pipeline_ignoring_canceled_merge_train(self) -> None:
@@ -266,14 +266,14 @@ class TestFetchRequiredChecksGitLab(TestCase):
                 return (0, json.dumps({"iid": _PR_IID, "sha": _SHA}), "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_train_then_head):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_train_then_head):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "green"
 
 
 class TestExecuteBoundMergeGitLab(TestCase):
     def test_uses_glab_api_put_merge_endpoint_with_sha(self) -> None:
         stub = _GlabStub(merge_sha="commit-sha-12345")
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             result = execute_bound_merge(
                 slug=_GITLAB_SLUG,
                 pr_id=_PR_IID,
@@ -290,7 +290,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
     def test_merge_failure_raises_precondition_error(self) -> None:
         stub = _GlabStub(merge_rc=1)
         with (
-            patch("teatree.core.merge_execution._run_glab", side_effect=stub),
+            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub),
             pytest.raises(MergePreconditionError),
         ):
             execute_bound_merge(
@@ -308,7 +308,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_glab", side_effect=_sha_mismatch),
+            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_sha_mismatch),
             pytest.raises(MergeHeadMovedError),
         ):
             execute_bound_merge(
@@ -335,7 +335,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
 
         with (
             patch("teatree.core.merge_execution.time.sleep"),
-            patch("teatree.core.merge_execution._run_glab", side_effect=_transient_then_ok),
+            patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_transient_then_ok),
         ):
             result = execute_bound_merge(
                 slug=_GITLAB_SLUG,
@@ -353,7 +353,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
                 return (0, "[1, 2, 3]", "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_list_body):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_list_body):
             result = execute_bound_merge(
                 slug=_GITLAB_SLUG,
                 pr_id=_PR_IID,
@@ -371,7 +371,7 @@ class TestExecuteBoundMergeGitLab(TestCase):
                 return (0, "not-json-at-all", "")
             return (0, "", "")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=_garbled_body):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_garbled_body):
             result = execute_bound_merge(
                 slug=_GITLAB_SLUG,
                 pr_id=_PR_IID,
@@ -394,7 +394,7 @@ class TestGitLabEndToEndMerge(TestCase):
         clear = _clear(ticket)
         stub = _GlabStub(sha=_SHA, draft=False, pipeline_status="success")
 
-        with patch("teatree.core.merge_execution._run_glab", side_effect=stub):
+        with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
             outcome: MergeOutcome = merge_ticket_pr(
                 clear=clear,
                 executing_loop_identity="merge-loop",

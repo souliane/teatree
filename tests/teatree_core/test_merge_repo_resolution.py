@@ -104,7 +104,7 @@ class TestMergeUsesResolvedRepo(TestCase):
             return (0, "", "")
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_gh),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
             patch(
                 "teatree.core.merge_execution._project_repo_slug",
                 return_value="souliane/teatree",
@@ -208,7 +208,7 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
         calls: list[list[str]] = []
 
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=self._gh_keyed_by_repo(calls)),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_keyed_by_repo(calls)),
             patch("teatree.core.merge_execution._project_repo_slug", return_value="souliane/teatree"),
         ):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")

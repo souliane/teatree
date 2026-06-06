@@ -126,7 +126,7 @@ class TestMergeTimeMergeLoopBlockedIntegration(TestCase):
             blast_class=MergeClear.BlastClass.LOGIC,
         )
         with (
-            patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub),
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
             pytest.raises(MergePreconditionError),
         ):
             merge_ticket_pr(clear=clear, executing_loop_identity="other-loop")
@@ -154,7 +154,7 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
             )
         )
         assert clear.pk is not None
-        with patch("teatree.core.merge_execution._run_gh", side_effect=_gh_stub):
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()
         clear.refresh_from_db()
