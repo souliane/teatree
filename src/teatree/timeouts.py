@@ -20,6 +20,7 @@ SETUP = "setup"
 START = "start"
 DB_IMPORT = "db_import"
 DOCKER_COMPOSE_UP = "docker_compose_up"
+DOCKER_COMPOSE_BUILD = "docker_compose_build"
 DOCKER_COMPOSE_DOWN = "docker_compose_down"
 PROVISION_STEP = "provision_step"
 PRE_RUN_STEP = "pre_run_step"
@@ -30,6 +31,8 @@ CORE_DEFAULTS: dict[str, int] = {
     START: 60,
     DB_IMPORT: 180,
     DOCKER_COMPOSE_UP: 60,
+    # First-time image builds (Gradle/Java sidecars) routinely exceed 120s.
+    DOCKER_COMPOSE_BUILD: 600,
     DOCKER_COMPOSE_DOWN: 30,
     PROVISION_STEP: 120,
     PRE_RUN_STEP: 60,
