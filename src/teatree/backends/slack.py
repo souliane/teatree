@@ -1,4 +1,3 @@
-import re
 from dataclasses import dataclass
 from typing import cast
 
@@ -6,6 +5,7 @@ import httpx
 
 from teatree.identity import agent_signature_suffix
 from teatree.types import RawAPIDict
+from teatree.url_classify import find_pr_urls
 
 
 def post_webhook_message(webhook_url: str, text: str, *, signature: str = "") -> RawAPIDict:
@@ -30,9 +30,6 @@ class SlackReviewMatch:
     channel: str
     ts: str = ""
     author: str = ""
-
-
-_PR_URL_RE = re.compile(r"https://[^\s|>]+/(?:merge_requests|pull|pulls)/\d+")
 
 
 def _resolve_workspace_domain(client: httpx.Client) -> str:
@@ -61,7 +58,7 @@ def _iter_review_matches(
     ts = str(msg.get("ts", ""))
     if not ts:
         return []
-    found_urls = _PR_URL_RE.findall(text)
+    found_urls = find_pr_urls(text)
     if not found_urls:
         return []
 

@@ -104,6 +104,22 @@ class DuplicateCluster:
 
 
 @dataclasses.dataclass(frozen=True)
+class ShadowedFixture:
+    path: str
+    name: str
+    ancestor_conftest: str
+
+    @property
+    def message(self) -> str:
+        return (
+            f"{self.path}: autouse fixture {self.name!r} shadows an ancestor "
+            f"autouse fixture of the same name in conftest "
+            f"{self.ancestor_conftest!r}. The ancestor already applies it to this "
+            "file; delete the local copy (confirm the bodies match first)."
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RatioRegression:
     measured: RatioMeasurement
     baseline: Baseline
@@ -127,10 +143,11 @@ class TestShapeReport:
     duplicate_clusters: tuple[DuplicateCluster, ...]
     ratio_regression: RatioRegression | None
     mode: Mode
+    shadowed_fixtures: tuple[ShadowedFixture, ...] = ()
 
     @property
     def has_findings(self) -> bool:
-        return bool(self.duplicate_clusters) or self.ratio_regression is not None
+        return bool(self.duplicate_clusters) or self.ratio_regression is not None or bool(self.shadowed_fixtures)
 
     @property
     def should_block(self) -> bool:
@@ -138,6 +155,7 @@ class TestShapeReport:
 
     def summary_lines(self) -> list[str]:
         lines: list[str] = [f"  - {cluster.message}" for cluster in self.duplicate_clusters]
+        lines.extend(f"  - {fixture.message}" for fixture in self.shadowed_fixtures)
         if self.ratio_regression is not None:
             lines.append(f"  - {self.ratio_regression.message}")
         return lines
@@ -211,6 +229,86 @@ def find_duplicate_clusters(source: str, path: str, config: DupConfig | None = N
         for names in by_shape.values()
         if len(names) >= cfg.min_cluster
     ]
+
+
+def _is_autouse_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    for dec in node.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        target = dec.func
+        is_fixture = (isinstance(target, ast.Attribute) and target.attr == "fixture") or (
+            isinstance(target, ast.Name) and target.id == "fixture"
+        )
+        if not is_fixture:
+            continue
+        for kw in dec.keywords:
+            if kw.arg == "autouse" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                return True
+    return False
+
+
+def autouse_fixture_names(source: str) -> set[str]:
+    """Return the names of every ``@pytest.fixture(autouse=True)`` in *source*."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_autouse_fixture(node)
+    }
+
+
+def _ancestor_conftests(test_file: Path, root: Path) -> list[Path]:
+    """Conftest.py files on the path from *root* down to *test_file*'s directory.
+
+    A deeper conftest is itself a file that can shadow a shallower one, so the
+    list excludes ``test_file`` only — when ``test_file`` is a conftest, its own
+    strictly-shallower ancestors are returned.
+    """
+    conftests: list[Path] = []
+    current = test_file.parent
+    stack: list[Path] = []
+    while True:
+        stack.append(current)
+        if current in {root, current.parent}:
+            break
+        current = current.parent
+    for directory in reversed(stack):
+        candidate = directory / "conftest.py"
+        if candidate.is_file() and candidate != test_file:
+            conftests.append(candidate)
+    return conftests
+
+
+def find_shadowed_autouse_fixtures(*, test_files: Iterable[Path], root: Path) -> list[ShadowedFixture]:
+    """Find autouse fixtures redundantly redefined where an ancestor conftest already provides them.
+
+    A ``@pytest.fixture(autouse=True)`` in a test module or deeper conftest is
+    redundant when an ancestor ``conftest.py`` defines an autouse fixture of the
+    same name — pytest already applies the ancestor's fixture to every test in
+    the subtree, so the local copy is dead duplication.
+    """
+    conftest_autouse: dict[Path, set[str]] = {}
+
+    def names_for(path: Path) -> set[str]:
+        if path not in conftest_autouse:
+            conftest_autouse[path] = autouse_fixture_names(_read(path))
+        return conftest_autouse[path]
+
+    findings: list[ShadowedFixture] = []
+    for test_file in test_files:
+        local = autouse_fixture_names(_read(test_file))
+        if not local:
+            continue
+        for ancestor in _ancestor_conftests(test_file, root):
+            shadowed = local & names_for(ancestor)
+            findings.extend(
+                ShadowedFixture(path=str(test_file), name=name, ancestor_conftest=str(ancestor))
+                for name in sorted(shadowed)
+            )
+    return findings
 
 
 def _significant_line_count(text: str) -> int:
@@ -309,6 +407,7 @@ def build_report(
     test_files: Sequence[Path],
     source_files: Sequence[Path],
     config: TestShapeConfig,
+    root: Path | None = None,
 ) -> TestShapeReport:
     clusters: list[DuplicateCluster] = []
     for path in test_files:
@@ -319,8 +418,13 @@ def build_report(
         measured = measure_ratio(test_files=test_files, source_files=source_files)
         ratio_regression = detect_ratio_regression(measured, config.baseline)
 
+    shadowed: tuple[ShadowedFixture, ...] = ()
+    if root is not None:
+        shadowed = tuple(find_shadowed_autouse_fixtures(test_files=test_files, root=root))
+
     return TestShapeReport(
         duplicate_clusters=tuple(clusters),
         ratio_regression=ratio_regression,
         mode=config.mode,
+        shadowed_fixtures=shadowed,
     )

@@ -1,25 +1,14 @@
 """`t3 ticket create-sub` — create a child work item nested under a parent."""
 
-from collections.abc import Iterator
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
-from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
-
-
-@pytest.fixture(autouse=True)
-def clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
-
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
 _PARENT_URL = "https://gitlab.com/org/repo/-/work_items/8545"

@@ -180,9 +180,7 @@ def _auto_enqueue_headless_task(
         return
     if _is_loop_dispatched(instance):
         return
-    from teatree.core.overlay_loader import resolve_overlay_name  # noqa: PLC0415
-
-    if instance.ticket.overlay and resolve_overlay_name(instance.ticket.overlay) is None:
+    if not instance.ticket.has_dispatchable_overlay():
         logger.warning("Skipping auto-enqueue of task %s: unknown overlay %r", instance.pk, instance.ticket.overlay)
         return
     from teatree.core.tasks import execute_headless_task  # noqa: PLC0415

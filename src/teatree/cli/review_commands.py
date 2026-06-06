@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.cli.review import ReviewService, review_app
+from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
     from teatree.cli.review_evidence_gate import FindingEvidence
@@ -22,12 +23,7 @@ def _require_token() -> ReviewService:
     # touches the ORM. CLI module stays Django-free at import time so
     # typer can render --help / discover commands; mirrors cli/loop.py.
     # See souliane/teatree#1003.
-    import os  # noqa: PLC0415
-
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     token = ReviewService.get_gitlab_token()
     if not token:

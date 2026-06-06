@@ -36,10 +36,10 @@ from teatree.core.review_findings import (
     FindingsStore,
     ReviewFinding,
     parse_findings,
-    parse_pr_url,
     process_review_findings,
 )
 from teatree.types import RawAPIDict
+from teatree.url_classify import repo_and_iid
 
 if TYPE_CHECKING:
     from teatree.backends.protocols import CodeHostBackend
@@ -81,16 +81,17 @@ class Command(TyperCommand):
         return json.dumps(self._run(pr_url, classification=classification, repo=repo, label=label))
 
     def _run(self, pr_url: str, *, classification: str, repo: str, label: str) -> RawAPIDict:
-        ref = parse_pr_url(pr_url)
+        ref = repo_and_iid(pr_url)
         if ref is None:
             return {"error": f"Not a recognised PR/MR URL: {pr_url}"}
-        repo_slug = repo or ref.repo
+        parsed_repo, iid = ref
+        repo_slug = repo or parsed_repo
 
         host = self._resolve_host(pr_url)
         if host is None:
             return {"error": f"No code host could be resolved for {pr_url}"}
 
-        comments = host.list_pr_comments(repo=repo_slug, pr_iid=ref.iid)
+        comments = host.list_pr_comments(repo=repo_slug, pr_iid=iid)
         findings = parse_findings(comments)
         store = FindingsStore()
 

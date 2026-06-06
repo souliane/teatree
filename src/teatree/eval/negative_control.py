@@ -15,7 +15,6 @@ editing the canonical clone). ``t3 eval negative-control`` and
 
 import dataclasses
 import json
-import os
 import sys
 from collections.abc import Callable
 
@@ -24,6 +23,7 @@ import typer
 from teatree.eval.discovery import find_spec
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall
 from teatree.eval.report import ScenarioResult, evaluate, render_json, render_text
+from teatree.utils.django_bootstrap import ensure_django
 
 NEGATIVE_CONTROL_SCENARIO = "worktree_first"
 
@@ -132,17 +132,8 @@ def run_negative_control(*, run_factory: RunFactory = build_violating_run) -> Ne
     )
 
 
-def _bootstrap_django() -> None:
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    import django  # noqa: PLC0415
-    from django.apps import apps  # noqa: PLC0415
-
-    if not apps.ready:
-        django.setup()
-
-
 def main() -> int:  # pragma: no cover — module entry point (orchestrates tested helpers)
-    _bootstrap_django()
+    ensure_django()
     outcome = run_negative_control()
     typer.echo(render_outcome(outcome, as_json=False))
     return 0 if outcome.caught else 1

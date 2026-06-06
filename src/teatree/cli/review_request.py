@@ -1,11 +1,11 @@
 """``t3 review-request`` — batch review request commands."""
 
-import os
 from pathlib import Path
 
 import typer
 
 from teatree.cli.overlay import managepy_core
+from teatree.utils.django_bootstrap import ensure_django
 
 review_request_app = typer.Typer(no_args_is_help=True, help="Batch review requests.")
 
@@ -62,12 +62,9 @@ def _overlay_name_for_mr(mr_url: str) -> str:
     if overlay_name:
         return overlay_name
 
-    import django  # noqa: PLC0415
-
     from teatree.core.overlay_loader import infer_overlay_for_url  # noqa: PLC0415
 
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
     return infer_overlay_for_url(mr_url)
 
 

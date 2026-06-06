@@ -1,10 +1,11 @@
 """``t3 config`` — configuration and skill autoloading commands."""
 
-import os
 import sys
 from pathlib import Path
 
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 config_app = typer.Typer(no_args_is_help=True, help="Configuration and autoloading.")
 
@@ -44,14 +45,11 @@ def show(
 @config_app.command(name="write-skill-cache")
 def write_skill_cache() -> None:
     """Write overlay skill metadata + trigger index to XDG cache for hook consumption."""
-    import django  # noqa: PLC0415
-
     from teatree.config import discover_active_overlay  # noqa: PLC0415
     from teatree.paths import DATA_DIR  # noqa: PLC0415
 
     discover_active_overlay()
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from teatree.core.skill_cache import write_skill_metadata_cache  # noqa: PLC0415
 

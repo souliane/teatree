@@ -6,6 +6,7 @@ from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import RawAPIDict
+from teatree.url_classify import pr_ref
 
 
 def _str_field(data: RawAPIDict, *names: str) -> str:
@@ -39,9 +40,8 @@ def _repo_slug(pr: RawAPIDict) -> str:
     if "/repos/" in repository_url:
         return repository_url.split("/repos/", 1)[-1]
     url = _str_field(pr, "web_url", "html_url")
-    if "/-/merge_requests/" in url:
-        return url.split("://", 1)[-1].split("/", 1)[-1].split("/-/merge_requests/", 1)[0]
-    return ""
+    ref = pr_ref(url) if url else None
+    return ref.slug if ref is not None else ""
 
 
 class Command(TyperCommand):

@@ -9,28 +9,13 @@ from typing import TYPE_CHECKING
 import typer
 
 from teatree.core.overlay_loader import get_all_overlays, get_overlay, get_overlay_for_repo
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
 
 tool_app = typer.Typer(no_args_is_help=True, help="Standalone utilities.")
-
-
-def _ensure_django() -> None:
-    """Set up Django before touching the overlay's models — mirrors sibling CLI modules.
-
-    ``get_overlay()`` imports the active overlay package, whose module body
-    defines Django models. Without ``django.setup()`` first, that import
-    raises ``ImproperlyConfigured`` / ``AppRegistryNotReady``. The pre-push
-    hook shells ``t3 tool validate-mr`` from a fresh session shell with no
-    ``DJANGO_SETTINGS_MODULE`` preset, so the command must initialise Django
-    itself — a crash here fails the gate CLOSED and blocks every MR/PR create.
-    """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
 
 
 class ToolRunner:
@@ -109,7 +94,7 @@ def validate_mr(
         mis-read as a "metadata invalid" verdict and use to block every MR
         create/update (the lockout this fix closes).
     """
-    _ensure_django()
+    ensure_django()
     from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
 
     try:

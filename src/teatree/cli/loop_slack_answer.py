@@ -12,6 +12,8 @@ import os
 
 import typer
 
+from teatree.utils.django_bootstrap import ensure_django
+
 slack_answer_app = typer.Typer(
     name="slack-answer",
     help=(
@@ -31,10 +33,7 @@ def slack_answer_run_command(
     json_output: bool = typer.Option(False, "--json", help="Emit the cycle report as JSON."),
 ) -> None:
     """Run one reactive Slack-answer cycle."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
@@ -47,10 +46,7 @@ def slack_answer_run_command(
 @slack_answer_app.command("status")
 def slack_answer_status_command() -> None:
     """Show the reactive Slack-answer loop's unreplied queue depth."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from teatree.core.models import PendingChatInjection  # noqa: PLC0415
 

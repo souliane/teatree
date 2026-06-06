@@ -44,6 +44,7 @@ from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_watchdog import register as register_watchdog
 from teatree.config import cadence_seconds
 from teatree.loop.statusline import default_path
+from teatree.utils.django_bootstrap import ensure_django
 
 loop_app = typer.Typer(
     name="loop",
@@ -87,10 +88,7 @@ def tick_command(
     ``django.setup()``).  All heavy imports (ORM, backends, scanners)
     live in the management command module, not here.
     """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
@@ -130,10 +128,7 @@ def pending_spawn_command(
     Stop-hook self-pump); the ``/loop`` slot should drive dispatch with
     ``claim-next``, not this + ``spawn-claim``.
     """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
@@ -159,10 +154,7 @@ def spawn_claim_command(
     by-id claims; ``complete`` still happens when the sub-agent reports
     back via the standard TaskAttempt flow.
     """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
@@ -291,10 +283,7 @@ def self_improve_run_command(
     json_output: bool = typer.Option(False, "--json", help="Emit the cycle report as JSON."),
 ) -> None:
     """Run one self-improve schedule cycle for the given tier."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
@@ -310,10 +299,7 @@ def self_improve_status_command(
     limit: int = typer.Option(20, "--limit", help="Max firings to show (default 20)."),
 ) -> None:
     """List the most recent SelfImproveFiring rows."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from teatree.core.models import SelfImproveFiring  # noqa: PLC0415
 

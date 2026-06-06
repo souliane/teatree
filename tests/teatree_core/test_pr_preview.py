@@ -4,17 +4,14 @@ Split out of ``test_pr_command`` alongside the ``_pr_preview`` module split:
 test files mirror the production module path.
 """
 
-from collections.abc import Iterator
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 
 from teatree.core.management.commands import _pr_preview
 from teatree.core.management.commands._pr_preview import ship_preview
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayMetadata
-from teatree.core.overlay_loader import reset_overlay_cache
 from tests.teatree_core.conftest import CommandOverlay
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -29,13 +26,6 @@ class _GeneratingMetadata(OverlayMetadata):
 
 class _GenOverlay(CommandOverlay):
     metadata = _GeneratingMetadata()
-
-
-@pytest.fixture(autouse=True)
-def _clear_overlay_cache() -> Iterator[None]:
-    reset_overlay_cache()
-    yield
-    reset_overlay_cache()
 
 
 class TestShipPreviewTitleDescriptionInvariant(TestCase):

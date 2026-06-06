@@ -35,11 +35,12 @@ heuristic. Other malformed URLs exit 2 with ``error="bad_url"``.
 import json
 from dataclasses import dataclass
 from typing import Final, cast
-from urllib.parse import urlparse
 
 import typer
 
 from teatree.cli.review import review_app
+from teatree.url_classify import Forge, forge_of, repo_and_iid
+from teatree.utils.django_bootstrap import ensure_django
 
 # GitLab JSON payloads — narrow ``object`` rather than a fictitious schema
 # because the API surface mixes strings (paths, diffs), ints (ids), and
@@ -112,19 +113,6 @@ class ReviewRunResult:
         return json.dumps(payload, sort_keys=True)
 
 
-def _detect_forge(url: str) -> str:
-    """Return ``"gitlab"``, ``"github"``, or ``""`` for an MR/PR URL."""
-    parsed = urlparse(url.strip())
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    parts = [p for p in parsed.path.split("/") if p]
-    if "merge_requests" in parts:
-        return "gitlab"
-    if "pull" in parts:
-        return "github"
-    return ""
-
-
 def _classify_complexity(*, files: int, additions: int, deletions: int) -> str:
     total = additions + deletions
     if files >= _LARGE_FILES or total >= _LARGE_LOC:
@@ -161,27 +149,6 @@ def _open_discussion_count(discussions: DiscussionList) -> int:
                 count += 1
                 break
     return count
-
-
-def _parse_repo_and_iid(url: str) -> tuple[str, int] | None:
-    """Return ``(<owner>/<repo>, <iid>)`` for a GitLab MR URL, else ``None``."""
-    parsed = urlparse(url.strip())
-    parts = [p for p in parsed.path.split("/") if p]
-    if "merge_requests" not in parts:
-        return None
-    idx = parts.index("merge_requests")
-    if idx < 1 or idx + 1 >= len(parts):
-        return None
-    try:
-        iid = int(parts[idx + 1])
-    except ValueError:
-        return None
-    repo_parts = parts[:idx]
-    if repo_parts and repo_parts[-1] == "-":
-        repo_parts = repo_parts[:-1]
-    if not repo_parts:
-        return None
-    return "/".join(repo_parts), iid
 
 
 def _count_diff_lines(diff_text: str) -> tuple[int, int]:
@@ -269,7 +236,7 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     from teatree.cli.review import ReviewService  # noqa: PLC0415
     from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
 
-    parsed = _parse_repo_and_iid(url)
+    parsed = repo_and_iid(url)
     if parsed is None:
         msg = "bad_url"
         raise ValueError(msg)
@@ -302,16 +269,6 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     )
 
 
-def _bootstrap_django() -> None:
-    """Bootstrap Django before touching ORM-backed helpers (mirrors ``_require_token``)."""
-    import os  # noqa: PLC0415
-
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
-
-
 @review_app.command(name="run")
 def run(
     url: str = typer.Argument(help="GitLab MR URL (GitHub PR URLs return unsupported_forge)."),
@@ -333,14 +290,14 @@ def run(
     * ``2`` — URL refused before any API call (``unsupported_forge`` for
         GitHub PRs, ``bad_url`` for anything else).
     """
-    forge = _detect_forge(url)
-    if forge == "github":
+    forge = forge_of(url)
+    if forge is Forge.GITHUB:
         typer.echo(json.dumps({"error": "unsupported_forge", "forge": "github", "url": url}, sort_keys=True))
         raise typer.Exit(code=2)
-    if forge != "gitlab":
+    if forge is not Forge.GITLAB:
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
         raise typer.Exit(code=2)
-    _bootstrap_django()
+    ensure_django()
     try:
         result = _audit_gitlab_mr(url)
     except ValueError:

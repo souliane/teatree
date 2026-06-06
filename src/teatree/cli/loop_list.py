@@ -8,9 +8,9 @@ statusline file written at the last tick, so its countdowns go stale —
 management command, not a plain typer command).
 """
 
-import os
-
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def list_command(
@@ -23,10 +23,7 @@ def list_command(
     claims, or mutates anything. Unlike ``t3 loop status`` (the cached
     statusline view), every countdown here is recomputed at call time.
     """
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 
