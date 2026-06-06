@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import ClassVar
 
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 
@@ -108,6 +109,29 @@ class BotPing(models.Model):
             return False
         moment = now or timezone.now()
         return posted_at <= moment - cls.SENDING_STALE_AFTER
+
+    @classmethod
+    def recoverable_info(cls, *, limit: int = 50) -> "models.QuerySet[BotPing]":
+        """INFO rows that never delivered and can be re-attempted on a later tick.
+
+        The durable backlog the cross-tick re-delivery drain (:func:`teatree.
+        core.notify.drain_undelivered_notifies`) consumes. A bot→user INFO DM
+        fired from a sub-agent shell with no reachable backend (``pass`` /
+        ``gpg`` unavailable in the restricted sub-agent PATH) lands as a NOOP
+        row; a configured backend whose send broke lands as FAILED; a claim
+        whose owner crashed before finalizing strands a SENDING row. All three
+        are re-deliverable once a tick runs in a context with a working backend
+        — that is exactly the recoverability set :meth:`claim_delivery` already
+        replaces, scoped here to the INFO kind (QUESTION rows are drained
+        separately by :func:`drain_deferred_questions`).
+
+        A fresh SENDING row is a genuine in-flight delivery and is excluded.
+        """
+        moment = timezone.now()
+        stale_before = moment - cls.SENDING_STALE_AFTER
+        terminal = Q(status__in=tuple(cls._RECOVERABLE))
+        stale_claim = Q(status=cls.Status.SENDING, posted_at__lte=stale_before)
+        return cls.objects.filter(kind=cls.Kind.INFO).filter(terminal | stale_claim).order_by("posted_at", "pk")[:limit]
 
     @classmethod
     def claim_delivery(
