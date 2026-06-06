@@ -115,6 +115,14 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 The free, no-model commands — `trigger-qa`, `regression`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
+### `t3 eval all` — the combined five-lane surface (#1781)
+
+`t3 eval all` runs every lane in one summary table: the four free deterministic
+lanes (`trigger-qa`, `regression`, `negative-control`, `transcript-replay`) plus
+the metered AI lane. The AI lane never meters silently — `--backend sdk` opts in.
+A missing real transcript SKIPs (never FAILs) the transcript-replay lane, and the
+command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
+
 `--trials`/`--models` always force the metered `sdk` runner regardless of
 `--backend` (a multi-trial / matrix run cannot be served from a single saved
 transcript); combining them with the subscription default prints a one-line

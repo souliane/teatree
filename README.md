@@ -354,9 +354,12 @@ skills carry the rest.
 
 ### For users
 
+Teatree is not on PyPI. Install the `t3` CLI straight from the repo:
+
 ```bash
-uv tool install teatree           # installs `t3` globally (pipx install teatree also works)
+uv tool install --from git+https://github.com/souliane/teatree.git teatree   # installs `t3` globally
 apm install -g souliane/teatree   # installs skills + companion dependencies
+t3 setup                          # links plugin, syncs skills, migrates self-DB
 t3 startoverlay my-overlay ~/workspace/my-overlay
 ```
 
@@ -382,9 +385,10 @@ find where something lives.
 the user flow — edits in this clone take effect on the next invocation, no
 `uv run` prefix. `t3 setup` runs [APM](https://github.com/microsoft/apm) to
 install companion dependencies (superpowers, ac-django, etc.), symlinks teatree
-skills to `~/.claude/skills/`, links the Claude plugin
-(`~/.claude/plugins/t3 → <clone>`) so hooks and agents always read from the
-live checkout, and — if `t3` is not on `PATH` — re-runs
+skills to `~/.claude/skills/`, registers the Claude plugin in
+`~/.claude/plugins/installed_plugins.json` with `installPath` pointing at the
+clone so hooks and agents always read from the live checkout, applies any
+pending self-DB migrations, and — if `t3` is not on `PATH` — re-runs
 `uv tool install --editable .` to self-install. Must be run from the main
 clone, not a worktree.
 

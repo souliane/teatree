@@ -75,6 +75,17 @@ class TestCheckEditableSanity:
 
         assert any("contribute=false" in p for p in problems)
 
+    def test_teatree_editable_warning_does_not_scold_contributor_setup(self, tmp_path, monkeypatch):
+        _stage_home(tmp_path, monkeypatch)
+        _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\ncontribute = false\n")
+
+        with patch.object(IntrospectionHelpers, "editable_info", return_value=(True, "file:///src")):
+            problems = DoctorService.check_editable_sanity()
+
+        msg = next(p for p in problems if "contribute=false" in p)
+        assert "risk accidentally modifying" not in msg
+        assert "contribute=true" in msg
+
     def test_auto_fixes_overlay_when_contribute_true(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         _write_teatree_toml(

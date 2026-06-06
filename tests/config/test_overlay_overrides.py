@@ -195,6 +195,32 @@ user_identity_aliases = ["adrien.work", "souliane", "adrien.cossa"]
 
         assert get_effective_settings().user_identity_aliases == ["adrien.work", "souliane", "adrien.cossa"]
 
+    def test_overlay_can_override_clean_ignore(
+        self,
+        config_file: Path,
+        elsewhere: Path,
+        no_installed_overlays: None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A per-overlay clean_ignore glob list wins over the global default (#1940)."""
+        del elsewhere, no_installed_overlays
+        monkeypatch.delenv("T3_MODE", raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "scoped")
+
+        _write_toml(
+            config_file,
+            """
+[teatree]
+clean_ignore = ["global-*"]
+
+[overlays.scoped]
+class = "x.y:Z"
+clean_ignore = ["spike/*", "dev-override"]
+""",
+        )
+
+        assert get_effective_settings().clean_ignore == ["spike/*", "dev-override"]
+
     def test_overlay_can_override_require_human_approval_to_answer(
         self,
         config_file: Path,

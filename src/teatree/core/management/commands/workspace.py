@@ -19,6 +19,7 @@ from teatree.core.dev_repo import resolve_repo_names
 from teatree.core.local_stack_gate import refuse_if_limit_exceeded
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_cleanup import (
+    WorktreeReaper,
     _die,
     _fix_drift,
     _raise_on_cleanup_failures,
@@ -564,17 +565,15 @@ class Command(TyperCommand):
         cleaned: list[str] = []
         interactive = sys.stdin.isatty() and sys.stdout.isatty()
         in_use = _wh.dslr_tenants_in_use()  # before cleanup loop reaps CREATED worktrees (#1306)
+        reaper = WorktreeReaper(workspace)
+        cleaned.extend(reaper.reap_squash_merged_worktrees(interactive=interactive))
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED):
             try:
                 cleaned.append(str(cleanup_worktree(wt)))
             except RuntimeError as exc:
                 cleaned.append(resolve_unsynced_worktree(wt, exc, interactive=interactive))
 
-        for entry in workspace.iterdir():
-            if entry.is_dir() and not any(entry.iterdir()):
-                with suppress(OSError):
-                    entry.rmdir()
-                    cleaned.append(f"Removed empty dir: {entry.name}")
+        cleaned.extend(reaper.remove_empty_ticket_dirs())
 
         cleaned.extend(drop_orphan_databases())
         cleaned.extend(reap_orphan_worktree_docker())

@@ -16,7 +16,7 @@ from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
-from teatree.self_update import current_editable_source
+from teatree.self_update import current_editable_source, ensure_self_db_migrated
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
 
 # Re-exported here so external callers and tests see a single import path for
@@ -273,6 +273,23 @@ def _ensure_t3_installed(repo: Path) -> bool:
     return True
 
 
+_APM_FAILURE_MARKERS = ("installation failed", "package failed", "package(s) failed")
+
+
+def _apm_reported_failure(result: CompletedProcess[str]) -> bool:
+    """Whether an apm-install run failed, accounting for apm's exit-0-on-error.
+
+    apm writes its per-package diagnostics to *stdout* and (in some versions)
+    exits 0 even when a package fails validation, so a bare returncode check
+    misses the failure entirely.  Treat a non-zero exit OR a failure marker in
+    either stream as failure.
+    """
+    if result.returncode != 0:
+        return True
+    combined = f"{result.stdout}\n{result.stderr}".lower()
+    return any(marker in combined for marker in _APM_FAILURE_MARKERS)
+
+
 def _run_apm_install(repo: Path) -> bool:
     """Run apm install -g --target claude from the teatree repo."""
     apm_path = shutil.which("apm")
@@ -282,8 +299,9 @@ def _run_apm_install(repo: Path) -> bool:
         return False
 
     result = _run_captured([apm_path, "install", "-g", "--target", "claude"], cwd=repo)
-    if result.returncode != 0:
-        typer.echo(f"WARN  apm install failed: {result.stderr.strip()}")
+    if _apm_reported_failure(result):
+        detail = result.stdout.strip() or result.stderr.strip() or "(no output)"
+        typer.echo(f"WARN  apm install failed: {detail}")
         return False
     typer.echo("OK    APM dependencies installed globally.")
     return True
@@ -582,12 +600,17 @@ def run(
         echo=typer.echo,
     )
 
+    self_db_unmigrated = ensure_self_db_migrated(quiet=True)
+
     # Suggest (never apply) the recommended per-user auto-mode authorizations.
     # Teatree ships no classifier whitelist of its own — see
     # ``skills/setup/references/recommended-automode-authorizations.md``.
     from teatree.cli.recommended_authorizations import report_missing_authorizations  # noqa: PLC0415
 
     report_missing_authorizations(typer.echo)
+
+    if self_db_unmigrated:
+        raise typer.Exit(code=1)
 
     typer.echo("Done.")
 

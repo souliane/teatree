@@ -366,6 +366,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "todo_sweep_disabled": bool,
     "todo_sweep_recheck_interval_hours": int,
     "max_concurrent_local_stacks": int,
+    "clean_ignore": _parse_excluded_skills,
     "slack_voice_classifier_mode": SlackVoiceClassifierMode.parse,
     "speak_mode": SpeakMode.parse,
     "speak_target": SpeakTarget.parse,
@@ -690,6 +691,11 @@ class UserSettings:
     # Per-overlay overridable: a heavy overlay can cap to ``1`` while a
     # cheap dogfood overlay stays unbounded.
     max_concurrent_local_stacks: int = 0
+    # fnmatch globs of branch names ``clean-all`` must NEVER reap even when the
+    # squash-merge classifier says shipped — never-merge dev overrides, long-lived
+    # spikes. Matched against the full branch name. Default empty: nothing
+    # protected beyond the data-loss guards. Per-overlay overridable.
+    clean_ignore: list[str] = field(default_factory=list)
     # #1395 Slack voice/token mismatch classifier. The pre-publish gate
     # between ``chat.postMessage`` and the Slack API refuses (or warns)
     # when the body's voice ("PR merged" / "evidence" → agent vs "please
@@ -903,6 +909,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         todo_sweep_disabled=bool(teatree.get("todo_sweep_disabled", False)),
         todo_sweep_recheck_interval_hours=int(teatree.get("todo_sweep_recheck_interval_hours", 1)),
         max_concurrent_local_stacks=int(teatree.get("max_concurrent_local_stacks", 0)),
+        clean_ignore=_parse_excluded_skills(teatree.get("clean_ignore", [])),
         slack_voice_classifier_mode=_resolve_slack_voice_classifier_mode(teatree),
         speak_mode=_resolve_speak_mode(teatree),
         speak_target=_resolve_speak_target(teatree),

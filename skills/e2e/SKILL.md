@@ -194,7 +194,7 @@ With a design mockup available, use 3 columns:
 - Screenshots go below the section they verify, not at the bottom.
 - Write in first person, casual tone ("Tested on local...", "Works as expected").
 - Evidence must read as manual testing — no mentions of automation, E2E, Playwright, or scripts.
-- **Idempotent on `(ticket, env, commit)`.** Each comment carries a hidden marker `<!-- t3-e2e-evidence env=<env> commit=<sha> -->` (renders invisibly). Re-running with the same env + commit edits that comment in place; a different commit or env posts a new comment. You never have to hand-dedup — the marker does it.
+- **Idempotent on `(ticket, env)` — one comment per environment.** Each comment carries a hidden marker `<!-- t3-e2e-evidence env=<env> -->` (renders invisibly). Re-running on the same env — for any commit — edits that comment in place and opens it with a terse `old -> new` commit delta; a different env posts a new comment. You never have to hand-dedup, and a moving HEAD never spams the ticket with one comment per commit — the marker does it.
 - **Match evidence type to PR type.** UI screenshots for frontend PRs; backend evidence (test output, API diffs) for backend PRs.
 
 ### Evidence Source Integrity (Non-Negotiable)
