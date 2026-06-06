@@ -24,6 +24,7 @@ import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 import teatree.cli.speak as _speak
+import teatree.cli.ui as _ui
 from teatree.cli import (
     comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
 )
@@ -132,6 +133,7 @@ app.command()(_sessions.sessions)
 app.command()(_cost.cost)
 app.command()(_speak.speak)
 app.command()(_info.info)
+app.command()(_ui.ui)
 app.add_typer(config_app, name="config")
 app.add_typer(banned_terms_app, name="banned-terms")
 app.add_typer(ci_app, name="ci")

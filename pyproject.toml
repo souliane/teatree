@@ -69,6 +69,7 @@ dev = [
   "ruff>=0.14.2",
   "slack-sdk>=3.35",
   "tach>=0.34",
+  "trogon[typer]>=0.6",
   "ty>=0.0.18",
   "typer>=0.12",
 ]
@@ -82,6 +83,9 @@ docs = [
 # group: it is a narrow, opt-in safety gate, not part of routine `uv sync`.
 mutation = [
   "mutmut>=3.5,<4",
+]
+ui = [
+  "trogon[typer]>=0.6",
 ]
 
 [tool.ruff]
@@ -237,6 +241,7 @@ filterwarnings = [
   "error",
   "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
   "ignore:POSTGRES_PASSWORD literal is deprecated.*:DeprecationWarning",
+  "ignore:'BaseCommand' is deprecated.*:DeprecationWarning",
 ]
 xfail_strict = true
 markers = [
