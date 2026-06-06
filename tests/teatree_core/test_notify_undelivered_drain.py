@@ -1,0 +1,130 @@
+"""Re-delivery drain for INFO DMs stranded with no backend (sub-agent shell)."""
+
+from datetime import timedelta
+from unittest.mock import MagicMock, patch
+
+from django.test import TestCase
+from django.utils import timezone
+
+from teatree.core.models import BotPing
+from teatree.core.notify import drain_undelivered_notifies
+
+
+def _backend() -> MagicMock:
+    b = MagicMock()
+    b.open_dm.return_value = "D-USER"
+    b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+    b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+    return b
+
+
+class TestRecoverableInfo(TestCase):
+    def test_noop_info_row_is_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="subagent-dm-1",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="task done",
+            error_message="no messaging backend or user_id configured",
+        )
+        rows = list(BotPing.recoverable_info())
+        assert [r.idempotency_key for r in rows] == ["subagent-dm-1"]
+
+    def test_sent_info_row_is_not_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="already-sent",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENT,
+            text="delivered",
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+    def test_question_kind_is_not_recovered_here(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="deferred-q",
+            kind=BotPing.Kind.QUESTION,
+            status=BotPing.Status.NOOP,
+            text="a question",
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+    def test_fresh_sending_is_not_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="in-flight",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENDING,
+            text="being sent right now",
+        )
+        assert list(BotPing.recoverable_info()) == []
+
+    def test_stale_sending_is_recoverable(self) -> None:
+        row = BotPing.objects.create(
+            idempotency_key="crashed-claim",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.SENDING,
+            text="claimed then crashed",
+        )
+        BotPing.objects.filter(pk=row.pk).update(
+            posted_at=timezone.now() - BotPing.SENDING_STALE_AFTER - timedelta(seconds=1),
+        )
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["crashed-claim"]
+
+
+class TestDrainUndeliveredNotifies(TestCase):
+    def test_redelivers_stranded_info_dm_when_backend_now_available(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="subagent-dm-2",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="sub-agent finished its on-behalf post",
+            error_message="no messaging backend or user_id configured",
+        )
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            delivered, total = drain_undelivered_notifies(user_id="U_ME")
+
+        assert (delivered, total) == (1, 1)
+        backend.post_message.assert_called_once()
+        assert "sub-agent finished its on-behalf post" in backend.post_message.call_args.kwargs["text"]
+        row = BotPing.objects.get(idempotency_key="subagent-dm-2")
+        assert row.status == BotPing.Status.SENT
+
+    def test_no_op_when_nothing_stranded(self) -> None:
+        backend = _backend()
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            assert drain_undelivered_notifies(user_id="U_ME") == (0, 0)
+        backend.post_message.assert_not_called()
+
+    def test_still_no_backend_leaves_row_recoverable(self) -> None:
+        BotPing.objects.create(
+            idempotency_key="subagent-dm-3",
+            kind=BotPing.Kind.INFO,
+            status=BotPing.Status.NOOP,
+            text="still stranded",
+        )
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=None):
+            delivered, total = drain_undelivered_notifies(user_id="U_ME")
+
+        assert (delivered, total) == (0, 1)
+        row = BotPing.objects.get(idempotency_key="subagent-dm-3")
+        assert row.status == BotPing.Status.NOOP
+        assert [r.idempotency_key for r in BotPing.recoverable_info()] == ["subagent-dm-3"]
+
+    def test_one_failure_does_not_abort_the_drain(self) -> None:
+        for key in ("strand-a", "strand-b"):
+            BotPing.objects.create(
+                idempotency_key=key,
+                kind=BotPing.Kind.INFO,
+                status=BotPing.Status.NOOP,
+                text=key,
+            )
+        backend = _backend()
+        backend.post_message.side_effect = [
+            {"ok": False, "error": "channel_not_found"},
+            {"ok": True, "ts": "1700000000.000000"},
+        ]
+        with patch("teatree.core.notify.messaging_from_overlay", return_value=backend):
+            delivered, total = drain_undelivered_notifies(user_id="U_ME")
+
+        assert total == 2
+        assert delivered == 1

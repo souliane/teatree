@@ -55,11 +55,10 @@ def stub_messaging() -> Any:
 
 
 class TestDispatchLoopBuildJobs:
-    def test_returns_three_global_jobs(self) -> None:
+    def test_returns_global_jobs(self) -> None:
         jobs = DISPATCH_LOOP.build_jobs()
-        assert len(jobs) == 3
         names = {j.scanner.name for j in jobs}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit"}
+        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
 
 
 class TestArchReviewLoopBuildJobs:
