@@ -10,7 +10,7 @@ from typing import override
 from teatree.config import discover_overlays, load_config
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
-from teatree.core.runners.worktree_start import compose_project
+from teatree.core.worktree_env import compose_project
 from teatree.docker.reap import reap_compose_project
 from teatree.types import ProvisionStep, RunCommands, SkillMetadata
 from teatree.utils.run import run_checked
