@@ -22,8 +22,22 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import load_config
+from teatree.core import local_stack_gate as gate_mod
 from teatree.core.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import Ticket, Worktree
+
+
+@pytest.fixture(autouse=True)
+def _stacks_appear_live() -> "object":
+    """Default every blocker to a live docker stack for the existing gate tests.
+
+    The gate now reconciles blocker rows against ``docker ps`` and demotes
+    phantoms (zero running containers). The pre-existing tests model rows
+    that are genuinely up, so default the docker probe to "live"; the
+    reconciliation tests override this with their own ``patch.object``.
+    """
+    with patch.object(gate_mod, "_running_container_count", return_value=1):
+        yield
 
 
 def _write_toml(config_path: Path, content: str) -> None:
@@ -279,6 +293,112 @@ class TestWorktreeStartCliRefusesWhenLimitExceeded(TestCase):
             ):
                 call_command("worktree", "start", path=str(wt_dir))
             assert exc_info.value.code == 1
+
+
+class TestLocalStackGateDockerReconciliation(TestCase):
+    """A ``SERVICES_UP`` row with no live docker stack is a phantom — it must not block.
+
+    The DB FSM state can lie after a docker restart / OOM / manual
+    ``compose down``: the row still reads ``SERVICES_UP`` but holds no
+    real stack. Counting it refuses every legitimate start forever
+    (the 8568 Kletterrate blocker). The gate reconciles against
+    ``docker ps`` and demotes such phantoms before counting.
+    """
+
+    def test_phantom_blocker_with_zero_live_containers_does_not_count(self) -> None:
+        phantom = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7010",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/7010-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7011",
+            state=Worktree.State.PROVISIONED,
+        )
+        with patch.object(gate_mod, "_running_container_count", return_value=0):
+            check_local_stack_limit(candidate, limit=1)
+        phantom.refresh_from_db()
+        assert phantom.state == Worktree.State.PROVISIONED
+
+    def test_running_stack_still_counts_and_refuses(self) -> None:
+        live = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7020",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/7020-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7021",
+            state=Worktree.State.PROVISIONED,
+        )
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=2),
+            pytest.raises(LocalStackLimitExceededError),
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        live.refresh_from_db()
+        assert live.state == Worktree.State.SERVICES_UP
+
+    def test_unverifiable_docker_fails_safe_and_keeps_counting(self) -> None:
+        """When docker liveness can't be verified (-1) the row stays counted."""
+        blocker = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7030",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/7030-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7031",
+            state=Worktree.State.PROVISIONED,
+        )
+        with (
+            patch.object(gate_mod, "_running_container_count", return_value=-1),
+            pytest.raises(LocalStackLimitExceededError),
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        blocker.refresh_from_db()
+        assert blocker.state == Worktree.State.SERVICES_UP
+
+    def test_phantom_among_real_blockers_drops_only_the_phantom(self) -> None:
+        """With limit=1, demoting one phantom while another stack is live still refuses."""
+        phantom = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7040",
+            state=Worktree.State.SERVICES_UP,
+            worktree_path="/ws/7040-feat/backend",
+        )
+        live = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7041",
+            state=Worktree.State.READY,
+            worktree_path="/ws/7041-feat/backend",
+        )
+        candidate = _make_worktree(
+            overlay="t3-heavy",
+            ticket_number="7042",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        def counts(project: str) -> int:
+            return 0 if "wt7040" in project else 1
+
+        with (
+            patch.object(gate_mod, "_running_container_count", side_effect=counts),
+            pytest.raises(LocalStackLimitExceededError) as exc,
+        ):
+            check_local_stack_limit(candidate, limit=1)
+        phantom.refresh_from_db()
+        live.refresh_from_db()
+        assert phantom.state == Worktree.State.PROVISIONED
+        assert live.state == Worktree.State.READY
+        # The phantom must not appear in the refusal message; the live one must.
+        message = str(exc.value)
+        assert "/ws/7040-feat/backend" not in message
+        assert "/ws/7041-feat/backend" in message
 
 
 class TestLocalStackGateMultipleBlockers(TestCase):

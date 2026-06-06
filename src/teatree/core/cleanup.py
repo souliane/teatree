@@ -24,6 +24,7 @@ from teatree.config import load_config
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.worktree_env import worktree_pg_connection
 from teatree.core.worktree_recovery import _has_unpushed_commits, capture_recovery_artifact
 from teatree.utils import git
 from teatree.utils.db import drop_db
@@ -31,16 +32,6 @@ from teatree.utils.postgres_secret import remove_postgres_pass_entry
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
-
-
-def _read_env_cache_value(worktree_path: Path, key: str) -> str:
-    cache_file = worktree_path / ".t3-cache" / ".t3-env.cache"
-    if not cache_file.is_file():
-        return ""
-    for line in cache_file.read_text(encoding="utf-8").splitlines():
-        if line.startswith(f"{key}="):
-            return line.split("=", maxsplit=1)[1]
-    return ""
 
 
 _PR_SUFFIX_RE = re.compile(r"(?:\s*\(#\d+\))+$")
@@ -562,7 +553,7 @@ def cleanup_worktree(worktree: Worktree, *, force: bool = False, strict_hygiene:
     step_errors.extend(_remove_git_worktree(repo_main, wt_path, worktree, force=force, strict_hygiene=strict_hygiene))
 
     if worktree.db_name:
-        db_user = _read_env_cache_value(Path(wt_path), "POSTGRES_USER")
+        db_user, _, _ = worktree_pg_connection(worktree, overlay=overlay)
         try:
             drop_db(worktree.db_name, user=db_user)
         except Exception as exc:
