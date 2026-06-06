@@ -320,50 +320,50 @@ class TestF4GitlabApprovalsNoPhantomBlankOverlayTicket(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# F7: pr_sweep merge_pr_squash returns misleading empty SHA on rc != 0
+# F7: pr_sweep solo-overlay squash merge must be SHA-bound (#1985) and never
+# return a misleading empty SHA on success.
 # ---------------------------------------------------------------------------
 
 
-class TestF7PrSweepShaFetchFailureSurfaced(TestCase):
-    """F7 — merge_pr_squash returns (True, '') when the follow-up gh pr view rc != 0.
+class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
+    """F7 — the solo-overlay squash merge is bound and returns a non-empty SHA.
 
-    This yields a misleading 'SHA: ?' DM. Fix: surface a non-empty marker
-    (e.g. 'sha-unavailable') or retry once so the caller knows the SHA is
-    absent rather than empty.
+    The former unbound ``merge_pr_squash`` followed the merge with a separate
+    ``gh pr view mergeCommit`` whose rc!=0 yielded a silently empty SHA (the F7
+    bug). Option A (#1985) routes the merge through ``execute_bound_merge``,
+    which returns ``merged_sha or expected_head_oid`` from the merge response
+    itself — never a silent empty on success, and now SHA-bound so a force-push
+    in the TOCTOU window can't slip an unreviewed head through.
     """
 
-    def test_sha_fetch_rc_nonzero_does_not_return_empty_sha(self) -> None:
-        """SHA-fetch failure returns a non-empty marker, not silent empty string.
+    def test_bound_merge_returns_non_empty_sha_on_success(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
 
-        After a successful merge, if the SHA-fetch subprocess fails (rc!=0),
-        the returned SHA must not be silently empty string.
-        """
         from teatree.loop.scanners.pr_sweep_adapters import GhPrApiClient  # noqa: PLC0415
 
-        # GhPrApiClient uses slots=True so patch.object won't work on an instance.
-        # Subclass to override _run_gh instead.
-        class _FakeClient(GhPrApiClient):
-            __slots__ = ()
+        expected = "c" * 40
 
-            def _run_gh(self, argv: list[str]) -> tuple[int, str, str]:
-                if "merge" in argv:
-                    return 0, "", ""
-                if "view" in argv and "mergeCommit" in argv:
-                    # SHA fetch fails
-                    return 1, "", "not found"
-                return 0, "", ""
+        def _gh(argv: list[str]) -> tuple[int, str, str]:
+            joined = " ".join(argv)
+            if "headRefOid" in joined:
+                return (0, expected, "")
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]', "")
+            if "pulls" in joined and "merge" in joined:
+                # The merge response carries no ``sha`` field — the bound path
+                # must fall back to the bound head, never a silent empty string.
+                return (0, "{}", "")
+            return (0, "", "")
 
-        client = _FakeClient(token="")
-        ok, sha = client.merge_pr_squash(slug="owner/repo", pr_id=42)
+        client = GhPrApiClient(token="")
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh):
+            ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
         assert ok is True
-        # Bug: sha is "" when the fetch rc != 0.
-        # Fix: sha must carry a non-empty marker (not silently "").
-        assert sha != "", (
-            "merge_pr_squash returned empty string SHA when the gh pr view "
-            "follow-up failed — caller has no way to distinguish 'SHA unknown' "
-            "from 'merged but SHA empty'. Expected a non-empty marker."
-        )
+        assert sha != "", "merge_pr_squash_bound returned an empty SHA on a successful merge"
+        assert sha == expected
 
 
 class TestPrSweepListLimit(TestCase):
