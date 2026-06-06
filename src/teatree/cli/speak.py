@@ -7,9 +7,9 @@ management framework (Django bootstrapped by it, not a manual
 ``call_command`` exactly like ``t3 cost``.
 """
 
-import os
-
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def speak(
@@ -18,10 +18,7 @@ def speak(
     overlay: str = typer.Option("", "--overlay", help="Set T3_OVERLAY_NAME for the call (per-overlay Slack creds)."),
 ) -> None:
     """Read text aloud per the resolved speak_mode + speak_target (no-op when off)."""
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+    ensure_django()
 
     from django.core.management import call_command  # noqa: PLC0415
 

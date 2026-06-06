@@ -9,16 +9,9 @@ onto the shared ``loop_app`` so the user-facing surface stays
 management command, not a plain typer command.
 """
 
-import os
-
 import typer
 
-
-def _bootstrap_django() -> None:
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def _delegate(subcommand: str, *, slot: str | None, json_output: bool, extra: dict[str, bool] | None = None) -> None:
@@ -29,7 +22,7 @@ def _delegate(subcommand: str, *, slot: str | None, json_output: bool, extra: di
     ``typer.Exit`` so the process exit code is preserved. ``slot=None`` for
     slot-agnostic subcommands (``whoami``) that take no ``--slot`` arg.
     """
-    _bootstrap_django()
+    ensure_django()
     from django.core.management import call_command  # noqa: PLC0415
 
     kwargs: dict[str, str | bool] = {}

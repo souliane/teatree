@@ -1,7 +1,6 @@
 """``t3 eval`` — behavioral eval harness commands."""
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -42,6 +41,7 @@ from teatree.eval.report import evaluate, render_json, render_text
 from teatree.eval.trigger_qa import render_json as render_trigger_json
 from teatree.eval.trigger_qa import render_text as render_trigger_text
 from teatree.eval.trigger_qa import run_trigger_qa
+from teatree.utils.django_bootstrap import ensure_django
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
@@ -57,28 +57,10 @@ def _require_valid_format(output_format: str) -> None:
         raise typer.Exit(code=2)
 
 
-def _bootstrap_django() -> None:
-    """Ensure Django is configured before overlay discovery runs.
-
-    The overlay loader (``teatree.core.overlay_loader.get_all_overlays``)
-    imports modules that touch Django models at import time, which raises
-    ``ImproperlyConfigured`` in an unbootstrapped process. ``t3 eval`` is
-    one of the few CLI surfaces that may run ahead of any other DB-touching
-    command, so we bootstrap explicitly here rather than relying on a
-    sibling command having warmed Django for us.
-    """
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    import django  # noqa: PLC0415
-    from django.apps import apps  # noqa: PLC0415
-
-    if not apps.ready:
-        django.setup()
-
-
 @eval_app.command("list")
 def list_scenarios() -> None:
     """List discovered eval scenarios as a table (Name, Scenario, Agent, File, Asserts)."""
-    _bootstrap_django()
+    ensure_django()
     specs = discover_specs()
     if not specs:
         typer.echo("(no scenarios discovered)")
@@ -180,7 +162,7 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     CI arms it only when a key is configured; local runs leave it off so the
     subscription backend's legitimate pre-transcript all-skip stays green.
     """
-    _bootstrap_django()
+    ensure_django()
     _require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
@@ -258,7 +240,7 @@ def prepare_subscription(
     sub-agent's JSONL to that path, and finally grades with
     ``t3 eval run --backend subscription``.
     """
-    _bootstrap_django()
+    ensure_django()
     _require_valid_format(output_format)
     specs = discover_specs() if name is None else [_require_spec(name)]
     manifest = build_subscription_manifest(specs, transcript_dir or Path.cwd())
@@ -287,7 +269,7 @@ def history(
     current reference run per model; ``--mark-baseline <id>`` promotes a run to
     baseline (demoting the prior baseline for that model).
     """
-    _bootstrap_django()
+    ensure_django()
     _require_valid_format(output_format)
     from teatree.cli.eval_history import mark_run_baseline, render_history_json, render_history_text  # noqa: PLC0415
     from teatree.core.models import EvalRunRecord  # noqa: PLC0415
@@ -333,7 +315,7 @@ def regression(
     pid-anchored loop lease, the migration-graph leaf count) on a must-block and
     a must-allow input. Any violated invariant exits non-zero.
     """
-    _bootstrap_django()
+    ensure_django()
     _require_valid_format(output_format)
     report = run_regression_corpus()
     typer.echo(render_regression_json(report) if output_format == "json" else render_regression_text(report))
@@ -391,7 +373,7 @@ def all_lanes(
         except DockerUnavailableError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
-    _bootstrap_django()
+    ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
         trigger_lane(run_trigger_qa()),

@@ -40,6 +40,7 @@ from urllib.parse import urlparse
 import typer
 
 from teatree.cli.review import review_app
+from teatree.utils.django_bootstrap import ensure_django
 
 # GitLab JSON payloads — narrow ``object`` rather than a fictitious schema
 # because the API surface mixes strings (paths, diffs), ints (ids), and
@@ -302,16 +303,6 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     )
 
 
-def _bootstrap_django() -> None:
-    """Bootstrap Django before touching ORM-backed helpers (mirrors ``_require_token``)."""
-    import os  # noqa: PLC0415
-
-    import django  # noqa: PLC0415
-
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    django.setup()
-
-
 @review_app.command(name="run")
 def run(
     url: str = typer.Argument(help="GitLab MR URL (GitHub PR URLs return unsupported_forge)."),
@@ -340,7 +331,7 @@ def run(
     if forge != "gitlab":
         typer.echo(json.dumps({"error": "bad_url", "url": url}, sort_keys=True))
         raise typer.Exit(code=2)
-    _bootstrap_django()
+    ensure_django()
     try:
         result = _audit_gitlab_mr(url)
     except ValueError:

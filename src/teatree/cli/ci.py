@@ -10,6 +10,7 @@ from rich.table import Table
 
 from teatree.backends.protocols import CIService
 from teatree.utils.coverage_floor import measure_coverage
+from teatree.utils.django_bootstrap import ensure_django
 
 ci_app = typer.Typer(no_args_is_help=True, help="CI pipeline helpers.")
 _console = Console()
@@ -42,9 +43,7 @@ class CICommands:
     def get_ci_project() -> str:
         """Get the CI project path — from overlay or git remote."""
         try:
-            import django  # noqa: PLC0415
-
-            django.setup()
+            ensure_django()
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
             project = get_overlay().metadata.get_ci_project_path()

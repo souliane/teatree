@@ -6,6 +6,8 @@ from pathlib import Path
 
 import typer
 
+from teatree.utils.django_bootstrap import ensure_django
+
 logger = logging.getLogger(__name__)
 
 AGENT_PHASE_OPTION = typer.Option("", "--phase", help="Explicit TeaTree phase override.")
@@ -20,10 +22,7 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
     if not (project_root / "manage.py").is_file():
         return ""
     try:
-        import django  # noqa: PLC0415
-
-        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        django.setup()
+        ensure_django()
         from teatree.core.resolve import resolve_worktree  # noqa: PLC0415
 
         return str(resolve_worktree().ticket.state)

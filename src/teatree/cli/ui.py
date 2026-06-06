@@ -4,9 +4,9 @@ Requires the optional ``ui`` dependency group (``uv sync --group ui``),
 following the same lazy-import guard as ``docs`` in :mod:`teatree.cli.info`.
 """
 
-import os
-
 import typer
+
+from teatree.utils.django_bootstrap import ensure_django
 
 
 def ui() -> None:
@@ -20,10 +20,7 @@ def ui() -> None:
         typer.echo("ui browser requires the 'ui' extra: uv sync --group ui")
         raise typer.Exit(code=1) from None
 
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-    import django  # noqa: PLC0415
-
-    django.setup()
+    ensure_django()
 
     from typer.main import get_group  # noqa: PLC0415
 
