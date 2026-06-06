@@ -157,7 +157,7 @@ def _already_reviewed_at_head(ticket: Ticket, head_sha: str) -> bool:
     """
     if not head_sha:
         return False
-    from teatree.backends.protocols import ReviewState  # noqa: PLC0415
+    from teatree.core.backend_protocols import ReviewState  # noqa: PLC0415
 
     extra = ticket.extra or {}
     terminal = {ReviewState.APPROVED.value, ReviewState.REVIEWED_NO_ACTION.value}

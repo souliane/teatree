@@ -1,6 +1,6 @@
 """Tests for backend protocol structural typing."""
 
-from teatree.backends.protocols import (
+from teatree.core.backend_protocols import (
     ApprovalState,
     CIService,
     CodeHostBackend,

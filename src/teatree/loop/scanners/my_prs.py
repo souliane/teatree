@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import cast
 
-from teatree.backends.protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
 from teatree.types import RawAPIDict
 

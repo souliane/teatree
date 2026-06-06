@@ -62,7 +62,7 @@ class TestRunPersists(TestCase):
         from unittest.mock import patch  # noqa: PLC0415
 
         with (
-            patch("teatree.cli.eval.discover_specs", return_value=specs),
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
             patch("teatree.eval.backends.ClaudePRunner", _stub_runner(outcomes)),
         ):
             # The sdk runner is what these persistence tests stub; the default

@@ -42,7 +42,7 @@ agent-answered without a double reply (#1014).
 import logging
 from dataclasses import dataclass, field
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.slack_self_filter import OwnSlackIdentity, filter_self_messages, resolve_own_identity

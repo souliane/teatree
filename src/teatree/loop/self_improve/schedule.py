@@ -12,7 +12,7 @@ but they currently resolve to an empty detector list.
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.loop.self_improve.actions import ActionResult, run_action_ladder
 from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 from teatree.loop.self_improve.detectors import (

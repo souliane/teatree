@@ -1,6 +1,6 @@
 """Persistence, judging, and regression-gating helpers for ``t3 eval run``.
 
-The ``run`` command in :mod:`teatree.cli.eval` orchestrates three execution
+The ``run`` command in :mod:`teatree.cli.eval.app` orchestrates three execution
 shapes (single-trial, pass@k, model-matrix). This module holds the pieces those
 shapes share that are not themselves the runner loop: the LLM-judge grader
 closure, the three persistence entry points (single / pass@k / matrix), and the

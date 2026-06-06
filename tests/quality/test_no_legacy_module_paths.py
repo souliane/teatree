@@ -36,13 +36,13 @@ _SCAN_SUFFIXES = (".py", ".md", ".txt")
 # exclude it so the pin does not flag itself.
 _SELF = Path(__file__).resolve()
 
-# Documented PR7-deletable re-export shims (same shape as
-# ``teatree.backends.protocols``): a registered overlay consumer still imports
-# the old flat path, so the shim keeps it resolving with no cross-repo lockstep.
-# These files NAME their old path in the module docstring by design; the scan
-# excludes them, but :class:`TestPr7DeletableShims` pins each one to exist + to
-# re-export so the exception is tracked, not silent drift. Delete the entry (and
-# the shim file) once every overlay consumer has repointed.
+# Documented PR7-deletable re-export shims: a registered overlay consumer still
+# imports the old flat path (``teatree.core.merge_guard`` → the canonical
+# ``teatree.core.gates.merge_guard``), so the shim keeps it resolving with no
+# cross-repo lockstep. These files NAME their old path in the module docstring by
+# design; the scan excludes them, but :class:`TestPr7DeletableShims` pins each one
+# to exist + to re-export so the exception is tracked, not silent drift. Delete the
+# entry (and the shim file) once every overlay consumer has repointed.
 _SHIM_FILES = (_REPO_ROOT / "src" / "teatree" / "core" / "merge_guard.py",)
 _SHIM_PATHS = {p.resolve() for p in _SHIM_FILES}
 
@@ -157,10 +157,11 @@ class TestPr7DeletableShims:
     """Pin the documented PR7-deletable re-export shims (the cross-repo seam).
 
     Each shim keeps an old flat path resolving for a registered overlay consumer
-    that has not yet repointed, exactly like ``teatree.backends.protocols``. The
-    shim must (1) exist and (2) re-export the same object the canonical path
-    owns, so a consumer on either path sees one class — and so the exception
-    stays visible (delete the shim + this pin once overlays have repointed).
+    that has not yet repointed (``teatree.core.merge_guard`` →
+    ``teatree.core.gates.merge_guard``). The shim must (1) exist and (2) re-export
+    the same object the canonical path owns, so a consumer on either path sees one
+    class — and so the exception stays visible (delete the shim + this pin once
+    overlays have repointed).
     """
 
     def test_shim_files_exist(self) -> None:

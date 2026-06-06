@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.backends.protocols import MessagingBackend
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.loop.scanners.base import ScanSignal
 from teatree.paths import DATA_DIR
 from teatree.types import RawAPIDict

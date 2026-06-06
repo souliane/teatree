@@ -15,7 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from teatree.backends.protocols import CodeHostBackend, PrOpenState, ReviewState
+from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict

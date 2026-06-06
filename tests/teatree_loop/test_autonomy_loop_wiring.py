@@ -23,9 +23,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from teatree.backends.protocols import CodeHostBackend
 from teatree.config import Autonomy, Mode
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
 from teatree.loop.scanner_factories import _effective_settings_for_overlay, _pr_sweep_scanner_for
 

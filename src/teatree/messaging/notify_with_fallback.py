@@ -27,8 +27,8 @@ from dataclasses import dataclass
 
 from django.db import DatabaseError, IntegrityError, transaction
 
-from teatree.backends.protocols import MessagingBackend
 from teatree.core.backend_factory import messaging_from_overlay
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing
 from teatree.core.notify import NotifyKind, _format, _maybe_linkify, _resolve_user_id
 from teatree.notify import notify_user

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, cast
 from django.apps import apps
 
 from teatree.backends.loader import get_code_host_for_url
-from teatree.backends.protocols import CodeHostBackend
+from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict

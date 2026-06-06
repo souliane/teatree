@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 from teatree.loops.base import MiniLoop
 
 if TYPE_CHECKING:
-    from teatree.backends.protocols import MessagingBackend
     from teatree.core.backend_factory import OverlayBackends
+    from teatree.core.backend_protocols import MessagingBackend
     from teatree.loop.job_identity import _ScannerJob
     from teatree.loop.scanners.notion_view import NotionLike
 

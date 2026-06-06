@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from teatree.claude_sessions import SessionInfo
-from teatree.cli.eval_transcript_replay import replay_transcript_for_all, resolve_transcript
+from teatree.cli.eval.transcript_replay import replay_transcript_for_all, resolve_transcript
 
-_MODULE = "teatree.cli.eval_transcript_replay"
+_MODULE = "teatree.cli.eval.transcript_replay"
 
 
 def _session(session_id: str) -> SessionInfo:

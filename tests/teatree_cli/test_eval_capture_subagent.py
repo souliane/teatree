@@ -36,8 +36,8 @@ class TestCaptureSubagent:
             return captured
 
         with (
-            patch("teatree.cli.eval_capture_subagent.find_spec", return_value=spec),
-            patch("teatree.cli.eval_capture_subagent.capture_to", side_effect=_capture_to) as mock_capture,
+            patch("teatree.cli.eval.capture_subagent.find_spec", return_value=spec),
+            patch("teatree.cli.eval.capture_subagent.capture_to", side_effect=_capture_to) as mock_capture,
         ):
             result = CliRunner().invoke(
                 app,
@@ -52,8 +52,8 @@ class TestCaptureSubagent:
     def test_passes_since_through_to_capture(self, tmp_path: Path) -> None:
         spec = _spec()
         with (
-            patch("teatree.cli.eval_capture_subagent.find_spec", return_value=spec),
-            patch("teatree.cli.eval_capture_subagent.capture_to", return_value=Path("/x/agent.jsonl")) as mock_capture,
+            patch("teatree.cli.eval.capture_subagent.find_spec", return_value=spec),
+            patch("teatree.cli.eval.capture_subagent.capture_to", return_value=Path("/x/agent.jsonl")) as mock_capture,
         ):
             result = CliRunner().invoke(
                 app,
@@ -66,8 +66,8 @@ class TestCaptureSubagent:
     def test_exits_nonzero_when_no_subagent_transcript_found(self, tmp_path: Path) -> None:
         spec = _spec()
         with (
-            patch("teatree.cli.eval_capture_subagent.find_spec", return_value=spec),
-            patch("teatree.cli.eval_capture_subagent.capture_to", return_value=None),
+            patch("teatree.cli.eval.capture_subagent.find_spec", return_value=spec),
+            patch("teatree.cli.eval.capture_subagent.capture_to", return_value=None),
         ):
             result = CliRunner().invoke(
                 app,
@@ -79,8 +79,8 @@ class TestCaptureSubagent:
 
     def test_unknown_scenario_exits_with_code_2(self) -> None:
         with (
-            patch("teatree.cli.eval_capture_subagent.find_spec", return_value=None),
-            patch("teatree.cli.eval_capture_subagent.discover_specs", return_value=[_spec("alpha")]),
+            patch("teatree.cli.eval.capture_subagent.find_spec", return_value=None),
+            patch("teatree.cli.eval.capture_subagent.discover_specs", return_value=[_spec("alpha")]),
         ):
             result = CliRunner().invoke(app, ["eval", "capture-subagent", "missing"])
 
