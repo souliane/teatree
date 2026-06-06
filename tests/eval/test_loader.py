@@ -73,6 +73,27 @@ class TestLoadEvalYaml:
         spec = load_eval_yaml(_write(tmp_path, body))[0]
         assert spec.agent_path == "skills/ship/SKILL.md"
 
+    def test_defaults_agent_path_to_code_skill(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.agent_path == "skills/code/SKILL.md"
+
+    def test_default_agent_path_overrides_global_default_when_omitted(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL), default_agent_path="skills/ship/SKILL.md")[0]
+        assert spec.agent_path == "skills/ship/SKILL.md"
+
+    def test_explicit_agent_path_wins_over_default_agent_path(self, tmp_path: Path) -> None:
+        body = (
+            "- name: explicit\n"
+            "  scenario: explicit agent\n"
+            "  agent_path: skills/review/SKILL.md\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body), default_agent_path="skills/ship/SKILL.md")[0]
+        assert spec.agent_path == "skills/review/SKILL.md"
+
     def test_parses_positive_matcher(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
         matcher = spec.matchers[0]

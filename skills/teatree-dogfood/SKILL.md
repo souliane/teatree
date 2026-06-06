@@ -1,6 +1,7 @@
 ---
 name: teatree-dogfood
 description: Dogfooding checklist for teatree CLI, loop, and statusline changes — verify fresh behavior by running the command yourself, exercising the full task lifecycle, and watching the rendered statusline before declaring a change done. Also lists the known worktree/uv/git-stash pitfalls that trip up local validation.
+eval_exempt: manual dogfooding checklist run by the human operator; no autonomous agent trajectory to grade
 requires:
   - teatree
 metadata:

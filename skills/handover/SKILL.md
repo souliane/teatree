@@ -1,6 +1,7 @@
 ---
 name: handover
 description: Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high.
+eval_exempt: describes a one-shot `t3 teatree handover` command surface; produces no recurring multi-step agent trajectory to grade
 compatibility: any
 triggers:
   priority: 50

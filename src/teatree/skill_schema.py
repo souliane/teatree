@@ -28,6 +28,7 @@ _KNOWN_TOP_LEVEL = frozenset(
         "companions",
         "metadata",
         "compatibility",
+        "eval_exempt",
     }
 )
 
@@ -81,6 +82,9 @@ def validate_skill_md(path: Path, *, known_skills: set[str] | None = None) -> tu
     # Unknown fields.
     warnings.extend(f"{path}: unknown field '{key}' (APM extension?)" for key in fields if key not in _KNOWN_TOP_LEVEL)
 
+    if "eval_exempt" in fields:
+        _validate_eval_exempt(path, frontmatter, errors)
+
     # Validate trigger keyword regexes.
     _validate_trigger_keywords(path, frontmatter, errors)
 
@@ -99,6 +103,16 @@ def _extract_top_level_fields(frontmatter: str) -> set[str]:
             if key:
                 fields.add(key)
     return fields
+
+
+def _validate_eval_exempt(path: Path, frontmatter: str, errors: list[str]) -> None:
+    for line in frontmatter.splitlines():
+        if line.startswith((" ", "\t")) or not line.startswith("eval_exempt:"):
+            continue
+        reason = line.removeprefix("eval_exempt:").strip().strip("'\"")
+        if not reason:
+            errors.append(f"{path}: eval_exempt must be a non-empty reason string")
+        return
 
 
 def _validate_trigger_keywords(path: Path, frontmatter: str, errors: list[str]) -> None:

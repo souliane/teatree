@@ -1,6 +1,7 @@
 ---
 name: availability
 description: 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away). Use when configuring work hours, switching to away-mode for a holiday, answering the deferred-question backlog, or debugging the availability resolver.
+eval_exempt: thin chairside reference for the `t3 teatree availability` and `t3 teatree questions` commands; behaviour is enforced by the PreToolUse availability hook and pinned by scenarios/askuserquestion_slack_resolution.yaml, not by this skill's prose
 compatibility: any
 metadata:
   version: 0.0.1

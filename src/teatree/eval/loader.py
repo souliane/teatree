@@ -33,7 +33,7 @@ class EvalSpecError(ValueError):
         super().__init__(f"{loc}: {message}")
 
 
-def load_eval_yaml(path: Path) -> list[EvalSpec]:
+def load_eval_yaml(path: Path, default_agent_path: str | None = None) -> list[EvalSpec]:
     text = path.read_text(encoding="utf-8")
     try:
         loaded = yaml.safe_load(text)
@@ -42,16 +42,16 @@ def load_eval_yaml(path: Path) -> list[EvalSpec]:
         raise EvalSpecError(path, (line + 1) if line is not None else None, str(exc)) from exc
     if not isinstance(loaded, list) or not loaded:
         raise EvalSpecError(path, None, "expected a top-level YAML list with at least one spec")
-    return [_parse_spec(entry, path) for entry in loaded]
+    return [_parse_spec(entry, path, default_agent_path) for entry in loaded]
 
 
-def _parse_spec(entry: object, path: Path) -> EvalSpec:
+def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> EvalSpec:
     if not isinstance(entry, Mapping):
         raise EvalSpecError(path, None, f"each spec must be a mapping, got {type(entry).__name__}")
     spec_map: Mapping[str, Any] = {str(k): v for k, v in entry.items()}
     name = _required_str(spec_map, "name", path)
     scenario = _required_str(spec_map, "scenario", path)
-    agent_path = str(spec_map.get("agent_path") or spec_map.get("agent") or DEFAULT_AGENT_PATH)
+    agent_path = str(spec_map.get("agent_path") or spec_map.get("agent") or default_agent_path or DEFAULT_AGENT_PATH)
     prompt = str(spec_map.get("prompt") or scenario)
     judge = _parse_judge(spec_map, name, path)
     expect = spec_map.get("expect")

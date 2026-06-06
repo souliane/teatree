@@ -1,6 +1,7 @@
 ---
 name: running-evals
 description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (trigger-qa, regression) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
+eval_exempt: in-session driver for the eval harness itself; its commands are covered by the eval CLI tests, not by a self-referential behavioural eval
 compatibility: any
 metadata:
   version: 0.0.1
@@ -67,6 +68,7 @@ t3 eval all --backend sdk
 ```bash
 # Free deterministic lanes (no model spend).
 t3 eval trigger-qa
+t3 eval coverage          # per-skill eval coverage: covered / eval_exempt / gap (warn-first)
 t3 eval regression
 
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
@@ -80,6 +82,10 @@ t3 eval run --backend subscription --transcript-dir ./transcripts
 # Whole picture in one command (the non-session orchestratable piece).
 t3 eval all
 ```
+
+## Authoring co-located evals
+
+A skill ships its behavioral evals beside its `SKILL.md` as `skills/<name>/evals.yaml` (the Anthropic skill-authoring convention — evals live next to the unit they test). The file is the **same `EvalSpec` schema** as a flat-catalog scenario; omit `agent_path` and it defaults to the owning `skills/<name>/SKILL.md`. Each scenario still ships its three anti-vacuous fixtures (`tests/eval/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap. Reference: <https://docs.anthropic.com/en/docs/agents-and-tools/agent-skills/best-practices> § "Evaluation and iteration".
 
 ## Related
 

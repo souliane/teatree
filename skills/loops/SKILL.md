@@ -1,6 +1,7 @@
 ---
 name: loops
 description: 'Show t3 loop status — which loops are running vs stalled, the cadence and next tick of each loop, and loop ownership. Use when the user says "which loops are running", "loop status", "loops", "loop health", "is the loop ticking".'
+eval_exempt: read-only `t3 loop status` reference; the loop FSM behaviour is covered by the regression corpus, not by agent prose here
 compatibility: any
 triggers:
   priority: 50

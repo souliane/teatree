@@ -1,6 +1,7 @@
 ---
 name: platforms
 description: Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms.
+eval_exempt: pure API-recipe reference auto-loaded as a dependency; carries no standalone agent behaviour of its own
 compatibility: any
 metadata:
   version: 0.0.1
