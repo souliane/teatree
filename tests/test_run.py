@@ -1,6 +1,14 @@
 import pytest
 
-from teatree.utils.run import PIPE, CommandFailedError, run_allowed_to_fail, run_checked, run_streamed, spawn
+from teatree.utils.run import (
+    PIPE,
+    STREAMED_STDERR_RETAINED_LINES,
+    CommandFailedError,
+    run_allowed_to_fail,
+    run_checked,
+    run_streamed,
+    spawn,
+)
 
 
 class TestRunChecked:
@@ -60,6 +68,19 @@ class TestRunStreamed:
         with pytest.raises(CommandFailedError):
             run_streamed(["sh", "-c", "echo live-stderr >&2; exit 1"])
         assert "live-stderr" in capfd.readouterr().err
+
+    def test_captured_stderr_is_bounded(self, capfd: pytest.CaptureFixture[str]) -> None:
+        # A long-lived check=False server (uvicorn/runserver) emits unbounded
+        # stderr; the wrapper must retain only the last N lines, not every line.
+        emitted = STREAMED_STDERR_RETAINED_LINES + 500
+        script = f"for i in $(seq 1 {emitted}); do echo line-$i >&2; done; exit 1"
+        with pytest.raises(CommandFailedError) as exc:
+            run_streamed(["sh", "-c", script])
+        retained = exc.value.stderr.splitlines()
+        assert len(retained) == STREAMED_STDERR_RETAINED_LINES
+        assert retained[-1] == f"line-{emitted}"
+        assert retained[0] == f"line-{emitted - STREAMED_STDERR_RETAINED_LINES + 1}"
+        assert capfd.readouterr().err.count("line-") == emitted
 
 
 class TestRunAllowedToFail:

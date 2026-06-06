@@ -387,7 +387,7 @@ def _remove_git_worktree(
         # It is never skipped except by an explicit force override.
         #
         # One narrower path is NOT routed here: _workspace_cleanup.
-        # prune_squash_merged() deletes a branch+worktree directly via
+        # _prune_squash_merged() deletes a branch+worktree directly via
         # git.worktree_remove/branch_delete, but only AFTER is_squash_merged()
         # has confirmed the content is on a remote (merged PR or empty diff vs
         # origin/<default>), so it is low risk. Routing it through this guard

@@ -1170,6 +1170,8 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       assert it is caught (token-free).                      │
 │ capture-subagent      Copy the freshest in-session sub-agent JSONL to a      │
 │                       scenario's transcript path.                            │
+│ transcript-replay     Replay a real session transcript against teatree       │
+│                       behavioural invariants.                                │
 │ list                  List discovered eval scenarios as a table (Name,       │
 │                       Scenario, Agent, File, Asserts).                       │
 │ run                   Run one scenario by name, or all scenarios when no     │
@@ -1184,8 +1186,6 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                       gate/checker code paths.                               │
 │ all                   Run every eval lane in sequence and render one unified │
 │                       summary table.                                         │
-│ transcript-replay     Replay a real session transcript against teatree       │
-│                       behavioural invariants.                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1230,6 +1230,33 @@ Usage: t3 eval capture-subagent [OPTIONS] NAME
 │                                at/after this epoch (disambiguates sequential │
 │                                dispatches).                                  │
 │ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 eval transcript-replay`
+
+```
+Usage: t3 eval transcript-replay [OPTIONS]
+
+ Replay a real session transcript against teatree behavioural invariants.
+
+ The #169 complement to the #168 gate-liveness corpus: #168 proves the gates
+ CAN fire on synthetic payloads; this proves they DID (or weren't needed) in
+ a REAL run. Django-free, stdout-only, no transport: privacy by construction.
+ Exits non-zero on any invariant violation; skips and exits 0 when no
+ transcript is found. The report names only invariant ids and event indexes —
+ never a tool input, prompt, hook output, or quote.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --latest     --no-latest          Replay the newest session for the cwd's    │
+│                                   project.                                   │
+│                                   [default: latest]                          │
+│ --session                   TEXT  Replay a specific session id (in the cwd's │
+│                                   project).                                  │
+│ --file                      PATH  Replay a specific session JSONL file path. │
+│ --format                    TEXT  Report format: text or json.               │
+│                                   [default: text]                            │
+│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -1435,11 +1462,13 @@ Usage: t3 eval all [OPTIONS]
 
  Run every eval lane in sequence and render one unified summary table.
 
- Free deterministic lanes (trigger-qa, regression) always run. The AI lane
- grades subscription-produced transcripts when present; with none on disk it
- emits the subscription manifest plus the in-session recipe and NEVER silently
- shells the metered ``claude -p`` runner. ``--backend sdk`` is the explicit
- metered opt-in (CI's path).
+ The four free deterministic lanes (trigger-qa, regression, negative-control,
+ transcript-replay) always run; transcript-replay SKIPs when no real session
+ transcript is in scope (a missing run is not a violation). The AI lane grades
+ subscription-produced transcripts when present; with none on disk it emits the
+ subscription manifest plus the in-session recipe and NEVER silently shells the
+ metered ``claude -p`` runner. ``--backend sdk`` is the explicit metered opt-in
+ (CI's path). A SKIP never fails the run; only a real FAIL exits non-zero.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
@@ -1450,33 +1479,6 @@ Usage: t3 eval all [OPTIONS]
 │ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
 │                               transcripts for the AI lane (default: cwd).    │
 │ --help                        Show this message and exit.                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval transcript-replay`
-
-```
-Usage: t3 eval transcript-replay [OPTIONS]
-
- Replay a real session transcript against teatree behavioural invariants.
-
- The #169 complement to the #168 gate-liveness corpus: #168 proves the gates
- CAN fire on synthetic payloads; this proves they DID (or weren't needed) in
- a REAL run. Django-free, stdout-only, no transport: privacy by construction.
- Exits non-zero on any invariant violation; skips and exits 0 when no
- transcript is found. The report names only invariant ids and event indexes —
- never a tool input, prompt, hook output, or quote.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --latest     --no-latest          Replay the newest session for the cwd's    │
-│                                   project.                                   │
-│                                   [default: latest]                          │
-│ --session                   TEXT  Replay a specific session id (in the cwd's │
-│                                   project).                                  │
-│ --file                      PATH  Replay a specific session JSONL file path. │
-│ --format                    TEXT  Report format: text or json.               │
-│                                   [default: text]                            │
-│ --help                            Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4425,8 +4427,11 @@ Usage: t3 teatree tasks complete [OPTIONS] TASK_ID
  Fail-closed evidence gate (#1280): when ``--note`` ASSERTS an external
  outcome (merged / posted / shipped / deployed) it must also carry a
  resolvable artifact pointer (URL / SHA / ``!123`` / ``#123`` / note id /
- path), so a phantom "done" claim cannot be recorded without proof. A
- note with no outcome claim — or no note — is untouched.
+ path / Slack ts), so a phantom "done" claim cannot be recorded without
+ proof. A Slack post recorded as ``slack:<channel>:<ts>`` or
+ ``<channel>:<ts>`` is normalized to its archives permalink before the gate
+ and before storage. A note with no outcome claim — or no note — is
+ untouched.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    task_id      INTEGER  Task ID (see `task_id` in `tasks list`).          │

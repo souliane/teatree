@@ -82,5 +82,23 @@ class TestGitLabManualTrigger:
         )
 
     def test_eval_manual_runs_the_suite(self) -> None:
-        script = "\n".join(cast("list[str]", _gitlab_config()["eval-manual"]["script"]))
-        assert "t3 eval run" in script, "eval-manual must run the behavioral suite."
+        # The suite script is the shared `.eval-suite` body extended by eval-manual.
+        script = "\n".join(cast("list[str]", _gitlab_config()[".eval-suite"]["script"]))
+        assert "t3 eval run" in script, "the shared eval-suite must run the behavioral suite."
+
+    def test_eval_jobs_share_one_suite_definition(self) -> None:
+        # DRY: both eval jobs extend the single `.eval-suite` template rather than
+        # carrying their own copy of image/before_script/script/retry.
+        config = _gitlab_config()
+        assert ".eval-suite" in config, "the shared eval-suite template must exist."
+        for job in ("eval-weekly", "eval-manual"):
+            assert config[job].get("extends") == ".eval-suite", f"{job} must extend the shared eval-suite."
+            assert "script" not in config[job], f"{job} must not carry its own script copy."
+            assert "retry" not in config[job], f"{job} must not carry its own retry copy."
+
+    def test_eval_manual_inherits_the_transient_retry(self) -> None:
+        # The manual job previously omitted the retry block; sharing `.eval-suite`
+        # gives it the same bounded retry on transient infra classes.
+        retry = cast("dict[str, Any]", _gitlab_config()[".eval-suite"]["retry"])
+        assert retry["max"] == 2
+        assert "script_failure" in retry["when"]
