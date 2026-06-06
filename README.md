@@ -258,10 +258,16 @@ t3 cost                         # cycle-to-date SDK-equivalent spend vs the mont
 t3 speak                        # read text aloud per resolved speak_mode/speak_target (no-op when off)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
+t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in
 > another overlay.
+
+`t3 ui` is a [trogon](https://github.com/Textualize/trogon)-backed browser for
+the full `t3` command tree (core plus every installed overlay). It is in the
+optional `ui` dependency group — install it with `uv sync --group ui` before the
+first run.
 
 ### 2. Loop & Statusline
 

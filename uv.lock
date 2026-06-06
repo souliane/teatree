@@ -2550,6 +2550,7 @@ dev = [
     { name = "ruff" },
     { name = "slack-sdk" },
     { name = "tach" },
+    { name = "trogon", extra = ["typer"] },
     { name = "ty" },
     { name = "typer" },
 ]
@@ -2559,6 +2560,9 @@ docs = [
 ]
 mutation = [
     { name = "mutmut" },
+]
+ui = [
+    { name = "trogon", extra = ["typer"] },
 ]
 
 [package.metadata]
@@ -2600,6 +2604,7 @@ dev = [
     { name = "ruff", specifier = ">=0.14.2" },
     { name = "slack-sdk", specifier = ">=3.35" },
     { name = "tach", specifier = ">=0.34" },
+    { name = "trogon", extras = ["typer"], specifier = ">=0.6" },
     { name = "ty", specifier = ">=0.0.18" },
     { name = "typer", specifier = ">=0.12" },
 ]
@@ -2608,6 +2613,7 @@ docs = [
     { name = "mkdocs-material", specifier = ">=9" },
 ]
 mutation = [{ name = "mutmut", specifier = ">=3.5,<4" }]
+ui = [{ name = "trogon", extras = ["typer"], specifier = ">=0.6" }]
 
 [[package]]
 name = "text-unidecode"
@@ -2687,6 +2693,24 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/51/db/03eaf4331631ef6b27d6e3c9b68c54dc6f0d63d87201fed600cc409307fd/tomlkit-0.15.0.tar.gz", hash = "sha256:7d1a9ecba3086638211b13814ea79c90dd54dd11993564376f3aa92271f5c7a3", size = 161875, upload-time = "2026-05-10T07:38:22.245Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/43/8bd850ee71a191bf072e31302c73a66be413fecdd98fdcd111ecbcce13ca/tomlkit-0.15.0-py3-none-any.whl", hash = "sha256:4dbc8f0fc024412b57ced8757ac7461305126a648ff8c2c807fcb8e133a78738", size = 41328, upload-time = "2026-05-10T07:38:23.517Z" },
+]
+
+[[package]]
+name = "trogon"
+version = "0.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "textual" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/ae/7367acac2194a215b092ba3fccde3b558272702110b8bb9bea164ab4ac42/trogon-0.6.0.tar.gz", hash = "sha256:fd1abfeb7b15d79d6e6cfc9e724aad2a2728812e4713a744d975f133e7ec73a4", size = 22902, upload-time = "2024-10-02T13:38:12.511Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/97/30/33035d5796a3b8b9624997fec7545e3febd2268c7b48df38a715a95cb5e4/trogon-0.6.0-py3-none-any.whl", hash = "sha256:fb5b6c25acd7a0eaba8d2cd32a57f1d80c26413cea737dad7a4eebcda56060e0", size = 26077, upload-time = "2024-10-02T13:38:11.09Z" },
+]
+
+[package.optional-dependencies]
+typer = [
+    { name = "typer" },
 ]
 
 [[package]]
