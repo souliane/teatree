@@ -124,7 +124,7 @@ class SlackMentionsScanner:
             # above. A crash before this point leaves the ``.draining`` file
             # for the next drain to recover, so no mention is lost (Slack
             # never retries them).
-            from teatree.backends.slack_receiver import commit_drain  # noqa: PLC0415
+            from teatree.backends.slack.receiver import commit_drain  # noqa: PLC0415
 
             commit_drain()
         return signals
@@ -138,7 +138,7 @@ class SlackMentionsScanner:
         events land in ``slack-reactions.jsonl`` (drained by
         ``SlackReviewIntentScanner``, #1047) and never reach here.
         """
-        from teatree.backends.slack_receiver import drain_event_queue  # noqa: PLC0415
+        from teatree.backends.slack.receiver import drain_event_queue  # noqa: PLC0415
 
         drained_any = False
         for queued in drain_event_queue():

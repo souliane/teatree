@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.core.backend_protocols import PullRequestSpec
 
 

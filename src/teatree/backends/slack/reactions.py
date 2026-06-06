@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from teatree.backends.slack_react_errors import SlackReactionError, build_react_error_message
+from teatree.backends.slack.react_errors import SlackReactionError, build_react_error_message
 from teatree.core.overlay_loader import get_overlay
 
 if TYPE_CHECKING:

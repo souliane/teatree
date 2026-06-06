@@ -42,7 +42,7 @@ from typing import Any
 import httpx
 import pytest
 
-from teatree.backends import slack_http
+from teatree.backends.slack import http as slack_http
 from teatree.types import SlackVoiceClassifierMode as _VoiceClassifierMode
 
 # ── Fake Slack transport ──────────────────────────────────────────────

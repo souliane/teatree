@@ -12,8 +12,8 @@ import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.backends import slack_http
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.connector_preflight import assert_slack_scope, run_connector_preflight
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep

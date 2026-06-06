@@ -5,7 +5,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.backends.slack_receiver import default_queue_path, run_listener
+from teatree.backends.slack.receiver import default_queue_path, run_listener
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
 from teatree.utils.django_bootstrap import ensure_django
@@ -87,7 +87,7 @@ def check_command() -> None:
     """
     import json  # noqa: PLC0415
 
-    from teatree.backends.slack_receiver import commit_drain, drain_event_queue  # noqa: PLC0415
+    from teatree.backends.slack.receiver import commit_drain, drain_event_queue  # noqa: PLC0415
 
     events = drain_event_queue()
     messages: list[dict[str, str]] = []

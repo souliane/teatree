@@ -4,7 +4,7 @@ import re
 from typing import cast
 from urllib.parse import urlencode
 
-from teatree.backends.gitlab_api import GitLabAPI
+from teatree.backends.gitlab.api import GitLabAPI
 
 
 class GitLabCIService:

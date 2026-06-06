@@ -8,7 +8,7 @@ the user's personal ``xoxp-`` token, rendering as user-to-self with no
 notification.
 
 Two heuristic predicates and one assertion live in
-:mod:`teatree.backends.slack_voice_classifier`:
+:mod:`teatree.backends.slack.voice_classifier`:
 
 *   :func:`classify_voice` reads message body and returns
     :class:`Voice.AGENT` (status-report markers — PR merged, MR ready,
@@ -32,7 +32,7 @@ import logging
 
 import pytest
 
-from teatree.backends.slack_voice_classifier import (
+from teatree.backends.slack.voice_classifier import (
     ClassifierMode,
     SlackVoiceMismatchError,
     TokenKind,
@@ -225,7 +225,7 @@ class TestAssertVoiceTokenMatchWarn:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack_voice_classifier"):
+        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack.voice_classifier"):
             assert_voice_token_match(
                 text="PR merged, evidence at https://example/p1",
                 channel="D0DEMOCLNT1",
@@ -242,7 +242,7 @@ class TestAssertVoiceTokenMatchOff:
     """Disabled mode never refuses and never warns."""
 
     def test_off_mode_never_refuses(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack_voice_classifier"):
+        with caplog.at_level(logging.WARNING, logger="teatree.backends.slack.voice_classifier"):
             assert_voice_token_match(
                 text="PR merged",
                 channel="D0DEMOCLNT1",
@@ -263,7 +263,7 @@ class TestSlackBotBackendVoiceClassifier:
     """
 
     def test_strict_post_message_refused_on_agent_voice_to_user_dm(self) -> None:
-        from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+        from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
             bot_token="",
@@ -278,7 +278,7 @@ class TestSlackBotBackendVoiceClassifier:
     def test_warn_post_message_allows_agent_voice_to_user_dm(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+        from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
             bot_token="",
@@ -292,7 +292,7 @@ class TestSlackBotBackendVoiceClassifier:
         posted.assert_called_once()
 
     def test_post_reply_strict_refuses_agent_voice_to_user_dm(self) -> None:
-        from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+        from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
         backend = SlackBotBackend(
             bot_token="",

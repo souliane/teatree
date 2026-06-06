@@ -11,7 +11,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.backends import slack
+from teatree.backends.slack import client as slack_client
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
 from teatree.core.models import ReviewRequestPost
 from tests.teatree_core.test_review_request_guard import FakeClient, _bind
@@ -97,7 +97,7 @@ class TestReviewRequestCheckCommand(TestCase):
             ),
             pytest.MonkeyPatch.context() as mp,
         ):
-            mp.setattr(slack.httpx, "Client", lambda **kw: _bind(fake, kw))
+            mp.setattr(slack_client.httpx, "Client", lambda **kw: _bind(fake, kw))
             result = cast(
                 "dict[str, object]",
                 call_command("review_request_check", "--mr-url", _MR_URL),

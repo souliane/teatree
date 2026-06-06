@@ -8,11 +8,13 @@ Slack review-history read. ``BackendsConfig.ready()`` registers one instance so
 
 from typing import TYPE_CHECKING
 
-from teatree.backends import github_sync, gitlab_sync, loader
+from teatree.backends import loader
 from teatree.backends.github import GitHubCodeHost
+from teatree.backends.github import sync as github_sync
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.backends.gitlab import sync as gitlab_sync
 from teatree.backends.slack import SlackReviewSearchRequest, read_recent_review_matches
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_registry import register_backend_provider
 
 if TYPE_CHECKING:

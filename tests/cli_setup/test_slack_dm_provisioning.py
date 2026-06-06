@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import tomlkit
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.cli import slack_dm_provisioning
 from teatree.cli.slack_dm_provisioning import ProvisionResult, provision_overlay_dm_channel, resolve_user_slack_id
 

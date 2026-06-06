@@ -180,7 +180,7 @@ class TestProvisionChannels:
         with (
             patch("teatree.cli.slack_provision._broadcast_channels", return_value=[("rev", "C1")]),
             patch("teatree.cli.slack_provision.read_pass", return_value="xoxb-bot"),
-            patch("teatree.backends.slack_bot.SlackBotBackend", return_value=backend),
+            patch("teatree.backends.slack.bot.SlackBotBackend", return_value=backend),
             patch(
                 "teatree.cli.slack_provision.join_review_channels",
                 return_value=[ChannelJoinResult(status=JoinStatus.JOINED, channel_name="rev", channel_id="C1")],

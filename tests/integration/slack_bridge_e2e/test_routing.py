@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from inline_snapshot import snapshot
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig

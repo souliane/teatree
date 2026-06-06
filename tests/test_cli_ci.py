@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-import teatree.backends.gitlab_api as gitlab_api_mod
+import teatree.backends.gitlab.api as gitlab_api_mod
 import teatree.core.backend_factory as backend_factory_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.git as git_mod

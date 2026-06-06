@@ -5,8 +5,8 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends import slack_http
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack import http as slack_http
+from teatree.backends.slack.bot import SlackBotBackend
 
 
 def _post_returning(body: dict, captured: list[dict[str, object]]) -> object:

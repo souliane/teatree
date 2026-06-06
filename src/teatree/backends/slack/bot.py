@@ -45,20 +45,20 @@ import threading
 from pathlib import Path
 from typing import cast
 
-from teatree.backends.slack_bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
-from teatree.backends.slack_http import SlackHttpClient
-from teatree.backends.slack_react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
-from teatree.backends.slack_scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
-from teatree.backends.slack_token_policy import SlackOp, channel_token
-from teatree.backends.slack_token_validation import (
+from teatree.backends.slack.bot_errors import GLOBAL_TOKEN_FAILURES as _GLOBAL_TOKEN_FAILURES
+from teatree.backends.slack.http import SlackHttpClient
+from teatree.backends.slack.react_errors import SingleEmojiBodyRefusedError, is_single_emoji_body
+from teatree.backends.slack.scopes import OAUTH_SCOPES_HEADER, attach_granted_scopes
+from teatree.backends.slack.token_policy import SlackOp, channel_token
+from teatree.backends.slack.token_validation import (
     TokenSlotMismatchError,
     assert_app_token,
     assert_bot_token,
     assert_user_token,
     resolve_user_token_or_degrade,
 )
-from teatree.backends.slack_voice_classifier import ClassifierMode as VoiceClassifierMode
-from teatree.backends.slack_voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
+from teatree.backends.slack.voice_classifier import ClassifierMode as VoiceClassifierMode
+from teatree.backends.slack.voice_classifier import SlackVoiceMismatchError, VoiceTokenGate
 from teatree.types import RawAPIDict, ScannerError
 
 __all__ = [
@@ -329,7 +329,7 @@ class SlackBotBackend:
         every outbound surface — ``post_message`` / ``post_reply`` /
         ``react`` / ``get_reactions`` (all ``SlackOp.WRITE``) — and, via
         the shared
-        :func:`teatree.backends.slack_token_policy.channel_token` helper,
+        :func:`teatree.backends.slack.token_policy.channel_token` helper,
         by the review-request dedup guard's read-as-the-post
         (``resolve_channel_token`` → ``SlackOp.WRITE``, so read-token ==
         post-token #1084). Connect membership is only probed when both

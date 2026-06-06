@@ -1,4 +1,4 @@
-from teatree.backends.gitlab_payloads import mutation_errors, work_item_global_id, work_item_type_global_id
+from teatree.backends.gitlab.payloads import mutation_errors, work_item_global_id, work_item_type_global_id
 
 
 def test_work_item_global_id_extracts_gid() -> None:

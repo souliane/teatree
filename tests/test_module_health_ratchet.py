@@ -38,7 +38,7 @@ class TestLocShrinkRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 1
@@ -52,7 +52,7 @@ class TestLocShrinkRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 0
@@ -66,7 +66,7 @@ class TestLocShrinkRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 0
@@ -85,7 +85,7 @@ class TestMergeCommitSkipsRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 0
@@ -102,7 +102,48 @@ class TestMergeCommitSkipsRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/big.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: _OVER_CAP)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 1
+
+
+class TestRenameFollowsGrandfather:
+    """A renamed over-cap file is grandfathered via its pre-rename path.
+
+    The file-hierarchy campaign git-mv's over-cap modules into subpackages
+    (e.g. ``backends/slack_bot.py`` → ``backends/slack/bot.py``). The new
+    path does not exist at HEAD, so a path-keyed grandfather lookup would
+    read 0 LOC and block the move as a fresh over-cap file. The hook must
+    follow the rename and compare against the source path's HEAD ceiling.
+    """
+
+    def test_renamed_over_cap_file_is_not_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "pkg" / "moved.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(_src(_OVER_CAP), encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/pkg/moved.py"])
+        monkeypatch.setattr(mod, "_head_paths", lambda: {"src/pkg/moved.py": "src/old.py"})
+        monkeypatch.setattr(mod, "_count_loc_at_head", lambda f: _OVER_CAP if f == "src/old.py" else 0)
+        monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
+        monkeypatch.setattr("sys.argv", ["check_module_health.py"])
+
+        assert mod.main() == 0
+
+    def test_renamed_over_cap_file_that_grows_is_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "pkg" / "moved.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(_src(_OVER_CAP_GREW), encoding="utf-8")
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/pkg/moved.py"])
+        monkeypatch.setattr(mod, "_head_paths", lambda: {"src/pkg/moved.py": "src/old.py"})
+        monkeypatch.setattr(mod, "_count_loc_at_head", lambda f: _OVER_CAP if f == "src/old.py" else 0)
+        monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: [])
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 1
@@ -121,7 +162,7 @@ class TestFunctionCountShrinkRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/many_fns.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: 0)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: head_funcs)
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 1
@@ -138,7 +179,7 @@ class TestFunctionCountShrinkRatchet:
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/many_fns.py"])
         monkeypatch.setattr(mod, "_count_loc_at_head", lambda _f: 0)
         monkeypatch.setattr(mod, "_count_module_level_functions_at_head", lambda _f: head_funcs)
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: set())
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: set())
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 0

@@ -16,12 +16,12 @@ without spinning up the wider review machinery.
 import re
 from typing import TypedDict, cast
 
-from teatree.backends.gitlab_api import GitLabAPI
+from teatree.backends.gitlab.api import GitLabAPI
 
 # GitLab change-entry dict in an MR /changes response. ``object`` rather
 # than the actual narrow types because the API surface mixes strings
 # (paths, diffs) and bools (renamed/new_file flags); a TypedDict would
-# pin a fictitious schema. See ``teatree.backends.gitlab_api`` § ``RawMR``
+# pin a fictitious schema. See ``teatree.backends.gitlab.api`` § ``RawMR``
 # for the same pattern.
 type ChangeEntry = dict[str, object]
 

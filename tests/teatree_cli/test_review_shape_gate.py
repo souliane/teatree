@@ -390,7 +390,7 @@ class TestShapeGateCachesMRAuthor:
 
     def test_fetch_mr_author_uses_api_cache(self) -> None:
         """Two posts on the same MR — only one GET to ``merge_requests/<iid>``."""
-        from teatree.backends.gitlab_api import GitLabHTTPClient  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
         from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
@@ -451,7 +451,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_fetch_returns_empty_when_author_missing(self) -> None:
         """A GET that returns no ``author`` key yields empty author → not a colleague MR."""
-        from teatree.backends.gitlab_api import GitLabHTTPClient  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
         from teatree.cli.review_shape_gate import fetch_mr_author, is_colleague_mr  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
@@ -463,7 +463,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_fetch_returns_empty_on_network_exception(self) -> None:
         """``api.get_json`` raising (401, network) yields empty author → fail-open."""
-        from teatree.backends.gitlab_api import GitLabHTTPClient  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
         from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")
@@ -556,7 +556,7 @@ class TestShapeGateFailOpenAndCarveOuts:
 
     def test_fetch_returns_empty_on_non_dict_response(self) -> None:
         """``api.get_json`` returning ``None`` or a list (not a dict) → empty author."""
-        from teatree.backends.gitlab_api import GitLabHTTPClient  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabHTTPClient  # noqa: PLC0415
         from teatree.cli.review_shape_gate import fetch_mr_author  # noqa: PLC0415
 
         api = GitLabHTTPClient(token="t")

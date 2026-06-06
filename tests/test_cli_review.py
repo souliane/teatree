@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
-import teatree.backends.gitlab_api as gitlab_api_mod
+import teatree.backends.gitlab.api as gitlab_api_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import app
 from teatree.cli.review import ReviewService, _find_added_line

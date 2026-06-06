@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from teatree.backends.gitlab_payloads import WORK_ITEM_STATUS_QUERY, status_from_work_item_payload
+from teatree.backends.gitlab.payloads import WORK_ITEM_STATUS_QUERY, status_from_work_item_payload
 from teatree.utils import git
 
 type RawMR = dict[str, object]

@@ -7,7 +7,7 @@ can rely on instead of every reviewer sub-agent improvising its own
 diff-fetch + checklist.
 
 The command itself never publishes anything — it routes through
-:class:`~teatree.backends.gitlab_api.GitLabAPI` GET endpoints only — so
+:class:`~teatree.backends.gitlab.api.GitLabAPI` GET endpoints only — so
 it stays outside the on-behalf approval surface (#960). The reviewer
 sub-agent consumes the JSON and decides what to post via
 ``t3 review post-draft-note`` / ``post-comment`` afterwards.
@@ -232,7 +232,7 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     """
     import httpx  # noqa: PLC0415
 
-    from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
+    from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
     from teatree.cli.review import ReviewService  # noqa: PLC0415
     from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
 

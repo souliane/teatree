@@ -9,8 +9,8 @@ import pytest
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.gitlab_ci import GitLabCIService
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.gitlab.ci import GitLabCIService
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
     ci_service_from_overlay,
