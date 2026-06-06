@@ -24,11 +24,12 @@ The module is pure detection. The PreToolUse hook in
 ``stdout`` / ``permissionDecision`` JSON.
 
 Override via the ``--allow-banned-term`` flag in the first command
-segment, a leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token in
-the first segment (``ALLOW_BANNED_TERM=1 glab ...``), the
-``ALLOW_BANNED_TERM=1`` process env var, or ``ALLOW_BANNED_TERM=1`` in the
-tool-input env mapping — mirroring the quote-scanner's ``--quote-ok`` /
-``QUOTE_OK=1`` escape hatch.
+segment, a leading ``ALLOW_BANNED_TERM=1`` inline env-assignment token on
+the publish segment itself (``ALLOW_BANNED_TERM=1 glab ...`` or
+``cd <worktree> && ALLOW_BANNED_TERM=1 git commit ...`` — bash scopes the
+assignment to that command), the ``ALLOW_BANNED_TERM=1`` process env var,
+or ``ALLOW_BANNED_TERM=1`` in the tool-input env mapping — mirroring the
+quote-scanner's ``--quote-ok`` / ``QUOTE_OK=1`` escape hatch.
 """
 
 import os
@@ -41,6 +42,7 @@ from teatree.hooks._command_parser import extract_secret_scan_text as _extract_s
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
 from teatree.hooks._command_parser import is_fail_closed_sentinel as _is_fail_closed_sentinel
 from teatree.hooks._command_parser import is_publish_command as _is_publish_command
+from teatree.hooks._publish_detection import segment_word_lists_raw as _segment_word_lists_raw
 from teatree.hooks.term_match import matched_term as _matched_token_term
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
@@ -124,24 +126,45 @@ def secret_scan_text(tool_name: str, tool_input: ToolInput) -> str:
     return _extract_secret_scan_text(tool_input.get("command", ""))
 
 
+def _segment_leads_with_override(words: list[str]) -> bool:
+    """Return True iff ``words`` leads with ``ALLOW_BANNED_TERM=1`` before its command.
+
+    Only the leading run of ``KEY=value`` env-assignment tokens is inspected:
+    bash applies a leading inline assignment to that command's environment, while
+    a ``KEY=val``-shaped token after the command name is an argument, not an
+    override. The first non-assignment token ends the run.
+    """
+    for word in words:
+        name, sep, value = word.partition("=")
+        if not sep:
+            return False  # command name reached: later KEY=val tokens are args
+        if name == _OVERRIDE_ENV:
+            return value.strip() == "1"
+    return False
+
+
 def _has_leading_env_override(command: str) -> bool:
-    """Return True iff the first segment starts with ``ALLOW_BANNED_TERM=1``.
+    """Return True iff the segment carrying the publish leads with ``ALLOW_BANNED_TERM=1``.
 
     The Claude Code harness forwards a ``Bash`` command verbatim and lets
     NEITHER an inline ``env`` block reach the gate NOR ``glab``/``gh`` accept
     a ``--allow-banned-term`` flag (they reject the unknown flag). The one
     spelling the agent CAN reliably emit is a leading inline env assignment
     on the command itself — ``ALLOW_BANNED_TERM=1 glab mr note ...`` — which
-    bash applies to the command's environment. This honours that token when
-    it leads the FIRST command segment, so a chained second command cannot
-    smuggle the override past the gate.
+    bash applies to that command's environment.
+
+    Bash scopes a leading inline assignment to that one command, so the override
+    is honoured iff the segment it leads IS ITSELF the publish/commit the gate
+    would scan (checked via :func:`_is_publish_command` on the standalone
+    segment). This honours the common sub-agent shape that navigates first
+    (``cd <worktree> && ALLOW_BANNED_TERM=1 git commit ...`` — override on the
+    commit segment) while a decoy override on a harmless segment cannot vouch for
+    a chained publish elsewhere (``ALLOW_BANNED_TERM=1 echo hi && gh issue create
+    …`` and ``gh issue create … ; ALLOW_BANNED_TERM=1 echo`` both still fire).
     """
-    for word in _first_segment_words(command):
-        name, sep, value = word.partition("=")
-        if not sep:
-            return False  # first non-assignment token: command name reached
-        if name == _OVERRIDE_ENV:
-            return value.strip() == "1"
+    for words in _segment_word_lists_raw(command):
+        if _segment_leads_with_override(words) and _is_publish_command(" ".join(words)):
+            return True
     return False
 
 

@@ -97,10 +97,16 @@ def slug_for_cwd(cwd: Path) -> str:
     The full slug (including host) is used so an organisation-namespace
     allowlist entry matches a GitLab remote and a GitHub probe can be keyed by
     the same string.
+
+    ``FileNotFoundError`` (the ``git`` binary unresolved on the restricted hook
+    PATH) and ``OSError`` are caught alongside ``CommandFailedError`` so a
+    degraded subprocess fails SAFE to an empty slug -- an uncaught error would
+    propagate out of the carve-out and crash the whole gate, denying the offline
+    allowlist any chance to downgrade.
     """
     try:
         url = git.remote_url(repo=str(cwd))
-    except CommandFailedError:
+    except (CommandFailedError, OSError):
         return ""
     if not url:
         return ""

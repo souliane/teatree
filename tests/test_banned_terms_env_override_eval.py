@@ -59,12 +59,28 @@ class TestAllowBannedTermEnvReachesWrapper:
         cmd = 'gh issue create --title t --body "acmecorp" --allow-banned-term'
         assert has_override("Bash", {"command": cmd}) is True
 
+    def test_inline_env_behind_cd_prefix_is_honoured(self) -> None:
+        # The common sub-agent shape: cd into the worktree, then commit with the
+        # override leading the publish segment.
+        cmd = 'cd /work/ticket && ALLOW_BANNED_TERM=1 git commit -m "acmecorp"'
+        assert has_override("Bash", {"command": cmd}) is True
+
     @pytest.mark.usefixtures("_term_config")
     def test_process_env_override_bypasses_block_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setenv("ALLOW_BANNED_TERM", "1")
         data = _bash('gh issue create --title t --body "acmecorp ships next week"')
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_inline_env_behind_cd_prefix_bypasses_block_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        data = _bash('cd /tmp && ALLOW_BANNED_TERM=1 gh issue create --title t --body "acmecorp ships"')
         blocked = handle_banned_terms_pretool(data)
         assert blocked is False
         assert capsys.readouterr().out == ""
@@ -91,6 +107,18 @@ class TestBannedTermGenuineGuardIntact:
         # No override env, no flag → no bypass (the block decision is then
         # made by the scanner against the config).
         assert has_override("Bash", {"command": cmd}) is False
+
+    @pytest.mark.usefixtures("_term_config")
+    def test_override_on_decoy_segment_does_not_bypass_chained_publish(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The override leads a harmless echo; bash scopes it to that command, so
+        # it must NOT vouch for the banned-term publish chained after it.
+        monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+        data = _bash('ALLOW_BANNED_TERM=1 echo hi && gh issue create --title t --body "acmecorp ships"')
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
 class TestBannedTermFailsOpenOnBrokenEnv:
