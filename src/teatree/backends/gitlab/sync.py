@@ -16,10 +16,10 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from teatree.backends.gitlab import GitLabCodeHost
-from teatree.backends.gitlab_sync_issues import fetch_assigned_issues, fetch_issue_labels
-from teatree.backends.gitlab_sync_prs import _PRContext, extract_repo_path, upsert_ticket_from_pr
-from teatree.backends.gitlab_sync_terminal import detect_closed_prs, detect_merged_prs
-from teatree.backends.slack_review_sync import fetch_review_permalinks
+from teatree.backends.gitlab.sync_issues import fetch_assigned_issues, fetch_issue_labels
+from teatree.backends.gitlab.sync_prs import _PRContext, extract_repo_path, upsert_ticket_from_pr
+from teatree.backends.gitlab.sync_terminal import detect_closed_prs, detect_merged_prs
+from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name
 from teatree.types import LAST_SYNC_CACHE_KEY, PENDING_REVIEWS_CACHE_KEY, SyncBackend, SyncResult
@@ -36,7 +36,7 @@ class GitLabSyncBackend(SyncBackend):
 
     @override
     def sync(self, overlay: object) -> SyncResult:
-        from teatree.backends.gitlab_api import ProjectInfo  # noqa: PLC0415
+        from teatree.backends.gitlab.api import ProjectInfo  # noqa: PLC0415
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
 
         if not isinstance(overlay, OverlayBase):

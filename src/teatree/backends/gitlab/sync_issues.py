@@ -16,7 +16,7 @@ from teatree.core.models import Ticket
 from teatree.types import SyncResult
 
 if TYPE_CHECKING:
-    from teatree.backends.gitlab_api import GitLabAPI
+    from teatree.backends.gitlab.api import GitLabAPI
     from teatree.core.models.types import TicketExtra, TicketSiblingFields
 
 logger = logging.getLogger(__name__)

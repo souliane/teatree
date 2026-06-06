@@ -44,7 +44,7 @@ class GitLabNoteClient(Protocol):
     """The GitLab REST surface :class:`GitLabReplier` needs to post an MR note.
 
     Structural so ``core`` types the replier against a capability rather than
-    importing the concrete ``backends.gitlab_api.GitLabAPI`` (#1922).
+    importing the concrete ``backends.gitlab.api.GitLabAPI`` (#1922).
     """
 
     def resolve_project(self, repo_path: str) -> _ProjectInfoLike | None: ...  # pragma: no branch

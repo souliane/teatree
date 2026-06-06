@@ -377,7 +377,7 @@ class TestProductionDrainPath:
     def test_drains_reaction_events_from_jsonl_queue(self, tmp_path, monkeypatch) -> None:
         import json  # noqa: PLC0415
 
-        from teatree.backends import slack_receiver  # noqa: PLC0415
+        from teatree.backends.slack import receiver as slack_receiver  # noqa: PLC0415
 
         queue = tmp_path / "slack-reactions.jsonl"
         event = _reaction_event()
@@ -400,7 +400,7 @@ class TestProductionDrainPath:
     def test_reaction_queue_recovers_after_crash_before_persist(self, tmp_path, monkeypatch) -> None:
         import json  # noqa: PLC0415
 
-        from teatree.backends import slack_receiver  # noqa: PLC0415
+        from teatree.backends.slack import receiver as slack_receiver  # noqa: PLC0415
 
         queue = tmp_path / "slack-reactions.jsonl"
         event = _reaction_event()

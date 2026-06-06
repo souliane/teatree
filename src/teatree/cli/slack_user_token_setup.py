@@ -30,11 +30,11 @@ import typer
 
 # Re-export under the local underscored name for backward-compat with prior
 # imports inside this module. Source of truth lives in
-# ``teatree.backends.slack_token_validation`` so the runtime gate at
+# ``teatree.backends.slack.token_validation`` so the runtime gate at
 # backend construction (#1285) and the capture-time gate here agree on
 # the exact regex — drift between the two would let a token shape pass
 # capture but fail at construction, or vice versa.
-from teatree.backends.slack_token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
+from teatree.backends.slack.token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
 from teatree.cli.slack_app_resolve import derive_app_id_from_token
 from teatree.cli.slack_setup import _USER_SCOPES
 from teatree.cli.slack_token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token

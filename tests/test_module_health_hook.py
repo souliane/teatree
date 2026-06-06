@@ -20,7 +20,7 @@ class TestModuleHealthGate:
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/foo.py"])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: {1})
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: {1})
         monkeypatch.setattr("sys.argv", ["check_module_health.py"])
 
         assert mod.main() == 1
@@ -40,7 +40,7 @@ class TestModuleHealthGate:
 
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(mod, "_staged_python_files", lambda: ["src/foo.py"])
-        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f: {1})
+        monkeypatch.setattr(mod, "_added_line_numbers", lambda _f, _h: {1})
         monkeypatch.setattr("sys.argv", ["check_module_health.py", str(msg_file)])
 
         assert mod.main() == 1

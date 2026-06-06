@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-from teatree.backends.gitlab_sync_prs import _PRContext, merge_ticket_extras, update_ticket, upsert_ticket_from_pr
+from teatree.backends.gitlab.sync_prs import _PRContext, merge_ticket_extras, update_ticket, upsert_ticket_from_pr
 from teatree.core.e2e_workitem import record_run
 from teatree.core.gates import dod_gate
 from teatree.core.models import Ticket

@@ -81,7 +81,7 @@ class ReviewService:
         return ""
 
     def _get_api(self):  # noqa: ANN202
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
 

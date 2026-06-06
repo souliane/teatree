@@ -91,7 +91,7 @@ def gitlab_api_for_overlay(overlay_name: str) -> object | None:
     the process-global env/pass fallback.
     """
     try:
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return None
     token, base_url = _overlay_gitlab_credentials(overlay_name)
@@ -318,7 +318,7 @@ def github_note_verifier_for_overlay(overlay_name: str) -> "Verifier | None":
     )
 
     try:
-        from teatree.backends.github import _gh_api_get  # noqa: PLC0415
+        from teatree.backends.github.client import _gh_api_get  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return None
     token = _resolve_github_token_for_overlay(overlay_name)

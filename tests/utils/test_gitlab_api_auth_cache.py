@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.backends import gitlab_api
+from teatree.backends.gitlab import api as gitlab_api
 
 
 def test_current_username_returns_username(monkeypatch: pytest.MonkeyPatch) -> None:

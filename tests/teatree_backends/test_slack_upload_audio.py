@@ -20,7 +20,7 @@ from typing import cast
 import httpx
 import pytest
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 
 _SELF_DM = "D_SELF"
 _API_HOST = "slack.com/api"
@@ -176,7 +176,7 @@ class TestPostAudioDm:
 
 class TestPostExternal:
     def test_posts_bytes_untokened_and_returns_status(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.backends.slack_http import SlackHttpClient  # noqa: PLC0415
+        from teatree.backends.slack.http import SlackHttpClient  # noqa: PLC0415
 
         seen: list[tuple[str, bytes, str | None]] = []
 

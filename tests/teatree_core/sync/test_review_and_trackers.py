@@ -10,10 +10,10 @@ import httpx
 import pytest
 from django.test import TestCase
 
-from teatree.backends.gitlab_api import ProjectInfo
-from teatree.backends.gitlab_sync_issues import fetch_issue_labels, resolve_issue
-from teatree.backends.gitlab_sync_prs import detect_e2e_evidence
-from teatree.backends.slack_review_sync import fetch_review_permalinks
+from teatree.backends.gitlab.api import ProjectInfo
+from teatree.backends.gitlab.sync_issues import fetch_issue_labels, resolve_issue
+from teatree.backends.gitlab.sync_prs import detect_e2e_evidence
+from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
 from teatree.core.sync import _overlay_name, fetch_notion_statuses
 from teatree.types import RawAPIDict, SyncResult
@@ -111,7 +111,7 @@ class TestFetchReviewPermalinks(TestCase):
             msg = "Slack timeout"
             raise RuntimeError(msg)
 
-        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", _explode)
+        self._monkeypatch.setattr("teatree.backends.slack.review_sync.search_review_permalinks", _explode)
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
@@ -132,7 +132,7 @@ class TestFetchReviewPermalinks(TestCase):
         )
 
         self._monkeypatch.setattr(
-            "teatree.backends.slack_review_sync.search_review_permalinks",
+            "teatree.backends.slack.review_sync.search_review_permalinks",
             lambda _request: [
                 SlackReviewMatch(
                     pr_url=mr_url,
@@ -161,7 +161,7 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"prs": "not-a-dict"},
         )
-        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
+        self._monkeypatch.setattr("teatree.backends.slack.review_sync.search_review_permalinks", lambda _request: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()
@@ -177,7 +177,7 @@ class TestFetchReviewPermalinks(TestCase):
             state=Ticket.State.SHIPPED,
             extra={"prs": {"https://gitlab.com/mr/1": "not-a-dict"}},
         )
-        self._monkeypatch.setattr("teatree.backends.slack_review_sync.search_review_permalinks", lambda _request: [])
+        self._monkeypatch.setattr("teatree.backends.slack.review_sync.search_review_permalinks", lambda _request: [])
 
         with _patch_overlay(self._SLACK_OVERLAY):
             result = SyncResult()

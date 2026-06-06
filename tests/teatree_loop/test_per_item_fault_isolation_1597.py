@@ -547,7 +547,7 @@ class TestSlackReviewIntentReactionIsolation(TestCase):
 
         with (
             patch.object(SlackReviewIntentScanner, "_handle_reaction", _raising_handle),
-            patch("teatree.backends.slack_receiver.drain_reactions_queue", return_value=[]),
+            patch("teatree.backends.slack.receiver.drain_reactions_queue", return_value=[]),
         ):
             signals = scanner.scan()
 
@@ -576,7 +576,7 @@ class TestSlackReviewIntentMentionIsolation(TestCase):
 
         with (
             patch.object(SlackReviewIntentScanner, "_handle_mention", _raising_handle),
-            patch("teatree.backends.slack_receiver.drain_reactions_queue", return_value=[]),
+            patch("teatree.backends.slack.receiver.drain_reactions_queue", return_value=[]),
         ):
             signals = scanner.scan()
 

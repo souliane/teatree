@@ -6,21 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import teatree.backends.github as github_mod
-import teatree.backends.github_projects as github_projects_mod
+import teatree.backends.github.client as github_mod
+import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
-from teatree.backends.github import (
-    GitHubCodeHost,
-    ProjectItem,
-    _gh_api_get,
-    _gh_api_get_paginated,
-    _gh_api_patch,
-    _gh_api_post,
-    _run_gh,
-    fetch_project_items,
-    issue_repo_short,
-)
-from teatree.backends.github_projects import _gh_graphql
+from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
+from teatree.backends.github.client import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.projects import _gh_graphql
 from teatree.core.backend_protocols import PullRequestSpec
 
 

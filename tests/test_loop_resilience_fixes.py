@@ -257,11 +257,11 @@ class TestF3SlackMentionsCursorPersistedWhenDrainedNoSignals(TestCase):
 
             with (
                 patch(
-                    "teatree.backends.slack_receiver.drain_event_queue",
+                    "teatree.backends.slack.receiver.drain_event_queue",
                     return_value=[unknown_event],
                 ),
                 patch(
-                    "teatree.backends.slack_receiver.commit_drain",
+                    "teatree.backends.slack.receiver.commit_drain",
                     side_effect=lambda: commit_drain_called.append(True),
                 ),
                 patch.object(sm_mod, "_write_cursors", side_effect=_track_write_cursors),

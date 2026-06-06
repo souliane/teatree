@@ -57,7 +57,7 @@ def _patch_messaging(backend: object) -> AbstractContextManager[object]:
 
 
 def _patch_slack_bot_class(bot_class: type) -> AbstractContextManager[object]:
-    return patch("teatree.backends.slack_bot.SlackBotBackend", bot_class)
+    return patch("teatree.backends.slack.bot.SlackBotBackend", bot_class)
 
 
 def test_returns_empty_when_overlay_misconfigured() -> None:

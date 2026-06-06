@@ -18,7 +18,7 @@ t3 review-request check --mr-url "<MR_URL>"
 
 It reads the live channel's recent history (`conversations.history`, recency-bounded, no `search:read` scope) and takes an atomic DB claim. Post only on `{"action": "post"}`; on `{"action": "suppress", ...}` a request already exists (any author — a user's own post suppresses the agent) — record the returned `permalink` and skip.
 
-**Connect-token read note (load-bearing).** The gate reads with the *same* token an outbound post to that channel would use. For a Slack-Connect externally-shared channel the bot token (`xoxb-…`) cannot read history (`mcp_externally_shared_channel_restricted`) — the user OAuth token (`xoxp-…`) is required, and the gate routes to it via the single token-selection policy (`teatree.backends.slack_token_policy.channel_token`) exactly when the post would. Read-token == post-token: a dedup that read with a token the channel rejects would always see an empty history and never suppress a duplicate.
+**Connect-token read note (load-bearing).** The gate reads with the *same* token an outbound post to that channel would use. For a Slack-Connect externally-shared channel the bot token (`xoxb-…`) cannot read history (`mcp_externally_shared_channel_restricted`) — the user OAuth token (`xoxp-…`) is required, and the gate routes to it via the single token-selection policy (`teatree.backends.slack.token_policy.channel_token`) exactly when the post would. Read-token == post-token: a dedup that read with a token the channel rejects would always see an empty history and never suppress a duplicate.
 
 ### Manual search (non-dedup uses only)
 

@@ -4,9 +4,9 @@ from typing import TypedDict, cast
 from urllib.parse import quote_plus, urlparse
 
 from teatree.backends import forge_merge_rpc as _forge_merge
-from teatree.backends import gitlab_api as _gitlab_api
-from teatree.backends import gitlab_subissues as _subissues
-from teatree.backends.gitlab_api import GitLabAPI, ProjectInfo
+from teatree.backends.gitlab import api as _gitlab_api
+from teatree.backends.gitlab import subissues as _subissues
+from teatree.backends.gitlab.api import GitLabAPI, ProjectInfo
 from teatree.core.backend_protocols import (
     ApprovalState,
     ForgeMergeResult,
@@ -101,7 +101,7 @@ def get_client(*, token: str = "", base_url: str = "") -> GitLabAPI:
 
     When *token* is empty the ``GitLabAPI`` default (env-var fallback) is used.
     Resolves ``GitLabAPI`` through the module attribute so test patches that
-    rebind ``teatree.backends.gitlab_api.GitLabAPI`` apply here too.
+    rebind ``teatree.backends.gitlab.api.GitLabAPI`` apply here too.
     """
     return _gitlab_api.GitLabAPI(
         token=token,

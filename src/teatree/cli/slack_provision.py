@@ -142,7 +142,7 @@ def _provision_channels(
     if not bot_token:
         echo("WARN  No bot token — skipping review-channel join.")
         return []
-    from teatree.backends.slack_bot import SlackBotBackend  # noqa: PLC0415
+    from teatree.backends.slack.bot import SlackBotBackend  # noqa: PLC0415
 
     backend = SlackBotBackend(bot_token=bot_token)
     results = join_review_channels(backend=backend, channels=channels)

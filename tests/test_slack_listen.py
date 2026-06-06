@@ -140,7 +140,7 @@ class TestStatusCommand:
 @pytest.mark.django_db
 class TestCheckCommand:
     def test_exits_1_when_queue_empty(self) -> None:
-        with patch("teatree.backends.slack_receiver.drain_event_queue", return_value=[]):
+        with patch("teatree.backends.slack.receiver.drain_event_queue", return_value=[]):
             result = runner.invoke(slack_app, ["check"])
 
         assert result.exit_code == 1
@@ -157,7 +157,7 @@ class TestCheckCommand:
             },
         ]
         with (
-            patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events),
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
             patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
         ):
             result = runner.invoke(slack_app, ["check"])
@@ -173,7 +173,7 @@ class TestCheckCommand:
             {"overlay": "ov", "event": {"type": "message", "user": "U1", "text": "human", "channel": _DM_CHANNEL}},
         ]
         with (
-            patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events),
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
             patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: _RouteAwareFake()),
         ):
             result = runner.invoke(slack_app, ["check"])
@@ -193,7 +193,7 @@ class TestCheckCommand:
         ]
         fake = _RouteAwareFake()
         with (
-            patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events),
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
             patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: fake),
         ):
             result = runner.invoke(slack_app, ["check"])
@@ -205,7 +205,7 @@ class TestCheckCommand:
         """No slack backend for the overlay → skip the reaction, do not crash."""
         events = [{"overlay": "ov", "event": {"type": "message", "user": "U1", "text": "hi", "ts": "1.0"}}]
         with (
-            patch("teatree.backends.slack_receiver.drain_event_queue", return_value=events),
+            patch("teatree.backends.slack.receiver.drain_event_queue", return_value=events),
             patch("teatree.cli.slack_listen.messaging_from_overlay", lambda _o=None: None),
         ):
             result = runner.invoke(slack_app, ["check"])

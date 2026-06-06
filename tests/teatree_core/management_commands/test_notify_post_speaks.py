@@ -29,7 +29,7 @@ from unittest.mock import patch
 import pytest
 from django.core.management import call_command
 
-from teatree.backends.slack_bot import SlackBotBackend
+from teatree.backends.slack.bot import SlackBotBackend
 from teatree.types import LocalPlayback, SpeakConfig
 
 pytestmark = pytest.mark.django_db

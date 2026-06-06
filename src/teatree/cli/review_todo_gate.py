@@ -43,7 +43,7 @@ import re
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 if TYPE_CHECKING:
-    from teatree.backends.gitlab_api import GitLabHTTPClient
+    from teatree.backends.gitlab.api import GitLabHTTPClient
 
 # Mirrors :data:`teatree.cli.review_diff.ChangeEntry`: a GitLab change-entry
 # dict in an MR /changes response. Object-typed values rather than narrow

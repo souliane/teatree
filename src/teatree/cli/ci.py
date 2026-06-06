@@ -52,7 +52,7 @@ class CICommands:
         except Exception:  # noqa: BLE001, S110 — Django may not be configured
             pass
 
-        from teatree.backends.gitlab_api import GitLabAPI  # noqa: PLC0415
+        from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
 
         project_info = GitLabAPI().resolve_project_from_remote()
         return project_info.path_with_namespace if project_info else ""
