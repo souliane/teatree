@@ -8,17 +8,51 @@ its hot path without importing Django or building backends.
 
 The full detect-invalidate-reprobe recovery cycle (which needs Django and the
 network) lives in :mod:`teatree.core.account_switch`, which re-exports these
-readers; :mod:`teatree.loop.watchdog` re-exports
-:func:`current_account_fingerprint` too. No other module parses
-``~/.claude.json``'s account identity.
+readers; :mod:`teatree.loop.watchdog` builds its ``AccountState`` from
+:func:`current_account_identity`. No other module parses ``~/.claude.json``'s
+account identity.
 """
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 ACTIVE_ACCOUNT_FILE = ".claude.json"
 CLAUDE_HOME_DIR = ".claude"
 RECOVERED_FINGERPRINT_FILE = "teatree-account-switch.json"
+
+
+@dataclass(frozen=True, slots=True)
+class AccountIdentity:
+    """The active Claude Code account — its fingerprint and display email."""
+
+    account_uuid: str
+    email: str = ""
+
+
+def current_account_identity(*, home: Path | None = None) -> AccountIdentity | None:
+    """Parse ``~/.claude.json`` once and return the active account, ``None`` when unknown.
+
+    The single parser of the account identity. A missing or malformed file, or
+    a record with no ``accountUuid``, is "no signal" (``None``), never an error.
+    The ``email`` is the display address, defaulting to ``""`` when absent.
+    """
+    home = home if home is not None else Path.home()
+    cfg = home / ACTIVE_ACCOUNT_FILE
+    if not cfg.is_file():
+        return None
+    try:
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    oauth = data.get("oauthAccount") if isinstance(data, dict) else None
+    if not isinstance(oauth, dict):
+        return None
+    uuid = oauth.get("accountUuid")
+    if not isinstance(uuid, str) or not uuid:
+        return None
+    email = oauth.get("emailAddress", "")
+    return AccountIdentity(account_uuid=uuid, email=email if isinstance(email, str) else "")
 
 
 def current_account_fingerprint(*, home: Path | None = None) -> str:
@@ -28,19 +62,8 @@ def current_account_fingerprint(*, home: Path | None = None) -> str:
     caller treats an empty fingerprint as "cannot tell" and never claims a
     switch on it.
     """
-    home = home if home is not None else Path.home()
-    cfg = home / ACTIVE_ACCOUNT_FILE
-    if not cfg.is_file():
-        return ""
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return ""
-    oauth = data.get("oauthAccount") if isinstance(data, dict) else None
-    if not isinstance(oauth, dict):
-        return ""
-    uuid = oauth.get("accountUuid")
-    return uuid if isinstance(uuid, str) else ""
+    identity = current_account_identity(home=home)
+    return identity.account_uuid if identity is not None else ""
 
 
 def _recovered_path(home: Path) -> Path:
@@ -84,7 +107,9 @@ def fingerprint_switched(*, home: Path | None = None) -> bool:
 
 
 __all__ = [
+    "AccountIdentity",
     "current_account_fingerprint",
+    "current_account_identity",
     "fingerprint_switched",
     "load_recorded_fingerprint",
     "record_fingerprint",

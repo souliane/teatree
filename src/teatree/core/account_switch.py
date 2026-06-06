@@ -121,27 +121,32 @@ class AccountSwitchRecovery:
             self.reset_caches()
             probes = tuple(probe_connectors(self.backends()))
 
-        if current:
-            record_fingerprint(current, home=home)
-
-        return AccountSwitchOutcome(
+        outcome = AccountSwitchOutcome(
             current_fingerprint=current,
             previous_fingerprint=previous,
             switched=switched,
             probes=probes,
         )
 
+        if current and (not switched or outcome.all_reachable):
+            record_fingerprint(current, home=home)
+
+        return outcome
+
 
 def detect_and_recover_account_switch(*, home: Path | None = None) -> AccountSwitchOutcome:
     """Detect a ``/login`` switch, invalidate the cache, and re-probe connectors.
 
     Compares the active account fingerprint against the last-recorded one. On a
-    genuine switch (both non-empty and different): reset the backend cache,
-    re-probe each messaging connector's live reachability, then record the new
-    fingerprint. A first run (no recorded fingerprint) or an unchanged account
-    records the fingerprint and probes nothing — it is not a switch. An empty
-    active fingerprint ("cannot tell") never claims a switch. Thin convenience
-    wrapper around :class:`AccountSwitchRecovery` with production seams.
+    genuine switch (both non-empty and different): reset the backend cache and
+    re-probe each messaging connector's live reachability. The new fingerprint
+    is recorded only when recovery genuinely succeeded — a no-switch run (first
+    run or unchanged account) or a switch where every connector probed
+    reachable. A switch that left a connector unreachable does NOT record, so
+    the next session re-detects the switch and the heartbeat keeps surfacing
+    until the bridge is actually fixed. An empty active fingerprint ("cannot
+    tell") never claims a switch and never records. Thin convenience wrapper
+    around :class:`AccountSwitchRecovery` with production seams.
     """
     return AccountSwitchRecovery().run(home=home)
 
