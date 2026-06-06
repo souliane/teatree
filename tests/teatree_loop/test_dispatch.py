@@ -273,6 +273,18 @@ class PrSweepFlagStatuslineTests(TestCase):
         assert action.kind == "statusline"
         assert action.zone == "action_needed"
 
+    def test_no_review_flag_with_review_dispatched_routes_to_in_flight(self) -> None:
+        # #68: a flag whose review was auto-armed is in-flight work, not an
+        # operator-triage item — the loop is handling it.
+        signal = ScanSignal(
+            kind="pr_sweep.flag_no_review",
+            summary="souliane/teatree#42 solo_overlay_no_review",
+            payload={"slug": "souliane/teatree", "pr_id": 42, "review_dispatched": True},
+        )
+        actions = dispatch([signal])
+        assert actions[0].kind == "statusline"
+        assert actions[0].zone == "in_flight"
+
     def test_diagnostic_pr_sweep_outcomes_still_dropped(self) -> None:
         # Anti-vacuous: the exemption is flag-only — a normal merged/skip
         # outcome stays diagnostic noise off the statusline.

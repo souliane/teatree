@@ -1,4 +1,5 @@
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
+from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
@@ -60,6 +61,7 @@ __all__ = [
     "NEEDS_TRIAGE_LABEL",
     "AssessFinding",
     "AssessSweepRun",
+    "AutoReviewDispatch",
     "BotPing",
     "BroadcastObservation",
     "ClearIssuanceError",
@@ -135,6 +137,7 @@ __all__ = [
     "Worktree",
     "WorktreeEnvOverride",
     "WorktreeExtra",
+    "build_review_contract",
     "canonical_mr_scope",
     "validated_ticket_extra",
 ]

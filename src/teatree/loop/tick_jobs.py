@@ -36,6 +36,7 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     ArchitecturalReviewScanner,
     AssignedIssuesScanner,
+    AutoReviewTaskDispatcher,
     BackendChannelHistoryFetcher,
     CallCommandMergeKeystone,
     CodexReviewScanner,
@@ -375,6 +376,12 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         notifier = NullMergeNotifier()
     settings = _effective_settings_for_overlay(backend.name)
     solo_overlay = settings.autonomy is Autonomy.FULL
+    # #68: a green own PR with no independent verdict can't self-merge — arm the
+    # cold-review dispatch so the loop closes the loop. Gated on the same posture
+    # as the solo-overlay merge bypass (full autonomy) AND an explicit
+    # require_human_approval_to_merge=false: a human-approval overlay keeps the
+    # human in the merge loop, so the agent must not auto-dispatch its own review.
+    auto_review_dispatch = solo_overlay and not settings.require_human_approval_to_merge
     return PrSweepScanner(
         repos=repos,
         api=GhPrApiClient(token=github_token),
@@ -382,6 +389,8 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
         notifier=notifier,
         overlay=backend.name,
         solo_overlay=solo_overlay,
+        auto_review_dispatch=auto_review_dispatch,
+        review_dispatcher=AutoReviewTaskDispatcher() if auto_review_dispatch else None,
     )
 
 

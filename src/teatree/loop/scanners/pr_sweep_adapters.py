@@ -228,6 +228,25 @@ class CallCommandMergeKeystone:
 
 
 @dataclass(slots=True)
+class AutoReviewTaskDispatcher:
+    """Production :class:`ReviewDispatcher` — records the dedup ledger + reviewing task (#68)."""
+
+    def enqueue(  # noqa: PLR6301 — instance method to satisfy the injected ReviewDispatcher Protocol (mirrors sibling port adapters).
+        self, *, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str
+    ) -> bool:
+        from teatree.core.models.auto_review_dispatch import AutoReviewDispatch  # noqa: PLC0415
+
+        row = AutoReviewDispatch.enqueue(
+            slug=slug,
+            pr_id=pr_id,
+            head_sha=head_sha,
+            pr_url=pr_url,
+            overlay=overlay,
+        )
+        return row is not None
+
+
+@dataclass(slots=True)
 class SlackMergeNotifier:
     """Post a one-line DM on every actual merge, and on a flag-level signal."""
 
