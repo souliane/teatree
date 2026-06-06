@@ -33,11 +33,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.account_fingerprint import current_account_fingerprint
+from teatree.core.account_fingerprint import current_account_identity
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 CLAUDE_HOME_DIR = ".claude"
-ACTIVE_ACCOUNT_FILE = ".claude.json"
 SESSIONS_SUBDIR = "sessions"
 LOOP_PIN_FILE = "teatree-loop-session.json"
 DEFAULT_LABEL = "com.teatree.loop"
@@ -72,30 +71,17 @@ class LoopSessionInfo:
 def current_active_account(*, home: Path | None = None) -> AccountState | None:
     """Return the currently-logged-in Claude Code account, or ``None`` if unknown.
 
-    The account fingerprint (``oauthAccount.accountUuid``) comes from the
-    canonical single reader :func:`teatree.core.account_switch.current_account_fingerprint`
-    so the watchdog and the in-session recovery never diverge on which value is
-    "the account". The display ``email`` is read alongside; a missing or
-    malformed file is "no signal" (``None``) so the watchdog degrades to
-    "any session is good enough".
+    Reads ``~/.claude.json`` exactly once via the canonical single parser
+    :func:`teatree.core.account_fingerprint.current_account_identity`, so the
+    watchdog and the in-session recovery never diverge on which value is "the
+    account" and the file is never parsed twice. A missing or malformed file is
+    "no signal" (``None``) so the watchdog degrades to "any session is good
+    enough".
     """
-    home = home if home is not None else Path.home()
-    uuid = current_account_fingerprint(home=home)
-    if not uuid:
+    identity = current_account_identity(home=home)
+    if identity is None:
         return None
-    email = _read_account_email(home)
-    return AccountState(account_uuid=uuid, email=email)
-
-
-def _read_account_email(home: Path) -> str:
-    cfg = home / ACTIVE_ACCOUNT_FILE
-    try:
-        data = json.loads(cfg.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return ""
-    oauth = data.get("oauthAccount") if isinstance(data, dict) else None
-    email = oauth.get("emailAddress", "") if isinstance(oauth, dict) else ""
-    return email if isinstance(email, str) else ""
+    return AccountState(account_uuid=identity.account_uuid, email=identity.email)
 
 
 # ── session discovery ────────────────────────────────────────────────
