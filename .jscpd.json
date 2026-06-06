@@ -1,12 +1,18 @@
 {
   "$schema": "https://raw.githubusercontent.com/kucherenko/jscpd/master/packages/jscpd/schema.json",
-  "minLines": 50,
-  "minTokens": 300,
-  "threshold": 0,
-  "format": ["python"],
+  "minLines": 6,
+  "minTokens": 40,
+  "threshold": 2,
+  "format": [
+    "python"
+  ],
   "gitignore": true,
-  "reporters": ["console"],
-  "ignore": ["**/migrations/**"],
+  "reporters": [
+    "console"
+  ],
+  "ignore": [
+    "**/migrations/**"
+  ],
   "maxLines": 100000,
   "maxSize": "10mb"
 }

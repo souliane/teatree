@@ -2,14 +2,15 @@
 
 Two invariants.
 
-Config pin: ``.jscpd.json`` keeps the design thresholds (min-lines 50,
-min-tokens 300, threshold 0 = any clone fails) and a high max-lines/max-size so
-jscpd never silently skips a large source file. A loosening turns this red.
+Config pin: ``.jscpd.json`` keeps the design thresholds (min-lines 6,
+min-tokens 40, threshold 2 = warn-tolerance while the dedup burst clears) and a
+high max-lines/max-size so jscpd never silently skips a large source file. A
+loosening turns this red.
 
 Scan coverage: every ``src/teatree/**/*.py`` file large enough to contain a
-50-line clone (>= ``minLines`` physical lines, migrations excluded) is in
-jscpd's analyzed set. A file below ``minLines`` cannot hold a 50-line
-duplication, so jscpd legitimately omits it. This is the openclaw scan-coverage
+``minLines``-line clone (>= ``minLines`` physical lines, migrations excluded) is
+in jscpd's analyzed set. A file below ``minLines`` cannot hold a clone of that
+size, so jscpd legitimately omits it. This is the openclaw scan-coverage
 pattern: no clone-capable source escapes the scanner.
 
 jscpd's default ``max-lines`` (1000) and ``max-size`` (100kb) silently drop a
@@ -41,9 +42,9 @@ def config() -> dict:
 
 class TestConfigPin:
     def test_thresholds_match_design(self, config: dict) -> None:
-        assert config["minLines"] == 50
-        assert config["minTokens"] == 300
-        assert config["threshold"] == 0
+        assert config["minLines"] == 6
+        assert config["minTokens"] == 40
+        assert config["threshold"] == 2
 
     def test_python_format_only(self, config: dict) -> None:
         assert config["format"] == ["python"]

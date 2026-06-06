@@ -150,7 +150,7 @@ class Worktree(models.Model):
 class WorktreeEnvOverride(models.Model):
     """User-declared env var for a worktree's env cache.
 
-    Use ``t3 env set KEY=VALUE`` rather than editing this table directly.
+    Use ``t3 teatree env set-var KEY=VALUE`` rather than editing this table directly.
     Keys owned by core (``TICKET_DIR``, ``WT_DB_NAME`` …) are rejected at
     the CLI layer.
     """

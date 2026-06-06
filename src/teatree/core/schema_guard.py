@@ -25,6 +25,7 @@ import typer
 from django.core.management import call_command
 from django.db import DEFAULT_DB_ALIAS, connections
 from django.db.migrations.executor import MigrationExecutor
+from django.db.utils import OperationalError
 
 _REMEDIATION = (
     "Run the sanctioned non-destructive migrate against the runtime self-DB:\n"
@@ -119,13 +120,24 @@ def doctor_check_self_db_migrations(alias: str = DEFAULT_DB_ALIAS) -> bool:
     Returns ``True`` (check passed) when the schema is current. Returns
     ``False`` with a ``FAIL`` line naming the pending migrations so the
     gap is caught at session start instead of mid-merge. A DB that is
-    absent/offline is a valid state — it ``WARN``s and does not fail.
+    absent/offline (``OperationalError``) is a valid state — it ``WARN``s
+    and passes. Any other error (a wrong alias, an ORM regression) is a
+    real defect, so the check fails *closed* (``FAIL``/``False``) rather
+    than report the schema current by swallowing the error (#1987).
     """
     try:
         pending = pending_migrations(alias)
-    except Exception as exc:  # noqa: BLE001 — DB absent/offline is a valid state, not a doctor crash.
+    except OperationalError as exc:
+        # DB absent/offline is a valid session-start state — WARN, do not fail.
         typer.echo(f"WARN  Could not inspect self-DB migrations: {exc.__class__.__name__}: {exc}")
         return True
+    except Exception as exc:  # noqa: BLE001 — any non-connection error is a real defect; fail closed.
+        typer.echo(
+            f"FAIL  Self-DB migration check errored: {exc.__class__.__name__}: {exc}. "
+            f"This is a misconfiguration (wrong DB alias) or an ORM regression, "
+            f"not a benign DB-absent state — resolve it before relying on the merge path."
+        )
+        return False
     if not pending:
         return True
     typer.echo(

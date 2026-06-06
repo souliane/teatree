@@ -244,7 +244,7 @@ def validate_repo_refs(repo_root: Path) -> list[DanglingReference]:
     return findings
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover — pre-commit entry point (orchestrates tested helpers)
     """Pre-commit entry point — validate the repo's own agent skill references."""
     repo_root = Path(__file__).resolve().parent.parent.parent
     findings = validate_repo_refs(repo_root)

@@ -7,7 +7,7 @@ import os
 import sys
 
 
-def main() -> None:
+def main() -> None:  # pragma: no cover — console-script entry point (Django dispatch glue)
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     from django.core.management import execute_from_command_line  # noqa: PLC0415
 

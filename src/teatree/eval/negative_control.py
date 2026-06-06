@@ -141,7 +141,7 @@ def _bootstrap_django() -> None:
         django.setup()
 
 
-def main() -> int:
+def main() -> int:  # pragma: no cover — module entry point (orchestrates tested helpers)
     _bootstrap_django()
     outcome = run_negative_control()
     typer.echo(render_outcome(outcome, as_json=False))
