@@ -149,3 +149,60 @@ class TestCheckLegacyOverlayAlias:
             '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\npath = "/tmp/x"\n',
         )
         assert message == ""
+
+
+class TestCheckLegacySpeakKeys:
+    """``t3 doctor`` warns (never rewrites) on legacy ``speak_mode`` / ``speak_target`` (#2050).
+
+    The flat keys auto-map for one transition release; the doctor surfaces a
+    non-fatal WARN printing the exact ``[teatree.speak]`` block the current
+    values map to, and stays silent once the sub-table is present.
+    """
+
+    def _run(self, tmp_path, toml_body: str) -> str:
+        import io  # noqa: PLC0415
+        from contextlib import redirect_stdout  # noqa: PLC0415
+
+        config_path = tmp_path / ".teatree.toml"
+        config_path.write_text(toml_body, encoding="utf-8")
+        out = io.StringIO()
+        with (
+            patch("teatree.config.CONFIG_PATH", config_path),
+            redirect_stdout(out),
+        ):
+            teatree_cli_doctor._check_legacy_speak_keys()
+        return out.getvalue()
+
+    def test_warns_on_legacy_keys_with_paste_block(self, tmp_path):
+        message = self._run(tmp_path, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "both"\n')
+        assert "WARN" in message
+        assert "[teatree.speak]" in message
+        assert "local = true" in message
+        assert "slack_audio = true" in message
+        assert 'scope = "dm"' in message
+
+    def test_warns_with_off_mapped_block(self, tmp_path):
+        message = self._run(tmp_path, '[teatree]\nspeak_mode = "off"\nspeak_target = "both"\n')
+        assert "WARN" in message
+        assert "local = false" in message
+        assert "slack_audio = false" in message
+
+    def test_silent_when_new_table_present(self, tmp_path):
+        message = self._run(tmp_path, "[teatree.speak]\nlocal = true\n")
+        assert message == ""
+
+    def test_silent_when_new_table_present_alongside_legacy(self, tmp_path):
+        message = self._run(
+            tmp_path,
+            '[teatree]\nspeak_mode = "all"\n[teatree.speak]\nlocal = true\n',
+        )
+        assert message == ""
+
+    def test_silent_when_no_speak_config(self, tmp_path):
+        message = self._run(tmp_path, '[teatree]\nworkspace_dir = "~/workspace"\n')
+        assert message == ""
+
+    def test_never_flips_doctor_status(self) -> None:
+        # Non-fatal: the helper returns None, never a bool that aggregates
+        # into the doctor pass/fail.
+        assert teatree_cli_doctor._check_legacy_speak_keys() is None

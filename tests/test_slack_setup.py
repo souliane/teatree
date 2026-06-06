@@ -106,14 +106,14 @@ class TestBuildManifest:
             assert required in scopes
 
     def test_bot_scopes_grant_files_write_for_speak_audio(self) -> None:
-        """The bot token must hold ``files:write`` for the ``slack-audio`` speak target.
+        """The bot token must hold ``files:write`` for the ``[teatree.speak] slack_audio`` attach.
 
-        ``SlackBotBackend.upload_audio_to_dm`` posts the synthesised ``.m4a``
+        ``SlackBotBackend.post_audio_dm`` attaches the synthesised ``.m4a``
         to the user's own DM, which ``_route_token`` sends under the **bot**
         token. Without ``files:write`` in the manifest a reinstall never
         grants the scope, ``files.getUploadURLExternal`` returns
-        ``missing_scope``, and ``speak_target = slack-audio`` / ``both`` can
-        never deliver — the exact gap the speak docstrings tell the user a
+        ``missing_scope``, and ``slack_audio = true`` can never attach the
+        audio — the exact gap the speak docstrings tell the user a
         ``t3 setup slack-bot`` reinstall would close.
         """
         manifest = build_manifest(overlay_name="acme")

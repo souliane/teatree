@@ -1,35 +1,30 @@
-"""Local text-to-speech egress — the ``speak(text)`` seam (#1791).
+"""Text-to-speech egress — the ``speak()`` seam + the shared user-DM chokepoint (#1791/#2050).
 
-A single chokepoint that reads the resolved :class:`~teatree.types.SpeakMode`
-+ :class:`~teatree.types.SpeakTarget` and, when enabled, reads agent text
-aloud. Two call sites drive it:
+A single place that reads the resolved :class:`~teatree.types.SpeakConfig`
+(``local`` / ``slack_audio`` booleans + a ``scope``) and delivers spoken
+agent text. Two distinct deliveries share one config:
 
-*   ``im-only`` / ``all`` — :func:`teatree.core.notify.notify_user` calls
-    :func:`speak` for every bot→user IM/DM egress.
-*   ``all`` — the Stop hook (``handle_speak_all_on_stop``) calls
-    :func:`speak` with the transcript's last assistant text block.
+*   :func:`deliver_user_dm` — the ONE chokepoint both bot→user DM egress
+    points call (:func:`teatree.core.notify.notify_user` and the on-behalf
+    self-DM in :func:`teatree.core.on_behalf_egress.OnBehalfSlackEgress.post`).
+    When ``slack_audio`` is on and synthesis succeeds it posts a SINGLE DM
+    carrying the text + an inline audio attachment
+    (:meth:`~teatree.backends.slack_bot.SlackBotBackend.post_audio_dm`); on
+    a synthesis failure (or ``slack_audio`` off) it degrades to a text-only
+    :meth:`post_message`. Independently, when ``local`` is on the same text
+    plays through the machine's speakers — so the user's own DM both reaches
+    his phone with audio and reads aloud locally, driven from one call.
+*   :func:`speak` — the in-client last-turn read the Stop hook drives via a
+    detached ``t3 speak`` subprocess (``scope = all``). It plays ONLY through
+    the local speakers; the Stop-hook arm already refuses to fire when
+    ``slack_audio`` is on (no-double-speak by construction, #2021).
 
 The whole feature is gated on the macOS ``say`` binary being on ``PATH``
-(:func:`binary_available`): when it is absent :func:`resolve_mode` forces
-``off`` regardless of config, so the feature is simply inert off macOS — no
-error, no nag. Cloud TTS (OpenAI / ElevenLabs) is a possible later backend
-behind this same seam; out of scope here.
-
-Delivery is governed by :class:`~teatree.types.SpeakTarget`:
-
-*   ``local`` — ``say -o`` synthesises an AIFF, ``afconvert`` transcodes to
-    ``.m4a``, and ``afplay`` plays it through the speakers. macOS-only; each
-    step is independently no-op when its binary is absent.
-*   ``slack-audio`` — the same ``.m4a`` is uploaded to the user's Slack DM
-    via the messaging backend so the spoken reply reaches his phone.
-*   ``both`` — both legs.
-
-Every leg is non-blocking (spawned in a daemon thread / detached process)
-and never raises into the caller's egress / Stop path — a failure to
-synthesise or play locally is logged at debug and dropped. A failed
-``slack-audio`` upload is additionally surfaced to the user once per error
-class via a text DM (:func:`_surface_upload_failure`), so a missing
-``files:write`` scope can't silently masquerade as working delivery.
+(:func:`binary_available`): when it is absent :func:`resolve_speak` forces
+both destinations off, so the feature is simply inert off macOS — no error,
+no nag. A failed ``slack_audio`` attach (``files:write`` scope missing) is
+surfaced once per error class via a text DM (:func:`_surface_upload_failure`),
+so a missing scope can't silently masquerade as working audio delivery.
 """
 
 import logging
@@ -40,7 +35,8 @@ import threading
 from pathlib import Path
 
 from teatree.config import get_effective_settings
-from teatree.types import SpeakMode, SpeakTarget
+from teatree.core.backend_protocols import MessagingBackend
+from teatree.types import RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
 logger = logging.getLogger(__name__)
@@ -67,16 +63,16 @@ def binary_available() -> bool:
     return shutil.which(SAY_BINARY) is not None
 
 
-def resolve_mode() -> SpeakMode:
-    """The EFFECTIVE speak mode: configured value, forced ``off`` if ``say`` is absent.
+def resolve_speak() -> SpeakConfig:
+    """The EFFECTIVE speak config: configured value, forced inert if ``say`` is absent.
 
-    The single place the binary-presence gate is applied — both call
-    sites resolve through here so the prerequisite check can never drift
-    between the IM egress and the Stop hook.
+    The single place the binary-presence gate is applied — every call site
+    resolves through here so the prerequisite check can never drift between
+    the DM egress, the on-behalf self-DM, and the Stop hook.
     """
     if not binary_available():
-        return SpeakMode.OFF
-    return get_effective_settings().speak_mode
+        return SpeakConfig()
+    return get_effective_settings().speak
 
 
 def clean_for_speech(text: str) -> str:
@@ -102,56 +98,131 @@ def clean_for_speech(text: str) -> str:
 
 
 def speak(text: str, *, block: bool = False) -> None:
-    """Read ``text`` aloud per the resolved mode + target — never raises.
+    """Read ``text`` aloud through the LOCAL speakers — never raises (#2050).
 
-    Resolves the effective :class:`SpeakMode` (forced ``off`` when ``say``
-    is absent) and the configured :class:`SpeakTarget`, cleans the text
-    for speech, and runs the enabled delivery legs. A blank cleaned text,
-    ``off`` mode, or any delivery failure is a silent no-op.
+    The Stop-hook seam: the detached ``t3 speak`` subprocess calls this with
+    the in-client turn's last assistant text. It plays only on the local
+    speakers — the Slack-audio attach is owned by :func:`deliver_user_dm`,
+    not this path — so a blank cleaned text, both-destinations-off, ``local``
+    off, or any failure is a silent no-op. The Stop-hook arm only spawns this
+    when ``scope == all`` AND ``local`` AND NOT ``slack_audio`` (so it never
+    re-reads content already attached to a DM).
 
-    ``block=False`` (default) dispatches the delivery on a daemon thread so
-    an in-process caller's egress path (``notify_user``) is never delayed.
-    ``block=True`` runs delivery synchronously — used by the detached
-    ``t3 speak`` subprocess the Stop hook spawns, whose whole job is to
-    deliver before it exits (a daemon thread would die with the process).
-
-    Callers gate on the mode SEMANTICS themselves (the IM egress speaks
-    for ``im-only`` *and* ``all``; the Stop hook speaks only for ``all``)
-    — this function just refuses ``off``.
+    ``block=False`` dispatches on a daemon thread so an in-process caller is
+    never delayed; ``block=True`` runs synchronously — used by the detached
+    subprocess, whose whole job is to deliver before it exits.
     """
-    if resolve_mode() is SpeakMode.OFF:
+    config = resolve_speak()
+    if not config.local:
         return
     cleaned = clean_for_speech(text)
     if not cleaned:
         return
-    target = get_effective_settings().speak_target
     if block:
-        _deliver(cleaned, target)
+        _speak_local(cleaned)
         return
-    thread = threading.Thread(target=_deliver, args=(cleaned, target), daemon=True)
+    thread = threading.Thread(target=_speak_local, args=(cleaned,), daemon=True)
     thread.start()
 
 
-def _deliver(text: str, target: SpeakTarget) -> None:
-    """Run the enabled delivery legs; contain every failure to a debug log.
+def deliver_user_dm(
+    backend: MessagingBackend,
+    *,
+    channel: str,
+    text: str,
+    thread_ts: str = "",
+) -> RawAPIDict:
+    """Post ONE bot→user DM, attaching spoken audio when ``slack_audio`` is on (#2050).
 
-    Runs on the daemon thread :func:`speak` spawns. The local and Slack
-    legs are independent: a failure (or absence) of one never suppresses
-    the other.
+    The single chokepoint both bot→user DM egress points call. ``text`` is
+    the already-formatted DM body. When ``slack_audio`` is on AND synthesis
+    succeeds, posts a SINGLE message via :meth:`post_audio_dm` carrying
+    ``text`` as the message + the audio inline; otherwise (``slack_audio``
+    off, ``say``/``afconvert`` absent, synthesis or upload failure) degrades
+    to a text-only :meth:`post_message` so the DM is never lost. Independently,
+    when ``local`` is on the same text plays through the speakers.
+
+    Returns the raw Slack body of whichever post ran so the caller finalises
+    its delivery row exactly as a plain ``post_message`` would. Never lets a
+    speak-side failure (config read, synthesis, attach, local play) drop the
+    text DM: any such error degrades to a plain text-only post.
     """
-    audio_path: Path | None = None
+    config = _resolve_speak_safe()
+    audio_body = _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
+    if audio_body is not None:
+        response = audio_body
+    else:
+        response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+    _maybe_speak_local(config, text)
+    return response
+
+
+def _resolve_speak_safe() -> SpeakConfig:
+    """Resolve the speak config, degrading to inert on any failure.
+
+    The DM delivery must never be lost to a speak-config read error, so a
+    failed :func:`resolve_speak` falls back to both-destinations-off (a plain
+    text DM still goes out).
+    """
     try:
-        if target.includes_local():
-            _speak_local(text)
-        if target.includes_slack():
-            audio_path = _synthesise_m4a(text)
-            if audio_path is not None:
-                _upload_to_slack(audio_path)
-    except Exception as exc:  # noqa: BLE001 — the speak seam must never raise into the caller
-        logger.debug("speak delivery failed: %s", exc)
-    finally:
-        if audio_path is not None:
+        return resolve_speak()
+    except Exception as exc:  # noqa: BLE001 — a config read must never drop the text DM
+        logger.debug("speak config read failed; degrading to text-only DM: %s", exc)
+        return SpeakConfig()
+
+
+def _maybe_post_with_audio(
+    backend: MessagingBackend,
+    config: SpeakConfig,
+    *,
+    channel: str,
+    text: str,
+    thread_ts: str,
+) -> RawAPIDict | None:
+    """Post ``text`` + an inline audio attachment, or ``None`` to degrade to text-only.
+
+    Returns the ``post_audio_dm`` body on a successful attach (the caller
+    uses it as the delivery response), or ``None`` when ``slack_audio`` is
+    off, synthesis fails, or the attach returns a non-ok body — in every
+    ``None`` case the caller falls back to a text-only post so the DM is
+    never dropped. A non-ok attach body additionally surfaces the failure
+    once per error class so a missing ``files:write`` scope is visible.
+    """
+    if not config.slack_audio:
+        return None
+    try:
+        audio_path = synthesise(clean_for_speech(text))
+        if audio_path is None:
+            return None
+        try:
+            body = backend.post_audio_dm(channel=channel, filepath=str(audio_path), text=text, thread_ts=thread_ts)
+        finally:
             shutil.rmtree(audio_path.parent, ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001 — a failed attach must degrade to a text DM, never drop it
+        logger.debug("speak audio attach raised; degrading to text-only DM: %s", exc)
+        return None
+    if not body.get("ok"):
+        error = str(body.get("error", "no response"))
+        logger.debug("speak audio attach not ok: %s", error)
+        _surface_upload_failure(error)
+        return None
+    return body
+
+
+def _maybe_speak_local(config: SpeakConfig, text: str) -> None:
+    """Play ``text`` on the local speakers when ``local`` is on — best-effort.
+
+    The local-speakers leg of a bot→user DM, independent of the Slack-audio
+    attach: run on a daemon thread so the caller's egress path is never
+    delayed, and contained so a synthesis/play failure never breaks the DM.
+    """
+    if not config.local:
+        return
+    cleaned = clean_for_speech(text)
+    if not cleaned:
+        return
+    thread = threading.Thread(target=_speak_local, args=(cleaned,), daemon=True)
+    thread.start()
 
 
 def _speak_local(text: str) -> None:
@@ -170,12 +241,13 @@ def _speak_local(text: str) -> None:
         logger.debug("local say failed: %s", exc)
 
 
-def _synthesise_m4a(text: str) -> Path | None:
+def synthesise(text: str) -> Path | None:
     """Synthesise ``text`` to a temp ``.m4a`` (``say -o`` AIFF → ``afconvert``).
 
     Returns the path on success, or ``None`` when a required binary is
-    absent or a step fails — the Slack leg then silently no-ops. The
-    caller owns deleting the returned file.
+    absent or a step fails — the caller then degrades to a text-only DM (or
+    a silent no-op for the local leg). The caller owns deleting the returned
+    file's parent directory.
     """
     say_bin = shutil.which(SAY_BINARY)
     afconvert_bin = shutil.which(_AFCONVERT_BINARY)
@@ -198,35 +270,6 @@ def _synthesise_m4a(text: str) -> Path | None:
     return m4a_path
 
 
-def _upload_to_slack(audio_path: Path) -> None:
-    """Upload the synthesised audio to the user's Slack DM — best-effort.
-
-    Reuses the same backend + ``slack_user_id`` resolution the bot→user
-    DM path uses (:func:`teatree.core.notify.notify_user`'s helpers), so
-    a single config drives both. A non-ok upload body (e.g. ``files:write``
-    scope missing) is logged at debug AND surfaced once to the user via a
-    text DM through :func:`_surface_upload_failure`, so a silent audio drop
-    can't masquerade as working ``slack-audio`` delivery.
-    """
-    from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
-    from teatree.core.notify import _resolve_user_id  # noqa: PLC0415
-
-    backend = messaging_from_overlay()
-    user_id = _resolve_user_id()
-    if backend is None or not user_id:
-        logger.debug("speak slack upload skipped: no backend or user_id")
-        return
-    channel = backend.open_dm(user_id)
-    if not channel:
-        logger.debug("speak slack upload skipped: open_dm returned empty channel")
-        return
-    body = backend.upload_audio_to_dm(channel=channel, filepath=str(audio_path), title="Agent reply")
-    if not body.get("ok"):
-        error = str(body.get("error", "no response"))
-        logger.debug("speak slack upload not ok: %s", error)
-        _surface_upload_failure(error)
-
-
 _MISSING_SCOPE_HINT = (
     "Re-run `t3 setup slack-bot` to reinstall the bot with the `files:write` "
     "scope it now declares, then the audio will reach your phone."
@@ -234,22 +277,20 @@ _MISSING_SCOPE_HINT = (
 
 
 def _surface_upload_failure(error: str) -> None:
-    """DM the user once per error class when ``slack-audio`` delivery fails.
+    """DM the user once per error class when the ``slack_audio`` attach fails.
 
-    A failed upload is otherwise invisible: the user enables
-    ``speak_target = both`` / ``slack-audio``, hears nothing on his phone,
-    and gets no signal why. The text DM path (``chat:write``) is healthy
-    even when ``files:write`` is not, so this reaches the user reliably.
+    A failed attach is otherwise invisible: the user enables ``slack_audio``,
+    hears nothing on his phone, and gets no signal why. The text DM still
+    landed (the caller degraded), and the text DM path (``chat:write``) is
+    healthy even when ``files:write`` is not, so this reaches the user.
 
     Idempotent per error class — the ``BotPing`` ledger dedupes the
-    ``speak-upload-failed-<error>`` key, so a recurring ``missing_scope``
-    surfaces once, not on every spoken reply. Never raises into the speak
-    seam (the daemon-thread delivery path must stay crash-proof).
+    ``speak-upload-failed-<error>`` key. Never raises into the speak seam.
     """
     from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
 
     hint = _MISSING_SCOPE_HINT if error == "missing_scope" else ""
-    message = f"Couldn't deliver the spoken reply as Slack audio (Slack error: {error})."
+    message = f"Couldn't attach the spoken audio to your Slack DM (Slack error: {error})."
     if hint:
         message = f"{message} {hint}"
     try:

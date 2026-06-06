@@ -1,56 +1,55 @@
-"""``SpeakMode`` / ``SpeakTarget`` enum parsing + TOML config resolution (#1791).
+"""``SpeakScope`` / ``SpeakConfig`` parsing + ``[teatree.speak]`` resolution (#2050).
 
-Pure-logic coverage of the two enums (``.parse`` mirroring the sibling
-``SlackVoiceClassifierMode`` / ``OnBehalfPostMode``) and the loader's
-``speak_mode`` / ``speak_target`` resolution: default ``off`` / ``local``
-when absent, flat-key parse, a clean ``ValueError`` on a typo so a silent
-mode mis-resolution never lands, and per-overlay override registration.
+The new schema: a ``[teatree.speak]`` sub-table with two booleans
+(``local`` / ``slack_audio``) and a ``scope`` enum (``dm`` / ``all``).
+Legacy flat ``speak_mode`` / ``speak_target`` keys auto-map to the new
+shape for one transition release (mirrors the ``on_behalf_post_mode``
+legacy alias). Covers: defaults when absent, new-table parse, the
+legacy map (incl. the live ``im-only`` / ``both`` config), new-table
+precedence over legacy, a clean ``ValueError`` on a typo, and the
+per-overlay sub-table merge.
 """
 
 from pathlib import Path
 
 import pytest
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, discover_overlays, load_config
-from teatree.types import SpeakMode, SpeakTarget
+from teatree.config import get_effective_settings, load_config
+from teatree.config_speak import resolve_speak
+from teatree.types import SpeakConfig, SpeakScope
 
 
-class TestSpeakModeEnum:
+class TestSpeakScopeEnum:
     def test_parse_each_value(self) -> None:
-        assert SpeakMode.parse("off") is SpeakMode.OFF
-        assert SpeakMode.parse("im-only") is SpeakMode.IM_ONLY
-        assert SpeakMode.parse("all") is SpeakMode.ALL
+        assert SpeakScope.parse("dm") is SpeakScope.DM
+        assert SpeakScope.parse("all") is SpeakScope.ALL
 
     def test_parse_is_case_and_whitespace_insensitive(self) -> None:
-        assert SpeakMode.parse("  IM-ONLY ") is SpeakMode.IM_ONLY
+        assert SpeakScope.parse("  ALL ") is SpeakScope.ALL
 
     def test_parse_rejects_typo(self) -> None:
-        with pytest.raises(ValueError, match="Invalid speak_mode"):
-            SpeakMode.parse("loud")
+        with pytest.raises(ValueError, match="Invalid speak scope"):
+            SpeakScope.parse("everything")
 
-    def test_default_is_off(self) -> None:
-        assert SpeakMode.OFF == "off"
+    def test_default_is_dm(self) -> None:
+        assert SpeakConfig().scope is SpeakScope.DM
 
 
-class TestSpeakTargetEnum:
-    def test_parse_each_value(self) -> None:
-        assert SpeakTarget.parse("local") is SpeakTarget.LOCAL
-        assert SpeakTarget.parse("slack-audio") is SpeakTarget.SLACK_AUDIO
-        assert SpeakTarget.parse("both") is SpeakTarget.BOTH
+class TestSpeakConfigHelpers:
+    def test_disabled_by_default(self) -> None:
+        cfg = SpeakConfig()
+        assert cfg.enabled() is False
+        assert cfg.speaks_dms() is False
 
-    def test_parse_rejects_typo(self) -> None:
-        with pytest.raises(ValueError, match="Invalid speak_target"):
-            SpeakTarget.parse("phone")
+    def test_enabled_when_any_destination_on(self) -> None:
+        assert SpeakConfig(local=True).enabled() is True
+        assert SpeakConfig(slack_audio=True).enabled() is True
 
-    def test_includes_local(self) -> None:
-        assert SpeakTarget.LOCAL.includes_local()
-        assert SpeakTarget.BOTH.includes_local()
-        assert not SpeakTarget.SLACK_AUDIO.includes_local()
-
-    def test_includes_slack(self) -> None:
-        assert SpeakTarget.SLACK_AUDIO.includes_slack()
-        assert SpeakTarget.BOTH.includes_slack()
-        assert not SpeakTarget.LOCAL.includes_slack()
+    def test_speaks_in_client_turns_only_when_all_local_and_not_slack_audio(self) -> None:
+        assert SpeakConfig(local=True, scope=SpeakScope.ALL).speaks_in_client_turns() is True
+        assert SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.ALL).speaks_in_client_turns() is False
+        assert SpeakConfig(local=True, scope=SpeakScope.DM).speaks_in_client_turns() is False
+        assert SpeakConfig(local=False, scope=SpeakScope.ALL).speaks_in_client_turns() is False
 
 
 @pytest.fixture
@@ -64,66 +63,101 @@ def _write(cfg: Path, body: str) -> None:
     cfg.write_text(body, encoding="utf-8")
 
 
-class TestSpeakModeResolution:
-    def test_default_is_off_when_absent(self, config_file: Path) -> None:
+class TestNewTableResolution:
+    def test_default_when_absent(self, config_file: Path) -> None:
         _write(config_file, "[teatree]\n")
-        assert load_config().user.speak_mode is SpeakMode.OFF
+        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=False, scope=SpeakScope.DM)
 
-    def test_default_is_off_when_file_missing(self, config_file: Path) -> None:
-        assert load_config().user.speak_mode is SpeakMode.OFF
+    def test_default_when_file_missing(self, config_file: Path) -> None:
+        assert load_config().user.speak == SpeakConfig()
 
-    def test_flat_im_only(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "im-only"\n')
-        assert load_config().user.speak_mode is SpeakMode.IM_ONLY
+    def test_new_table_parsed(self, config_file: Path) -> None:
+        _write(config_file, '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n')
+        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.ALL)
 
-    def test_flat_all(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "all"\n')
-        assert load_config().user.speak_mode is SpeakMode.ALL
+    def test_new_table_partial_keys_default_the_rest(self, config_file: Path) -> None:
+        _write(config_file, "[teatree.speak]\nslack_audio = true\n")
+        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=True, scope=SpeakScope.DM)
 
-    def test_invalid_value_raises(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "loud"\n')
-        with pytest.raises(ValueError, match="Invalid speak_mode"):
+    def test_invalid_scope_raises_clean_valueerror(self, config_file: Path) -> None:
+        _write(config_file, '[teatree.speak]\nscope = "everywhere"\n')
+        with pytest.raises(ValueError, match="Invalid speak scope"):
             load_config()
 
 
-class TestSpeakTargetResolution:
-    def test_default_is_local_when_absent(self, config_file: Path) -> None:
-        _write(config_file, "[teatree]\n")
-        assert load_config().user.speak_target is SpeakTarget.LOCAL
+class TestLegacyMigration:
+    def test_legacy_im_only_both_maps(self, config_file: Path) -> None:
+        _write(config_file, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "both"\n')
+        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.DM)
 
-    def test_flat_slack_audio(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_target = "slack-audio"\n')
-        assert load_config().user.speak_target is SpeakTarget.SLACK_AUDIO
+    def test_legacy_all_slack_audio_maps(self, config_file: Path) -> None:
+        _write(config_file, '[teatree]\nspeak_mode = "all"\nspeak_target = "slack-audio"\n')
+        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=True, scope=SpeakScope.ALL)
 
-    def test_flat_both(self, config_file: Path) -> None:
+    def test_legacy_local_only_maps(self, config_file: Path) -> None:
+        _write(config_file, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "local"\n')
+        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=False, scope=SpeakScope.DM)
+
+    def test_legacy_off_maps_both_destinations_false(self, config_file: Path) -> None:
+        _write(config_file, '[teatree]\nspeak_mode = "off"\nspeak_target = "both"\n')
+        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=False, scope=SpeakScope.DM)
+
+    def test_legacy_target_only_defaults_scope_dm(self, config_file: Path) -> None:
         _write(config_file, '[teatree]\nspeak_target = "both"\n')
-        assert load_config().user.speak_target is SpeakTarget.BOTH
+        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.DM)
 
-    def test_invalid_value_raises(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_target = "phone"\n')
-        with pytest.raises(ValueError, match="Invalid speak_target"):
-            load_config()
+    def test_new_table_wins_over_legacy(self, config_file: Path) -> None:
+        _write(
+            config_file,
+            '[teatree]\nspeak_mode = "all"\nspeak_target = "both"\n[teatree.speak]\nlocal = true\n',
+        )
+        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=False, scope=SpeakScope.DM)
+
+
+class TestResolveSpeakDirect:
+    def test_off_when_empty(self) -> None:
+        assert resolve_speak({}) == SpeakConfig()
+
+    def test_legacy_mapping_function_level(self) -> None:
+        assert resolve_speak({"speak_mode": "im-only", "speak_target": "both"}) == SpeakConfig(
+            local=True, slack_audio=True, scope=SpeakScope.DM
+        )
 
 
 class TestPerOverlayOverride:
-    def test_both_settings_are_overlay_overridable(self) -> None:
-        assert OVERLAY_OVERRIDABLE_SETTINGS["speak_mode"]("all") is SpeakMode.ALL
-        assert OVERLAY_OVERRIDABLE_SETTINGS["speak_target"]("both") is SpeakTarget.BOTH
-
-    def test_overlay_table_parses_both_overrides(self, tmp_path: Path) -> None:
+    def test_per_overlay_speak_sub_table_merges_onto_base(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         config_path = tmp_path / ".teatree.toml"
         config_path.write_text(
             (
-                "[teatree]\n"
-                'speak_mode = "im-only"\n'
-                'speak_target = "local"\n'
+                "[teatree.speak]\n"
+                "local = true\n"
+                'scope = "all"\n'
                 "[overlays.my-overlay]\n"
                 'class = "x.y:Z"\n'
-                'speak_mode = "all"\n'
-                'speak_target = "both"\n'
+                "[overlays.my-overlay.speak]\n"
+                "slack_audio = true\n"
             ),
             encoding="utf-8",
         )
-        by_name = {e.name: e for e in discover_overlays(config_path=config_path)}
-        assert by_name["my-overlay"].overrides["speak_mode"] is SpeakMode.ALL
-        assert by_name["my-overlay"].overrides["speak_target"] is SpeakTarget.BOTH
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
+        effective = get_effective_settings("my-overlay")
+        assert effective.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.ALL)
+
+    def test_per_overlay_scope_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        config_path = tmp_path / ".teatree.toml"
+        config_path.write_text(
+            (
+                "[teatree.speak]\n"
+                "local = true\n"
+                "[overlays.my-overlay]\n"
+                'class = "x.y:Z"\n'
+                "[overlays.my-overlay.speak]\n"
+                'scope = "all"\n'
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
+        effective = get_effective_settings("my-overlay")
+        assert effective.speak == SpeakConfig(local=True, slack_audio=False, scope=SpeakScope.ALL)

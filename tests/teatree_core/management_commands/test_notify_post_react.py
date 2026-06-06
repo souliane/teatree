@@ -15,6 +15,7 @@ Only the messaging backend (the Slack HTTP boundary) is mocked.
 """
 
 import os
+from contextlib import ExitStack
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
@@ -34,13 +35,49 @@ def _call(*args: str) -> tuple[str, str, int]:
     return out.getvalue(), err.getvalue(), code
 
 
+def _colleague_backend() -> MagicMock:
+    """A fake whose #1750 classifier reports a ``C…`` channel as a colleague.
+
+    A bare ``MagicMock`` auto-mocks ``_is_self_dm`` truthy, which would send a
+    colleague channel down ``OnBehalfSlackEgress``'s self-DM carve-out; pin the
+    real classification so the colleague tests exercise the gated
+    ``post_routed`` / ``react_routed`` xoxp path the #1750 contract requires.
+    """
+    backend = MagicMock()
+    backend._is_self_dm.side_effect = lambda channel: channel.startswith(("D", "U"))
+    return backend
+
+
+def _colleague_egress_patches() -> ExitStack:
+    """Pass the on-behalf gate + silence the after-receipt DM for a colleague post.
+
+    A colleague post is gated (BLOCK under the default ``draft_or_ask`` with no
+    recorded approval); this CLI test pins the destination *routing* contract
+    (colleague → ``post_routed`` xoxp), not the gate, so satisfy the gate by
+    publishing directly and stub the after-receipt notify. The gate itself is
+    covered in ``tests/teatree_core/test_on_behalf_egress.py``.
+    """
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "teatree.core.on_behalf_egress.require_on_behalf_approval",
+            lambda *, target, action, publish: publish(),
+        )
+    )
+    stack.enter_context(patch("teatree.core.on_behalf_egress.notify_user_on_behalf_post", lambda *_a, **_k: None))
+    return stack
+
+
 class TestNotifyPost:
     def test_post_routes_via_user_token_and_exits_zero(self) -> None:
-        backend = MagicMock()
+        backend = _colleague_backend()
         backend.post_routed.return_value = {"ok": True, "ts": "1700.0001"}
-        with patch(
-            "teatree.core.management.commands.notify.messaging_from_overlay",
-            return_value=backend,
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=backend,
+            ),
+            _colleague_egress_patches(),
         ):
             out, _err, code = _call("notify", "post", "--channel", "C_TEAM", "--text", "hi team")
 
@@ -49,11 +86,14 @@ class TestNotifyPost:
         assert "1700.0001" in out
 
     def test_post_threads_when_thread_ts_given(self) -> None:
-        backend = MagicMock()
+        backend = _colleague_backend()
         backend.post_routed.return_value = {"ok": True, "ts": "1700.9"}
-        with patch(
-            "teatree.core.management.commands.notify.messaging_from_overlay",
-            return_value=backend,
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=backend,
+            ),
+            _colleague_egress_patches(),
         ):
             _out, _err, code = _call(
                 "notify", "post", "--channel", "C_TEAM", "--thread-ts", "1700.0001", "--text", "reply"
@@ -90,7 +130,7 @@ class TestNotifyPost:
         assert payload["channel"] == "D_ME"
 
     def test_post_text_dash_reads_stdin(self) -> None:
-        backend = MagicMock()
+        backend = _colleague_backend()
         backend.post_routed.return_value = {"ok": True, "ts": "1.2"}
         with (
             patch(
@@ -98,6 +138,7 @@ class TestNotifyPost:
                 return_value=backend,
             ),
             patch("sys.stdin", StringIO("piped body")),
+            _colleague_egress_patches(),
         ):
             _out, _err, code = _call("notify", "post", "--channel", "C_TEAM", "--text", "-")
 
@@ -105,11 +146,14 @@ class TestNotifyPost:
         assert backend.post_routed.call_args.kwargs["text"] == "piped body"
 
     def test_post_not_ok_exits_one_loudly(self) -> None:
-        backend = MagicMock()
+        backend = _colleague_backend()
         backend.post_routed.return_value = {"ok": False, "error": "channel_not_found"}
-        with patch(
-            "teatree.core.management.commands.notify.messaging_from_overlay",
-            return_value=backend,
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                return_value=backend,
+            ),
+            _colleague_egress_patches(),
         ):
             _out, err, code = _call("notify", "post", "--channel", "C_GONE", "--text", "x")
 
@@ -132,7 +176,7 @@ class TestNotifyPost:
         assert "text" in err.lower()
 
     def test_post_overlay_flag_sets_env(self) -> None:
-        backend = MagicMock()
+        backend = _colleague_backend()
         backend.post_routed.return_value = {"ok": True, "ts": "1"}
         seen: dict[str, str] = {}
 
@@ -140,9 +184,12 @@ class TestNotifyPost:
             seen["overlay"] = os.environ.get("T3_OVERLAY_NAME", "")
             return backend
 
-        with patch(
-            "teatree.core.management.commands.notify.messaging_from_overlay",
-            side_effect=_capture,
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                side_effect=_capture,
+            ),
+            _colleague_egress_patches(),
         ):
             _call("notify", "post", "--channel", "C_TEAM", "--text", "x", "--overlay", "teatree")
 

@@ -40,80 +40,74 @@ class SlackVoiceClassifierMode(enum.StrEnum):
             raise ValueError(message) from exc
 
 
-class SpeakMode(enum.StrEnum):
-    """What agent text is read aloud by the local text-to-speech seam (#1791).
+class SpeakScope(enum.StrEnum):
+    """Which agent text the text-to-speech seam reads aloud (#1791/#2050).
 
     Lives in :mod:`teatree.types` (no deps) so :mod:`teatree.config` can
-    parse the ``[teatree] speak_mode`` setting without importing the
+    parse the ``[teatree.speak] scope`` setting without importing the
     :mod:`teatree.core.speak` implementation (the ``teatree.core →
     teatree.config`` edge is allowed but ``teatree.config →
     teatree.core`` would cycle).
 
-    The whole feature is additionally gated on the ``say`` binary being
-    on ``PATH`` (:func:`teatree.core.speak.binary_available`); when it is
-    absent the resolved mode is forced to :attr:`OFF` regardless of the
-    configured value, so the feature is simply inert off macOS.
+    *   :attr:`DM` (default) — speak only the Slack DMs the bot sends the
+        user (the IM/DM egress in :func:`teatree.core.notify.notify_user`
+        and the on-behalf self-DM).
+    *   :attr:`ALL` — additionally speak the last in-client assistant reply
+        of each turn (the Stop hook reads the transcript's last text block).
 
-    *   :attr:`OFF` (default) — nothing is spoken.
-    *   :attr:`IM_ONLY` — speak only text egressed to the user through the
-        IM/DM channel abstraction (today the Slack DM in
-        :func:`teatree.core.notify.notify_user`). The name is
-        provider-neutral on purpose — it tracks the IM/DM channel, not
-        the Slack backend.
-    *   :attr:`ALL` — additionally speak every free-text agent reply (the
-        Stop hook reads the transcript's last assistant text block).
+    The whole feature is off when both ``local`` and ``slack_audio`` are
+    false, so there is no separate "off" scope — see :class:`SpeakConfig`.
     """
 
-    OFF = "off"
-    IM_ONLY = "im-only"
+    DM = "dm"
     ALL = "all"
 
     @classmethod
-    def parse(cls, value: str) -> "SpeakMode":
+    def parse(cls, value: str) -> "SpeakScope":
         normalised = value.strip().lower()
         try:
             return cls(normalised)
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
-            message = f"Invalid speak_mode {value!r}; valid values: {valid}"
+            message = f"Invalid speak scope {value!r}; valid values: {valid}"
             raise ValueError(message) from exc
 
 
-class SpeakTarget(enum.StrEnum):
-    """Where spoken audio is delivered for the text-to-speech seam (#1791).
+@dataclass(frozen=True)
+class SpeakConfig:
+    """The resolved ``[teatree.speak]`` sub-table — two booleans + one scope (#2050).
 
-    Orthogonal to :class:`SpeakMode` (which decides *what* is spoken):
-    one config pair controls the mode, this one the delivery surface so
-    the same spoken text can reach the user's speakers, his phone, or both.
+    One cohesive object the config layer produces and :mod:`teatree.core.speak`
+    reads, replacing the confusing ``speak_mode`` / ``speak_target`` pair.
 
-    *   :attr:`LOCAL` (default) — synthesise with the macOS ``say`` binary
-        and play through the local speakers. Inert off macOS.
-    *   :attr:`SLACK_AUDIO` — synthesise an audio file and upload it to the
-        user's Slack DM so he hears it on his phone. Requires the Slack
-        token's ``files:write`` scope (see
-        :meth:`teatree.backends.slack_bot.SlackBotBackend.upload_audio_to_dm`).
-    *   :attr:`BOTH` — deliver to local speakers *and* the Slack DM.
+    *   ``local`` — synthesise with the macOS ``say`` binary and play through
+        the local speakers. Inert off macOS.
+    *   ``slack_audio`` — attach a spoken audio rendition to every Slack text
+        DM the user receives, in the SAME message (one DM = text + inline
+        audio player). Requires the Slack token's ``files:write`` scope.
+    *   ``scope`` — :attr:`SpeakScope.DM` speaks only the bot's DMs;
+        :attr:`SpeakScope.ALL` additionally speaks the in-client turn.
+
+    The feature is enabled iff at least one destination is on; the whole
+    thing is additionally gated on the ``say`` binary being present
+    (:func:`teatree.core.speak.binary_available`).
     """
 
-    LOCAL = "local"
-    SLACK_AUDIO = "slack-audio"
-    BOTH = "both"
+    local: bool = False
+    slack_audio: bool = False
+    scope: SpeakScope = SpeakScope.DM
 
-    @classmethod
-    def parse(cls, value: str) -> "SpeakTarget":
-        normalised = value.strip().lower()
-        try:
-            return cls(normalised)
-        except ValueError as exc:
-            valid = ", ".join(m.value for m in cls)
-            message = f"Invalid speak_target {value!r}; valid values: {valid}"
-            raise ValueError(message) from exc
+    def enabled(self) -> bool:
+        return self.local or self.slack_audio
 
-    def includes_local(self) -> bool:
-        return self in {SpeakTarget.LOCAL, SpeakTarget.BOTH}
+    def speaks_dms(self) -> bool:
+        return self.enabled()
 
-    def includes_slack(self) -> bool:
-        return self in {SpeakTarget.SLACK_AUDIO, SpeakTarget.BOTH}
+    def speaks_in_client_turns(self) -> bool:
+        return self.scope is SpeakScope.ALL and self.local and not self.slack_audio
+
+    def to_dict(self) -> dict[str, bool | str]:
+        return {"local": self.local, "slack_audio": self.slack_audio, "scope": self.scope.value}
 
 
 class ScannerErrorClass(enum.StrEnum):

@@ -180,15 +180,22 @@ class TestSelfDmCarveOut(TestCase):
         approval = OnBehalfApproval.objects.get(target=_DM_CHANNEL, action="adhoc_slack_react")
         assert approval.consumed_at is None
 
-    def test_self_dm_post_emits_ungated(self) -> None:
+    def test_self_dm_post_emits_ungated_via_shared_dm_chokepoint(self) -> None:
+        # The self-DM post routes through teatree.core.speak.deliver_user_dm
+        # (the shared bot→user DM chokepoint), which posts via post_message —
+        # ungated and unaudited, consuming no approval and writing no
+        # on_behalf_post BotPing. With the speak feature off (default), no
+        # audio attach and no local read fire.
         fake = _RouteAwareFake()
-        OnBehalfSlackEgress(fake).post(
+        response = OnBehalfSlackEgress(fake).post(
             channel=_DM_CHANNEL,
             text="hi",
             target=_DM_CHANNEL,
             action="cli_notify_post",
         )
-        assert fake.post_routed_calls == [(_DM_CHANNEL, "hi", "")]
+        assert response.get("ok") is True
+        assert fake.post_routed_calls == []
+        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
 
 
 class TestFailClosed(TestCase):
