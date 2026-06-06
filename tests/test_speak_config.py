@@ -1,13 +1,9 @@
 """``SpeakScope`` / ``SpeakConfig`` parsing + ``[teatree.speak]`` resolution (#2050).
 
-The new schema: a ``[teatree.speak]`` sub-table with two booleans
+The schema: a ``[teatree.speak]`` sub-table with two booleans
 (``local`` / ``slack_audio``) and a ``scope`` enum (``dm`` / ``all``).
-Legacy flat ``speak_mode`` / ``speak_target`` keys auto-map to the new
-shape for one transition release (mirrors the ``on_behalf_post_mode``
-legacy alias). Covers: defaults when absent, new-table parse, the
-legacy map (incl. the live ``im-only`` / ``both`` config), new-table
-precedence over legacy, a clean ``ValueError`` on a typo, and the
-per-overlay sub-table merge.
+Covers: defaults when absent, new-table parse, partial keys, a clean
+``ValueError`` on a typo, and the per-overlay sub-table merge.
 """
 
 from pathlib import Path
@@ -85,42 +81,16 @@ class TestNewTableResolution:
             load_config()
 
 
-class TestLegacyMigration:
-    def test_legacy_im_only_both_maps(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "both"\n')
-        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.DM)
-
-    def test_legacy_all_slack_audio_maps(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "all"\nspeak_target = "slack-audio"\n')
-        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=True, scope=SpeakScope.ALL)
-
-    def test_legacy_local_only_maps(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "im-only"\nspeak_target = "local"\n')
-        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=False, scope=SpeakScope.DM)
-
-    def test_legacy_off_maps_both_destinations_false(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_mode = "off"\nspeak_target = "both"\n')
-        assert load_config().user.speak == SpeakConfig(local=False, slack_audio=False, scope=SpeakScope.DM)
-
-    def test_legacy_target_only_defaults_scope_dm(self, config_file: Path) -> None:
-        _write(config_file, '[teatree]\nspeak_target = "both"\n')
-        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=True, scope=SpeakScope.DM)
-
-    def test_new_table_wins_over_legacy(self, config_file: Path) -> None:
-        _write(
-            config_file,
-            '[teatree]\nspeak_mode = "all"\nspeak_target = "both"\n[teatree.speak]\nlocal = true\n',
-        )
-        assert load_config().user.speak == SpeakConfig(local=True, slack_audio=False, scope=SpeakScope.DM)
-
-
 class TestResolveSpeakDirect:
     def test_off_when_empty(self) -> None:
         assert resolve_speak({}) == SpeakConfig()
 
-    def test_legacy_mapping_function_level(self) -> None:
-        assert resolve_speak({"speak_mode": "im-only", "speak_target": "both"}) == SpeakConfig(
-            local=True, slack_audio=True, scope=SpeakScope.DM
+    def test_unknown_top_level_keys_ignored(self) -> None:
+        assert resolve_speak({"workspace_dir": "~/workspace"}) == SpeakConfig()
+
+    def test_sub_table_function_level(self) -> None:
+        assert resolve_speak({"speak": {"local": True, "slack_audio": True, "scope": "all"}}) == SpeakConfig(
+            local=True, slack_audio=True, scope=SpeakScope.ALL
         )
 
 

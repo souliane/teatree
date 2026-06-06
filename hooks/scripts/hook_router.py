@@ -7437,7 +7437,7 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
     return "\n".join(chunks)
 
 
-# ── Stop: speak-on-stop arm (speak_mode == all, #1791) ──────────────────────
+# ── Stop: speak-on-stop arm (scope == all, #1791) ───────────────────────────
 
 
 def _speak_settings() -> tuple[bool, bool, str]:
@@ -7445,12 +7445,11 @@ def _speak_settings() -> tuple[bool, bool, str]:
 
     The hook-side mirror of :func:`teatree.config_speak.resolve_speak` (the hook
     cannot cheaply import the Django config, so it re-reads the toml with the
-    SAME precedence + legacy map — a parity test pins the two in agreement):
-    (1) an explicit ``[teatree.speak]`` sub-table wins; (2) else legacy
-    ``speak_mode`` / ``speak_target`` flat keys map to the new shape; (3) else
-    defaults (``False, False, "dm"``). Best-effort: a missing or malformed
-    config, or no ``[teatree]`` table, yields the defaults so the Stop arm
-    stays silent unless the user opted in.
+    SAME precedence — a parity test pins the two in agreement): an explicit
+    ``[teatree.speak]`` sub-table wins, else the defaults (``False, False,
+    "dm"``). Best-effort: a missing or malformed config, or no ``[teatree]``
+    table, yields the defaults so the Stop arm stays silent unless the user
+    opted in.
     """
     import tomllib  # noqa: PLC0415
 
@@ -7473,24 +7472,7 @@ def _speak_settings() -> tuple[bool, bool, str]:
             bool(subtable.get("slack_audio", False)),
             scope.strip().lower() if isinstance(scope, str) else "dm",
         )
-    if "speak_mode" in teatree or "speak_target" in teatree:
-        return _speak_settings_from_legacy(teatree)
     return False, False, "dm"
-
-
-def _speak_settings_from_legacy(teatree: dict) -> tuple[bool, bool, str]:
-    """Map legacy ``speak_mode`` / ``speak_target`` to ``(local, slack_audio, scope)``.
-
-    Mirrors :func:`teatree.config_speak.speak_from_legacy` exactly: ``off`` forces
-    both destinations false; otherwise ``speak_mode`` drives the scope and
-    ``speak_target`` drives the destination booleans.
-    """
-    mode = str(teatree.get("speak_mode", "im-only")).strip().lower()
-    target = str(teatree.get("speak_target", "local")).strip().lower()
-    if mode == "off":
-        return False, False, "dm"
-    scope = "all" if mode == "all" else "dm"
-    return target in {"local", "both"}, target in {"slack-audio", "both"}, scope
 
 
 def handle_speak_all_on_stop(data: dict) -> None:

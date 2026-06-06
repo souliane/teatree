@@ -2,9 +2,9 @@
 
 The Stop hook reads ``[teatree.speak]`` directly from toml (it cannot
 cheaply import the Django config), so it carries a small pure-Python
-duplicate of the precedence + legacy map. This golden-corpus parity test
+duplicate of the sub-table precedence. This golden-corpus parity test
 pins the two implementations to the same ``(local, slack_audio, scope)``
-for every legacy + new toml shape, so the duplicate can never drift
+for every toml shape, so the duplicate can never drift
 (architecture-design check 8).
 """
 
@@ -19,20 +19,15 @@ _CORPUS: list[str] = [
     '[teatree.speak]\nlocal = true\nslack_audio = true\nscope = "all"\n',
     "[teatree.speak]\nslack_audio = true\n",
     '[teatree.speak]\nlocal = true\nscope = "all"\n',
+    '[teatree.speak]\nscope = "dm"\n',
     "[teatree.speak]\n",
-    '[teatree]\nspeak_mode = "im-only"\nspeak_target = "both"\n',
-    '[teatree]\nspeak_mode = "all"\nspeak_target = "slack-audio"\n',
-    '[teatree]\nspeak_mode = "all"\nspeak_target = "local"\n',
-    '[teatree]\nspeak_mode = "off"\nspeak_target = "both"\n',
-    '[teatree]\nspeak_target = "both"\n',
-    '[teatree]\nspeak_mode = "im-only"\n',
     "[teatree]\n",
     "[other]\nx = 1\n",
 ]
 
 
 @pytest.mark.parametrize("toml_body", _CORPUS)
-def test_hook_and_config_legacy_map_parity(toml_body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hook_and_config_sub_table_parity(toml_body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = tmp_path / ".teatree.toml"
     cfg.write_text(toml_body, encoding="utf-8")
     monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
@@ -52,5 +47,5 @@ def test_hook_and_config_legacy_map_parity(toml_body: str, tmp_path: Path, monke
 
 def test_resolve_speak_is_the_config_source_of_truth() -> None:
     # The hook map mirrors resolve_speak; pin that the config helper exists
-    # and produces the legacy mapping the hook duplicates.
-    assert resolve_speak({"speak_mode": "all", "speak_target": "both"}).scope.value == "all"
+    # and reads the new sub-table the hook duplicates.
+    assert resolve_speak({"speak": {"local": True, "scope": "all"}}).scope.value == "all"
