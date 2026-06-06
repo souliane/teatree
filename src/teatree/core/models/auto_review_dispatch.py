@@ -9,8 +9,10 @@ This model closes that loop: ``enqueue`` records a row keyed on
 ``(slug, pr_id, head_sha)`` and creates the claimable ``Task(phase=reviewing)``
 the loop self-pump dispatches to ``t3:reviewer``. The reviewer cold-reviews the
 PR and records a ``merge_safe`` :class:`ReviewVerdict` bound to the reviewed
-head; the NEXT sweep consumes that verdict (``_has_independent_cold_review``)
-and merges. Dedup is per ``(PR, head_sha)``: a new push (new head) re-arms
+head; recording the verdict triggers the sweep merge on demand
+(``teatree.loop.sweep_on_demand``, #2017) instead of waiting a full tick
+cadence, and the periodic sweep consumes the same verdict
+(``_has_independent_cold_review``) as the backstop. Dedup is per ``(PR, head_sha)``: a new push (new head) re-arms
 exactly one new task; an open task for the same head never duplicates; a
 recorded verdict for the head suppresses enqueue upstream (the PR never reaches
 ``flag_no_review``).

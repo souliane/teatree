@@ -243,16 +243,39 @@ class PrSweepScanner:
                 except Exception:
                     logger.exception("pr_sweep failed to evaluate %s#%s", slug, getattr(pr, "number", "?"))
                     continue
+                self._log_attempt(attempt)
                 signals.append(_signal_from_attempt(attempt, overlay=self.overlay))
-                logger.info(
-                    "pr_sweep %s#%d decision=%s reason=%s merged=%s",
-                    attempt.slug,
-                    attempt.pr_id,
-                    attempt.decision,
-                    attempt.reason,
-                    attempt.merged,
-                )
         return signals
+
+    def evaluate_one(self, *, slug: str, pr_id: int) -> MergeAttempt | None:
+        """Run the same decision ladder for a single open PR, on demand (#2017).
+
+        The event-driven complement to the periodic :meth:`scan`: when a
+        ``merge_safe`` :class:`ReviewVerdict` is recorded for a PR the sweep
+        is waiting on, the merge must not idle a full tick cadence (a parallel
+        human merge wins that race). Fetches the one PR through the same
+        ``list_open_prs`` adapter and runs the identical :meth:`_evaluate`, so
+        the on-demand path and the periodic sweep can never drift. Returns the
+        :class:`MergeAttempt` (``None`` when the PR is no longer open, so a
+        merged / closed PR is a quiet no-op rather than an error).
+        """
+        pr = next((candidate for candidate in self._safe_list(slug) if candidate.number == pr_id), None)
+        if pr is None:
+            return None
+        attempt = self._evaluate(pr)
+        self._log_attempt(attempt)
+        return attempt
+
+    @staticmethod
+    def _log_attempt(attempt: MergeAttempt) -> None:
+        logger.info(
+            "pr_sweep %s#%d decision=%s reason=%s merged=%s",
+            attempt.slug,
+            attempt.pr_id,
+            attempt.decision,
+            attempt.reason,
+            attempt.merged,
+        )
 
     def _safe_list(self, slug: str) -> list[PrSummary]:
         try:
