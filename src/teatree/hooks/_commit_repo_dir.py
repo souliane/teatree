@@ -102,7 +102,7 @@ def _cumulative_dash_c(words: list[str]) -> str | None:
     return str(accumulator) if accumulator is not None else None
 
 
-def _leading_cd_dir(command: str) -> str | None:
+def leading_cd_dir(command: str) -> str | None:
     """Return the working dir a leading ``cd``/``pushd`` chain resolves to, or ``None``.
 
     Walks the LEADING navigation segments of ``command`` (``cd <path>`` /
@@ -145,7 +145,7 @@ def effective_repo_dir(command: str) -> str | None:
     """Return the dir whose repo a ``git`` command's commit LANDS in, or ``None``.
 
     A leading ``cd <dir>`` / ``pushd <dir>`` navigation prefix
-    (:func:`_leading_cd_dir`) sets the base working dir; ``git``'s own ``-C``
+    (:func:`leading_cd_dir`) sets the base working dir; ``git``'s own ``-C``
     is applied ON TOP of it. Repeated ``-C`` flags are CUMULATIVE, not
     last-wins: each subsequent non-absolute ``-C <path>`` joins onto the
     preceding one and an absolute ``-C <path>`` resets the accumulator
@@ -161,7 +161,7 @@ def effective_repo_dir(command: str) -> str | None:
     ``-C`` value cannot be statically resolved, so the carve-out never
     downgrades onto an unknown target.
     """
-    cd_dir = _leading_cd_dir(command)
+    cd_dir = leading_cd_dir(command)
     git_words = _git_segment_words(command)
     dash_c = _cumulative_dash_c(git_words)
     if dash_c == UNRESOLVABLE_REPO_DIR:
