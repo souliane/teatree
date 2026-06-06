@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 from teatree.timeouts import (
     CORE_DEFAULTS,
     DB_IMPORT,
+    DOCKER_COMPOSE_BUILD,
     DOCKER_COMPOSE_DOWN,
     DOCKER_COMPOSE_UP,
     PRE_RUN_STEP,
@@ -42,6 +43,17 @@ class TestTimeoutConfig:
     def test_completely_unknown_operation_returns_120(self) -> None:
         cfg = TimeoutConfig(values={})
         assert cfg.get("nonexistent_operation") == 120
+
+    def test_docker_compose_build_uses_600s_default(self) -> None:
+        """First-time image builds need a long default, not the 120s fallback.
+
+        Regression: ``docker_compose_build`` was missing from CORE_DEFAULTS,
+        so ``get`` fell through to the hardcoded 120 for unknown operations —
+        timing out first-time Gradle/Java sidecar builds at 120s.
+        """
+        cfg = TimeoutConfig()
+        assert cfg.get(DOCKER_COMPOSE_BUILD) == 600
+        assert CORE_DEFAULTS[DOCKER_COMPOSE_BUILD] == 600
 
     def test_frozen(self) -> None:
         cfg = TimeoutConfig()
@@ -114,7 +126,16 @@ class TestLoadTimeouts(TestCase):
 
     def test_all_operations_have_defaults(self) -> None:
         cfg = load_timeouts()
-        for op in (SETUP, START, DB_IMPORT, DOCKER_COMPOSE_UP, DOCKER_COMPOSE_DOWN, PROVISION_STEP, PRE_RUN_STEP):
+        for op in (
+            SETUP,
+            START,
+            DB_IMPORT,
+            DOCKER_COMPOSE_UP,
+            DOCKER_COMPOSE_BUILD,
+            DOCKER_COMPOSE_DOWN,
+            PROVISION_STEP,
+            PRE_RUN_STEP,
+        ):
             val = cfg.get(op)
             assert val is not None, f"{op} should not be None"
             assert val > 0, f"{op} should have a positive default"
