@@ -167,13 +167,14 @@ class AntiVacuityAttestation(TypedDict, total=False):
 class ExternalDeliveryLease(TypedDict, total=False):
     """TTL'd record that a unit is under active EXTERNAL delivery (#2104).
 
-    Stamped by ``Ticket.mark_external_delivery`` when a hand-dispatched
-    delivery agent takes the ticket via ``workspace ticket`` — the external
-    entry the loop's own FSM never uses. The loop consults
-    ``Ticket.under_external_delivery`` at its scheduling chokepoints
-    (``schedule_planning`` and the ``pr_sweep`` review-arm) and skips the
-    follow-up work a directly-implementing external owner will never claim,
-    so the loop stops re-deriving duplicate planner/reviewer tasks.
+    Stamped by ``external_delivery.mark_external_delivery`` when a
+    hand-dispatched delivery agent takes the ticket via ``workspace ticket`` —
+    the external entry the loop's own FSM never uses. The loop consults
+    ``external_delivery.under_external_delivery`` at its scheduling chokepoints
+    (``execute_provision`` before ``schedule_planning``, and the ``pr_sweep``
+    review-arm) and skips the follow-up work a directly-implementing external
+    owner will never claim, so the loop stops re-deriving duplicate
+    planner/reviewer tasks.
 
     ``expires_at`` is a UTC ISO timestamp; the lease is self-reaping so a
     crashed external owner cannot permanently wedge the loop's autonomous FSM

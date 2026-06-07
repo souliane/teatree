@@ -561,20 +561,21 @@ def _has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> boo
 
 
 def _pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:
-    """True iff the PR's ticket carries a live external-delivery lease (#2104).
+    """True iff the PR's AUTHOR ticket carries a live external-delivery lease (#2104).
 
-    Resolves the ticket by ``issue_url`` exactly as
-    :meth:`AutoReviewDispatch._create_reviewing_task` does (``pr_url`` then the
-    ``{slug}#{pr_id}`` fallback), so the review-arm chokepoint reads the same
-    unit the dispatcher would create — no normalization drift. A missing ticket
-    (the loop has not seen this PR) means no external owner, so the loop arms
-    the review as before.
+    The lease is stamped by ``workspace ticket <ISSUE_URL>`` on the author /
+    delivery ticket keyed by the ISSUE-tracker URL — never on the PR URL. So the
+    review-arm must ask whether the AUTHOR ticket that OWNS this PR holds the
+    lease, resolved through the existing PR→author-ticket linkage
+    (:func:`resolve_author_ticket`: ``PullRequest`` FK then
+    ``Ticket.extra["prs"]``). A PR with no resolvable author ticket (the loop
+    has not seen this delivery) is treated as unowned, so the loop arms the
+    review as before.
     """
     from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+    from teatree.loop.pr_ticket_index import resolve_author_ticket  # noqa: PLC0415
 
-    issue_url = pr_url or f"{slug}#{pr_id}"
-    ticket = Ticket.objects.filter(issue_url=issue_url).first()
+    ticket = resolve_author_ticket(slug=slug, pr_id=pr_id, pr_url=pr_url)
     return ticket is not None and under_external_delivery(ticket)
 
 

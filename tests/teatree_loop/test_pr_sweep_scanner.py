@@ -671,15 +671,23 @@ class TestAutoReviewDispatch:
         assert signals[0].payload["reason"] == "no_clear_for_head"
 
     def test_external_delivery_suppresses_review_arm(self) -> None:
-        # #2104: the PR's ticket is under active external (hand-dispatched)
-        # review. The loop must NOT arm a duplicate review — the external
-        # reviewer is already on it. The flag-level signal still fires.
+        # #2104: the production seam — a hand-dispatched delivery agent ran
+        # ``workspace ticket <ISSUE_URL>``, stamping the lease on the AUTHOR
+        # ticket keyed by the ISSUE url (NOT the PR url); the ship pipeline
+        # records the PR under that ticket's ``extra["prs"]``. The loop must
+        # resolve the PR back to that author ticket and NOT arm a duplicate
+        # review — the external reviewer is already on it. The flag-level
+        # signal still fires.
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
 
         pr = _open_pr()
-        ticket = Ticket.objects.create(overlay="teatree", issue_url=pr.url)
-        mark_external_delivery(ticket)
+        author_ticket = Ticket.objects.create(
+            overlay="teatree",
+            issue_url=f"https://github.com/{SLUG}/issues/2104",
+            extra={"prs": {pr.url: {"draft": False}}},
+        )
+        mark_external_delivery(author_ticket)
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
         scanner, _ = _scanner(
@@ -693,12 +701,17 @@ class TestAutoReviewDispatch:
         assert signals[0].payload["review_dispatched"] is False
 
     def test_unowned_green_pr_still_arms_review(self) -> None:
-        # #2104 must-still-fire: a genuinely unowned PR (no live external
-        # delivery lease) still gets its review armed — the loop owns it.
+        # #2104 must-still-fire: the same author-ticket-linked PR shape, but the
+        # author ticket holds NO external-delivery lease (the loop owns
+        # delivery). The review is still armed.
         from teatree.core.models import Ticket  # noqa: PLC0415
 
         pr = _open_pr()
-        Ticket.objects.create(overlay="teatree", issue_url=pr.url)
+        Ticket.objects.create(
+            overlay="teatree",
+            issue_url=f"https://github.com/{SLUG}/issues/2104",
+            extra={"prs": {pr.url: {"draft": False}}},
+        )
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
         scanner, _ = _scanner(

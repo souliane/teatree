@@ -6,6 +6,7 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.core.models import Task, Ticket
+from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 
 logger = logging.getLogger(__name__)
@@ -225,8 +226,6 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     planning phase, so the planner would be orphaned). The loop's own
     autonomous FSM never stamps the delivery lease, so its flow is unchanged.
     """
-    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
-
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
         if ticket.state != Ticket.State.STARTED:
