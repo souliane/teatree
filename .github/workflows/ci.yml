@@ -1,3 +1,58 @@
+# ============================================================
+# CI WORKFLOW LEGEND — read before editing
+# ============================================================
+#
+# GATE vs ADVISORY
+#   Gate:     exits non-zero on failure → PR cannot merge.
+#   Advisory: always exits 0 → shows up as a warning/annotation but
+#             never blocks. Look for `|| true` or the job comment
+#             saying "advisory" to identify advisory jobs.
+#
+# LOAD-BEARING NAMES (do NOT rename without a coordinated change)
+#   `test (3.13)` — The check context produced by the `test` job
+#       matrix entry with python-version="3.13".  Branch protection
+#       lists this string by name.  The `test-shim` job deliberately
+#       reproduces the same context on docs-only PRs (see below).
+#       Hardcoded as REQUIRED_CHECK_NAME in
+#       src/teatree/loop/scanners/pr_sweep.py.
+#   `uv-audit`  — The job key used as UV_AUDIT_CHECK_NAME in
+#       src/teatree/loop/scanners/pr_sweep.py for the PR-sweep
+#       scanner's fallback escape hatch.  Rename breaks the scanner.
+#
+# THE `preflight` JOB — diff-scoped lane classifier
+#   Reads the PR's file diff and exports two booleans:
+#     run_heavy_python — true unless the diff is PROVABLY pure docs/markdown.
+#     all              — always-run lane flag (currently unused by downstream).
+#   Only runs on pull_request events (no base to diff on push/schedule).
+#   The only sanctioned skip driven by preflight is the HEAVY `test` +
+#   `mutation-diff` lanes on a provably pure-docs PR.  Every security,
+#   quality, and docs gate ignores preflight and runs unconditionally.
+#   Unknown/ambiguous paths always force run_heavy_python=true
+#   (fail-safe-unknown, souliane/teatree#132).
+#
+# THE `test-shim` PATTERN
+#   Branch protection requires `test (3.13)` on every PR.  When preflight
+#   decides run_heavy_python=false (pure-docs diff), the real `test` job is
+#   skipped and never emits that context — leaving the PR permanently pending.
+#   `test-shim` fires in exactly that scenario: it sets `name: test` + the
+#   same matrix so GitHub sees an identical `test (3.13)` context from a
+#   no-op step.  The two jobs have mutually exclusive `if:` conditions so
+#   they can never both report in the same run.
+#
+# JOB GROUPS (in order of appearance below)
+#   1. Lane routing          — preflight
+#   2. Fast static checks    — lint, blueprint-cross-pr, blueprint-size-cross-pr
+#   3. Docs integrity        — doc-update-gate, comment-density-warning,
+#                              docs-drift
+#   4. Signal & ratchet      — semgrep-regressions (advisory), test-shape
+#                              (advisory), test-path-mirror (ratchet gate)
+#   5. Test suite            — test, test-shim
+#   6. Architecture / quality fitness gates — mutation-diff, mutation-weekly,
+#                              banned-terms-tree
+#   7. Security & supply chain — uv-audit, sbom
+#   8. Metered / scheduled   — eval-weekly
+# ============================================================
+
 name: CI
 
 on:
@@ -24,6 +79,11 @@ on:
         type: string
 
 jobs:
+
+  # ── 1. Lane routing ────────────────────────────────────────────────────────
+
+  # GATE (PR-only): classifies the diff into heavy vs docs-only lanes; exports
+  # run_heavy_python so downstream jobs can skip safely on pure-docs PRs.
   preflight:
     # Diff-scoped lane classifier with FAIL-SAFE-UNKNOWN routing
     # (souliane/teatree#132). Classifies the PR diff into lanes and
@@ -65,6 +125,9 @@ jobs:
           git diff --name-only "origin/$BASE_REF...HEAD" > changed_paths.txt || true
           uv run python scripts/ci/changed_lanes.py < changed_paths.txt
 
+  # ── 2. Fast static checks ──────────────────────────────────────────────────
+
+  # GATE: ruff/prek lint + migration-graph linearity; runs on every push and PR.
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -86,6 +149,8 @@ jobs:
       # detected`` (exit 1) on a forked graph, failing the PR before it lands.
       - run: uv run python manage.py makemigrations --check --dry-run
 
+  # GATE (PR-only): catches two concurrent PRs both adding the same §17.N
+  # invariant number — local pre-commit can't see sibling PRs.
   blueprint-cross-pr:
     # Cross-PR §17.1 invariant-numbering gate (souliane/teatree#1288).
     # The pre-commit hook is tree-local; two concurrent PRs each adding
@@ -120,6 +185,9 @@ jobs:
         if: steps.blueprint_diff.outputs.changed == 'true'
         run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref=origin/${{ github.base_ref }}
 
+  # GATE (PR-only): fails when this PR alone grows BLUEPRINT.md past its
+  # per-PR byte-delta allowance; concurrent growth on main cannot red an
+  # innocent PR (race-free delta comparison vs the merge-base).
   blueprint-size-cross-pr:
     # Delta-based, race-free BLUEPRINT size gate (souliane/teatree#2040). The
     # gate fails only when the PR's OWN diff grows the corpus past the per-PR
@@ -144,6 +212,10 @@ jobs:
       - name: BLUEPRINT per-PR size-delta check
         run: uv run python scripts/hooks/check_blueprint_size_budget.py --ci --base-ref=origin/${{ github.base_ref }}
 
+  # ── 3. Docs integrity ──────────────────────────────────────────────────────
+
+  # GATE (PR-only): re-runs the doc-update pre-push hook on the PR diff so an
+  # agent that bypasses prek still trips the gate.
   doc-update-gate:
     # Deterministic doc-update gate (souliane/teatree#1461). The
     # pre-push hook runs against staged changes; CI re-runs the same
@@ -171,6 +243,8 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_doc_update.py
 
+  # ADVISORY (PR-only): warns about comment-dense files; always exits 0 so it
+  # never blocks a PR — signal only.
   comment-density-warning:
     # Near-zero-comments check (souliane/teatree#1369). Advisory: the script
     # prints any comment-dense file as a warning and exits 0, so the job
@@ -200,105 +274,8 @@ jobs:
           git reset --soft FETCH_HEAD
       - run: uv run python scripts/hooks/check_comment_density.py
 
-  semgrep-regressions:
-    # Advisory warn-set scan for the named regression-detector rules
-    # (souliane/teatree#126). The blocking set rides the prek step above
-    # (full-tree, --error, fails CI on a finding). This job runs the WARN
-    # config and ALWAYS exits 0, so a still-open regression's findings are
-    # visible on every PR without gating — mirrors comment-density-warning.
-    # Each warn rule flips warn/ -> blocking/ in its bug's fix PR.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      - name: Warn-set regression scan (advisory; never fails)
-        run: uvx semgrep@1.165.0 scan --config .semgrep/warn || true
-
-  mutation-diff:
-    # Scoped (narrow) mutation testing, PR-only (souliane/teatree#131).
-    # ``t3 mutation run`` diffs the PR vs base, intersects with
-    # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
-    # touched safety modules — a no-op (fast pass) when the PR touches none, so
-    # most PRs pay nothing. Programmatic ratchet: the command fails when the
-    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total,
-    # in BOTH ``warn`` and ``block`` mode (the count may only ever shrink) —
-    # survivors at-or-below baseline still pass. Flipping ``mode`` to "block" is
-    # a later follow-up (gate on survivors existing at all), no workflow change.
-    # ``t3 mutation run --all --update-baseline`` tightens the recorded counts.
-    # The 10-min cap bounds a pathological run.
-    #
-    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
-    # (preflight ``run_heavy_python=false``). Any non-pure-docs PR runs
-    # it — fail-safe-unknown. (#132)
-    needs: preflight
-    if: >
-      always() &&
-      github.event_name == 'pull_request' &&
-      needs.preflight.outputs.run_heavy_python == 'true'
-    timeout-minutes: 12
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
-          fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync --group mutation
-      - name: Diff-scoped mutation run (warn-first; 10-min cap)
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          git fetch --no-tags origin "$BASE_REF"
-          timeout 600 uv run t3 mutation run --target "origin/$BASE_REF"
-
-  mutation-weekly:
-    # Weekly full-scope mutation run over the whole registry (not just the
-    # diff). Like the eval suite, it is metered (slow), so it runs once a week
-    # on the FIRST PR opened that ISO week — ``scripts/eval/first_pr_of_week.py``
-    # makes that decision (order-independent, re-run safe). Warn-first as above;
-    # mutates every declared safety module by passing each registry path as the
-    # changed set.
-    if: github.event_name == 'pull_request'
-    timeout-minutes: 30
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync --group mutation
-      - name: Decide whether this is the first PR of the ISO week
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
-            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
-          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
-            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_mutation=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Full-scope mutation run (warn-first)
-        if: steps.gate.outputs.run_mutation == 'true'
-        run: uv run t3 mutation run --all
-
+  # GATE: regenerates all generated docs and runs mkdocs --strict; fails if
+  # committed output is stale or if any link/nav target is broken.
   docs-drift:
     runs-on: ubuntu-latest
     steps:
@@ -320,6 +297,33 @@ jobs:
       # missing nav target fails CI instead of shipping a broken site.
       - run: uv run mkdocs build --strict
 
+  # ── 4. Signal & ratchet checks (mix of advisory + ratchet gate) ────────────
+
+  # ADVISORY (PR-only): runs the warn-set semgrep rules and always exits 0;
+  # a finding is visible in CI output but does not block the PR.
+  semgrep-regressions:
+    # Advisory warn-set scan for the named regression-detector rules
+    # (souliane/teatree#126). The blocking set rides the prek step above
+    # (full-tree, --error, fails CI on a finding). This job runs the WARN
+    # config and ALWAYS exits 0, so a still-open regression's findings are
+    # visible on every PR without gating — mirrors comment-density-warning.
+    # Each warn rule flips warn/ -> blocking/ in its bug's fix PR.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Warn-set regression scan (advisory; never fails)
+        run: uvx semgrep@1.165.0 scan --config .semgrep/warn || true
+
+  # ADVISORY: reports near-duplicate test functions and test-to-source ratio;
+  # default mode exits 0 (warn-only); flip to "block" in pyproject.toml to gate.
   test-shape:
     # Conservative, report-first test-shape check (near-duplicate test
     # functions + test:source ratio regression vs the committed baseline in
@@ -341,6 +345,9 @@ jobs:
       - name: Test-shape report
         run: uv run t3 tool test-shape --root .
 
+  # GATE: ratchet that fails (exits non-zero) only when a NEW mis-pathed test
+  # file appears — live count exceeds the committed baseline; never blocks on
+  # pre-existing violations; baseline trends toward 0 as the sweep proceeds.
   test-path-mirror:
     # Forward-guard: every test file mirrors its src/teatree/<pkg>/... module
     # path as tests/teatree_<pkg>/... ([tool.teatree.test_path_mirror]). The
@@ -362,71 +369,13 @@ jobs:
       - name: Test-path-mirror ratchet
         run: uv run t3 tool test-path-mirror --root .
 
-  banned-terms-tree:
-    # Full-tree banned-brand backstop (souliane/teatree#1570). The
-    # diff/payload banned-terms gate only ever sees a *change*; a brand
-    # name ALREADY committed never appears in a post-landing diff. This
-    # job scans every git-tracked file's content for the high-confidence
-    # brand list on push-to-main and on a daily schedule, failing CI if a
-    # brand is present. The public repo ships with no brands; the list is
-    # supplied from the TEATREE_BANNED_BRANDS secret so no tenant name is
-    # ever committed. With no secret configured the scan is a clean no-op.
-    if: github.event_name == 'push' || github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      - name: Full-tree banned-brand scan
-        env:
-          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-        run: uv run t3 banned-terms scan-tree --repo-root .
+  # ── 5. Test suite ──────────────────────────────────────────────────────────
 
-  uv-audit:
-    # Job name preserved for compatibility with the PR-sweep scanner's
-    # ``--fallback-uv-audit`` escape hatch (see
-    # ``src/teatree/loop/scanners/pr_sweep.py`` ``UV_AUDIT_CHECK_NAME``).
-    # The inner command is ``pip-audit`` because ``uv audit`` is still
-    # a preview feature and astral-sh/uv#19492 (OSV parser regression)
-    # turned every PR red. ``pip-audit`` uses the same OSV backend and
-    # is production-stable. See souliane/teatree#1264.
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      - run: uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt
-      - run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt
-
-  sbom:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      - run: scripts/hooks/generate_sbom.sh
-      - run: git diff --exit-code dist/sbom.json
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: sbom
-          path: dist/sbom.json
-
+  # GATE (heavy lane): full pytest suite in Docker + per-module coverage floors.
+  # Skipped ONLY on a provably pure-docs PR diff (preflight run_heavy_python=false);
+  # always runs on push-to-main, schedule, and any non-pure-docs PR.
+  # LOAD-BEARING: the job key + matrix produce the `test (3.13)` check context
+  # that branch protection requires — do NOT rename without updating protection.
   test:
     # Heavy lane. Skipped ONLY on a provably pure-docs/markdown PR diff
     # (preflight ``run_heavy_python=false``). On push-to-main and on the
@@ -482,6 +431,9 @@ jobs:
           name: coverage-${{ matrix.python-version }}
           path: coverage.xml
 
+  # GATE (shim): emits the load-bearing `test (3.13)` required context on
+  # pure-docs PRs where the real `test` job is path-skipped; a no-op step
+  # only — never runs tests. Mutually exclusive with the `test` job above.
   test-shim:
     # Required-context shim for pure-docs PRs (souliane/teatree#1942).
     # Branch protection requires the context `test (3.13)`. The heavy `test`
@@ -517,6 +469,171 @@ jobs:
           (run_heavy_python=false). Emitting a passing 'test (${{ matrix.python-version }})'
           so the required status context is satisfied without re-running the suite."
 
+  # ── 6. Architecture / quality fitness gates ────────────────────────────────
+
+  # GATE (heavy lane, PR-only): diff-scoped mutation testing on safety modules;
+  # skipped on pure-docs PRs; most PRs touch no safety module and pass instantly.
+  mutation-diff:
+    # Scoped (narrow) mutation testing, PR-only (souliane/teatree#131).
+    # ``t3 mutation run`` diffs the PR vs base, intersects with
+    # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
+    # touched safety modules — a no-op (fast pass) when the PR touches none, so
+    # most PRs pay nothing. Programmatic ratchet: the command fails when the
+    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total,
+    # in BOTH ``warn`` and ``block`` mode (the count may only ever shrink) —
+    # survivors at-or-below baseline still pass. Flipping ``mode`` to "block" is
+    # a later follow-up (gate on survivors existing at all), no workflow change.
+    # ``t3 mutation run --all --update-baseline`` tightens the recorded counts.
+    # The 10-min cap bounds a pathological run.
+    #
+    # Heavy lane: PR-only AND skipped on a provably pure-docs diff
+    # (preflight ``run_heavy_python=false``). Any non-pure-docs PR runs
+    # it — fail-safe-unknown. (#132)
+    needs: preflight
+    if: >
+      always() &&
+      github.event_name == 'pull_request' &&
+      needs.preflight.outputs.run_heavy_python == 'true'
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # fetch-depth: 0 so ``git merge-base origin/main HEAD`` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Diff-scoped mutation run (warn-first; 10-min cap)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF"
+          timeout 600 uv run t3 mutation run --target "origin/$BASE_REF"
+
+  # GATE (weekly cadence, PR-only): full-registry mutation run on the first PR
+  # of each ISO week; a no-op (skipped) on every subsequent PR that week.
+  mutation-weekly:
+    # Weekly full-scope mutation run over the whole registry (not just the
+    # diff). Like the eval suite, it is metered (slow), so it runs once a week
+    # on the FIRST PR opened that ISO week — ``scripts/eval/first_pr_of_week.py``
+    # makes that decision (order-independent, re-run safe). Warn-first as above;
+    # mutates every declared safety module by passing each registry path as the
+    # changed set.
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --group mutation
+      - name: Decide whether this is the first PR of the ISO week
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
+            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
+          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_mutation=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Full-scope mutation run (warn-first)
+        if: steps.gate.outputs.run_mutation == 'true'
+        run: uv run t3 mutation run --all
+
+  # GATE (push + schedule only): full-tree scan for committed customer brand names;
+  # runs daily and on push-to-main; skipped on PRs (diff-only gate handles PRs).
+  banned-terms-tree:
+    # Full-tree banned-brand backstop (souliane/teatree#1570). The
+    # diff/payload banned-terms gate only ever sees a *change*; a brand
+    # name ALREADY committed never appears in a post-landing diff. This
+    # job scans every git-tracked file's content for the high-confidence
+    # brand list on push-to-main and on a daily schedule, failing CI if a
+    # brand is present. The public repo ships with no brands; the list is
+    # supplied from the TEATREE_BANNED_BRANDS secret so no tenant name is
+    # ever committed. With no secret configured the scan is a clean no-op.
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Full-tree banned-brand scan
+        env:
+          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+        run: uv run t3 banned-terms scan-tree --repo-root .
+
+  # ── 7. Security & supply chain ─────────────────────────────────────────────
+
+  # GATE: dependency vulnerability audit via pip-audit (OSV backend). Job key
+  # `uv-audit` is LOAD-BEARING — hardcoded as UV_AUDIT_CHECK_NAME in
+  # src/teatree/loop/scanners/pr_sweep.py. The inner tool is pip-audit, not
+  # `uv audit`, because `uv audit` has a known OSV parser regression (#19492).
+  uv-audit:
+    # Job name preserved for compatibility with the PR-sweep scanner's
+    # ``--fallback-uv-audit`` escape hatch (see
+    # ``src/teatree/loop/scanners/pr_sweep.py`` ``UV_AUDIT_CHECK_NAME``).
+    # The inner command is ``pip-audit`` because ``uv audit`` is still
+    # a preview feature and astral-sh/uv#19492 (OSV parser regression)
+    # turned every PR red. ``pip-audit`` uses the same OSV backend and
+    # is production-stable. See souliane/teatree#1264.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: uv export --format requirements-txt --no-emit-project --no-emit-workspace --no-header --quiet > requirements.audit.txt
+      - run: uvx pip-audit --strict --vulnerability-service osv --disable-pip -r requirements.audit.txt
+
+  # GATE: regenerates dist/sbom.json and fails if the committed copy is stale;
+  # also uploads the SBOM as a workflow artifact for supply-chain visibility.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - run: scripts/hooks/generate_sbom.sh
+      - run: git diff --exit-code dist/sbom.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: sbom
+          path: dist/sbom.json
+
+  # ── 8. Metered / scheduled ─────────────────────────────────────────────────
+
+  # GATE (weekly + on-demand): AI behavioral eval suite (metered, calls claude -p).
+  # Runs on the first PR of each ISO week, the Sunday cron backstop for PR-less
+  # weeks, and unconditionally on workflow_dispatch. Skipped (internal gate step)
+  # on every other PR and every non-Sunday cron tick.
   eval-weekly:
     # Weekly behavioral-eval gate. The eval suite shells out to `claude -p`
     # (cost, network, model variance), so it must NOT run on every push or
