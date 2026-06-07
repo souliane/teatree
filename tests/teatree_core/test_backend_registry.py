@@ -19,6 +19,7 @@ class TestBackendProviderRegistry:
         try:
             provider = backend_registry.get_backend_provider()
             assert provider.get_code_host(object()) is None
+            assert provider.get_code_host_for_repo(object(), "/tmp/repo") is None
             assert provider.get_code_hosts(object()) == []
             assert provider.get_messaging(object()) is None
             assert provider.get_ci_service(gitlab_token="t", gitlab_url="u") is None

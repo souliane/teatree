@@ -72,6 +72,7 @@ t3 eval all --docker                          # run the gate inside the CI image
 t3 eval run                                 # run all (DEFAULT backend = subscription, no API spend)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
+t3 eval run --format html > report.html     # self-contained HTML report (single-trial; inline CSS, no external assets)
 t3 eval run worktree_first --max-turns 5    # override max_turns
 t3 eval run --no-persist                     # run without recording to the ledger
 t3 eval run --trials 3                        # pass@k: 3 trials, pass if any passes

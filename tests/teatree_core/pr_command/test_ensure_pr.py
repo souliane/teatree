@@ -6,6 +6,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
@@ -98,7 +99,7 @@ class TestEnsurePr(TestCase):
         # (GitHub backend was aligned to it; GitLab API native).
         host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/999"}
         host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -147,7 +148,7 @@ class TestEnsurePr(TestCase):
             stdout="",
             stderr="pull request create failed: GraphQL: No commits between main and feat-q (createPullRequest)",
         )
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -184,7 +185,7 @@ class TestEnsurePr(TestCase):
             stdout="",
             stderr="pull request create failed: GraphQL: API rate limit exceeded",
         )
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
@@ -253,7 +254,7 @@ class TestCreatePrTitleSourcing(TestCase):
         host = MagicMock()
         host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/1"}
         host.current_user.return_value = "souliane"
-        self._monkeypatch.setattr(ensure_pr_mod, "code_host_from_overlay", lambda: host)
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
         return host
 
     def test_title_derives_from_branch_commit_not_default_head(self) -> None:
@@ -299,3 +300,29 @@ class TestCreatePrTitleSourcing(TestCase):
         (spec,) = host.create_pr.call_args.args
         assert spec.title == "WIP: empty-branch"
         assert "1426" not in spec.title
+
+
+class TestEnsurePrResolutionError:
+    """#2025: a mismatched forge surfaces as a structured error result.
+
+    The central AC: ``create_or_defer_pr`` must return a structured
+    ``error`` result — never an unhandled exception — when the repo's
+    forge has no configured credentials.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_returns_structured_error_on_resolution_failure(self) -> None:
+        def _raise(_repo_path: str) -> object:
+            msg = "repo origin resolves to the gitlab forge but no gitlab token"
+            raise BackendResolutionError(msg)
+
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", _raise)
+
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY):
+            result = create_or_defer_pr(".", "some-branch")
+
+        assert "error" in result
+        assert "gitlab" in result["error"]

@@ -203,6 +203,29 @@ class TestTranscriptReplay:
         payload = json.loads(output[start:end])
         assert payload["summary"]["total"] == 1
 
+    def test_html_format_emits_self_contained_document(self) -> None:
+        specs = [_spec("alpha")]
+
+        class _StubRunner:
+            def __init__(self, *_, **__) -> None: ...
+
+            def run(self, spec: EvalSpec) -> EvalRun:
+                return _run(spec.name, tool_calls=_PASSING_CALL)
+
+        with (
+            patch("teatree.cli.eval.app.discover_specs", return_value=specs),
+            patch("teatree.eval.backends.ClaudePRunner", _StubRunner),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--format", "html", "--no-persist"])
+        assert result.exit_code == 0, result.output
+        assert "<!doctype html>" in result.output.lower()
+        assert "alpha" in result.output
+
+    def test_html_format_rejected_on_history_command(self) -> None:
+        result = CliRunner().invoke(app, ["eval", "history", "--format", "html"])
+        assert result.exit_code == 2
+        assert "unknown --format" in result.output
+
     def test_exits_nonzero_when_any_scenario_failed(self) -> None:
         specs = [_spec("alpha")]
 

@@ -474,6 +474,88 @@ class TestAllowlistHostQualificationSymmetry:
         assert _repo_visibility.slug_is_allowlisted_private("acmecorp-engineering/product", cfg) is False
 
 
+class TestAllowlistSshAliasAndSupersetSlug:
+    """The allowlist match is path-segment-aware, not a raw substring (#1953).
+
+    A bare ``entry in slug`` substring check misclassifies a PUBLIC repo as
+    private whenever the entry happens to appear as a substring of an unrelated
+    part of the slug -- an SSH host alias (``gitlab-<entry>:org/public``) or a
+    superset owner (``<entry>-fork/repo``, ``open<entry>/repo``). That downgrades
+    the banned-terms gate on a public surface -- the leak-direction bug. The fix
+    matches the entry against the slug's owner/repo PATH SEGMENTS only (the host
+    segment never participates), as an exact leading-segment-prefix.
+    """
+
+    def test_ssh_alias_host_containing_entry_does_not_match(self, tmp_path: Path) -> None:
+        # The canonical bug: a PUBLIC repo whose ``origin`` uses an SSH config
+        # Host ALIAS (``gitlab-acmecorp``) -- a local name with no canonical
+        # identity -- that merely CONTAINS the allowlist entry as a substring.
+        cfg = _config(tmp_path, ["acmecorp"])
+        assert _repo_visibility.slug_is_allowlisted_private("gitlab-acmecorp/someorg/public-repo", cfg) is False
+
+    def test_superset_owner_segment_does_not_match(self, tmp_path: Path) -> None:
+        # ``acme-engineering`` must NOT match a different org ``acme-engineering-fork``.
+        cfg = _config(tmp_path, ["acme-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/acme-engineering-fork/widget", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering-fork/widget", cfg) is False
+
+    def test_substring_owner_segment_does_not_match(self, tmp_path: Path) -> None:
+        # ``acmecorp`` must NOT match an owner that merely CONTAINS it (``openacmecorp``).
+        cfg = _config(tmp_path, ["acmecorp"])
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/openacmecorp/widget", cfg) is False
+        assert _repo_visibility.slug_is_allowlisted_private("openacmecorp/widget", cfg) is False
+
+    def test_genuine_private_org_namespace_still_matches(self, tmp_path: Path) -> None:
+        # The must-MATCH side: a real private repo under the configured namespace
+        # still downgrades, in every slug form, host-qualified and bare.
+        cfg = _config(tmp_path, ["acme-engineering"])
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/acme-engineering/secret", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("gitlab.com/acme-engineering/secret", cfg) is True
+
+    def test_whole_owner_repo_entry_still_matches(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["acme-engineering/secret"])
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/secret", cfg) is True
+        assert _repo_visibility.slug_is_allowlisted_private("github.com/acme-engineering/secret", cfg) is True
+        # A different repo under the same owner is NOT covered by a whole-repo entry.
+        assert _repo_visibility.slug_is_allowlisted_private("acme-engineering/other", cfg) is False
+
+
+class TestSlugForCwdSshAliasNormalization:
+    """``slug_for_cwd`` normalizes an SSH config Host ALIAS remote (#1953).
+
+    A standard SSH remote ``git@host:owner/repo`` already normalizes to
+    ``host/owner/repo`` because it carries a ``user@`` part. An SSH *alias*
+    remote ``alias:owner/repo`` (the ``Host alias`` form from ``~/.ssh/config``,
+    no ``user@``) was previously returned verbatim (``alias:owner/repo``) with
+    the ``:`` glued in -- a non-canonical slug whose alias segment then tripped
+    the substring matcher. The alias is a local config name with no canonical
+    identity, so it is dropped; the canonical slug is the bare ``owner/repo``.
+    """
+
+    def test_ssh_alias_remote_drops_alias_and_keeps_owner_repo(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
+        assert _repo_visibility.slug_for_cwd(repo) == "someorg/public-repo"
+
+    def test_standard_ssh_remote_still_keeps_real_host(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme-engineering/secret.git")
+        assert _repo_visibility.slug_for_cwd(repo) == "gitlab.com/acme-engineering/secret"
+
+    def test_https_remote_unchanged(self, tmp_path: Path) -> None:
+        repo = _repo_with_remote(tmp_path / "r", "https://github.com/souliane/teatree.git")
+        assert _repo_visibility.slug_for_cwd(repo) == "github.com/souliane/teatree"
+
+    def test_public_repo_with_alias_host_is_not_downgraded_end_to_end(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # End-to-end: a PUBLIC repo whose origin uses an alias host containing the
+        # allowlist entry must NOT be carved out as private.
+        cfg = _config(tmp_path, ["acmecorp"])
+        repo = _repo_with_remote(tmp_path / "r", "gitlab-acmecorp:someorg/public-repo.git")
+        monkeypatch.setenv("PATH", _git_only_bin(tmp_path / "bin"))
+        assert publish_surface.commit_targets_private_repo(repo, config_path=cfg) is False
+
+
 class TestVisibilityProbeFallback:
     @pytest.fixture(autouse=True)
     def _isolated_cache(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

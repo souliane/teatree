@@ -239,7 +239,7 @@ def is_gh_glab_posting_command(command: str) -> bool:
 def commit_targets_private_repo(cwd: Path | None, *, config_path: Path | None = None) -> bool:
     """Return True iff a commit in ``cwd`` targets a known-private repo.
 
-    Offline-first: the ``[teatree] private_repos`` slug-substring allowlist is
+    Offline-first: the ``[teatree] private_repos`` slug-namespace allowlist is
     consulted before any network probe, so a fully-offline session still gets
     the carve-out for declared repos. The cached ``gh``/``glab`` visibility
     probe is the fallback. An unresolvable repo is NOT private -- detection
