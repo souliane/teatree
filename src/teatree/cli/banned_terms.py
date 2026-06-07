@@ -19,6 +19,7 @@ banned_terms_app = typer.Typer(no_args_is_help=True, help="Banned-terms backstop
 _console = Console()
 
 _FINDINGS_EXIT_CODE = 1
+_MISCONFIGURED_EXIT_CODE = 2
 
 
 @banned_terms_app.callback()
@@ -43,12 +44,28 @@ def scan_tree(
         "--config",
         help="Override the ~/.teatree.toml term-list config (else resolved as the gate does).",
     ),
+    *,
+    require_brands: bool = typer.Option(
+        False,
+        "--require-brands",
+        help="HARD-FAIL (exit 2) when no brands are configured, instead of warning and "
+        "exiting 0. CI passes this so a missing TEATREE_BANNED_BRANDS secret reds the "
+        "job loudly; local dev omits it and stays green.",
+    ),
 ) -> None:
     """Scan every git-tracked file for committed banned terms."""
     root = repo_root if repo_root is not None else Path.cwd()
     result = scan_committed_tree(root, config_path=config)
 
     if not result.brands_configured:
+        if require_brands:
+            _console.print(
+                "[red]banned-terms scan-tree: MISCONFIGURED — brand backstop INERT under "
+                "--require-brands: banned_brands is unpopulated.[/] "
+                "Configure the TEATREE_BANNED_BRANDS secret (or [teatree].banned_brands) "
+                "with the curated brand subset so the full-tree scan actually runs."
+            )
+            raise typer.Exit(_MISCONFIGURED_EXIT_CODE)
         _console.print(
             "[yellow]banned-terms scan-tree: WARNING — brand backstop INERT: "
             "banned_brands is unpopulated[/] "

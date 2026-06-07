@@ -44,8 +44,8 @@
 #   2. Fast static checks    — lint, blueprint-cross-pr, blueprint-size-budget
 #   3. Docs integrity        — doc-update-gate, comment-density-warning,
 #                              docs-drift
-#   4. Signal & ratchet      — semgrep-regressions (advisory), test-shape
-#                              (advisory), test-path-mirror (ratchet gate)
+#   4. Signal & ratchet      — test-shape (advisory),
+#                              test-path-mirror (ratchet gate)
 #   5. Test suite            — test, test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree
@@ -287,6 +287,13 @@ jobs:
       # drifts from the code. See souliane/teatree#890.
       - run: uv run python manage.py generate_all_docs
       - run: uv run python scripts/hooks/generate_cli_reference.py
+      # Regenerate the antipattern catalog from antipatterns.yaml so the
+      # docs/generated diff gate below can catch any skew. ANTIPATTERN_CATALOG_NO_STAGE
+      # stops the generator from git-add-ing its output — a staged rewrite would
+      # match the index and hide the drift from `git diff` (no --cached).
+      - run: uv run python scripts/hooks/generate_antipattern_catalog.py
+        env:
+          ANTIPATTERN_CATALOG_NO_STAGE: "1"
       - run: git diff --exit-code docs/generated
       # A strict build is the second half of the gate: a broken link or
       # missing nav target fails CI instead of shipping a broken site.
@@ -294,28 +301,15 @@ jobs:
 
   # ── 4. Signal & ratchet checks (mix of advisory + ratchet gate) ────────────
 
-  # ADVISORY (PR-only): runs the warn-set semgrep rules and always exits 0;
-  # a finding is visible in CI output but does not block the PR.
-  semgrep-regressions:
-    # Advisory warn-set scan for the named regression-detector rules
-    # (souliane/teatree#126). The blocking set rides the prek step above
-    # (full-tree, --error, fails CI on a finding). This job runs the WARN
-    # config and ALWAYS exits 0, so a still-open regression's findings are
-    # visible on every PR without gating — mirrors comment-density-warning.
-    # Each warn rule flips warn/ -> blocking/ in its bug's fix PR.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: uv sync
-      - name: Warn-set regression scan (advisory; never fails)
-        run: uvx semgrep@1.165.0 scan --config .semgrep/warn || true
+  # NOTE: the former ``semgrep-regressions`` advisory job is removed. The
+  # named regression-detector layer is now fully BLOCKING (all rules live in
+  # ``.semgrep/blocking/``; ``.semgrep/warn/`` no longer exists), and the
+  # blocking set is enforced on every push/PR via the prek step in the ``lint``
+  # job (``.pre-commit-config.yaml`` ``semgrep-regressions`` alias,
+  # ``--config=.semgrep/blocking --error``). The advisory job scanned the
+  # now-absent ``.semgrep/warn`` (semgrep exits 0 on a missing config, and the
+  # trailing ``|| true`` swallowed any non-zero), so it was a no-op fake-green
+  # gate — deleting it loses no coverage.
 
   # ADVISORY: reports near-duplicate test functions and test-to-source ratio;
   # default mode exits 0 (warn-only); flip to "block" in pyproject.toml to gate.
@@ -537,9 +531,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
-            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
-          if uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
+          # FAIL-SAFE: if the PR list cannot be fetched (gh outage, rate-limit,
+          # network), default to RUNNING the mutation suite — never silently
+          # skip. The old empty-list fallback made a fetch failure look like
+          # "not the first PR of the week" and skipped the run, exiting 0 even
+          # when it should have run (fake-green).
+          if ! gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
+              --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json; then
+            echo "WARNING: could not fetch the PR list — running mutation (run-when-uncertain)." >&2
+            echo "run_mutation=true" >> "$GITHUB_OUTPUT"
+          elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
             echo "run_mutation=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_mutation=false" >> "$GITHUB_OUTPUT"
@@ -558,7 +559,10 @@ jobs:
     # brand list on push-to-main and on a daily schedule, failing CI if a
     # brand is present. The public repo ships with no brands; the list is
     # supplied from the TEATREE_BANNED_BRANDS secret so no tenant name is
-    # ever committed. With no secret configured the scan is a clean no-op.
+    # ever committed. ``--require-brands`` makes a MISSING secret a LOUD
+    # failure (exit 2 = misconfigured) instead of a silent clean no-op — the
+    # job stays RED until the secret is wired (intended). Local dev omits the
+    # flag and stays green.
     if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -573,7 +577,7 @@ jobs:
       - name: Full-tree banned-brand scan
         env:
           TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
-        run: uv run t3 banned-terms scan-tree --repo-root .
+        run: uv run t3 banned-terms scan-tree --repo-root . --require-brands
 
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 

@@ -338,6 +338,87 @@ class TestScanTreeCliInertSignal:
         assert "clean" in result.stdout
 
 
+class TestScanTreeRequireBrandsHardFail:
+    """Fix #3: ``--require-brands`` hard-fails when brands aren't configured.
+
+    Without the flag the inert state is a LOUD warning + exit 0 (local dev
+    stays green). With the flag — the form CI passes — an unpopulated brand
+    list is MISCONFIGURED (exit 2, distinct from exit 1 = findings), so a
+    missing TEATREE_BANNED_BRANDS secret reds the job instead of running a
+    fake-green no-op scan.
+    """
+
+    def test_require_brands_hard_fails_when_no_brands(self, tmp_path: Path) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml"), "--require-brands"],
+        )
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in result.stdout
+
+    def test_require_brands_with_empty_brands_list_hard_fails(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, brands=[], banned_terms=["ship", "delivery"])
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg), "--require-brands"],
+        )
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in result.stdout
+
+    def test_without_flag_no_brands_stays_green(self, tmp_path: Path) -> None:
+        # Anti-vacuity: the SAME no-brands repo that exits 2 under --require-brands
+        # must exit 0 without it, proving the hard-fail is the flag's doing.
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
+        )
+        assert result.exit_code == 0
+        assert "INERT" in result.stdout
+
+    def test_require_brands_with_brands_configured_runs_normally(self, tmp_path: Path) -> None:
+        # The flag only hard-fails on the misconfigured state; a populated brand
+        # list scans normally and the flag is a no-op (exit 0 on a clean tree).
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND])
+        repo = _repo_with(tmp_path, "src/app.py", "WORKTREE = 'wt_777_generic'\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg), "--require-brands"],
+        )
+        assert result.exit_code == 0
+        assert "clean" in result.stdout
+
+    def test_require_brands_with_brands_still_reports_findings_as_exit_1(self, tmp_path: Path) -> None:
+        # A dirty tree under --require-brands is exit 1 (findings), NOT exit 2 —
+        # the two failure modes stay distinct.
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND])
+        repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg), "--require-brands"],
+        )
+        assert result.exit_code == 1
+        assert "src/app.py" in result.stdout
+
+
+class TestBannedTermsTreeCiPassesRequireBrands:
+    """Fix #3 (CI side): the banned-terms-tree job passes ``--require-brands``."""
+
+    def test_ci_step_passes_require_brands(self) -> None:
+        import yaml  # noqa: PLC0415
+
+        ci = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text())
+        steps = ci["jobs"]["banned-terms-tree"]["steps"]
+        joined = " ".join(s.get("run", "") for s in steps if isinstance(s, dict))
+        assert "scan-tree" in joined, "The banned-terms-tree CI step must run `banned-terms scan-tree`."
+        assert "--require-brands" in joined, (
+            "The banned-terms-tree CI step must pass --require-brands so a missing "
+            "TEATREE_BANNED_BRANDS secret reds the job (fail-loud), not a silent no-op."
+        )
+
+
 class TestBackstopBrandVsCommonWord:
     """The activated backstop flags a planted brand but not a common word (#1591).
 
