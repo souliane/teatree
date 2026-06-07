@@ -24,7 +24,7 @@ _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
-from teatree.skill_loading import SkillLoadingPolicy
+from teatree.skill_support.loading import SkillLoadingPolicy
 
 XDG_DATA_DIR = Path.home() / ".local" / "share" / "teatree"
 SKILL_METADATA_CACHE = XDG_DATA_DIR / "skill-metadata.json"

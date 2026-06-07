@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from teatree.skill_deps import TriggerIndex, resolve_companions
+from teatree.skill_support.deps import TriggerIndex, resolve_companions
 from teatree.types import SkillMetadata
 from teatree.utils import git
 
@@ -26,7 +26,7 @@ def _default_skills_dir() -> Path:
     if root:
         return root / "skills"
     # Fallback for non-source installs: skills/ next to src/
-    return Path(__file__).resolve().parent.parent.parent / "skills"
+    return Path(__file__).resolve().parents[3] / "skills"
 
 
 DEFAULT_SKILLS_DIR = _default_skills_dir()

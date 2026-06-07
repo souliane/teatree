@@ -102,7 +102,7 @@ def agent(
     from teatree.cli import _find_project_root  # noqa: PLC0415
     from teatree.config import discover_active_overlay  # noqa: PLC0415
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-    from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+    from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
 
     project_root = _find_project_root()
     active = discover_active_overlay()

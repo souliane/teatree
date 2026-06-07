@@ -40,10 +40,10 @@ def render_skill_delegation_map(mapping: Mapping[str, Sequence[str]]) -> str:
 
 def load_skill_delegation(path: Path | None = DEFAULT_SKILL_MAP) -> tuple[str, dict[str, list[str]]]:
     if path is None:
-        return "teatree.skill_map.DEFAULT_SKILL_DELEGATION", default_skill_delegation()
+        return "teatree.skill_support.map.DEFAULT_SKILL_DELEGATION", default_skill_delegation()
     if path.exists():
         return str(path), parse_skill_delegation_map(path.read_text(encoding="utf-8"))
     if path.as_posix() == DEFAULT_SKILL_MAP.as_posix():
-        return "teatree.skill_map.DEFAULT_SKILL_DELEGATION", default_skill_delegation()
+        return "teatree.skill_support.map.DEFAULT_SKILL_DELEGATION", default_skill_delegation()
     msg = f"Skill delegation map not found: {path}"
     raise FileNotFoundError(msg)

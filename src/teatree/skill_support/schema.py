@@ -1,7 +1,7 @@
 """SKILL.md frontmatter schema validation.
 
 Validates required fields, regex patterns, and cross-references.
-Can be used as a CLI tool: ``uv run python -m teatree.skill_schema <paths>``.
+Can be used as a CLI tool: ``uv run python -m teatree.skill_support.schema <paths>``.
 
 Teatree frontmatter is a superset of APM's SKILL.md format:
 - APM requires: ``name``, ``description``
@@ -171,7 +171,7 @@ def main() -> None:  # pragma: no cover — pre-commit entry point (orchestrates
     """CLI entry point for pre-commit and manual validation."""
     paths = [Path(p) for p in sys.argv[1:]]
     if not paths:
-        typer.echo("Usage: python -m teatree.skill_schema <SKILL.md ...>", err=True)
+        typer.echo("Usage: python -m teatree.skill_support.schema <SKILL.md ...>", err=True)
         sys.exit(1)
 
     all_errors: list[str] = []

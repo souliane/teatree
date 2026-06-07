@@ -1,8 +1,8 @@
-"""Tests for teatree.skill_schema — SKILL.md frontmatter validation."""
+"""Tests for teatree.skill_support.schema — SKILL.md frontmatter validation."""
 
 from pathlib import Path
 
-from teatree.skill_schema import validate_directory, validate_skill_md
+from teatree.skill_support.schema import validate_directory, validate_skill_md
 
 
 class TestValidateSkillMd:
