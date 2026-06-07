@@ -198,10 +198,14 @@ class BotPing(models.Model):
         not deliver (the backend did not resolve, or a configured send failed).
         Keyed by ``idempotency_key`` rather than pk because a failed delivery
         through :meth:`claim_delivery` deletes the recoverable row and recreates
-        a fresh one under the same key — the count must survive that swap.
-        Drives the :attr:`MAX_REDELIVERY_ATTEMPTS` bound so a row that can never
-        deliver is EXPIRED rather than retried forever. An ``F`` expression so
-        concurrent drains never lose a count.
+        a fresh one under the same key — the pk changes but the key does not.
+        :meth:`claim_delivery` carries the prior ``attempts`` onto the recreated
+        row so this bump lands on the accumulated count, not a reset-to-zero row;
+        without that the failed-delivery path would re-record at ``attempts=1``
+        every tick and the :attr:`MAX_REDELIVERY_ATTEMPTS` bound would never trip
+        (#2068). Drives that bound so a row that can never deliver is EXPIRED
+        rather than retried forever. An ``F`` expression so concurrent drains
+        never lose a count.
         """
         cls.objects.filter(idempotency_key=idempotency_key).update(attempts=models.F("attempts") + 1)
 
@@ -233,23 +237,28 @@ class BotPing(models.Model):
         :meth:`finalize_sent` / :meth:`finalize_failed`. A recoverable row
         (FAILED/NOOP — #1306, or a STALE SENDING whose owner crashed before
         finalizing — see :meth:`is_stale_sending`) is replaced by the fresh
-        SENDING claim so a retry still re-delivers.
+        SENDING claim so a retry still re-delivers; its ``attempts`` count is
+        carried onto the fresh row so the :attr:`MAX_REDELIVERY_ATTEMPTS` bound
+        accumulates across delete-recreate cycles rather than resetting (#2068).
         """
         manager = cls.objects.using(using) if using else cls.objects
         with transaction.atomic(using=using):
             row = manager.select_for_update().filter(idempotency_key=idempotency_key).first()
+            prior_attempts = 0
             if row is not None:
                 if row.status == cls.Status.SENT:
                     return DeliveryClaim.ALREADY_SENT
                 recoverable = row.status in cls._RECOVERABLE or cls.is_stale_sending(row.status, row.posted_at)
                 if not recoverable:
                     return DeliveryClaim.IN_FLIGHT
+                prior_attempts = row.attempts
                 row.delete()
             manager.create(
                 idempotency_key=idempotency_key,
                 kind=kind,
                 status=cls.Status.SENDING,
                 text=text,
+                attempts=prior_attempts,
             )
         return DeliveryClaim.CLAIMED
 
