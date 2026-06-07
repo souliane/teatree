@@ -6,11 +6,13 @@ phase/ship gates → ``core/gates/`` package, ``loop/tick_jobs.py`` →
 ``job_identity`` / ``scanner_factories`` / ``domain_jobs`` /
 ``global_scanner_factories``; PR8: the 24 flat ``backends/<provider>_*.py``
 modules → ``backends/gitlab`` / ``backends/slack`` / ``backends/github``
-subpackages (prefix stripped) — every importer and ``mock.patch`` target moved
-to the new location. This module is the fitness function that keeps it that
-way: a regression that resurrects an old path (a copy-pasted import, a
-``patch("teatree.core.merge_execution...")`` target, a doc/skill reference)
-turns it red.
+subpackages (prefix stripped); PR9: the 16 flat ``cli/review*.py`` modules →
+the ``cli/review`` subpackage (redundant ``review_`` prefix stripped, bare
+``cli/review.py`` → ``cli/review/service.py``) — every importer and
+``mock.patch`` target moved to the new location. This module is the fitness
+function that keeps it that way: a regression that resurrects an old path (a
+copy-pasted import, a ``patch("teatree.core.merge_execution...")`` target, a
+doc/skill reference) turns it red.
 
 Two halves:
 
@@ -103,6 +105,36 @@ _BACKEND_FLAT_STEMS = (
     "github_sync",
 )
 
+# PR9 cli/ review grouping: each flat ``teatree.cli.review_<rest>`` moved into
+# the ``teatree.cli.review`` subpackage with the redundant ``review_`` prefix
+# stripped (e.g. the flat ``review_diff`` module → ``teatree.cli.review.diff``), and
+# the bare ``teatree.cli.review`` module (``ReviewService`` + ``review_app``)
+# became ``teatree.cli.review.service``. The flat ``review_<rest>`` paths are now
+# dead; the dotted ``teatree.cli.review.<rest>`` paths (incl. ``service``) are
+# live. ``teatree.cli.review`` itself is the live package facade, so it is NOT a
+# dead path — only the underscore-joined ``review_<rest>`` forms are.
+_CLI_REVIEW_FLAT_STEMS = (
+    "approval",
+    "audit",
+    "authorize",
+    "commands",
+    "default_draft",
+    "diff",
+    "drafts",
+    "evidence_gate",
+    "live_approval",
+    "on_behalf",
+    "post_impl",
+    "request",
+    "run",
+    "shape_gate",
+    "todo_gate",
+)
+
+# Submodule names inside ``teatree.cli.review`` after the move (the live dotted
+# paths). ``service`` carries the former bare ``review.py`` surface.
+_CLI_REVIEW_SUBMODULES = (*_CLI_REVIEW_FLAT_STEMS, "service")
+
 
 def _legacy_patterns() -> dict[str, re.Pattern[str]]:
     patterns = {
@@ -118,6 +150,10 @@ def _legacy_patterns() -> dict[str, re.Pattern[str]]:
         # Flat ``teatree.backends.<provider>_<rest>`` — the dotted subpackage path
         # ``teatree.backends.<provider>.<rest>`` is live and never matches this.
         patterns[f"teatree.backends.{stem}"] = re.compile(rf"\bteatree\.backends\.{stem}\b")
+    for stem in _CLI_REVIEW_FLAT_STEMS:
+        # Flat ``teatree.cli.review_<rest>`` — the dotted subpackage path
+        # ``teatree.cli.review.<rest>`` is live and never matches this.
+        patterns[f"teatree.cli.review_{stem}"] = re.compile(rf"\bteatree\.cli\.review_{stem}\b")
     return patterns
 
 
@@ -213,6 +249,15 @@ class TestFacadeImportSmoke:
         github = importlib.import_module("teatree.backends.github")
         for name in ("GitHubCodeHost", "ProjectItem", "fetch_project_items", "issue_repo_short"):
             assert hasattr(github, name), f"teatree.backends.github missing {name}"
+
+    @pytest.mark.parametrize("stem", _CLI_REVIEW_SUBMODULES)
+    def test_cli_review_subpackage_modules_import(self, stem: str) -> None:
+        importlib.import_module(f"teatree.cli.review.{stem}")
+
+    def test_cli_review_package_facade_re_exports(self) -> None:
+        review = importlib.import_module("teatree.cli.review")
+        for name in ("ReviewService", "review_app", "review_request_app"):
+            assert hasattr(review, name), f"teatree.cli.review missing {name}"
 
 
 class TestPr7DeletableShims:

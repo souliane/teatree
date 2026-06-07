@@ -30,8 +30,8 @@ otherwise. The genuine guard is preserved: no authorization of any kind
 → refusal.
 
 Kept in its own module (registered by :mod:`teatree.cli.review` via
-:func:`register`, exactly like :mod:`teatree.cli.review_on_behalf` and
-:mod:`teatree.cli.review_live_approval`) so the GitLab-MR review
+:func:`register`, exactly like :mod:`teatree.cli.review.on_behalf` and
+:mod:`teatree.cli.review.live_approval`) so the GitLab-MR review
 mechanics module stays under the OOP/LOC ceiling.
 """
 

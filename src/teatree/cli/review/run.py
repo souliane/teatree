@@ -38,14 +38,14 @@ from typing import Final, cast
 
 import typer
 
-from teatree.cli.review import review_app
+from teatree.cli.review.service import review_app
 from teatree.url_classify import Forge, forge_of, repo_and_iid
 from teatree.utils.django_bootstrap import ensure_django
 
 # GitLab JSON payloads — narrow ``object`` rather than a fictitious schema
 # because the API surface mixes strings (paths, diffs), ints (ids), and
 # nested dicts/lists per endpoint. Mirrors the type-alias pattern in
-# :mod:`teatree.cli.review_diff`.
+# :mod:`teatree.cli.review.diff`.
 type JSONObject = dict[str, object]
 type DiscussionList = list[JSONObject]
 
@@ -233,7 +233,7 @@ def _audit_gitlab_mr(url: str) -> ReviewRunResult:
     import httpx  # noqa: PLC0415
 
     from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
-    from teatree.cli.review import ReviewService  # noqa: PLC0415
+    from teatree.cli.review.service import ReviewService  # noqa: PLC0415
     from teatree.core.models.live_post_approval import canonical_mr_scope  # noqa: PLC0415
 
     parsed = repo_and_iid(url)

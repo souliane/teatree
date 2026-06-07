@@ -15,7 +15,7 @@ follow-up.
 
 import pytest
 
-from teatree.cli.review_live_approval import APPROVAL_PHRASES, _has_approval_phrase
+from teatree.cli.review.live_approval import APPROVAL_PHRASES, _has_approval_phrase
 
 
 class TestApprovalPhraseWholeWord:

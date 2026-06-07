@@ -16,15 +16,15 @@ because this module IS the extracted implementation of those methods.
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
-from teatree.cli.review_approval import identity_in_approved_by
-from teatree.cli.review_audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
+from teatree.cli.review.approval import identity_in_approved_by
+from teatree.cli.review.audit import ReviewAfterReceipt, notify_review_after_receipt, record_note_claim
 
 _HTTP_OK_CODES = frozenset({HTTPStatus.OK, HTTPStatus.CREATED, HTTPStatus.NO_CONTENT})
 
 
 def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-    """Indirection so test monkeypatches on ``teatree.cli.review.resolve_inline_position`` apply here too."""
-    from teatree.cli import review as review_mod  # noqa: PLC0415
+    """Indirection so test monkeypatches on ``teatree.cli.review.service.resolve_inline_position`` apply here too."""
+    from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
     return review_mod.resolve_inline_position(*args, **kwargs)
 
@@ -32,7 +32,7 @@ def _resolve_inline_position(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
 resolve_inline_position = _resolve_inline_position
 
 if TYPE_CHECKING:
-    from teatree.cli.review import ReviewService
+    from teatree.cli.review.service import ReviewService
 
 
 def post_draft_note_impl(  # noqa: PLR0913 — every kwarg maps 1:1 to a public CLI flag on `review post-draft-note`.

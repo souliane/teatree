@@ -7,9 +7,9 @@ typed receipts the reviewer used to derive the claim.
 
 Sibling gates on the same publishing flow:
 
-* :mod:`teatree.cli.review_on_behalf` — recorded-approval gate (#960).
-* :mod:`teatree.cli.review_shape_gate` — colleague-MR shape gate (#1114).
-* :mod:`teatree.cli.review_todo_gate` — author-marked TODO/FIXME anchor gate (#1186).
+* :mod:`teatree.cli.review.on_behalf` — recorded-approval gate (#960).
+* :mod:`teatree.cli.review.shape_gate` — colleague-MR shape gate (#1114).
+* :mod:`teatree.cli.review.todo_gate` — author-marked TODO/FIXME anchor gate (#1186).
 
 All four run on every publishing call that takes a body, in this order:
 on-behalf → shape → TODO-anchor → evidence. The evidence gate is the last one
@@ -227,7 +227,7 @@ def _refusal_missing() -> str:
         "downgrade the finding to a non-claim observation (a nit, a question, a\n"
         "cross-reference). Speculative findings on master-state should drop entirely —\n"
         "silence on a checked claim is correct.\n"
-        "Schema: teatree.cli.review_evidence_gate.FindingEvidence.\n"
+        "Schema: teatree.cli.review.evidence_gate.FindingEvidence.\n"
         "See: https://github.com/souliane/teatree/issues/1280"
     )
 

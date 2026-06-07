@@ -2,7 +2,7 @@
 
 Split from :mod:`teatree.backends.github` so the code-host module stays
 under the module-health LOC cap. :func:`record_github_note_claim` is the
-GitHub-side parallel of :func:`teatree.cli.review_audit.record_note_claim`
+GitHub-side parallel of :func:`teatree.cli.review.audit.record_note_claim`
 for the GitLab side: a best-effort write of one :class:`OutboundClaim`
 row in the same logical step as a successful comment POST, so the drift
 verifier can later confirm the artifact actually exists on the forge.
@@ -22,7 +22,7 @@ def record_github_note_claim(
 ) -> None:
     """Audit one successful GitHub-comment publish for the drift verifier (#1198).
 
-    Mirrors :func:`teatree.cli.review_audit.record_note_claim` for the
+    Mirrors :func:`teatree.cli.review.audit.record_note_claim` for the
     GitLab side: best-effort write, never raises into the caller.
     ``payload_digest`` lets the verifier detect silent body-divergence
     without storing the full body in the claim row.

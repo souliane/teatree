@@ -6,7 +6,8 @@ from typer.testing import CliRunner
 import teatree.backends.gitlab.api as gitlab_api_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import app
-from teatree.cli.review import ReviewService, _find_added_line
+from teatree.cli.review import ReviewService
+from teatree.cli.review.service import _find_added_line
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 
 runner = CliRunner()

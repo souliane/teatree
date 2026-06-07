@@ -111,7 +111,7 @@ class TestReviewRunHappyPath:
         with (
             patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
             patch(
-                "teatree.cli.review.ReviewService.get_gitlab_token",
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
                 return_value="t",
             ),
         ):
@@ -192,7 +192,7 @@ class TestReviewRunHttpError:
         with (
             patch("teatree.backends.gitlab.api.GitLabAPI", return_value=_HttpErrAPI()),
             patch(
-                "teatree.cli.review.ReviewService.get_gitlab_token",
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
                 return_value="t",
             ),
         ):
@@ -244,7 +244,7 @@ class TestReviewRunApiUnavailable:
         with (
             patch("teatree.backends.gitlab.api.GitLabAPI", return_value=_NullAPI()),
             patch(
-                "teatree.cli.review.ReviewService.get_gitlab_token",
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
                 return_value="t",
             ),
         ):
@@ -279,7 +279,7 @@ class TestReviewRunLargeMRFinding:
         with (
             patch("teatree.backends.gitlab.api.GitLabAPI", return_value=stub),
             patch(
-                "teatree.cli.review.ReviewService.get_gitlab_token",
+                "teatree.cli.review.service.ReviewService.get_gitlab_token",
                 return_value="t",
             ),
         ):

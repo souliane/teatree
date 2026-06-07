@@ -11,7 +11,7 @@ the GitLab-MR review mechanics module stays under the OOP/LOC ceiling
 * :func:`notify_draft_created` — fire-and-forget Slack DM with the
     GitLab draft link, emitted once per successful default-draft post.
 
-The shape mirrors :mod:`teatree.cli.review_on_behalf` exactly: the
+The shape mirrors :mod:`teatree.cli.review.on_behalf` exactly: the
 service method calls a thin module helper that owns the lazy ORM
 import. Keeping these out of the service class keeps the per-class
 method count under the OOP cap.
