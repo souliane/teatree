@@ -320,6 +320,31 @@ class TestExecuteProvision(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_planning_for_externally_delivered_ticket(self) -> None:
+        # #2104: a hand-dispatched delivery agent claimed the unit (via
+        # ``workspace ticket``). The provision worker must NOT auto-schedule the
+        # planner the external owner will never claim — but provisioning itself
+        # still succeeds.
+        from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+        mark_external_delivery(ticket)
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="planning").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "provisioned 1 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
 

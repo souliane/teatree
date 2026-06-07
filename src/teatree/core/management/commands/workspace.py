@@ -32,6 +32,7 @@ from teatree.core.management.commands._workspace_cleanup import (
 )
 from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
@@ -227,6 +228,14 @@ class Command(TyperCommand):
                 extra["description"] = description
             ticket.extra = extra
             ticket.save()
+
+            # #2104: this CLI IS the hand-dispatched external-delivery entry — a
+            # directly-implementing delivery agent (per /teatree-batch) runs it,
+            # the loop's own FSM never does. Claim delivery ownership so the
+            # loop's scheduling chokepoints (execute_provision before
+            # schedule_planning; the pr_sweep review-arm) skip the auto-planner /
+            # duplicate review-arm the external owner will never consume.
+            mark_external_delivery(ticket)
 
             if ticket.state == Ticket.State.SCOPED:
                 ticket.start()

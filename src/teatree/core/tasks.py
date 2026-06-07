@@ -219,8 +219,14 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     for the same transition — a lost update or a redelivered job must be safe.
 
     On success, the runner has materialised every git worktree; we then call
-    ``schedule_planning()`` so the FSM proceeds toward CODED.
+    ``schedule_planning()`` so the FSM proceeds toward CODED — unless the unit
+    is under active external delivery (#2104), in which case the auto-planner is
+    skipped (a hand-dispatched delivery agent implements directly with no
+    planning phase, so the planner would be orphaned). The loop's own
+    autonomous FSM never stamps the delivery lease, so its flow is unchanged.
     """
+    from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
+
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
         if ticket.state != Ticket.State.STARTED:
@@ -236,7 +242,10 @@ def execute_provision(ticket_id: int) -> TransitionResult:
             logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        ticket.schedule_planning()
+        if under_external_delivery(ticket):
+            logger.info("Ticket %s under external delivery; skipping auto-planner (#2104)", ticket_id)
+        else:
+            ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
 

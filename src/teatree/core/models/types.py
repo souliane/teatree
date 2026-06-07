@@ -92,6 +92,11 @@ class TicketExtra(TypedDict, total=False):
     # #1829 SHA-bound anti-vacuity proof; read by ``anti_vacuity_gate`` (see
     # ``AntiVacuityAttestation`` below).
     anti_vacuity_attestation: "AntiVacuityAttestation"
+    # #2104 delivery-ownership lease: stamped when a hand-dispatched delivery
+    # agent (``workspace ticket``) takes the unit, so the loop's scheduling
+    # chokepoints skip the auto-planner / duplicate review-arm a directly-
+    # implementing external owner never consumes (see ``ExternalDeliveryLease``).
+    external_delivery: "ExternalDeliveryLease"
 
 
 class ReviewSkillRun(TypedDict, total=False):
@@ -157,6 +162,27 @@ class AntiVacuityAttestation(TypedDict, total=False):
     proven_tests: list[str]
     no_new_tests: bool
     at: str
+
+
+class ExternalDeliveryLease(TypedDict, total=False):
+    """TTL'd record that a unit is under active EXTERNAL delivery (#2104).
+
+    Stamped by ``Ticket.mark_external_delivery`` when a hand-dispatched
+    delivery agent takes the ticket via ``workspace ticket`` — the external
+    entry the loop's own FSM never uses. The loop consults
+    ``Ticket.under_external_delivery`` at its scheduling chokepoints
+    (``schedule_planning`` and the ``pr_sweep`` review-arm) and skips the
+    follow-up work a directly-implementing external owner will never claim,
+    so the loop stops re-deriving duplicate planner/reviewer tasks.
+
+    ``expires_at`` is a UTC ISO timestamp; the lease is self-reaping so a
+    crashed external owner cannot permanently wedge the loop's autonomous FSM
+    (mirrors the TTL release of ``LoopLease``/``Task`` claims). ``at`` is the
+    UTC ISO stamp of when delivery was claimed (audit trail).
+    """
+
+    at: str
+    expires_at: str
 
 
 class BranchCurrencyBlocker(TypedDict, total=False):

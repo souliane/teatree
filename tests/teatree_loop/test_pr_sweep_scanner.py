@@ -670,6 +670,46 @@ class TestAutoReviewDispatch:
         assert dispatcher.calls == []
         assert signals[0].payload["reason"] == "no_clear_for_head"
 
+    def test_external_delivery_suppresses_review_arm(self) -> None:
+        # #2104: the PR's ticket is under active external (hand-dispatched)
+        # review. The loop must NOT arm a duplicate review — the external
+        # reviewer is already on it. The flag-level signal still fires.
+        from teatree.core.models import Ticket  # noqa: PLC0415
+        from teatree.core.models.external_delivery import mark_external_delivery  # noqa: PLC0415
+
+        pr = _open_pr()
+        ticket = Ticket.objects.create(overlay="teatree", issue_url=pr.url)
+        mark_external_delivery(ticket)
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == []
+        assert signals[0].kind == "pr_sweep.flag_no_review"
+        assert signals[0].payload["review_dispatched"] is False
+
+    def test_unowned_green_pr_still_arms_review(self) -> None:
+        # #2104 must-still-fire: a genuinely unowned PR (no live external
+        # delivery lease) still gets its review armed — the loop owns it.
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        pr = _open_pr()
+        Ticket.objects.create(overlay="teatree", issue_url=pr.url)
+        dispatcher = FakeReviewDispatcher()
+        api = FakePrApiClient(prs_by_slug={SLUG: [pr]})
+        scanner, _ = _scanner(
+            api=api, keystone=FakeKeystone(), solo_overlay=True, auto_review_dispatch=True, dispatcher=dispatcher
+        )
+
+        signals = scanner.scan()
+
+        assert dispatcher.calls == [(SLUG, 6230, HEAD, pr.url, "teatree")]
+        assert signals[0].payload["review_dispatched"] is True
+
     def test_end_to_end_enqueued_task_then_recorded_verdict_merges_on_next_sweep(self) -> None:
         # Sweep 1: no verdict, armed -> flag_no_review + a real reviewing task.
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
