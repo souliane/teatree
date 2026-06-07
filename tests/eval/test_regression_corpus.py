@@ -23,6 +23,7 @@ from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
 from teatree.eval import regression_corpus
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
+from teatree.hooks import _repo_visibility, banned_terms_scanner
 
 
 def _linear_core_graph() -> MigrationGraph:
@@ -127,6 +128,24 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("account-switch" in r.check.failure_class for r in report.failures)
+
+    def test_private_repo_allowlist_check_fails_under_substring_match(self) -> None:
+        def _substring_match(entry: str, slug: str) -> bool:
+            return entry.strip().lower() in slug.strip().lower()
+
+        with patch.object(_repo_visibility, "slug_namespace_matches", _substring_match):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("private-repo allowlist" in r.check.failure_class for r in report.failures)
+
+    def test_banned_terms_scanner_check_fails_when_crash_returns_none(self) -> None:
+        def _fail_open(text: str, *, config_path=None) -> None:
+            return None
+
+        with patch.object(banned_terms_scanner, "scan_text", _fail_open):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("banned-terms scanner fail-closed" in r.check.failure_class for r in report.failures)
 
     def test_skips_db_checks_when_django_not_configured(self) -> None:
         with patch.object(regression_corpus, "_django_ready", return_value=False):
