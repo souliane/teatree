@@ -228,19 +228,6 @@ class BaselineRatchet:
             return False
         return len(outcome.survived) > baseline
 
-    @staticmethod
-    def total(outcome: MutationOutcome, *, baseline: int) -> int:
-        """The new total baseline after this run — the lower of the two (only shrinks).
-
-        Mirrors :func:`teatree.quality.test_shape.loosens_baseline`: fewer
-        survivors auto-tighten to the lower count; at-or-above holds the existing
-        (lower) baseline. The ratchet only moves in the improving direction, so
-        re-baselining can never silently loosen. A no-op run holds the baseline.
-        """
-        if outcome.is_no_op:
-            return baseline
-        return min(baseline, len(outcome.survived))
-
     @classmethod
     def per_module(
         cls,

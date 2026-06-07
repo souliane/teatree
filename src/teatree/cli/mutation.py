@@ -108,8 +108,7 @@ def _update_baseline(outcome: MutationOutcome, *, allow_regression: bool) -> Non
         )
         raise typer.Exit(code=1)
     if loosens:
-        measured = BaselineRatchet.survivors_per_module(outcome)
-        new_baseline = {**new_baseline, **{m: max(new_baseline.get(m, 0), c) for m, c in measured.items()}}
+        new_baseline = {**new_baseline, **BaselineRatchet.survivors_per_module(outcome)}
     _write_baseline(pyproject, new_baseline)
     direction = "loosened (regression allowed)" if loosens else "ratcheted"
     _console.print(f"[green]Baseline {direction}:[/green] {new_baseline}")

@@ -77,7 +77,7 @@ class TestParseResults:
         assert result.survived == ("a",)
 
 
-class TestDecideVerdict:
+class TestBaselineRatchetVerdict:
     def _outcome(self, *, survivors: int, scoped: tuple[str, ...] = ("src/teatree/x.py",)) -> MutationOutcome:
         return MutationOutcome(
             scoped_modules=scoped,
@@ -139,31 +139,6 @@ class TestSurvivingExceedsBaseline:
     def test_no_op_outcome_never_exceeds(self) -> None:
         outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
         assert BaselineRatchet.exceeds_baseline(outcome, baseline=0) is False
-
-
-class TestRatchetBaselineTotal:
-    """Auto-tighten / refuse-to-loosen, mirroring test_shape's loosens_baseline."""
-
-    def _outcome(self, *, survivors: int) -> MutationOutcome:
-        return MutationOutcome(
-            scoped_modules=("src/teatree/x.py",),
-            survived=tuple(f"m{i}" for i in range(survivors)),
-            killed=(),
-            inconclusive=(),
-        )
-
-    def test_fewer_survivors_tightens_to_the_lower_count(self) -> None:
-        assert BaselineRatchet.total(self._outcome(survivors=3), baseline=7) == 3
-
-    def test_equal_survivors_holds_the_baseline(self) -> None:
-        assert BaselineRatchet.total(self._outcome(survivors=7), baseline=7) == 7
-
-    def test_more_survivors_refuses_to_loosen_keeping_the_lower_baseline(self) -> None:
-        assert BaselineRatchet.total(self._outcome(survivors=9), baseline=7) == 7
-
-    def test_no_op_outcome_holds_the_baseline(self) -> None:
-        outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
-        assert BaselineRatchet.total(outcome, baseline=7) == 7
 
 
 class TestModuleDottedPrefix:
