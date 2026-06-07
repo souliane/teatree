@@ -26,13 +26,29 @@ from teatree.types import RawAPIDict
 pytestmark = pytest.mark.django_db
 
 
+_BOT_UID = "UBOT"
+_USER_UID = "UUSER"
+
+
 @dataclass
 class RecordingBackend:
-    """In-memory MessagingBackend recording react / post_reply calls."""
+    """In-memory MessagingBackend modelling Slack thread re-parenting (#2061).
+
+    ``post_reply(ts=<user msg ts>)`` re-parents to the thread ROOT, exactly
+    as Slack does: the posted bot reply is appended to ``thread_replies``
+    under the user message's resolved root, and ``fetch_thread_replies``
+    reads from there. ``message_meta`` maps a user-message ts to its
+    ``{ts, thread_ts}`` so ``resolve_thread_root`` can canonicalise a
+    non-root reply ts up to its root. ``read_after_post`` controls whether
+    the just-posted reply is visible on read-back (models a transient
+    read failure for the conservative-retry path).
+    """
 
     reactions: list[tuple[str, str, str]] = field(default_factory=list)
     replies: list[tuple[str, str, str]] = field(default_factory=list)
-    permalink_ok: bool = True
+    message_meta: dict[str, RawAPIDict] = field(default_factory=dict)
+    thread_replies: dict[str, list[RawAPIDict]] = field(default_factory=dict)
+    read_after_post: bool = True
     post_reply_raises: bool = False
 
     def fetch_mentions(self, *, since: str = "") -> list[RawAPIDict]:
@@ -43,15 +59,36 @@ class RecordingBackend:
         _ = since
         return []
 
+    def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict:
+        _ = channel
+        return self.message_meta.get(ts, {})
+
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = channel
+        if not self.read_after_post:
+            return []
+        return list(self.thread_replies.get(thread_ts, []))
+
+    def auth_test(self) -> RawAPIDict:
+        return {"ok": True, "user_id": _BOT_UID}
+
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
         _ = (channel, text, thread_ts)
         return {}
+
+    def _root_of(self, ts: str) -> str:
+        meta = self.message_meta.get(ts, {})
+        thread_ts = meta.get("thread_ts")
+        return thread_ts if isinstance(thread_ts, str) and thread_ts else ts
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
         if self.post_reply_raises:
             msg = "slack 503"
             raise RuntimeError(msg)
         self.replies.append((channel, ts, text))
+        root = self._root_of(ts)
+        posted = {"ts": f"{ts}-bot", "user": _BOT_UID, "text": text, "thread_ts": root}
+        self.thread_replies.setdefault(root, []).append(posted)
         return {"ok": True}
 
     def open_dm(self, user_id: str) -> str:
@@ -60,7 +97,7 @@ class RecordingBackend:
 
     def get_permalink(self, *, channel: str, ts: str) -> str:
         _ = (channel, ts)
-        return "https://slack/p1" if self.permalink_ok else ""
+        return "https://slack/p1"
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         self.reactions.append((channel, ts, emoji))
@@ -134,7 +171,7 @@ class TestSimple:
 
     def test_simple_not_stamped_when_readback_fails(self) -> None:
         row = _row("what's the status?")
-        backend = RecordingBackend(permalink_ok=False)
+        backend = RecordingBackend(read_after_post=False)
 
         with patch(
             "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
@@ -157,6 +194,73 @@ class TestSimple:
 
         row.refresh_from_db()
         assert row.loop_replied_at is None
+
+
+class TestNonRootUserMessageReadBack:
+    """Non-root user-message read-back resolves to the thread ROOT (#2061).
+
+    A user message that is itself a thread reply (non-root ts) must
+    verify and dedup against the thread ROOT, not the user-message ts.
+
+    The bot reply re-parents to the root, so a read-back keyed on the
+    non-root user-message ts misses it: the verification would wrongly
+    stamp the delivered reply as absent (→ unstamped, re-posts next cycle =
+    duplicate) and a second cooperating answerer's dedup would see "no
+    prior reply" and post a duplicate. Resolving the root first makes both
+    reads find the just-posted reply.
+    """
+
+    _ROOT = "1780770410.451969"
+    _USER_REPLY_TS = "1780772700.000100"
+
+    def _non_root_row(self) -> PendingChatInjection:
+        return _row("what's the status?", ts=self._USER_REPLY_TS)
+
+    def _non_root_backend(self) -> RecordingBackend:
+        return RecordingBackend(
+            message_meta={self._USER_REPLY_TS: {"ts": self._USER_REPLY_TS, "thread_ts": self._ROOT, "user": _USER_UID}}
+        )
+
+    def test_delivered_reply_under_root_is_verified_and_stamped(self) -> None:
+        row = self._non_root_row()
+        backend = self._non_root_backend()
+
+        with patch(
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert len(backend.replies) == 1  # exactly one answer posted
+        assert self._ROOT in backend.thread_replies  # re-parented to the root
+        row.refresh_from_db()
+        assert row.answer_kind == "simple"
+        assert row.loop_replied_at is not None  # verification found it under the root
+
+    def test_rerun_does_not_post_a_duplicate_answer_under_root(self) -> None:
+        """A second answerer (fresh row, no shared CAS) must dedup on the root.
+
+        Models #2061's cross-agent duplicate: a reply already exists under
+        the root; the dedup read keyed on the root finds it and skips the
+        post. Keyed on the non-root user-message ts it would see nothing
+        and post a duplicate.
+        """
+        backend = self._non_root_backend()
+        backend.thread_replies[self._ROOT] = [
+            {"ts": f"{self._ROOT}-prior", "user": _BOT_UID, "text": "overlay=acme", "thread_ts": self._ROOT}
+        ]
+        row = self._non_root_row()
+
+        with patch(
+            "teatree.loop.slack_answer.simple_answer.statusline_for_slack",
+            return_value="overlay=acme\nticket=#1\n",
+        ):
+            run_slack_answer_cycle(messaging_resolver=_resolver(backend))
+
+        assert backend.replies == []  # dedup short-circuited the post
+        row.refresh_from_db()
+        assert row.answer_kind == "simple"  # treated as already-answered
+        assert row.loop_replied_at is not None
 
 
 class TestNeedsWorkDelegation:

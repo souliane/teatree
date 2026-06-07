@@ -304,6 +304,8 @@ class MessagingBackend(Protocol):
 
     def fetch_message(self, *, channel: str, ts: str) -> RawAPIDict: ...  # pragma: no branch
 
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict: ...  # pragma: no branch
