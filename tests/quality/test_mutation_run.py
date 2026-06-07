@@ -11,12 +11,14 @@ from pathlib import Path
 import pytest
 
 from teatree.quality import mutation_run
+from teatree.quality.mutation import MutationConfigError
 from teatree.quality.mutation_run import (
+    BaselineRatchet,
     MutationOutcome,
     MutationResult,
     MutationSettings,
     build_mutmut_config,
-    decide_verdict,
+    load_baseline_per_module,
     load_settings,
     parse_results,
     run_scoped,
@@ -75,7 +77,7 @@ class TestParseResults:
         assert result.survived == ("a",)
 
 
-class TestDecideVerdict:
+class TestBaselineRatchetVerdict:
     def _outcome(self, *, survivors: int, scoped: tuple[str, ...] = ("src/teatree/x.py",)) -> MutationOutcome:
         return MutationOutcome(
             scoped_modules=scoped,
@@ -84,25 +86,158 @@ class TestDecideVerdict:
             inconclusive=(),
         )
 
-    def test_warn_mode_never_fails_even_with_survivors(self) -> None:
+    def test_warn_mode_fails_when_survivors_exceed_baseline(self) -> None:
         outcome = self._outcome(survivors=5)
-        assert decide_verdict(outcome, mode="warn", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=0) == 1
+
+    def test_warn_mode_passes_at_or_below_baseline(self) -> None:
+        outcome = self._outcome(survivors=2)
+        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=2) == 0
 
     def test_block_mode_fails_above_baseline(self) -> None:
         outcome = self._outcome(survivors=3)
-        assert decide_verdict(outcome, mode="block", baseline=2) == 1
+        assert BaselineRatchet.verdict(outcome, mode="block", baseline=2) == 1
 
     def test_block_mode_passes_at_or_below_baseline(self) -> None:
         outcome = self._outcome(survivors=2)
-        assert decide_verdict(outcome, mode="block", baseline=2) == 0
+        assert BaselineRatchet.verdict(outcome, mode="block", baseline=2) == 0
 
     def test_block_mode_passes_with_no_survivors(self) -> None:
         outcome = self._outcome(survivors=0)
-        assert decide_verdict(outcome, mode="block", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, mode="block", baseline=0) == 0
 
     def test_no_op_outcome_passes_in_any_mode(self) -> None:
         outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
-        assert decide_verdict(outcome, mode="block", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, mode="block", baseline=0) == 0
+        assert BaselineRatchet.verdict(outcome, mode="warn", baseline=0) == 0
+
+    def test_rejects_unknown_mode(self) -> None:
+        with pytest.raises(MutationConfigError, match="mode"):
+            BaselineRatchet.verdict(self._outcome(survivors=1), mode="explode", baseline=0)
+
+
+class TestSurvivingExceedsBaseline:
+    """The mode-independent ratchet: more survivors than recorded baseline fails."""
+
+    def _outcome(self, *, survivors: int) -> MutationOutcome:
+        return MutationOutcome(
+            scoped_modules=("src/teatree/x.py",),
+            survived=tuple(f"m{i}" for i in range(survivors)),
+            killed=(),
+            inconclusive=(),
+        )
+
+    def test_more_survivors_than_baseline_exceeds(self) -> None:
+        assert BaselineRatchet.exceeds_baseline(self._outcome(survivors=8), baseline=7) is True
+
+    def test_equal_to_baseline_does_not_exceed(self) -> None:
+        assert BaselineRatchet.exceeds_baseline(self._outcome(survivors=7), baseline=7) is False
+
+    def test_fewer_than_baseline_does_not_exceed(self) -> None:
+        assert BaselineRatchet.exceeds_baseline(self._outcome(survivors=3), baseline=7) is False
+
+    def test_no_op_outcome_never_exceeds(self) -> None:
+        outcome = MutationOutcome(scoped_modules=(), survived=(), killed=(), inconclusive=())
+        assert BaselineRatchet.exceeds_baseline(outcome, baseline=0) is False
+
+
+class TestModuleDottedPrefix:
+    def test_strips_src_and_suffix_and_dots_the_path(self) -> None:
+        assert BaselineRatchet.module_dotted_prefix("src/teatree/on_behalf_gate.py") == "teatree.on_behalf_gate"
+
+    def test_handles_nested_package_path(self) -> None:
+        assert (
+            BaselineRatchet.module_dotted_prefix("src/teatree/core/merge/execution.py")
+            == "teatree.core.merge.execution"
+        )
+
+
+class TestSurvivorsPerModule:
+    def test_attributes_each_survivor_to_its_module_by_dotted_prefix(self) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/a.py", "src/teatree/b.py"),
+            survived=("teatree.a.f__mutmut_1", "teatree.a.g__mutmut_2", "teatree.b.h__mutmut_1"),
+            killed=(),
+            inconclusive=(),
+        )
+        assert BaselineRatchet.survivors_per_module(outcome) == {"src/teatree/a.py": 2, "src/teatree/b.py": 1}
+
+    def test_longest_prefix_wins_over_a_shorter_sibling(self) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/core.py", "src/teatree/core/merge.py"),
+            survived=("teatree.core.merge.x__mutmut_1", "teatree.core.y__mutmut_1"),
+            killed=(),
+            inconclusive=(),
+        )
+        assert BaselineRatchet.survivors_per_module(outcome) == {
+            "src/teatree/core.py": 1,
+            "src/teatree/core/merge.py": 1,
+        }
+
+    def test_no_survivors_is_all_zero(self) -> None:
+        outcome = MutationOutcome(scoped_modules=("src/teatree/a.py",), survived=(), killed=(), inconclusive=())
+        assert BaselineRatchet.survivors_per_module(outcome) == {"src/teatree/a.py": 0}
+
+    def test_survivor_matching_no_scoped_module_is_not_attributed(self) -> None:
+        outcome = MutationOutcome(
+            scoped_modules=("src/teatree/a.py",),
+            survived=("teatree.unrelated.f__mutmut_1",),
+            killed=(),
+            inconclusive=(),
+        )
+        assert BaselineRatchet.survivors_per_module(outcome) == {"src/teatree/a.py": 0}
+
+
+class TestRatchetPerModuleBaseline:
+    def _outcome(self, survived: tuple[str, ...]) -> MutationOutcome:
+        return MutationOutcome(
+            scoped_modules=("src/teatree/a.py", "src/teatree/b.py"),
+            survived=survived,
+            killed=(),
+            inconclusive=(),
+        )
+
+    def test_fewer_survivors_tightens_that_module_and_does_not_loosen(self) -> None:
+        outcome = self._outcome(("teatree.a.f__mutmut_1",))
+        new_baseline, loosens = BaselineRatchet.per_module(
+            outcome, committed={"src/teatree/a.py": 4, "src/teatree/b.py": 0}
+        )
+        assert new_baseline == {"src/teatree/a.py": 1, "src/teatree/b.py": 0}
+        assert loosens is False
+
+    def test_more_survivors_flags_loosen_and_holds_the_lower_count(self) -> None:
+        outcome = self._outcome(("teatree.a.f__mutmut_1", "teatree.a.g__mutmut_2"))
+        new_baseline, loosens = BaselineRatchet.per_module(
+            outcome, committed={"src/teatree/a.py": 1, "src/teatree/b.py": 0}
+        )
+        assert new_baseline == {"src/teatree/a.py": 1, "src/teatree/b.py": 0}
+        assert loosens is True
+
+    def test_modules_not_in_this_run_carry_through_unchanged(self) -> None:
+        outcome = self._outcome(())
+        new_baseline, loosens = BaselineRatchet.per_module(
+            outcome, committed={"src/teatree/a.py": 0, "src/teatree/b.py": 0, "src/teatree/other.py": 5}
+        )
+        assert new_baseline["src/teatree/other.py"] == 5
+        assert loosens is False
+
+
+class TestLoadBaselinePerModule:
+    def test_reads_the_per_module_counts(self, tmp_path: Path) -> None:
+        path = tmp_path / "pyproject.toml"
+        path.write_text(
+            "[tool.teatree.mutation]\n"
+            'high_value_modules = [ "src/teatree/x.py" ]\n'
+            'baseline_surviving = [ { path = "src/teatree/x.py", count = 7 }, '
+            '{ path = "src/teatree/y.py", count = 2 } ]\n',
+            encoding="utf-8",
+        )
+        assert load_baseline_per_module(path) == {"src/teatree/x.py": 7, "src/teatree/y.py": 2}
+
+    def test_absent_array_is_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "pyproject.toml"
+        path.write_text('[tool.teatree.mutation]\nhigh_value_modules = [ "src/teatree/x.py" ]\n', encoding="utf-8")
+        assert load_baseline_per_module(path) == {}
 
 
 class TestRunScopedWiring:
