@@ -19,9 +19,12 @@ Three sources, cheapest first:
 
 import re
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from teatree.loop.dispatch import DispatchAction
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
 type Payload = Mapping[str, Any]
 
@@ -140,6 +143,45 @@ def _lookup_ticket_extra_prs(urls: Iterable[str]) -> dict[str, str]:
     except Exception:  # noqa: BLE001
         return {}
     return result
+
+
+def resolve_author_ticket(*, slug: str, pr_id: int, pr_url: str) -> "Ticket | None":
+    """Return the AUTHOR/delivery ticket that owns the PR, or ``None`` (#2104).
+
+    The PR is owned by the author ticket the ship pipeline links it to — NOT
+    by a ticket whose ``issue_url`` happens to equal the PR URL (that shape is
+    the reviewer-role ticket ``AutoReviewDispatch._create_reviewing_task``
+    mints, which never carries the delivery lease). Reuses the existing
+    PR→author-ticket linkage, cheapest first — the ``PullRequest`` FK keyed on
+    ``(repo=slug, iid=pr_id)`` (authoritative, persisted by ``ship``; the same
+    key ``reference_linkifier._db_pull_request_url`` resolves on), then the
+    ``Ticket.extra["prs"][<pr_url>]`` fallback :func:`_lookup_ticket_extra_prs`
+    walks for a manually-opened PR with no FK row.
+
+    Best-effort: a DB error or app-not-ready degrades to ``None`` so the
+    caller treats the PR as unowned (arms the review as before).
+    """
+    try:
+        from django.apps import apps  # noqa: PLC0415
+
+        pr_model = apps.get_model("core", "PullRequest")
+        ticket_model = apps.get_model("core", "Ticket")
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        row = pr_model.objects.filter(repo=slug, iid=str(pr_id)).select_related("ticket").order_by("-id").first()
+        if row is not None and row.ticket is not None:
+            return row.ticket
+        if not pr_url:
+            return None
+        for ticket in ticket_model.objects.exclude(extra={}).only("issue_url", "extra", "id"):
+            extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+            prs = extra.get("prs") if isinstance(extra, dict) else None
+            if isinstance(prs, dict) and pr_url in prs:
+                return ticket
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def build_ticket_index(actions: Iterable[DispatchAction]) -> dict[str, str]:

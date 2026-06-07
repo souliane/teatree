@@ -5,7 +5,7 @@ from django.test import TestCase
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.ticket import Ticket
 from teatree.loop.dispatch import DispatchAction
-from teatree.loop.pr_ticket_index import _parse_closes_ticket, build_ticket_index
+from teatree.loop.pr_ticket_index import _parse_closes_ticket, build_ticket_index, resolve_author_ticket
 
 
 class TestParseClosesTicket:
@@ -413,3 +413,81 @@ class TestZonesForGroupsByParentTicket(TestCase):
         assert "!999" in text
         # No parent ticket — should not carry a "#N:" prefix in the bucket.
         assert "#" not in text.replace("[acme]", "")
+
+
+class TestResolveAuthorTicket(TestCase):
+    """#2104 — resolve a PR back to its AUTHOR/delivery ticket, not the PR-url ticket."""
+
+    SLUG = "souliane/teatree"
+    PR_ID = 6230
+    PR_URL = "https://github.com/souliane/teatree/pull/6230"
+
+    def test_resolves_via_pull_request_fk(self) -> None:
+        author = Ticket.objects.create(overlay="t3-teatree", issue_url=f"https://github.com/{self.SLUG}/issues/2104")
+        PullRequest.objects.create(
+            ticket=author, overlay="t3-teatree", url=self.PR_URL, repo=self.SLUG, iid=str(self.PR_ID)
+        )
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
+        assert resolved is not None
+        assert resolved.pk == author.pk
+
+    def test_resolves_via_ticket_extra_prs_fallback(self) -> None:
+        author = Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/{self.SLUG}/issues/2104",
+            extra={"prs": {self.PR_URL: {"draft": False}}},
+        )
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
+        assert resolved is not None
+        assert resolved.pk == author.pk
+
+    def test_does_not_match_the_reviewer_ticket_keyed_by_pr_url(self) -> None:
+        # The shape AutoReviewDispatch._create_reviewing_task mints — issue_url
+        # IS the PR url, no PullRequest FK, no extra["prs"]. It must NOT resolve
+        # as the author ticket (the bug the cold review caught).
+        Ticket.objects.create(overlay="t3-teatree", issue_url=self.PR_URL)
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
+        assert resolved is None
+
+    def test_returns_none_when_no_link_exists(self) -> None:
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
+        assert resolved is None
+
+    def test_no_fk_and_blank_pr_url_skips_extra_prs_fallback(self) -> None:
+        # No PullRequest FK and an empty pr_url: the extra["prs"] fallback needs
+        # a url key to match, so the resolver returns None without walking.
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/{self.SLUG}/issues/2104",
+            extra={"prs": {self.PR_URL: {"draft": False}}},
+        )
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url="")
+        assert resolved is None
+
+    def test_non_dict_prs_extra_is_skipped(self) -> None:
+        # A ticket whose extra["prs"] is not a dict must be skipped, not crash.
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url=f"https://github.com/{self.SLUG}/issues/2104",
+            extra={"prs": "garbage"},
+        )
+        resolved = resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL)
+        assert resolved is None
+
+    def test_app_not_ready_degrades_to_none(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        with patch("django.apps.apps.get_model", side_effect=LookupError("boom")):
+            assert resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL) is None
+
+    def test_db_query_error_degrades_to_none(self) -> None:
+        from types import SimpleNamespace  # noqa: PLC0415
+        from unittest.mock import patch  # noqa: PLC0415
+
+        def _raise(**_kwargs: object) -> object:
+            msg = "db down"
+            raise RuntimeError(msg)
+
+        broken = SimpleNamespace(objects=SimpleNamespace(filter=_raise))
+        with patch("django.apps.apps.get_model", return_value=broken):
+            assert resolve_author_ticket(slug=self.SLUG, pr_id=self.PR_ID, pr_url=self.PR_URL) is None
