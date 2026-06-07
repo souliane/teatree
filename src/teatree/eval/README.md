@@ -336,6 +336,7 @@ class, where it is pinned, and the originating fix:
 | anti-vacuous self-review before review-request/merge (revert fix → RED proof; don't ship a green vacuous regression test) | `scenarios/anti_vacuous_self_review.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | record the SHA-bound anti-vacuity attestation before requesting review (the structural gate's recording seam, not posting un-attested) | `scenarios/anti_vacuous_self_review.yaml` | [#1829](https://github.com/souliane/teatree/issues/1829) |
 | blocked sub-agent surfaces a structured block, never silently works around; orchestrator escalates, never swallows | `scenarios/blocked_subagent_escalation.yaml` | [#1915](https://github.com/souliane/teatree/issues/1915) |
+| near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `skills/code/evals.yaml` (`comment_density_writes_sparse_code`, co-located) | [#2024](https://github.com/souliane/teatree/issues/2024) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
 skill-ref-resolve, and per-phase scenarios (answerer, sweeping-prs, review,
@@ -653,6 +654,57 @@ from `hooks.scripts.hook_router` (not imported, to stay independent of the
 concurrently-evolving router and the tach module-edge rules); a lockstep test in
 `tests/test_transcript_replay_conformance.py` asserts they stay equal to the
 router source.
+
+## Gate-failure feedback loop
+
+`t3 <overlay> retro gate-failures` ([#2024](https://github.com/souliane/teatree/issues/2024))
+closes the loop from "a quality gate fired on agent output" to "an eval that
+stops the gate firing first-try". A non-zero hook exit in a session transcript
+IS a gate failure (a prek hook block, comment-density, banned-terms, the
+doc-update gate). The command reads the SINGLE transcript chokepoint
+(`extract_hook_events` — no per-gate instrumentation), keeps the non-zero exits,
+classifies each `preventable` / `environmental` via one declarative table
+(`gate_failures._ENVIRONMENTAL_GATES`: dependency audit/lock/sync, secret scan,
+upstream type / module-graph checkers are environmental; everything
+agent-output-shaped, and any unknown gate, is preventable — fail toward an eval),
+records each to the durable per-key store (so recurrence across sessions is
+observable), and emits JSON + a human summary.
+
+`--escalate` files one scoped, deduped enforcement issue per *recurring*
+*preventable* failure, reusing `core.review_findings.file_class_c_issue` so it is
+fingerprint-deduped (a re-run never refiles), banned-terms-safe (a hit withholds
+rather than leaks), and clickable-link safe. The issue body names the
+preventable gate, its recurrence, and the smallest anti-vacuous eval to stop it
+first-try; labels are `enforcement-gap` + `needs-triage`.
+
+```bash
+t3 <overlay> retro gate-failures                       # latest in-scope session
+t3 <overlay> retro gate-failures --file <path.jsonl>   # an explicit session log
+t3 <overlay> retro gate-failures --session <id>        # a specific session in scope
+t3 <overlay> retro gate-failures --escalate --repo <slug> --pr-url <url>
+```
+
+**Privacy by construction.** `GateFailure` carries ONLY the gate name + a
+path-neutralized command shape + the session id — NEVER the hook's
+`stdout`/`stderr`, which hold the diff/banned content the gate was reacting to.
+The fingerprint hashes (gate, normalized command shape) so two comment-density
+fails on different files hash together (one recurring class) while a different
+gate hashes apart. The extractor and classifier live in `eval/gate_failures.py`
+(layer `integration`), not `core` (layer `domain`) — a `core -> eval` import is a
+backwards tach edge; the `retro` command (layer `interface`) calls into `eval` on
+a forward edge.
+
+The **worked example** (the ticket's whole point) is the
+`comment_density_writes_sparse_code` scenario co-located in `skills/code/evals.yaml`:
+the agent tends to write code-restating comments, the comment-density gate blocks
+them post-hoc, and this eval asserts the agent's first-try output passes the gate
+so the trial-and-error cycle stops. Its `_fail` fixture (a transcript that writes
+a restating comment) goes RED, proving the eval is anti-vacuous.
+
+**Out of scope (clean follow-up):** auto-invoking `gate-failures` from the loop
+tick / retro synthesis is orchestrator-only ([#837](https://github.com/souliane/teatree/issues/837))
+and lands separately; this PR ships the deterministic extractor + classifier +
+CLI only.
 
 ## Negative control (harness self-test)
 

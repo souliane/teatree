@@ -262,6 +262,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "review-findings",
                 "Classify a PR's review findings A/B/C and auto-file a deduped enforcement issue per class-C.",
             ),
+            (
+                "gate-failures",
+                (
+                    "Extract a session's gate failures, classify preventable/environmental, "
+                    "and --escalate a deduped enforcement issue per recurring preventable one."
+                ),
+            ),
         ],
         core_dispatch=True,
     ),
