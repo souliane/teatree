@@ -225,18 +225,25 @@ class TestScanCommittedTree:
     def test_explicit_config_drives_the_scan(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, brands=[SYNTH_BRAND])
         repo = _repo_with(tmp_path, "src/app.py", f"WORKTREE = 'wt_777_{SYNTH_BRAND}'\n")
-        findings = banned_terms_tree.scan_committed_tree(repo, config_path=cfg)
-        assert [f.path for f in findings] == ["src/app.py"]
+        result = banned_terms_tree.scan_committed_tree(repo, config_path=cfg)
+        assert [f.path for f in result.findings] == ["src/app.py"]
+        assert result.brands_configured is True
 
     def test_env_var_brands_without_a_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
-        findings = banned_terms_tree.scan_committed_tree(repo)
-        assert len(findings) == 1
+        result = banned_terms_tree.scan_committed_tree(repo)
+        assert len(result.findings) == 1
+        assert result.brands_configured is True
 
-    def test_no_brands_anywhere_is_clean(self, tmp_path: Path) -> None:
+    def test_no_brands_anywhere_reports_inert(self, tmp_path: Path) -> None:
+        # The brand backstop is INERT when no brands are configured: the
+        # result carries findings (terminology only) AND the loud inert flag,
+        # never a silent clean result that hides the unpopulated key.
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
-        assert banned_terms_tree.scan_committed_tree(repo, config_path=tmp_path / "absent.toml") == []
+        result = banned_terms_tree.scan_committed_tree(repo, config_path=tmp_path / "absent.toml")
+        assert result.findings == []
+        assert result.brands_configured is False
 
 
 class TestScanTreeCli:
@@ -277,9 +284,82 @@ class TestScanTreeCli:
             banned_terms_app,
             ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
         )
-        # An absent config file yields an empty brand list — clean no-op.
+        # An absent config file yields an empty brand list — a legitimate
+        # no-op for the public repo, but the inert state must be LOUD, never
+        # a silent clean green.
         assert result.exit_code == 0
+        assert "INERT" in result.stdout
+        assert "banned_brands" in result.stdout
+
+
+class TestScanTreeCliInertSignal:
+    """The brand backstop announces when it is INERT (#1591).
+
+    An unpopulated ``banned_brands`` key is the defect #1591 fixes: the
+    full-tree brand scan silently returned 0, hiding that the backstop did
+    nothing. The CLI must emit a LOUD inert warning instead of a silent
+    clean line, while still exiting 0 (the no-brands state is legitimate
+    for the public repo).
+    """
+
+    def test_no_brands_emits_loud_inert_warning(self, tmp_path: Path) -> None:
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
+        )
+        assert result.exit_code == 0
+        assert "INERT" in result.stdout
+        assert "banned_brands" in result.stdout
+        # The silent-success phrasing must NOT be the whole story.
+        assert "clean (0 findings)" not in result.stdout
+
+    def test_empty_brands_list_in_config_is_inert(self, tmp_path: Path) -> None:
+        # A config that declares banned_terms but leaves banned_brands empty
+        # is exactly the #1591 scenario: the populated key is the wrong one.
+        cfg = _config(tmp_path, brands=[], banned_terms=["ship", "delivery"])
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
+        )
+        assert result.exit_code == 0
+        assert "INERT" in result.stdout
+
+    def test_populated_brands_does_not_warn_inert(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND])
+        repo = _repo_with(tmp_path, "src/app.py", "WORKTREE = 'wt_777_generic'\n")
+        result = CliRunner().invoke(
+            banned_terms_app,
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
+        )
+        assert result.exit_code == 0
+        assert "INERT" not in result.stdout
         assert "clean" in result.stdout
+
+
+class TestBackstopBrandVsCommonWord:
+    """The activated backstop flags a planted brand but not a common word (#1591).
+
+    The false-positive guard the curation enforces: a high-confidence brand
+    in ``banned_brands`` is flagged across the whole tree, while a common
+    word that lives ONLY in ``banned_terms`` (the point-of-egress list) is
+    never fed to the underscore-tolerant tree scan, so it cannot substring-
+    match across committed files.
+    """
+
+    def test_planted_brand_is_flagged_common_word_is_not(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND], banned_terms=["ship"])
+        repo = _repo_with(
+            tmp_path,
+            "src/app.py",
+            f"BRAND = 'wt_777_{SYNTH_BRAND}'\nNOTE = 'we ship relationships daily'\n",
+        )
+        result = banned_terms_tree.scan_committed_tree(repo, config_path=cfg)
+        flagged_terms = {f.term.lower() for f in result.findings}
+        assert SYNTH_BRAND in flagged_terms
+        assert "ship" not in flagged_terms
+        assert result.brands_configured is True
 
 
 class TestScanTreeCliSummaryIsBrandAgnostic:
@@ -290,18 +370,23 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
     """
 
     def test_terminology_only_summary_does_not_say_brand(self, tmp_path: Path) -> None:
-        # A conflated-terminology hit with NO brand configured: the only
-        # finding is a terminology violation, never a brand. The conflated
-        # phrase is assembled at runtime so this (non-exempt) test file's
-        # own committed source never trips the terminology backstop.
+        # A conflated-terminology hit whose ONLY finding is a terminology
+        # violation must never be labelled a "brand" finding in the count or
+        # remediation lines. A non-matching brand is configured so the brand
+        # backstop is active (no inert warning), isolating this assertion to
+        # the finding-summary wording. The conflated phrase is assembled at
+        # runtime so this (non-exempt) test file's own committed source never
+        # trips the terminology backstop.
         conflated = "claude-" + "code " + "todos"
+        cfg = _config(tmp_path, brands=[SYNTH_BRAND])
         repo = _repo_with(tmp_path, "docs/note.md", f"tracking {conflated} here\n")
         result = CliRunner().invoke(
             banned_terms_app,
-            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
         )
         assert result.exit_code == 1
         assert "docs/note.md" in result.stdout
+        assert "INERT" not in result.stdout
         assert "brand" not in result.stdout.lower()
 
     def test_summary_counts_findings_generically(self, tmp_path: Path) -> None:

@@ -689,9 +689,14 @@ underscore-tolerant — `wt_777_<brand>` and `<brand>_x` are caught where the
 diff gate's word-boundary matcher misses them — while common-word entries keep
 strict boundaries (no substring noise) and the email carve-out is preserved.
 The brand list comes from `[teatree].banned_brands` in `~/.teatree.toml` or the
-`$TEATREE_BANNED_BRANDS` environment variable, so the public repo ships with
-none (a clean no-op). A CI job runs the scan on push to `main` and on a daily
-schedule.
+`$TEATREE_BANNED_BRANDS` environment variable; it is a curated high-confidence
+subset (brand-only — common words stay in `banned_terms` so the
+underscore-tolerant tree scan never substring-matches them). The public repo
+ships with none, so the brand scan is a no-op — but it reports a loud
+`brand backstop INERT: banned_brands is unpopulated` warning rather than a
+silent clean line, so an operator who expected the backstop to be active can
+tell it is not yet populated. A CI job runs the scan on push to `main` and on a
+daily schedule.
 
 ## Project Structure
 

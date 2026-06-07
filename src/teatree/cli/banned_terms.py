@@ -46,13 +46,25 @@ def scan_tree(
 ) -> None:
     """Scan every git-tracked file for committed banned terms."""
     root = repo_root if repo_root is not None else Path.cwd()
-    findings = scan_committed_tree(root, config_path=config)
-    if not findings:
-        _console.print("[green]banned-terms scan-tree: clean (0 findings).[/]")
+    result = scan_committed_tree(root, config_path=config)
+
+    if not result.brands_configured:
+        _console.print(
+            "[yellow]banned-terms scan-tree: WARNING — brand backstop INERT: "
+            "banned_brands is unpopulated[/] "
+            "([yellow]populate [teatree].banned_brands (or the TEATREE_BANNED_BRANDS "
+            "secret) with the curated brand subset to activate the full-tree scan[/])."
+        )
+
+    if not result.findings:
+        if result.brands_configured:
+            _console.print("[green]banned-terms scan-tree: clean (0 findings).[/]")
+        else:
+            _console.print("[green]banned-terms scan-tree: no terminology findings.[/]")
         return
 
-    _console.print(f"[red]banned-terms scan-tree: {len(findings)} committed banned-term finding(s).[/]")
-    for finding in findings:
+    _console.print(f"[red]banned-terms scan-tree: {len(result.findings)} committed banned-term finding(s).[/]")
+    for finding in result.findings:
         _console.print(f"  {finding.render()}")
     _console.print(
         "\nA banned term is committed to the tree. Scrub it "
