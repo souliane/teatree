@@ -1,3 +1,6 @@
+# test-path: cross-cutting
+# Exercises the hooks/scripts/hook_router.py gate (no src/teatree mirror) together
+# with teatree.cli.teatree_gate and teatree.core.models, so it spans packages.
 """Anti-vacuous tests for the plan-gate never-lockout escapes (Batch B).
 
 Three escape paths for ``handle_block_edit_before_planned``:
