@@ -53,9 +53,17 @@ _FIXTURE_PLACEMENT: dict[str, str] = {
     "loose_at_root": "tests",
     "mirrored": "tests/teatree_hooks",
     "cross_cutting_pragma": "tests/test_anywhere_dir",
+    "mispathed_package_with_toplevel_import": "tests/teatree_hooks",
 }
 
 runner = CliRunner()
+
+
+def _seed_src_tree(root: Path) -> None:
+    src = root / "src" / "teatree"
+    for package in ("hooks", "core"):
+        (src / package).mkdir(parents=True, exist_ok=True)
+    (src / "identity.py").write_text("current_user = None\n", encoding="utf-8")
 
 
 def _make_repo(root: Path, *, baseline: int, loose_files: int) -> Path:
@@ -78,6 +86,7 @@ def _plant(root: Path, rel_dir: str, name: str, body: str) -> Path:
 
 
 def _plant_fixture(root: Path, fixture: Path) -> Path:
+    _seed_src_tree(root)
     stem = fixture.name.removesuffix(".py.txt")
     return _plant(root, _FIXTURE_PLACEMENT[stem], f"test_{stem}.py", fixture.read_text(encoding="utf-8"))
 
@@ -139,19 +148,37 @@ class TestDegradation:
 
 class TestExpectedDir:
     @pytest.mark.parametrize(
-        ("module", "expected"),
+        ("module", "expected_path", "exact_only"),
         [
-            ("teatree.hooks.banned_terms_scanner", "tests/teatree_hooks"),
-            ("teatree.quality.test_path_mirror", "tests/teatree_quality"),
-            ("teatree.backends.gitlab.ci", "tests/teatree_backends/gitlab"),
-            ("teatree.core.models.merge_clear", "tests/teatree_core/models"),
-            ("teatree.config", "tests/teatree_config"),
-            ("teatree.identity", "tests"),
-            ("teatree", None),
+            ("teatree.hooks.banned_terms_scanner", "tests/teatree_hooks", False),
+            ("teatree.quality.test_path_mirror", "tests/teatree_quality", False),
+            ("teatree.backends.gitlab.ci", "tests/teatree_backends/gitlab", False),
+            ("teatree.core.models.merge_clear", "tests/teatree_core/models", False),
+            ("teatree.config", "tests/teatree_config", False),
+            ("teatree.identity", "tests", True),
         ],
     )
-    def test_module_maps_to_mirror_dir(self, module: str, expected: str | None) -> None:
-        assert expected_test_dir(module, _REPO_ROOT) == expected
+    def test_module_maps_to_mirror_dir(self, module: str, expected_path: str, *, exact_only: bool) -> None:
+        result = expected_test_dir(module, _REPO_ROOT)
+        assert result is not None
+        assert result.path == expected_path
+        assert result.exact_only is exact_only
+
+    def test_bare_root_module_maps_to_nothing(self) -> None:
+        assert expected_test_dir("teatree", _REPO_ROOT) is None
+
+    def test_toplevel_module_expectation_demands_exact_root(self) -> None:
+        expectation = expected_test_dir("teatree.identity", _REPO_ROOT)
+        assert expectation is not None
+        assert expectation.satisfied_by("tests")
+        assert not expectation.satisfied_by("tests/teatree_hooks")
+
+    def test_package_expectation_allows_descendant(self) -> None:
+        expectation = expected_test_dir("teatree.core.models.merge_clear", _REPO_ROOT)
+        assert expectation is not None
+        assert expectation.satisfied_by("tests/teatree_core/models")
+        assert expectation.satisfied_by("tests/teatree_core/models/deeper")
+        assert not expectation.satisfied_by("tests/teatree_hooks")
 
 
 class TestImportExtraction:
@@ -178,6 +205,38 @@ class TestGoldenCorpus:
     def test_must_not_flag_fixture_is_clean(self, fixture: Path, tmp_path: Path) -> None:
         planted = _plant_fixture(tmp_path, fixture)
         assert check_file(planted, tmp_path) is None, f"{fixture.name} wrongly flagged"
+
+
+class TestToplevelImportLoophole:
+    def test_mispathed_package_test_still_flagged_despite_toplevel_import(self, tmp_path: Path) -> None:
+        _seed_src_tree(tmp_path)
+        planted = _plant(
+            tmp_path,
+            "tests/teatree_hooks",
+            "test_x.py",
+            "from teatree.core.models import Ticket\nfrom teatree.identity import current_user\n",
+        )
+        assert check_file(planted, tmp_path) is not None
+
+    def test_toplevel_import_alone_does_not_excuse_a_subdir(self, tmp_path: Path) -> None:
+        _seed_src_tree(tmp_path)
+        planted = _plant(tmp_path, "tests/teatree_hooks", "test_x.py", "from teatree.identity import current_user\n")
+        assert check_file(planted, tmp_path) is not None
+
+    def test_legit_helper_import_stays_clean(self, tmp_path: Path) -> None:
+        _seed_src_tree(tmp_path)
+        planted = _plant(
+            tmp_path,
+            "tests/teatree_core",
+            "test_x.py",
+            "from teatree.core.models import Ticket\nfrom teatree.identity import current_user\n",
+        )
+        assert check_file(planted, tmp_path) is None
+
+    def test_toplevel_module_test_at_root_stays_clean(self, tmp_path: Path) -> None:
+        _seed_src_tree(tmp_path)
+        planted = _plant(tmp_path, "tests", "test_identity.py", "from teatree.identity import current_user\n")
+        assert check_file(planted, tmp_path) is None
 
 
 class TestExemptions:

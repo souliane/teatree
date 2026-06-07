@@ -12,10 +12,14 @@ The checker is pure-AST: for a test file it parses its top-level first-party
 imports (``from teatree.<dotted> import ...`` / ``import teatree.<dotted>``)
 WITHOUT executing them, maps each imported ``teatree.<pkg>...`` module to the
 test directory the convention expects, and asks whether the file's ACTUAL
-directory is an ancestor-or-equal of any expected directory. A file MIRRORS iff
-at least one imported module's expected dir contains it; otherwise it is a
-VIOLATION (the two dominant shapes: loose-at-``tests/``-root, and mis-pathed
-cross-package).
+directory is a descendant-or-equal of any expected directory (i.e. an expected
+dir CONTAINS it). A file MIRRORS iff at least one imported module's expected dir
+contains it; otherwise it is a VIOLATION (the two dominant shapes:
+loose-at-``tests/``-root, and mis-pathed cross-package). The one exception is a
+top-level src MODULE (not a package): its expectation is the ``tests`` root, and
+that demands EXACT placement at the root — descendant-matching there would let
+any top-level import excuse a mis-pathed package test placed anywhere under
+``tests/``.
 
 A tiny reviewed exemption set keeps legitimate cross-cutting tests out of the
 count: shared dir prefixes (``tests/integration/``, ``tests/conformance/``,
@@ -141,23 +145,47 @@ def _is_first_party(dotted: str) -> bool:
     return dotted == _FIRST_PARTY_ROOT or dotted.startswith(f"{_FIRST_PARTY_ROOT}.")
 
 
-def expected_test_dir(module: str, root: Path) -> str | None:
+_TESTS_ROOT = "tests"
+
+
+@dataclasses.dataclass(frozen=True)
+class ExpectedDir:
+    path: str
+    exact_only: bool
+
+    def satisfied_by(self, actual_dir: str) -> bool:
+        """Does *actual_dir* mirror this expectation?
+
+        A package expectation is satisfied by descendant-or-equal containment (a
+        deeper sub-package dir still mirrors the package). A ``tests``-root
+        expectation (a test whose subject is a top-level src module) demands EXACT
+        equality: the test must sit AT the root. Without ``exact_only`` the root
+        expectation would match every dir under ``tests/`` via the ``startswith``
+        branch, so importing any top-level module would excuse a mis-pathed
+        package test placed anywhere — the loophole this closes.
+        """
+        if self.exact_only:
+            return actual_dir == self.path
+        return actual_dir == self.path or actual_dir.startswith(f"{self.path}/")
+
+
+def expected_test_dir(module: str, root: Path) -> ExpectedDir | None:
     """Map ``teatree.<pkg>.<sub>.<leaf>`` to its expected test dir ``tests/teatree_<pkg>/<sub>``.
 
     The module's own leaf segment is dropped — a module maps to the directory its
     test lives in, never to a file. ``teatree.<X>`` where ``src/teatree/<X>.py`` is
-    a top-level MODULE (not a package) mirrors at the ``tests`` root, since the
-    convention's ``teatree_<pkg>`` directory only applies to packages. ``teatree``
-    alone resolves to nothing (no package to mirror).
+    a top-level MODULE (not a package) maps to the ``tests`` root as an
+    ``exact_only`` expectation (its test must sit AT the root, not anywhere under
+    it). ``teatree`` alone resolves to nothing (no package to mirror).
     """
     parts = module.split(".")
     if parts[0] != _FIRST_PARTY_ROOT or len(parts) < _PACKAGE_MODULE_PARTS:
         return None
     if len(parts) == _PACKAGE_MODULE_PARTS and _is_top_level_module(parts[1], root):
-        return "tests"
+        return ExpectedDir(path=_TESTS_ROOT, exact_only=True)
     package = f"{_TEST_DIR_PREFIX}{parts[1]}"
     intermediate = parts[2:-1]
-    return "/".join(["tests", package, *intermediate])
+    return ExpectedDir(path="/".join([_TESTS_ROOT, package, *intermediate]), exact_only=False)
 
 
 def _is_top_level_module(name: str, root: Path) -> bool:
@@ -165,13 +193,17 @@ def _is_top_level_module(name: str, root: Path) -> bool:
     return (src / f"{name}.py").is_file() and not (src / name).is_dir()
 
 
-def _expected_dirs(modules: Iterable[str], root: Path) -> tuple[str, ...]:
+def _expected_dirs(modules: Iterable[str], root: Path) -> tuple[ExpectedDir, ...]:
     dirs = (expected_test_dir(module, root) for module in modules)
-    return tuple(dict.fromkeys(d for d in dirs if d is not None))
+    seen: dict[tuple[str, bool], ExpectedDir] = {}
+    for d in dirs:
+        if d is not None:
+            seen.setdefault((d.path, d.exact_only), d)
+    return tuple(seen.values())
 
 
-def _mirrors(actual_dir: str, expected_dirs: Iterable[str]) -> bool:
-    return any(actual_dir == expected or actual_dir.startswith(f"{expected}/") for expected in expected_dirs)
+def _mirrors(actual_dir: str, expected_dirs: Iterable[ExpectedDir]) -> bool:
+    return any(expected.satisfied_by(actual_dir) for expected in expected_dirs)
 
 
 def check_file(path: Path, root: Path) -> MirrorViolation | None:
@@ -184,7 +216,11 @@ def check_file(path: Path, root: Path) -> MirrorViolation | None:
     actual_dir = _rel_posix(path.parent, root)
     if _mirrors(actual_dir, expected):
         return None
-    return MirrorViolation(path=_rel_posix(path, root), imported_modules=modules, expected_dirs=expected)
+    return MirrorViolation(
+        path=_rel_posix(path, root),
+        imported_modules=modules,
+        expected_dirs=tuple(d.path for d in expected),
+    )
 
 
 def collect_test_files(root: Path) -> list[Path]:
