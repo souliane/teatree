@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from teatree.cli._format_opts import require_valid_format
+from teatree.cli._format_opts import VALID_FORMATS, require_valid_format
 from teatree.cli.eval.all import (
     build_scenarios_table,
     build_summary_table,
@@ -42,11 +42,13 @@ from teatree.eval.negative_control import run_negative_control
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
-from teatree.eval.report import evaluate, render_json, render_text
+from teatree.eval.report import evaluate, render_html, render_json, render_text
 from teatree.eval.trigger_qa import render_json as render_trigger_json
 from teatree.eval.trigger_qa import render_text as render_trigger_text
 from teatree.eval.trigger_qa import run_trigger_qa
 from teatree.utils.django_bootstrap import ensure_django
+
+_RUN_FORMATS = (*VALID_FORMATS, "html")
 
 eval_app = typer.Typer(no_args_is_help=True, help="Behavioral eval harness.")
 eval_app.command("negative-control")(negative_control)
@@ -68,7 +70,9 @@ def list_scenarios() -> None:
 @eval_app.command("run")
 def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a public ``t3 eval run`` flag. The arg list IS the CLI contract.
     name: str | None = typer.Argument(None, help="Scenario name to run (omit to run all)."),
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
+    output_format: str = typer.Option(
+        "text", "--format", help="Report format: text, json, or html (single-trial; html is a self-contained file)."
+    ),
     max_turns: int | None = typer.Option(
         None,
         "--max-turns",
@@ -160,7 +164,10 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
     subscription backend's legitimate pre-transcript all-skip stays green.
     """
     ensure_django()
-    require_valid_format(output_format)
+    require_valid_format(output_format, _RUN_FORMATS)
+    if output_format == "html" and (trials > 1 or models is not None):
+        typer.echo("--format html is only supported for a single-trial run (not --trials/--models)", err=True)
+        raise typer.Exit(code=2)
     specs = discover_specs() if name is None else [_require_spec(name)]
     grader = make_grader(enabled=judge, judge_budget=judge_budget)
     if (trials > 1 or models is not None) and backend == SUBSCRIPTION_BACKEND:
@@ -204,7 +211,8 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
     results = [evaluate(spec, runner.run(spec), judge=grader) for spec in specs]
-    typer.echo(render_json(results) if output_format == "json" else render_text(results))
+    renderers = {"json": render_json, "html": render_html}
+    typer.echo(renderers.get(output_format, render_text)(results))
     if backend == SUBSCRIPTION_BACKEND and isinstance(runner, SubscriptionTranscriptRunner):
         hint_missing_transcripts(runner, [spec for spec, r in zip(specs, results, strict=True) if r.skipped])
     guard_executed(executed=sum(1 for r in results if not r.skipped), collected=len(specs), required=require_executed)

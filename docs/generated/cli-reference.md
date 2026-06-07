@@ -1325,7 +1325,9 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format                              TEXT     Report format: text or json.  │
+│ --format                              TEXT     Report format: text, json, or │
+│                                                html (single-trial; html is a │
+│                                                self-contained file).         │
 │                                                [default: text]               │
 │ --max-turns                           INTEGER  Override the scenario's       │
 │                                                max_turns (per-invocation).   │
