@@ -90,11 +90,14 @@ _CLAIM_VERB_RE = re.compile(r"\b(" + "|".join(_CLAIM_VERBS) + r")\b", re.IGNOREC
 # object noun phrase reframing it as internal work ("merged", "it's merged",
 # "merged to main"). Such a note asserts an outcome on its own, with no further
 # context cue, so the terse phantom completion is gated rather than slipping
-# through ungated. A verb that LEADS a longer sentence ("shipped the feature",
-# "merged the two helper functions") carries an object and is NOT this shape.
+# through ungated. The trailer class is symmetric across every sentence-final
+# punctuation (``. ! , ; ?``) so ``merged,`` / ``merged;`` / ``merged?`` gate
+# like ``merged.``; it stays bare-verb-only, so a verb that LEADS a longer
+# sentence ("shipped the feature", "merged the two helper functions") carries an
+# object and is NOT this shape (the #1571 over-trigger guard).
 _NOTE_INITIAL_VERB_RE = re.compile(
     r"^\s*(?:it(?:'s|s|\s+is)\s+)?(?:" + "|".join(_CLAIM_VERBS) + r")"
-    r"(?:\s+to\s+\w+)?\s*[.!]*\s*$",
+    r"(?:\s+to\s+\w+)?\s*[.!,;?]*\s*$",
     re.IGNORECASE,
 )
 
