@@ -5309,6 +5309,8 @@ Usage: t3 teatree ticket [OPTIONS] COMMAND [ARGS]...
 │                          (`plan <id> "<text>"`).                             │
 │ plan-bypass              Record an audited PlanArtifact bypass and advance   │
 │                          to PLANNED (--human-authorize).                     │
+│ skip-planning            Mark a trivial ticket to skip planning and advance  │
+│                          to PLANNED (--reason, no artifact).                 │
 │ plan-reconcile-inflight  Retroactively advance STARTED tickets to PLANNED    │
 │                          after the gate was added.                           │
 │ e2e-bypass               Record a single-use user bypass of the              │
@@ -5359,11 +5361,11 @@ Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
  Record a PlanArtifact and advance the ticket STARTED → PLANNED.
 
  The operator-facing plan recorder named by the ``NoPlanArtifactError``
- message: a planning task that finished its work out-of-band, or a
- ticket the planner never ran on, can be advanced by recording the plan
- here. A blank ``plan_text`` is refused — a vacuous artifact cannot
- advance the FSM. For an *audited bypass* (no real plan, explicit human
- sign-off) use ``plan-bypass`` instead.
+ message: a planning task that finished out-of-band, or a ticket the
+ planner never ran on, advances by recording the plan here. A blank
+ ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. For
+ an *audited bypass* (no real plan, explicit human sign-off) use
+ ``plan-bypass``; for a trivial mechanical edit use ``skip-planning``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
@@ -5404,6 +5406,33 @@ Usage: t3 teatree ticket plan-bypass [OPTIONS] TICKET_ID
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree ticket skip-planning`
+
+```
+Usage: t3 teatree ticket skip-planning [OPTIONS] TICKET_ID
+
+ Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
+
+ The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
+ mechanical edit (a typo, a one-line bump): records a durable
+ ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
+ that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
+ skip the auto-planner. ``--reason`` is mandatory — an unreasoned skip is
+ refused and records nothing. See ``models.trivial_plan_skip``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    ticket_id      INTEGER  [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --reason        TEXT  Why this ticket is a trivial mechanical edit that   │
+│                          may skip planning (required).                       │
+│                          [required]                                          │
+│    --by            TEXT  Who recorded the skip (audit trail).                │
+│                          [default: operator]                                 │
+│    --help                Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree ticket plan-reconcile-inflight`
 
 ```
@@ -5411,12 +5440,9 @@ Usage: t3 teatree ticket plan-reconcile-inflight [OPTIONS]
 
  Retroactively advance STARTED tickets to PLANNED after the gate was added.
 
- Enumerates every STARTED ticket and records an audited PlanArtifact
- bypass for each, then drives plan(). Requires --human-authorize.
- Intended as a one-time operator command; a data migration would fabricate
- an authorizer it cannot legitimately name.
-
- Use --dry-run to inspect which tickets would be affected.
+ One-time operator command (a data migration would fabricate an authorizer
+ it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires
+ --human-authorize; --dry-run inspects which tickets would be affected.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ *  --human-authorize        TEXT  Human/operator authorising retroactive     │

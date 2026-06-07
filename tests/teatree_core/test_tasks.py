@@ -345,6 +345,29 @@ class TestExecuteProvision(TestCase):
         }
 
     @override_settings(**IMMEDIATE_BACKEND)
+    def test_skips_planning_for_trivial_marked_ticket(self) -> None:
+        # Batch C: a trivial-marked AUTHOR ticket skips the auto-planner exactly
+        # as an externally-delivered one does — but provisioning still succeeds.
+        from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
+        from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+
+        ticket = self._ticket_in_started()
+        mark_trivial_plan_skip(ticket, reason="one-line constant bump", by="operator")
+
+        with patch("teatree.core.tasks.WorktreeProvisioner") as provisioner:
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="planning").exists()
+        assert result.return_value == {
+            "ticket_id": ticket.pk,
+            "ok": True,
+            "detail": "provisioned 1 worktree(s)",
+        }
+
+    @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:
         ticket = Ticket.objects.create(overlay="test", state=Ticket.State.SCOPED)
 
