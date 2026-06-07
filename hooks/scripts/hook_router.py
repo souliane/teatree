@@ -3017,9 +3017,8 @@ def _dispatch_quote_gate_on_task_create_enabled() -> bool:
     (never wedges the loop) until the operator deliberately enables it with
     ``[teatree] dispatch_quote_gate_on_task_create_enabled = true``.
 
-    Mirrors :func:`_agent_plan_gate_on_task_create_enabled` exactly — it fails
-    CLOSED to disabled (missing config → False, broken → False) and returns True
-    only on an explicit ``true``. This deliberately DIFFERS from
+    Fails CLOSED to disabled (missing config → False, broken → False) and returns
+    True only on an explicit ``true``. This deliberately DIFFERS from
     :func:`_mcp_privacy_gate_enabled` (which fails OPEN to enabled): the Slack-MCP
     arm is the same risk class as an already-live gate, whereas this fan-out
     gate's enforcement semantics are not yet validated.
@@ -3537,11 +3536,10 @@ def _orchestrator_bash_gate_enabled() -> bool:
     """Whether the heavy-Bash boundary gate is enabled (default True).
 
     Best-effort read of ``[teatree] orchestrator_bash_gate_enabled`` from
-    ``~/.teatree.toml``, mirroring :func:`_plan_gate_enabled`'s toml-read
-    shape. Fails OPEN to enabled on a missing/broken config so the gate
-    keeps its protective default; an explicit ``false`` is the kill-switch
-    that lets the user disable it with one config line (never a code
-    edit).
+    ``~/.teatree.toml``. Fails OPEN to enabled on a missing/broken config so
+    the gate keeps its protective default; an explicit ``false`` is the
+    kill-switch that lets the user disable it with one config line (never a
+    code edit).
     """
     import tomllib  # noqa: PLC0415
 
@@ -3581,7 +3579,7 @@ def _orchestrator_boundary_agent_gate_enabled() -> bool:
     signal exists only on the Agent-matcher path, not the TaskCreated one.)
 
     Fails CLOSED to disabled (missing/broken config → False; only an explicit
-    ``true`` enables), mirroring :func:`_agent_plan_gate_on_task_create_enabled`.
+    ``true`` enables).
     """
     import tomllib  # noqa: PLC0415
 
