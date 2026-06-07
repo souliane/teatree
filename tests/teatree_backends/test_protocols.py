@@ -133,6 +133,10 @@ class _FakeCodeHost:
         _ = (repo, query)
         return []
 
+    def close_issue(self, *, issue_url: str, comment: str = "") -> dict[str, object]:
+        _ = (issue_url, comment)
+        return {}
+
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         _ = (repo, pr_iid)
         return ApprovalState(approvals_left=0, approved_by=[], unresolved_resolvable=0)

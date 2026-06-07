@@ -156,7 +156,7 @@ class ForgeMergeResult:
     merged_sha: str = ""
 
 
-@runtime_checkable
+@runtime_checkable  # noqa: PLR0904 — method count IS the code-host capability surface, mirrored by the concrete backends.
 class CodeHostBackend(Protocol):
     """Pull/merge requests + issue fetch — the canonical code-host concern.
 
@@ -240,6 +240,8 @@ class CodeHostBackend(Protocol):
     ) -> RawAPIDict: ...  # pragma: no branch
 
     def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...  # pragma: no branch
+
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
 

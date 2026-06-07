@@ -619,6 +619,34 @@ class TestGitHubCodeHost:
         argv = mock_run.call_args_list[0].args
         assert "--paginate" in argv
 
+    def test_close_issue_patches_state_closed(self) -> None:
+        url = "https://github.com/org/repo/issues/9"
+        with patch.object(github_mod, "_gh_api_patch", return_value={"state": "closed"}) as mock_patch:
+            host = GitHubCodeHost(token="tok")
+            result = host.close_issue(issue_url=url)
+        assert result == {"state": "closed"}
+        mock_patch.assert_called_once_with(
+            "repos/org/repo/issues/9",
+            {"state": "closed", "state_reason": "not_planned"},
+            token="tok",
+        )
+
+    def test_close_issue_posts_audit_comment_first(self) -> None:
+        url = "https://github.com/org/repo/issues/9"
+        with (
+            patch.object(github_mod, "_gh_api_post", return_value={"id": 1}) as mock_post,
+            patch.object(github_mod, "_gh_api_patch", return_value={"state": "closed"}),
+        ):
+            GitHubCodeHost().close_issue(issue_url=url, comment="dead")
+        assert mock_post.call_args[0][0] == "repos/org/repo/issues/9/comments"
+        assert mock_post.call_args[0][1] == {"body": "dead"}
+
+    def test_close_issue_rejects_non_issue_url(self) -> None:
+        with patch.object(github_mod, "_gh_api_patch") as mock_patch:
+            result = GitHubCodeHost().close_issue(issue_url="https://example.com/not/an/issue")
+        assert "error" in result
+        mock_patch.assert_not_called()
+
     def test_post_pr_comment(self) -> None:
         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
             host = GitHubCodeHost()
