@@ -52,6 +52,10 @@ class ReviewMatchLike(Protocol):
 class BackendProvider(Protocol):
     def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None": ...  # pragma: no branch
 
+    def get_code_host_for_repo(
+        self, overlay: "OverlayBase", repo_path: str
+    ) -> "CodeHostBackend | None": ...  # pragma: no branch
+
     def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]": ...  # pragma: no branch
 
     def get_messaging(self, overlay: "OverlayBase") -> "MessagingBackend | None": ...  # pragma: no branch
@@ -83,6 +87,9 @@ class _UnconfiguredProvider:
     """Fail-safe provider used before the backends app registers the real one."""
 
     def get_code_host(self, overlay: "OverlayBase") -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301
+        return None
+
+    def get_code_host_for_repo(self, overlay: "OverlayBase", repo_path: str) -> "CodeHostBackend | None":  # noqa: ARG002, PLR6301
         return None
 
     def get_code_hosts(self, overlay: "OverlayBase") -> "list[CodeHostBackend]":  # noqa: ARG002, PLR6301
