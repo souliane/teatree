@@ -1,6 +1,6 @@
 ---
 name: running-evals
-description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (trigger-qa, regression) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
+description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the subscription AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing subscription transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
 eval_exempt: in-session driver for the eval harness itself; its commands are covered by the eval CLI tests, not by a self-referential behavioural eval
 compatibility: any
 metadata:
@@ -27,8 +27,8 @@ The CLI mirror is **noun-first**: deterministic tests run under the overlay's `t
 
 | lane | command surface | cost |
 |------|-----------------|------|
-| skill-trigger eval | `t3 eval trigger-qa` | free |
-| regression corpus | `t3 eval regression` | free |
+| skill-triggers eval | `t3 eval skill-triggers` | free |
+| pinned-regressions corpus | `t3 eval pinned-regressions` | free |
 | AI/trajectory eval (subscription) | `t3 eval prepare-subscription` → dispatch in-session sub-agent → `t3 eval capture-subagent` → `t3 eval run --backend subscription` | subscription |
 | AI/trajectory eval (metered CI) | `t3 eval run --backend sdk` | metered API (`ANTHROPIC_API_KEY`) |
 
@@ -44,7 +44,7 @@ In ONE invocation, without the human running `prepare-subscription` or `capture-
 4. `t3 eval run --backend subscription` to grade the captured transcripts.
 5. Print ONE unified results table.
 
-The free deterministic lanes (`t3 eval trigger-qa`, `t3 eval regression`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
+The free deterministic lanes (`t3 eval skill-triggers`, `t3 eval pinned-regressions`) run alongside. The non-in-session pieces are bundled under `t3 eval all` (below); only steps 2–3 — producing and capturing the subscription transcripts — need this in-session skill.
 
 The captured transcript is the on-disk session schema (`isSidechain`/`agentId`, no `result` event, terminus via the final assistant `stop_reason`). The `subscription` backend auto-detects it and grades on matchers identically to a `claude -p` transcript — capture and grade read on-disk files only, so the lane never meters.
 
@@ -67,9 +67,9 @@ t3 eval all --backend sdk
 
 ```bash
 # Free deterministic lanes (no model spend).
-t3 eval trigger-qa
+t3 eval skill-triggers
 t3 eval coverage          # per-skill eval coverage: covered / eval_exempt / gap (warn-first)
-t3 eval regression
+t3 eval pinned-regressions
 
 # List discovered scenarios (rich table: Name / Scenario / Agent / File / Asserts).
 t3 eval list

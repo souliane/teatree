@@ -497,7 +497,7 @@ jobs:
     #
     # On-demand: a `workflow_dispatch` event runs the suite unconditionally
     # (the gate step below forces run_eval=true for it). Local runs still work
-    # via `t3 eval run` / `t3 eval trigger-qa` (also the periodic local-eval
+    # via `t3 eval run` / `t3 eval skill-triggers` (also the periodic local-eval
     # loop job — `EvalLocalScanner`). The GitLab mirror carries the PR-path rule
     # and a `when: manual` eval job in `.gitlab-ci.yml`.
     if: >
@@ -553,23 +553,22 @@ jobs:
           else
             echo "run_eval=false" >> "$GITHUB_OUTPUT"
           fi
-      - name: Trigger-QA (deterministic, free)
-        if: steps.gate.outputs.run_eval == 'true'
-        run: uv run t3 eval trigger-qa
-      - name: Migrate the self-DB (the needs_db regression checks open it)
+      # The deterministic lanes (skill-triggers, pinned-regressions) are NOT run
+      # standalone here: they gate every push via prek (eval-skill-triggers
+      # commit-stage, eval-pinned-regressions push-stage) and the regression
+      # corpus is also asserted every PR via pytest. One source of truth — this
+      # weekly job owns only the metered AI suite below.
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
         if: steps.gate.outputs.run_eval == 'true'
         run: uv run python -m teatree migrate --no-input
-      - name: Regression corpus (deterministic, free; also gated every PR via pytest)
-        if: steps.gate.outputs.run_eval == 'true'
-        run: uv run t3 eval regression
       # Decide whether the behavioral suite can actually execute. The runner
       # SKIPs every scenario when `claude` is not on PATH or no key is
       # configured, and a fully-skipped suite reports green with ZERO behavioral
       # coverage. When ANTHROPIC_API_KEY IS configured, arm `--require-executed`
       # so a fully-skipped run exits non-zero instead of passing decoratively
       # (souliane/teatree#1811). With no key the metered path cannot run, so the
-      # suite skips and the gate stays disarmed — trigger-qa + regression above
-      # carry the deterministic coverage.
+      # suite skips and the gate stays disarmed — the deterministic lanes
+      # (prek + pytest) carry the token-free coverage.
       - name: Decide eval-execution enforcement
         id: eval_exec
         if: steps.gate.outputs.run_eval == 'true'
