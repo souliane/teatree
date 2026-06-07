@@ -42,7 +42,7 @@ def run_pass_at_k_lane(  # noqa: PLR0913 — each kwarg threads one `eval run` C
     if require not in {"any", "all"}:
         typer.echo(f"unknown --require {require!r}; use 'any' or 'all'", err=True)
         raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns)
+    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
 
     def _trial(spec: EvalSpec) -> ScenarioResult:
         return evaluate(spec, runner.run(spec), judge=grader)
@@ -107,7 +107,7 @@ def run_model_matrix_lane(  # noqa: PLR0913 — each kwarg threads one `eval run
     if not model_list:
         typer.echo("--models was empty; pass e.g. --models opus,sonnet,haiku", err=True)
         raise typer.Exit(code=2)
-    runner = ClaudePRunner(max_turns_override=max_turns)
+    runner = ClaudePRunner(max_turns_override=max_turns, require_executed=require_executed)
     rows: list[MatrixRow] = []
     for model in model_list:
         for spec in specs:

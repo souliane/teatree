@@ -50,7 +50,15 @@
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree
 #   7. Security & supply chain — uv-audit, sbom
-#   8. Metered / scheduled   — eval-weekly
+#
+# THE METERED AI EVAL DOES NOT RUN HERE
+#   The metered behavioral-eval suite (`t3 eval run --backend sdk`, which shells
+#   out to `claude -p` — cost, network, model variance) is NOT part of this PR
+#   pipeline. It lives in a standalone workflow, `.github/workflows/eval.yml`,
+#   on a weekly schedule + manual `workflow_dispatch`. A PR run neither runs nor
+#   displays a metered-eval check. The FREE deterministic eval lanes
+#   (eval-skill-triggers, eval-pinned-regressions) still gate every push via
+#   prek and the regression corpus is asserted every PR via pytest.
 # ============================================================
 
 name: CI
@@ -64,19 +72,6 @@ on:
     # cannot see a brand name already committed; this catches a pre-existing
     # leak even when no new diff touches it.
     - cron: "17 6 * * *"
-  workflow_dispatch:
-    # On-demand manual run of the weekly behavioral-eval gate. The weekly
-    # cadence (first PR of the ISO week or the Sunday cron) means a maintainer
-    # who wants the suite at an arbitrary time has no CI path otherwise. A
-    # dispatch forces the eval to run unconditionally (see the eval-weekly gate
-    # step). The backend input picks the AI-lane runner: sdk (metered claude -p,
-    # the CI default) requires ANTHROPIC_API_KEY.
-    inputs:
-      backend:
-        description: "AI-lane backend for the manual run (sdk = metered claude -p)."
-        required: false
-        default: sdk
-        type: string
 
 jobs:
 
@@ -628,137 +623,8 @@ jobs:
           name: sbom
           path: dist/sbom.json
 
-  # ── 8. Metered / scheduled ─────────────────────────────────────────────────
-
-  # GATE (weekly + on-demand): AI behavioral eval suite (metered, calls claude -p).
-  # Runs on the first PR of each ISO week, the Sunday cron backstop for PR-less
-  # weeks, and unconditionally on workflow_dispatch. Skipped (internal gate step)
-  # on every other PR and every non-Sunday cron tick.
-  eval-weekly:
-    # Weekly behavioral-eval gate. The eval suite shells out to `claude -p`
-    # (cost, network, model variance), so it must NOT run on every push or
-    # every PR. The cadence is once a week. Two complementary paths fire it:
-    #
-    #   * PR path — on the FIRST pull request opened that ISO week
-    #     (`first_pr_of_week.py --mode first-of-week`, order-independent,
-    #     re-run safe). This is the PRIMARY path; it covers any week that
-    #     opened a PR.
-    #   * Cron path — a genuine last-resort backstop for a PR-LESS week,
-    #     pinned to the ISO week's LAST day (Sunday, `date -u +%u` == 7) on
-    #     the shared daily `17 6 * * *` cron, and only when NO PR was opened
-    #     this ISO week (`first_pr_of_week.py --mode no-pr-week`). Closes the
-    #     gap where a PR-less week ran no eval at all.
-    #
-    # Ordering / double-run: the two paths share one marker — the week's PR
-    # list — and the cron fires only at end-of-week. By Sunday a week with no
-    # PR has almost certainly produced none, so the backstop runs ~once for
-    # that week and the PR path never fired (it had no PR to fire on). The
-    # ONLY residual overlap is a PR opened on Sunday AFTER the 06:17 UTC cron
-    # already ran: that PR is then the first-of-week and its PR-path run is a
-    # second run for that ISO week. This is an accepted, sub-day sliver for a
-    # last-resort backstop; the zero-run direction (PR-less week → no eval at
-    # all) is the bug this closes and is fully eliminated.
-    #
-    # On-demand: a `workflow_dispatch` event runs the suite unconditionally
-    # (the gate step below forces run_eval=true for it). Local runs still work
-    # via `t3 eval run` / `t3 eval skill-triggers` (also the periodic local-eval
-    # loop job — `EvalLocalScanner`). The GitLab mirror carries the PR-path rule
-    # and a `when: manual` eval job in `.gitlab-ci.yml`.
-    if: >
-      github.event_name == 'pull_request' ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
-      - name: Sync dependencies (retry on transient network failure)
-        uses: nick-fields/retry@v4
-        with:
-          timeout_minutes: 10
-          max_attempts: 3
-          retry_wait_seconds: 30
-          command: uv sync
-      - name: Decide whether the weekly eval runs (PR path or cron path)
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          # Most-recent-first so the current ISO week is on the first page even
-          # for a repo with thousands of PRs. first_pr_of_week.py also keeps the
-          # newest window as a second line of defence regardless of ordering.
-          gh api "repos/${{ github.repository }}/pulls?state=all&sort=created&direction=desc&per_page=100" \
-            --jq '[.[] | {number: .number, created_at: .created_at}]' > prs.json || echo "[]" > prs.json
-          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            # Manual on-demand run: always run, no first-of-week gating.
-            echo "run_eval=true" >> "$GITHUB_OUTPUT"
-          elif [ "$EVENT_NAME" = "schedule" ]; then
-            # Cron path: last-resort backstop for a PR-less ISO week. Pinned to
-            # the week's LAST day (Sunday, %u == 7) so it cannot preempt the
-            # PR path mid-week (which would let a later first-PR run double-fire)
-            # and so it fires at most once per PR-less week, not every daily tick.
-            if [ "$(date -u +%u)" != "7" ]; then
-              echo "run_eval=false" >> "$GITHUB_OUTPUT"
-            elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --mode no-pr-week --skip-code 1; then
-              echo "run_eval=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "run_eval=false" >> "$GITHUB_OUTPUT"
-            fi
-          elif uv run python scripts/eval/first_pr_of_week.py --mrs-file prs.json --current-iid "$PR_NUMBER" --skip-code 1; then
-            echo "run_eval=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_eval=false" >> "$GITHUB_OUTPUT"
-          fi
-      # The deterministic lanes (skill-triggers, pinned-regressions) are NOT run
-      # standalone here: they gate every push via prek (eval-skill-triggers
-      # commit-stage, eval-pinned-regressions push-stage) and the regression
-      # corpus is also asserted every PR via pytest. One source of truth — this
-      # weekly job owns only the metered AI suite below.
-      - name: Migrate the self-DB (the eval run-history ledger persists into it)
-        if: steps.gate.outputs.run_eval == 'true'
-        run: uv run python -m teatree migrate --no-input
-      # Decide whether the behavioral suite can actually execute. The runner
-      # SKIPs every scenario when `claude` is not on PATH or no key is
-      # configured, and a fully-skipped suite reports green with ZERO behavioral
-      # coverage. When ANTHROPIC_API_KEY IS configured, arm `--require-executed`
-      # so a fully-skipped run exits non-zero instead of passing decoratively
-      # (souliane/teatree#1811). With no key the metered path cannot run, so the
-      # suite skips and the gate stays disarmed — the deterministic lanes
-      # (prek + pytest) carry the token-free coverage.
-      - name: Decide eval-execution enforcement
-        id: eval_exec
-        if: steps.gate.outputs.run_eval == 'true'
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then
-            echo "require_executed=--require-executed" >> "$GITHUB_OUTPUT"
-          else
-            echo "require_executed=" >> "$GITHUB_OUTPUT"
-          fi
-      # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--backend` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path explicitly
-      # (sdk default). A workflow_dispatch run may override it via the backend input; the
-      # empty PR/schedule input falls back to sdk. LOCAL `t3 eval run` defaults to the
-      # subscription backend (no API spend); CI is the budgeted exception.
-      # `--require-executed` (armed only when a key is configured) fails the job
-      # if the suite collected scenarios but executed none — no silent decorative pass.
-      - name: Behavioral eval suite (pass@k; --require-executed armed when a key is set)
-        if: steps.gate.outputs.run_eval == 'true'
-        uses: nick-fields/retry@v4
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
-        with:
-          timeout_minutes: 30
-          max_attempts: 3
-          retry_wait_seconds: 60
-          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" ${{ steps.eval_exec.outputs.require_executed }}
+  # The metered behavioral-eval suite (`t3 eval run --backend sdk`, `claude -p`)
+  # is NOT a job here. It runs in the standalone `.github/workflows/eval.yml`
+  # (weekly schedule + manual workflow_dispatch) so a PR pipeline neither runs
+  # nor displays a metered-eval check. See that workflow for the install +
+  # `--require-executed` enforcement.
