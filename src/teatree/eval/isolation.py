@@ -12,9 +12,10 @@ teatree gate enforces it. That biases every real eval result.
 to :func:`~teatree.utils.run.run_allowed_to_fail`: a copy of the parent
 environment with ``HOME`` (and the related config-dir vars) redirected at a
 freshly created, ``.claude``-free temp directory, and that same directory as a
-neutral cwd. Credential and PATH vars survive untouched, so the API-key auth the
-SDK backend relies on keeps working; only the personal-context discovery roots
-move. The command also carries ``--bare`` (set by each caller), which disables
+neutral cwd. Credential and PATH vars survive untouched, so the SDK backend's
+auth (``CLAUDE_CODE_OAUTH_TOKEN`` or ``ANTHROPIC_API_KEY``) keeps working; only
+the personal-context discovery roots move. The command also carries ``--bare``
+(set by each caller), which disables
 auto-memory and CLAUDE.md auto-discovery at the source — the env/cwd redirect is
 the belt to that flag's suspenders, and keeps the run virgin even if a caller is
 invoked directly without ``--bare``.

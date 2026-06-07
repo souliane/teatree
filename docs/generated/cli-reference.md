@@ -1317,9 +1317,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
- no ``ANTHROPIC_API_KEY``), so a decorative all-skipped run cannot pass green.
- CI arms it only when a key is configured; local runs leave it off so the
- subscription backend's legitimate pre-transcript all-skip stays green.
+ not authenticated), so a decorative all-skipped run cannot pass green. CI
+ arms it always; local runs leave it off so the subscription backend's
+ legitimate pre-transcript all-skip stays green.
+
+ ``--docker`` runs the suite inside the CI image. The metered ``sdk`` lane is
+ meant to run in-container, never on the host — the runner forwards the host's
+ ``CLAUDE_CODE_OAUTH_TOKEN`` (or ``ANTHROPIC_API_KEY``) in via docker's
+ ``-e VARNAME`` pass-through, so the token authenticates ``claude -p`` inside a
+ clean container and never lands on the command line.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   name      [NAME]  Scenario name to run (omit to run all).                  │
@@ -1381,8 +1387,15 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                scenarios but executed none   │
 │                                                (all skipped) — the CI gate   │
 │                                                so a decorative run with no   │
-│                                                claude/ANTHROPIC_API_KEY      │
-│                                                can't pass green.             │
+│                                                claude/credential can't pass  │
+│                                                green.                        │
+│ --docker                                       Run inside the CI image       │
+│                                                (dev/Dockerfile.test); the    │
+│                                                metered sdk lane runs         │
+│                                                in-container, authenticated   │
+│                                                by the host's                 │
+│                                                CLAUDE_CODE_OAUTH_TOKEN/ANTH… │
+│                                                (env pass-through).           │
 │ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

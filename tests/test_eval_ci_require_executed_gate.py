@@ -1,19 +1,23 @@
 """The metered eval workflow fails loud instead of passing an all-skipped green.
 
-The eval runner SKIPs every scenario when ``claude`` is not on PATH / no
-``ANTHROPIC_API_KEY``, and a fully-skipped suite reports green with zero
-behavioral coverage. The fix relocates the metered ``claude -p`` suite OUT of
-the PR pipeline into a standalone weekly/manual workflow that passes
+The eval runner SKIPs every scenario when ``claude`` is not on PATH / not
+authenticated, and a fully-skipped suite reports green with zero behavioral
+coverage. The fix relocates the metered ``claude -p`` suite OUT of the PR
+pipeline into a standalone weekly/manual workflow that passes
 ``--require-executed`` UNCONDITIONALLY (never key-gated — the original bug armed
-the guard only when ``ANTHROPIC_API_KEY`` was set, i.e. gated on the exact
-condition it exists to catch) and installs + asserts the Claude CLI so a missing
-binary FAILS the job.
+the guard only when a credential was set, i.e. gated on the exact condition it
+exists to catch) and installs + asserts the Claude CLI so a missing binary FAILS
+the job.
+
+Auth is the ``CLAUDE_CODE_OAUTH_TOKEN`` OAuth token (``claude setup-token``) —
+the everywhere-portable, June-15-safe path that authenticates ``claude -p`` on a
+clean runner with no ``sk-ant-api03`` API key.
 
 These are the recurrence-proof fitness tests: they parse the workflow YAML and
 assert the metered eval invocation always carries ``--require-executed`` and is
-NOT key-conditional, and that ``ci.yml`` no longer carries a metered eval job on
-the PR path. They go RED if ``--require-executed`` is removed from the eval
-workflow.
+NOT key-conditional, that auth is wired via the OAuth token (not the api03 key),
+and that ``ci.yml`` no longer carries a metered eval job on the PR path. They go
+RED if ``--require-executed`` is removed or auth regresses to the api key.
 """
 
 from pathlib import Path
@@ -44,6 +48,14 @@ def _gh_eval_workflow_text() -> str:
     return _GH_EVAL.read_text(encoding="utf-8")
 
 
+def _gh_eval_step_env() -> dict[str, str]:
+    jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
+    env: dict[str, str] = {}
+    for step in cast("list[dict[str, Any]]", jobs["eval"]["steps"]):
+        env.update(cast("dict[str, str]", step.get("env", {})))
+    return env
+
+
 def _gitlab_eval_script() -> list[str]:
     config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
     # The script is the shared `.eval-suite` body extended by the eval jobs.
@@ -67,11 +79,14 @@ class TestGitHubRequireExecutedUnconditional:
             "--require-executed must be passed unconditionally, not via a key-gated "
             "${{ steps.*.outputs.require_executed }} interpolation."
         )
-        # The flag must not sit behind any ANTHROPIC_API_KEY conditional anywhere
-        # in the eval workflow (no `if [ -n "$ANTHROPIC_API_KEY" ]` arming step).
+        # The flag must not sit behind any credential conditional anywhere in the
+        # eval workflow (no `if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]` arming step).
         text = _gh_eval_workflow_text()
+        assert 'if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]' not in text, (
+            "The eval workflow must not gate --require-executed on the OAuth token."
+        )
         assert 'if [ -n "$ANTHROPIC_API_KEY" ]' not in text, (
-            "The eval workflow must not gate --require-executed on ANTHROPIC_API_KEY."
+            "The eval workflow must not gate --require-executed on a credential."
         )
 
     def test_workflow_installs_and_asserts_the_claude_cli(self) -> None:
@@ -81,10 +96,15 @@ class TestGitHubRequireExecutedUnconditional:
             "missing binary fails the job instead of skipping every scenario."
         )
 
-    def test_api_key_secret_is_wired(self) -> None:
-        text = _gh_eval_workflow_text()
-        assert "secrets.ANTHROPIC_API_KEY" in text, (
-            "The eval workflow must wire ANTHROPIC_API_KEY from the repo secret so it works once the secret is set."
+    def test_oauth_token_secret_is_wired_not_the_api_key(self) -> None:
+        env = _gh_eval_step_env()
+        assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
+            "The eval step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the "
+            "everywhere-portable OAuth-token auth that works once the secret is set."
+        )
+        assert "ANTHROPIC_API_KEY" not in env, (
+            "No eval step env may set ANTHROPIC_API_KEY — auth is the OAuth token, the "
+            "June-15-safe path that does not depend on an sk-ant-api03 key."
         )
 
 
