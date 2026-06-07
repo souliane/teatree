@@ -206,7 +206,12 @@ def run(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 to a p
         )
         return
     try:
-        runner = make_runner(backend, max_turns_override=max_turns, transcript_dir=transcript_dir)
+        runner = make_runner(
+            backend,
+            max_turns_override=max_turns,
+            transcript_dir=transcript_dir,
+            require_executed=require_executed,
+        )
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.eval.runner import WATCHDOG_SECONDS, ClaudePRunner
+from teatree.eval.runner import WATCHDOG_SECONDS, ClaudeCliMissingError, ClaudePRunner
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -44,6 +44,29 @@ class TestClaudePRunner:
         assert result.terminal_reason.startswith("skipped:")
         assert result.is_error is False
         assert result.tool_calls == ()
+
+    def test_require_executed_hard_errors_when_claude_missing(self, tmp_path: Path) -> None:
+        # sdk + require-executed must NEVER decoratively skip: a missing claude
+        # binary raises (propagates to a non-zero CLI exit), not a skip-shaped run.
+        spec = _spec(tmp_path)
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value=None),
+            pytest.raises(ClaudeCliMissingError),
+        ):
+            ClaudePRunner(require_executed=True).run(spec)
+
+    def test_require_executed_still_runs_when_claude_present(self, tmp_path: Path) -> None:
+        # The hard-error path only fires on a MISSING binary; a present binary
+        # runs normally even under require_executed.
+        spec = _spec(tmp_path)
+        stream = (FIXTURES / "worktree_first_pass.stream.jsonl").read_text(encoding="utf-8")
+        with (
+            patch("teatree.eval.runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.utils.run.subprocess.run", return_value=_FakeCompleted(stdout=stream)),
+        ):
+            result = ClaudePRunner(workspace=tmp_path, require_executed=True).run(spec)
+        assert result.terminal_reason == "success"
+        assert result.is_error is False
 
     def test_builds_command_with_canonical_flags(self, tmp_path: Path) -> None:
         spec = _spec(tmp_path)
