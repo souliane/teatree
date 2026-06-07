@@ -4,7 +4,7 @@ Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
 the project's per-file LOC ceiling. This module owns the "is this repo
 private?" question and nothing about command classification:
 
-- the offline ``[teatree] private_repos`` slug-substring allowlist (the
+- the offline ``[teatree] private_repos`` slug-namespace allowlist (the
     reliable, network-free, recommended mechanism),
 - the day-cached ``gh``/``glab`` live-visibility probe (best-effort
     fallback; the binary is resolved against an augmented PATH so it works
@@ -66,15 +66,16 @@ def _config_path() -> Path:
 
 
 def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] private_repos`` slug-substring allowlist.
+    """Return the ``[teatree] private_repos`` slug-namespace allowlist.
 
-    Each entry is matched as a case-insensitive substring against the repo's
-    slug, so a single organisation-namespace entry covers every repo under that
-    namespace. Entries may be written bare (``owner/repo``) or host-qualified
-    (``host/owner/repo`` -- the form a repo URL carries); the match is
-    host-qualification-symmetric (see :func:`slug_is_allowlisted_private`), so
-    either form covers the commit surface (host-qualified cwd slug) and the
-    pr-create surface (bare ``--repo`` slug) alike. Reads the TOML directly (no
+    Each entry is matched as a case-insensitive path-segment prefix against the
+    repo's host-stripped ``owner/repo`` slug (see
+    :func:`slug_namespace_matches`), so a single organisation-namespace entry
+    covers every repo under that namespace. Entries may be written bare
+    (``owner/repo``) or host-qualified (``host/owner/repo`` -- the form a repo
+    URL carries); the match is host-qualification-symmetric, so either form
+    covers the commit surface (host-qualified cwd slug) and the pr-create
+    surface (bare ``--repo`` slug) alike. Reads the TOML directly (no
     Django/config import) to stay importable from the hook process.
     """
     import tomllib  # noqa: PLC0415
@@ -102,6 +103,18 @@ def slug_for_cwd(cwd: Path) -> str:
     allowlist entry matches a GitLab remote and a GitHub probe can be keyed by
     the same string.
 
+    Four remote forms normalize to a canonical slug:
+
+    - ``https://host/owner/repo`` -> ``host/owner/repo`` (host kept),
+    - ``user@host:owner/repo`` (standard SSH) -> ``host/owner/repo`` (real host
+        kept -- the ``user@`` segment proves the part before ``:`` is a host),
+    - ``alias:owner/repo`` (SSH config ``Host alias``, no ``user@``) ->
+        ``owner/repo`` -- the alias is a LOCAL ``~/.ssh/config`` name with no
+        canonical identity, so it is DROPPED. Keeping it (the old verbatim
+        return) glued the alias into the slug, and an alias whose name contained
+        an allowlist entry then tripped the substring matcher and falsely
+        downgraded a PUBLIC repo (#1953).
+
     ``FileNotFoundError`` (the ``git`` binary unresolved on the restricted hook
     PATH) and ``OSError`` are caught alongside ``CommandFailedError`` so a
     degraded subprocess fails SAFE to an empty slug -- an uncaught error would
@@ -117,10 +130,11 @@ def slug_for_cwd(cwd: Path) -> str:
     cleaned = url.strip().rstrip("/").removesuffix(".git")
     if "://" in cleaned:
         return cleaned.split("://", 1)[1]
-    if "@" in cleaned and ":" in cleaned:
+    if ":" in cleaned and "/" not in cleaned.partition(":")[0]:
         host, _, path = cleaned.partition(":")
-        host = host.rsplit("@", 1)[-1]
-        return f"{host}/{path}"
+        if "@" in host:
+            return f"{host.rsplit('@', 1)[-1]}/{path}"
+        return path
     return cleaned
 
 
@@ -299,35 +313,55 @@ def _strip_host_prefix(slug: str) -> str:
     return slug
 
 
-def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the offline allowlist.
+def slug_namespace_matches(entry: str, slug: str) -> bool:
+    """Return True iff allowlist ``entry`` matches ``slug`` on path-segment boundaries.
 
-    Each entry is matched as a case-insensitive substring against the repo
-    slug. The match is HOST-QUALIFICATION-SYMMETRIC: a host-qualified entry
-    (``host/owner/repo`` -- the form the config doc states and ``slug_for_cwd``
-    emits) must also match a BARE ``owner/repo`` slug, which is what
-    ``gh pr create --repo`` supplies. Without the symmetry, the same private
-    repo downgrades on commit (cwd slug is host-qualified) yet hard-blocks on
-    pr-create (the bare ``--repo`` slug) -- #2067. Both the slug and each entry
-    are compared in their original and host-stripped forms, so a host-qualified
-    entry matches a bare slug, a bare entry matches a host-qualified slug, and a
-    bare-org entry keeps matching both -- while no public repo gains a match.
+    The canonical key is the host-stripped ``owner/repo`` path. ``entry`` matches
+    when, host-stripped, it equals the host-stripped slug OR is a leading run of
+    its ``/``-separated segments: ``a`` and ``a/b`` match ``a/b`` and ``a/b/c``,
+    but ``a`` does NOT match ``ab/c`` (a substring of a segment) and ``a/b`` does
+    NOT match ``a/bc`` (a superset segment). The host segment never participates,
+    so an SSH-alias host (``gitlab-<entry>``) or an https host can never satisfy
+    the match.
 
-    A host-root-only entry (one whose host-stripped form is empty, e.g.
-    ``github.com/`` or ``host./``) carries no owner/repo identity and is
-    skipped entirely: matching on its bare host segment would downgrade EVERY
-    repo on that host, public ones included, and matching on its empty
-    host-stripped form (``"" in any_string`` is always True) would downgrade
-    everything. Such an entry is malformed, not a private-repo declaration.
+    The match is HOST-QUALIFICATION-SYMMETRIC: both sides are host-stripped first
+    (a leading ``/``-segment containing a dot), so a host-qualified entry matches
+    a bare ``gh pr create --repo`` slug, a bare entry matches a host-qualified cwd
+    slug, and a bare-org entry keeps matching both (#2067).
+
+    This replaces the old case-insensitive SUBSTRING containment, which falsely
+    matched an entry appearing anywhere in the slug -- inside an SSH-alias host
+    (``gitlab-<entry>:org/public``) or a superset owner (``<entry>-fork/repo``,
+    ``open<entry>/repo``) -- and so downgraded a PUBLIC repo to private,
+    relaxing the banned-terms gate on a public surface (#1953).
     """
-    slug_forms = {f for f in {slug.lower(), _strip_host_prefix(slug.lower())} if f}
-    for entry in _private_repo_allowlist(config_path):
-        if not _strip_host_prefix(entry):
-            continue
-        entry_forms = {entry, _strip_host_prefix(entry)}
-        if any(e in s for e in entry_forms for s in slug_forms):
-            return True
-    return False
+    entry_key = _strip_host_prefix(entry.strip().lower())
+    slug_key = _strip_host_prefix(slug.strip().lower())
+    if not entry_key or not slug_key:
+        return False
+    if entry_key == slug_key:
+        return True
+    entry_parts = entry_key.split("/")
+    slug_parts = slug_key.split("/")
+    return len(entry_parts) < len(slug_parts) and slug_parts[: len(entry_parts)] == entry_parts
+
+
+def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
+    """Return True iff ``slug`` matches the offline ``[teatree] private_repos`` allowlist.
+
+    Each entry is matched against the slug's host-stripped ``owner/repo`` path
+    segments via :func:`slug_namespace_matches` -- a leading-segment-prefix
+    match, NOT a substring. An organisation-namespace entry (``acme-engineering``)
+    covers every repo under it (``acme-engineering/secret``, host-qualified or
+    bare) while an unrelated superset owner (``acme-engineering-fork``) and an
+    SSH-alias host carrying the entry as a substring no longer match.
+
+    The classifier is fail-safe for the leak direction: a True DOWNGRADES the
+    banned-terms gate (and makes a publish destination skip the leak scan), so an
+    over-match is the dangerous direction. A non-matching, ambiguous, or
+    host-root-only entry yields False, which keeps enforcement hard-blocking.
+    """
+    return any(slug_namespace_matches(entry, slug) for entry in _private_repo_allowlist(config_path))
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
