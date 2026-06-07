@@ -78,3 +78,21 @@ class TestIsStale(TestCase):
 
         assert DreamRunMarker.objects.is_stale(now + dt.timedelta(hours=2), threshold_hours=1) is True
         assert DreamRunMarker.objects.is_stale(now + dt.timedelta(minutes=30), threshold_hours=1) is False
+
+
+class TestStr(TestCase):
+    def test_renders_succeeded_timestamp_branch(self) -> None:
+        ts = timezone.now()
+        DreamRunMarker.objects.mark_succeeded(ts)
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+
+        rendered = str(marker)
+
+        assert rendered == f"dream-run<dream:succeeded={ts.isoformat()}>"
+
+    def test_renders_never_branch_when_success_is_null(self) -> None:
+        DreamRunMarker.objects.mark_attempted(timezone.now())
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+
+        assert marker.last_succeeded_at is None
+        assert str(marker) == "dream-run<dream:succeeded=never>"

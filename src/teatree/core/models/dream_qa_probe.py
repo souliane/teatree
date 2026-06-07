@@ -19,7 +19,6 @@ Mirrors :class:`teatree.core.models.consolidated_memory.ConsolidatedMemory`
 from typing import ClassVar
 
 from django.db import models
-from django.utils import timezone
 
 
 class DreamQaProbeManager(models.Manager["DreamQaProbe"]):
@@ -47,7 +46,7 @@ class DreamQaProbe(models.Model):
     expected_answer = models.TextField()
     source_memory_path = models.CharField(max_length=512, blank=True, default="")
     overlay = models.CharField(max_length=64, blank=True, default="")
-    created_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
     last_pass_rate = models.FloatField(default=0.0)
     pass_count = models.PositiveIntegerField(default=0)
     run_count = models.PositiveIntegerField(default=0)

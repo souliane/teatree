@@ -186,3 +186,13 @@ class TestManager(TestCase):
 
         assert ConsolidatedMemory.objects.schema_count("acme") == 2
         assert ConsolidatedMemory.objects.schema_count("widgets") == 1
+
+
+class TestStr(TestCase):
+    def test_renders_pk_status_and_rule(self) -> None:
+        row = _record()
+
+        rendered = str(row)
+
+        assert rendered.startswith(f"consolidated-memory<{row.pk}:{ConsolidatedMemory.Status.CANDIDATE}:")
+        assert "Always run the gate before pushing." in rendered

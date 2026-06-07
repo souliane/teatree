@@ -94,3 +94,14 @@ class TestManager(TestCase):
         _probe("c", overlay="widgets")
 
         assert DreamQaProbe.objects.current_corpus("acme").count() == 2
+
+
+class TestStr(TestCase):
+    def test_renders_pk_rate_and_question(self) -> None:
+        probe = _probe("What gate runs before push?")
+        probe.record_result(passed=True)
+
+        rendered = str(probe)
+
+        assert rendered.startswith(f"dream-qa-probe<{probe.pk}:1.00:")
+        assert "What gate runs before push?" in rendered
