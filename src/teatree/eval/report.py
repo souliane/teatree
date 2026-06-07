@@ -1,8 +1,9 @@
-"""Text and JSON report rendering for one or more :class:`EvalRun` results."""
+"""Text, JSON, and HTML report rendering for one or more :class:`EvalRun` results."""
 
 import dataclasses
 import json
 from collections.abc import Callable
+from html import escape
 
 from teatree.eval.matchers import assert_no_tool_call_matching, assert_tool_call_contains, assert_tool_call_matching
 from teatree.eval.models import AnyOf, EvalRun, EvalSpec, ExpectItem, Matcher
@@ -168,6 +169,84 @@ def render_json(results: list[ScenarioResult]) -> str:
         "summary": _summary_dict(results),
     }
     return json.dumps(payload, indent=2)
+
+
+_HTML_STYLE = """
+:root { color-scheme: light dark; }
+body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+h1 { font-size: 1.4rem; }
+.summary { margin: 0 0 1.5rem; font-weight: 600; }
+.summary .pass { color: #1a7f37; }
+.summary .fail { color: #cf222e; }
+.summary .skip { color: #6e7781; }
+details { border: 1px solid #d0d7de; border-radius: 6px; margin: 0.5rem 0; padding: 0.5rem 0.75rem; }
+details.pass { border-left: 4px solid #1a7f37; }
+details.fail { border-left: 4px solid #cf222e; }
+details.skip { border-left: 4px solid #6e7781; }
+summary { cursor: pointer; font-weight: 600; }
+.verdict { font-size: 0.8rem; padding: 0.1rem 0.45rem; border-radius: 999px; margin-right: 0.5rem; color: #fff; }
+.verdict.pass { background: #1a7f37; }
+.verdict.fail { background: #cf222e; }
+.verdict.skip { background: #6e7781; }
+.reason { color: #6e7781; font-weight: 400; }
+ul.matchers { margin: 0.5rem 0 0; }
+pre { white-space: pre-wrap; background: rgba(127,127,127,0.1); padding: 0.5rem; border-radius: 4px; }
+.judge { margin-top: 0.5rem; }
+""".strip()
+
+
+def render_html(results: list[ScenarioResult]) -> str:
+    """Render a self-contained HTML report (inline CSS, no external assets).
+
+    Sibling of :func:`render_text` / :func:`render_json` — same
+    ``list[ScenarioResult]`` input contract. Every piece of run-derived content
+    (scenario name, terminal reason, matcher message, judge rationale) is
+    HTML-escaped so a transcript value can never inject markup.
+    """
+    counts = _summary_dict(results)
+    summary = (
+        f'<p class="summary">'
+        f'<span class="pass">{counts["passed"]} passed</span>, '
+        f'<span class="fail">{counts["failed"]} failed</span>, '
+        f'<span class="skip">{counts["skipped"]} skipped</span> '
+        f"(of {counts['total']})</p>"
+    )
+    rows = "\n".join(_html_scenario(result) for result in results)
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>Eval report</title>\n"
+        f"<style>{_HTML_STYLE}</style>\n"
+        "</head>\n<body>\n<h1>Eval report</h1>\n"
+        f"{summary}\n{rows}\n</body>\n</html>\n"
+    )
+
+
+def _html_scenario(result: ScenarioResult) -> str:
+    verdict = result.verdict
+    name = escape(result.spec.name)
+    reason = escape(result.run.terminal_reason)
+    head = (
+        f'<summary><span class="verdict {verdict}">{verdict.upper()}</span>'
+        f'{name} <span class="reason">({reason})</span></summary>'
+    )
+    body_parts: list[str] = []
+    failed_matchers = [m for m in result.matcher_results if not m.passed]
+    if failed_matchers:
+        items = "\n".join(f"<li><pre>{escape(m.message)}</pre></li>" for m in failed_matchers)
+        body_parts.append(f'<ul class="matchers">\n{items}\n</ul>')
+    if result.judge is not None and not result.judge.skipped:
+        judge_verdict = "pass" if result.judge.passed else "fail"
+        body_parts.append(
+            f'<p class="judge"><strong>judge ({judge_verdict}):</strong> {escape(result.judge.rationale)}</p>'
+        )
+    if result.run.is_error and not failed_matchers:
+        body_parts.append(f'<p class="judge"><strong>run errored:</strong> {reason}</p>')
+        if result.run.raw_stderr.strip():
+            body_parts.append(f"<pre>{escape(result.run.raw_stderr.strip()[:500])}</pre>")
+    body = "\n".join(body_parts)
+    return f'<details class="{verdict}">\n{head}\n{body}\n</details>'
 
 
 @dataclasses.dataclass(frozen=True)
