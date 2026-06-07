@@ -1,8 +1,8 @@
-"""Tests for teatree.skill_deps — transitive dependency resolution."""
+"""Tests for teatree.skill_support.deps — transitive dependency resolution."""
 
 import pytest
 
-from teatree.skill_deps import resolve_all, resolve_companions, resolve_requires
+from teatree.skill_support.deps import resolve_all, resolve_companions, resolve_requires
 
 
 def _index(*entries: tuple[str, list[str]]) -> list[dict[str, object]]:

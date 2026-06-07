@@ -18,8 +18,8 @@ from pathlib import Path
 import teatree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import DATA_DIR
-from teatree.skill_deps import resolve_all
-from teatree.skill_schema import validate_skill_md
+from teatree.skill_support.deps import resolve_all
+from teatree.skill_support.schema import validate_skill_md
 from teatree.trigger_parser import parse_triggers as _parse_triggers
 
 logger = logging.getLogger(__name__)

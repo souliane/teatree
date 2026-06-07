@@ -9,8 +9,8 @@ Verifies that:
 
 from pathlib import Path
 
-from teatree.skill_deps import resolve_requires
-from teatree.skill_schema import validate_skill_md
+from teatree.skill_support.deps import resolve_requires
+from teatree.skill_support.schema import validate_skill_md
 from teatree.trigger_parser import parse_triggers
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"

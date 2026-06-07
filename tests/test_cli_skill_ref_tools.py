@@ -31,7 +31,7 @@ class TestValidateSkillRefsCommand:
         config.write_text("ac-reviewing-skills: '\\breview\\b'\nac-django: '.'\n", encoding="utf-8")
         agents = tmp_path / "agents"
         agents.mkdir()
-        with patch("teatree.skill_ref_validator.default_search_dirs", return_value=[skills]):
+        with patch("teatree.skill_support.ref_validator.default_search_dirs", return_value=[skills]):
             result = runner.invoke(
                 app, ["tool", "validate-skill-refs", "--config", str(config), "--agents-dir", str(agents)]
             )
@@ -46,7 +46,7 @@ class TestValidateSkillRefsCommand:
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "coder.md").write_text("---\nname: coder\nskills:\n  - ac-django\n---\n# C", encoding="utf-8")
-        with patch("teatree.skill_ref_validator.default_search_dirs", return_value=[skills]):
+        with patch("teatree.skill_support.ref_validator.default_search_dirs", return_value=[skills]):
             result = runner.invoke(
                 app, ["tool", "validate-skill-refs", "--config", str(config), "--agents-dir", str(agents)]
             )
@@ -59,7 +59,7 @@ class TestValidateSkillRefsCommand:
         config.write_text("ac-reviewing-skills: '\\breview\\b'\n", encoding="utf-8")
         agents = tmp_path / "agents"
         agents.mkdir()
-        with patch("teatree.skill_ref_validator.default_search_dirs", return_value=[skills]):
+        with patch("teatree.skill_support.ref_validator.default_search_dirs", return_value=[skills]):
             result = runner.invoke(
                 app,
                 ["tool", "validate-skill-refs", "--config", str(config), "--agents-dir", str(agents), "--json"],

@@ -37,7 +37,7 @@ SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so discovery stays a leaf of the eval package (the same
 # backwards-edge convention ``trigger_qa`` follows — it must not reach up into
-# ``teatree.skill_loading``, a higher-level module).
+# ``teatree.skill_support.loading``, a higher-level module).
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 

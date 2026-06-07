@@ -118,7 +118,7 @@ class TestAgentCommand:
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
         from teatree.config import OverlayEntry  # noqa: PLC0415
-        from teatree.skill_loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
+        from teatree.skill_support.loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
 
         mock_overlay = OverlayEntry(name="test-overlay", overlay_class="test.overlay.TestOverlay")
         overlay_obj = MagicMock()
@@ -148,7 +148,7 @@ class TestAgentCommand:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-        from teatree.skill_loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
+        from teatree.skill_support.loading import SkillLoadingPolicy, SkillSelectionResult  # noqa: PLC0415
 
         with (
             patch.object(config_mod, "discover_active_overlay", return_value=None),
@@ -177,7 +177,7 @@ class TestAgentCommand:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-        from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+        from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
 
         with (
             patch.object(config_mod, "discover_active_overlay", return_value=None),

@@ -104,7 +104,7 @@ def deps(skill: str) -> None:
     import json as _json  # noqa: PLC0415
 
     from teatree.paths import DATA_DIR  # noqa: PLC0415
-    from teatree.skill_deps import resolve_all  # noqa: PLC0415
+    from teatree.skill_support.deps import resolve_all  # noqa: PLC0415
 
     cache_path = DATA_DIR / "skill-metadata.json"
     if not cache_path.is_file():

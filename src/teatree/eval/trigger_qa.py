@@ -24,7 +24,7 @@ from teatree.trigger_parser import parse_triggers
 CORPUS_PATH = Path(__file__).parent / "trigger_qa_corpus.yaml"
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so trigger-QA stays a leaf of the eval package (it must not
-# reach up into ``teatree.skill_loading``, a higher-level module — the same
+# reach up into ``teatree.skill_support.loading``, a higher-level module — the same
 # backwards-edge rule this eval's sibling scenario gates).
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 

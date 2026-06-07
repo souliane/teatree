@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from teatree.core.overlay import OverlayBase, OverlayMetadata
-from teatree.skill_map import load_skill_delegation
+from teatree.skill_support.map import load_skill_delegation
 
 _OVERLAY_HOOK_ORDER = (
     "get_repos",

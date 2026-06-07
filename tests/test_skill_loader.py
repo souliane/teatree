@@ -24,7 +24,7 @@ from lib.skill_loader import (  # noqa: E402
     suggest_skills,
 )
 
-import teatree.skill_loading as skill_loading_mod  # noqa: E402
+import teatree.skill_support.loading as skill_loading_mod  # noqa: E402
 
 SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
