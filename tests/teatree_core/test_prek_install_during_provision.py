@@ -178,7 +178,8 @@ class TestPrekInstallFailureSurfaces(TestCase):
             # Stub ``run_step`` so direnv passes and prek install fails — the
             # real binary may or may not be on PATH on a contributor's
             # machine, so we model the failure directly rather than depend
-            # on its absence.
+            # on its absence. ``prek install`` runs inside ``prek_hook``, so the
+            # step factory there is patched too (direnv stays in the runner).
             def fake_run_step(name: str, *_args: object, **_kwargs: object) -> StepResult:
                 if name == "prek-install":
                     return StepResult(
@@ -191,6 +192,10 @@ class TestPrekInstallFailureSurfaces(TestCase):
             with (
                 patch(
                     "teatree.core.runners.worktree_provision.run_step",
+                    side_effect=fake_run_step,
+                ),
+                patch(
+                    "teatree.core.prek_hook.run_step",
                     side_effect=fake_run_step,
                 ),
                 patch("teatree.core.runners.worktree_provision.write_env_cache", return_value=None),
