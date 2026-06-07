@@ -95,6 +95,17 @@ def load_settings(pyproject_path: Path | None = None) -> MutationSettings:
     )
 
 
+def load_baseline_per_module(pyproject_path: Path | None = None) -> dict[str, int]:
+    """The committed per-module surviving-mutant baseline (``path`` → ``count``).
+
+    Reads the ``baseline_surviving`` array of ``{ path, count }`` tables. A module
+    absent from the array has a baseline of zero (no recorded survivors).
+    """
+    path = pyproject_path or registry_pyproject_path()
+    section = tomllib.loads(path.read_text(encoding="utf-8")).get("tool", {}).get("teatree", {}).get("mutation", {})
+    return {str(entry["path"]): int(entry.get("count", 0)) for entry in section.get("baseline_surviving", [])}
+
+
 def tests_for(module: str, settings: MutationSettings) -> tuple[str, ...]:
     return settings.module_tests.get(module, settings.module_tests.get("default", ("tests/",)))
 
@@ -164,10 +175,111 @@ def parse_results(raw: str) -> MutationResult:
     return MutationResult(killed=tuple(killed), survived=tuple(survived), inconclusive=tuple(inconclusive))
 
 
-def decide_verdict(outcome: MutationOutcome, *, mode: str, baseline: int) -> int:
-    if mode == "warn" or outcome.is_no_op:
-        return 0
-    return 1 if len(outcome.survived) > baseline else 0
+class BaselineRatchet:
+    """The programmatic surviving-mutant ratchet over a :class:`MutationOutcome`.
+
+    The surviving count may only ever shrink. A run above the recorded baseline
+    is a regression CI must catch; a run below it auto-tightens the baseline. All
+    decisions are pure functions of an outcome plus the committed baseline, so
+    they live together here rather than scattered as module-level functions.
+    """
+
+    @staticmethod
+    def module_dotted_prefix(module: str) -> str:
+        """The importable dotted prefix of a registry path (``src/teatree/x.py`` → ``teatree.x``).
+
+        mutmut names a mutant ``<dotted-module>.<func>__mutmut_<n>``, so the
+        dotted form of each registry path attributes a survivor to its module.
+        """
+        return module.removeprefix("src/").removesuffix(".py").replace("/", ".")
+
+    @classmethod
+    def survivors_per_module(cls, outcome: MutationOutcome) -> dict[str, int]:
+        """Count surviving mutants attributed to each scoped registry module.
+
+        A survivor's mutmut name starts with its module's dotted prefix. Longest
+        matching prefix wins so a nested module (``teatree.core.merge.execution``)
+        is not stolen by a shorter sibling. A survivor matching no scoped module
+        is not attributed (it cannot, by construction — mutmut only mutates the
+        scoped paths), so the counts sum to at most ``len(outcome.survived)``.
+        """
+        prefixes = sorted(
+            ((cls.module_dotted_prefix(m), m) for m in outcome.scoped_modules),
+            key=lambda pair: len(pair[0]),
+            reverse=True,
+        )
+        counts = dict.fromkeys(outcome.scoped_modules, 0)
+        for name in outcome.survived:
+            for prefix, module in prefixes:
+                if name == prefix or name.startswith(f"{prefix}."):
+                    counts[module] += 1
+                    break
+        return counts
+
+    @staticmethod
+    def exceeds_baseline(outcome: MutationOutcome, *, baseline: int) -> bool:
+        """True when the run surfaced MORE surviving mutants than the recorded baseline.
+
+        A run above the baseline is a regression that fails CI regardless of
+        ``mode`` — what makes ``mode = "block"`` safe to flip later. A no-op run
+        (no safety module in the diff) surfaces nothing and never exceeds.
+        """
+        if outcome.is_no_op:
+            return False
+        return len(outcome.survived) > baseline
+
+    @staticmethod
+    def total(outcome: MutationOutcome, *, baseline: int) -> int:
+        """The new total baseline after this run — the lower of the two (only shrinks).
+
+        Mirrors :func:`teatree.quality.test_shape.loosens_baseline`: fewer
+        survivors auto-tighten to the lower count; at-or-above holds the existing
+        (lower) baseline. The ratchet only moves in the improving direction, so
+        re-baselining can never silently loosen. A no-op run holds the baseline.
+        """
+        if outcome.is_no_op:
+            return baseline
+        return min(baseline, len(outcome.survived))
+
+    @classmethod
+    def per_module(
+        cls,
+        outcome: MutationOutcome,
+        *,
+        committed: dict[str, int],
+    ) -> tuple[dict[str, int], bool]:
+        """The new per-module baseline (only shrinks) and whether the diff would loosen.
+
+        For every scoped module the new count is ``min(committed, measured)`` — a
+        module with fewer survivors auto-tightens, one at-or-above holds its lower
+        committed count. ``committed`` entries for modules NOT in this run are
+        carried through unchanged (a diff-scoped run only observed a subset). The
+        second element is True when any scoped module measured MORE survivors than
+        its committed baseline — the regression the rewrite refuses without an
+        explicit override (mirrors test_shape's ``loosens_baseline``).
+        """
+        measured = cls.survivors_per_module(outcome)
+        loosens = any(count > committed.get(module, 0) for module, count in measured.items())
+        new_baseline = dict(committed)
+        for module, count in measured.items():
+            new_baseline[module] = min(committed.get(module, count), count)
+        return new_baseline, loosens
+
+    @classmethod
+    def verdict(cls, outcome: MutationOutcome, *, mode: str, baseline: int) -> int:
+        """Exit code for ``t3 mutation run`` — the surviving-count ratchet.
+
+        A run above the recorded baseline fails (exit 1) in BOTH ``warn`` and
+        ``block`` mode: the surviving count may only ever shrink, so a PR that
+        surfaces more survivors than the baseline is a regression CI must catch.
+        This is the prerequisite that makes flipping ``mode`` to ``"block"`` safe
+        — ``mode`` stays as the lever for that follow-up (where it will gate on
+        survivors existing at all); today both modes coincide on the ratchet.
+        """
+        if mode not in _MODES:
+            detail = f"mode must be one of {sorted(_MODES)}, got {mode!r}"
+            raise MutationConfigError(detail)
+        return 1 if cls.exceeds_baseline(outcome, baseline=baseline) else 0
 
 
 def changed_files_vs_main(repo: str = ".", target: str = "origin/main") -> tuple[str, ...]:

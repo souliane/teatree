@@ -2973,7 +2973,8 @@ Usage: t3 mutation [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run  Mutate the safety modules a PR touches; warn/block per the ratchet.     │
+│ run  Mutate the safety modules a PR touches; fail when survivors exceed the  │
+│      baseline.                                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2982,12 +2983,21 @@ Usage: t3 mutation [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 mutation run [OPTIONS]
 
- Mutate the safety modules a PR touches; warn/block per the ratchet.
+ Mutate the safety modules a PR touches; fail when survivors exceed the
+ baseline.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --target        TEXT  Base ref to diff against [default: origin/main]        │
-│ --all                 Mutate the whole registry, not just the diff (weekly)  │
-│ --help                Show this message and exit.                            │
+│ --target                  TEXT  Base ref to diff against                     │
+│                                 [default: origin/main]                       │
+│ --all                           Mutate the whole registry, not just the diff │
+│                                 (weekly)                                     │
+│ --update-baseline               Rewrite the committed baseline_surviving     │
+│                                 counts to the current run (only shrinks).    │
+│ --allow-regression              With --update-baseline, permit recording     │
+│                                 MORE survivors than committed (an            │
+│                                 intentional, reviewed increase). Refused by  │
+│                                 default so the ratchet cannot loosen.        │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
