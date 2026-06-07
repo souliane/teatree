@@ -7,6 +7,7 @@ from django.tasks import task
 
 from teatree.core.models import Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
+from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
 
 logger = logging.getLogger(__name__)
@@ -223,8 +224,11 @@ def execute_provision(ticket_id: int) -> TransitionResult:
     ``schedule_planning()`` so the FSM proceeds toward CODED — unless the unit
     is under active external delivery (#2104), in which case the auto-planner is
     skipped (a hand-dispatched delivery agent implements directly with no
-    planning phase, so the planner would be orphaned). The loop's own
-    autonomous FSM never stamps the delivery lease, so its flow is unchanged.
+    planning phase, so the planner would be orphaned), or the unit carries the
+    lightweight trivial-skip marker (a trivial mechanical edit the operator
+    explicitly opted out of planning, mirroring the external-delivery skip). The
+    loop's own autonomous FSM never stamps either marker, so its flow is
+    unchanged.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -243,6 +247,8 @@ def execute_provision(ticket_id: int) -> TransitionResult:
 
         if under_external_delivery(ticket):
             logger.info("Ticket %s under external delivery; skipping auto-planner (#2104)", ticket_id)
+        elif is_trivial_plan_skip(ticket):
+            logger.info("Ticket %s marked trivial; skipping auto-planner (plan-gate carve-out)", ticket_id)
         else:
             ticket.schedule_planning()
 

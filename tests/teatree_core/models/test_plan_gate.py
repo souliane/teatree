@@ -138,6 +138,43 @@ class TestPlanArtifactModel(TestCase):
             ticket_b.plan()
 
 
+class TestTrivialPlanSkipCarveOut(TestCase):
+    """A trivial-marked AUTHOR ticket advances STARTED→PLANNED with no artifact.
+
+    The lightweight, audited carve-out (Batch C). Anti-vacuous proof: a
+    trivial-marked ticket's plan() advances with NO PlanArtifact and NO
+    --human-authorize, while an UNMARKED ticket's plan() STILL raises
+    NoPlanArtifactError (the carve-out must not leak to ordinary tickets — the
+    critical guard). RED-on-revert: if check_plan_artifact stops honouring the
+    marker, the first test goes red; if the marker were honoured too broadly
+    (any extra), the second goes red.
+    """
+
+    def test_trivial_marked_ticket_advances_without_artifact(self) -> None:
+        from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
+
+        ticket = _started_ticket()
+        mark_trivial_plan_skip(ticket, reason="one-line typo fix", by="operator")
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+        ticket.plan()
+        ticket.save()
+        assert ticket.state == Ticket.State.PLANNED
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+
+    def test_unmarked_ticket_still_requires_artifact(self) -> None:
+        ticket = _started_ticket()
+        assert not PlanArtifact.objects.filter(ticket=ticket).exists()
+        with pytest.raises(NoPlanArtifactError):
+            ticket.plan()
+
+    def test_marker_with_empty_reason_does_not_unlock_plan(self) -> None:
+        ticket = _started_ticket()
+        ticket.extra = {"trivial_plan_skip": {"reason": "", "by": "x"}}
+        ticket.save()
+        with pytest.raises(NoPlanArtifactError):
+            ticket.plan()
+
+
 class TestAttemptRecorderRecordsPlanArtifact(TestCase):
     """record_result_envelope auto-records PlanArtifact on a planning success."""
 
