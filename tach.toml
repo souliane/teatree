@@ -175,7 +175,7 @@ depends_on = []
 [[modules]]
 path = "teatree.eval"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.hooks", "teatree.utils", "teatree.trigger_parser"]
+depends_on = ["teatree.core", "teatree.hooks", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions"]
 
 [[modules]]
 path = "teatree.core.management"
@@ -186,6 +186,7 @@ depends_on = [
   "teatree.backends",
   "teatree.config",
   "teatree.docker",
+  "teatree.eval",
   "teatree.loop",
   "teatree.loops",
   "teatree.messaging",

@@ -336,6 +336,7 @@ class, where it is pinned, and the originating fix:
 | anti-vacuous self-review before review-request/merge (revert fix → RED proof; don't ship a green vacuous regression test) | `scenarios/anti_vacuous_self_review.yaml` | [#34](https://github.com/souliane/teatree/issues/34) |
 | record the SHA-bound anti-vacuity attestation before requesting review (the structural gate's recording seam, not posting un-attested) | `scenarios/anti_vacuous_self_review.yaml` | [#1829](https://github.com/souliane/teatree/issues/1829) |
 | blocked sub-agent surfaces a structured block, never silently works around; orchestrator escalates, never swallows | `scenarios/blocked_subagent_escalation.yaml` | [#1915](https://github.com/souliane/teatree/issues/1915) |
+| near-zero-comments — agent does not write a code-restating comment first-try (the worked example of the gate-failure feedback loop) | `skills/code/evals.yaml` (`comment_density_writes_sparse_code`, co-located) | [#2024](https://github.com/souliane/teatree/issues/2024) |
 | skip the bot's OWN TTS audio attachment on Slack read (transcribe the user's voice note, never the bot's own speech.m4a) | `scenarios/skip_own_tts_audio.yaml` | [#2089](https://github.com/souliane/teatree/issues/2089) |
 
 The on-behalf / answerer-draft, sweep-merge-never-rebase, review-branch-current,
@@ -654,6 +655,72 @@ from `hooks.scripts.hook_router` (not imported, to stay independent of the
 concurrently-evolving router and the tach module-edge rules); a lockstep test in
 `tests/test_transcript_replay_conformance.py` asserts they stay equal to the
 router source.
+
+## Gate-failure feedback loop
+
+`t3 <overlay> retro gate-failures` ([#2024](https://github.com/souliane/teatree/issues/2024))
+closes the loop from "a quality gate fired on agent output" to "an eval that
+stops the gate firing first-try".
+
+**The real on-disk schema (verified against `~/.claude/projects/*/*.jsonl`).** A
+teatree gate BLOCK is a `hook_blocking_error` attachment carrying NO `exitCode`;
+the gate identity lives in `attachment.blockingError.blockingError`, whose text
+leads with a `TEATREE GATE — <phrase>` marker. `attachment.hookName` is the
+EVENT:TOOL bucket (`Stop`, `PreToolUse:Bash`) — never a gate name — and
+`attachment.command` is the same `hook_router.py` runner invocation across every
+gate, so neither identifies the gate. (`TEATREE LOOP SELF-PUMP` is the same
+attachment type but a continue-the-loop signal, not a failure.) A
+`hook_non_blocking_error` carries `exitCode:1` and is an infra/dependency
+breakage (a missing plugin dir, a hook-runner traceback).
+
+The command reads the SINGLE transcript chokepoint (`extract_hook_events` — no
+per-gate instrumentation), keys on the attachment TYPE plus the marker (NEVER on
+`exitCode`, which a blocking gate lacks), excludes the self-pump signal, and
+reduces the gate identity to a bounded slug (`gate_identity_slug`). It classifies
+each `preventable` / `environmental` via one declarative table
+(`gate_failures._ENVIRONMENTAL_SLUG_FRAGMENTS`: any `hook_non_blocking_error`
+infra breakage is environmental; everything agent-output-shaped, and any unknown
+gate BLOCK, is preventable — fail toward an eval), records each to the durable
+per-key store (so recurrence across sessions is observable), and emits JSON + a
+human summary.
+
+`--escalate` files one scoped, deduped enforcement issue per *recurring*
+*preventable* failure, reusing `core.review_findings.file_class_c_issue` so it is
+fingerprint-deduped (a re-run never refiles), banned-terms-safe (a hit withholds
+rather than leaks), and clickable-link safe. The issue body names the
+preventable gate, its recurrence, and the smallest anti-vacuous eval to stop it
+first-try; labels are `enforcement-gap` + `needs-triage`.
+
+```bash
+t3 <overlay> retro gate-failures                       # latest in-scope session
+t3 <overlay> retro gate-failures --file <path.jsonl>   # an explicit session log
+t3 <overlay> retro gate-failures --session <id>        # a specific session in scope
+t3 <overlay> retro gate-failures --escalate --repo <slug> --pr-url <url>
+```
+
+**Privacy by construction.** `GateFailure` carries ONLY the gate-identity slug +
+the session id — NEVER the blockingError message, the `stderr`, the `command`, or
+`stdout` (the diff/banned content the gate was reacting to). The slug for a
+blocking gate is a bounded first-sentence token from the gate's OWN fixed marker
+text; a non-blocking `stderr` is arbitrary so it is matched to a canonical infra
+slug and never echoed verbatim. The fingerprint hashes the slug, so two firings
+of the same gate (any session, any tool) hash together while a different gate
+hashes apart. The extractor and classifier live in `eval/gate_failures.py` (layer
+`integration`), not `core` (layer `domain`) — a `core -> eval` import is a
+backwards tach edge; the `retro` command (layer `interface`) calls into `eval` on
+a forward edge.
+
+The **worked example** (the ticket's whole point) is the
+`comment_density_writes_sparse_code` scenario co-located in `skills/code/evals.yaml`:
+the agent tends to write code-restating comments, the comment-density gate blocks
+them post-hoc, and this eval asserts the agent's first-try output passes the gate
+so the trial-and-error cycle stops. Its `_fail` fixture (a transcript that writes
+a restating comment) goes RED, proving the eval is anti-vacuous.
+
+**Out of scope (clean follow-up):** auto-invoking `gate-failures` from the loop
+tick / retro synthesis is orchestrator-only ([#837](https://github.com/souliane/teatree/issues/837))
+and lands separately; this PR ships the deterministic extractor + classifier +
+CLI only.
 
 ## Negative control (harness self-test)
 

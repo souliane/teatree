@@ -38,6 +38,15 @@ from teatree.core.review_findings import (
     parse_findings,
     process_review_findings,
 )
+from teatree.eval.gate_failures import (
+    GateFailure,
+    classify_gate_failure,
+    escalate_gate_failures,
+    extract_gate_failures,
+    record_gate_failures,
+)
+from teatree.eval.session_transcript import parse_session_jsonl
+from teatree.eval.transcript_resolver import resolve_transcript
 from teatree.types import RawAPIDict
 from teatree.url_classify import repo_and_iid
 
@@ -79,6 +88,110 @@ class Command(TyperCommand):
         written to stdout); ``call_command`` callers parse the JSON.
         """
         return json.dumps(self._run(pr_url, classification=classification, repo=repo, label=label))
+
+    @command(name="gate-failures")
+    def gate_failures(  # noqa: PLR0913 — django-typer command: every param is a CLI flag mapped 1:1 to the public --file/--session/--escalate/--repo/--pr-url/--label surface (same rationale as `ticket clear`), not an internal design smell.
+        self,
+        *,
+        file: Annotated[
+            str, typer.Option(help="Path to a session JSONL; defaults to the latest in-scope session.")
+        ] = "",
+        session: Annotated[str, typer.Option(help="A specific session id (in the cwd's project) to read.")] = "",
+        escalate: Annotated[
+            bool, typer.Option(help="File one deduped enforcement issue per recurring preventable failure.")
+        ] = False,
+        repo: Annotated[
+            str, typer.Option(help="Repo slug to file the enforcement issue against (with --escalate).")
+        ] = "",
+        pr_url: Annotated[str, typer.Option(help="A PR/MR URL used to resolve the code host (with --escalate).")] = "",
+        label: Annotated[str, typer.Option(help="Label applied to filed enforcement issues.")] = "enforcement-gap",
+    ) -> str:
+        """Extract a session's gate failures, classify them, record, and optionally escalate.
+
+        A non-zero hook exit is a gate failure. The list pass classifies each
+        preventable / environmental, records it to the durable store (so
+        recurrence across sessions is observable), and emits JSON + a human
+        summary. ``--escalate`` files one scoped, deduped enforcement issue per
+        recurring preventable failure via the resolved code host. Returns the
+        structured result as JSON.
+        """
+        transcript = resolve_transcript(
+            latest=not (file or session),
+            session=session or None,
+            file=Path(file) if file else None,
+        )
+        context = FilingContext(repo=repo, pr_url=pr_url, label=label)
+        return json.dumps(self._run_gate_failures(transcript, escalate=escalate, context=context))
+
+    def _run_gate_failures(
+        self,
+        transcript: Path | None,
+        *,
+        escalate: bool,
+        context: FilingContext,
+    ) -> RawAPIDict:
+        if transcript is None:
+            self.stdout.write("  SKIP gate-failures: no session transcript found in scope")
+            return {"skipped": True, "failures": [], "filed": []}
+
+        events = parse_session_jsonl(transcript.read_text(encoding="utf-8", errors="replace"))
+        failures = extract_gate_failures(events, session_id=transcript.stem)
+        store = FindingsStore()
+        record_gate_failures(store, failures)
+
+        recurring = store.recurring_fingerprints(min_occurrences=2)
+        views = self._gate_failure_views(failures, recurring=recurring)
+        self._print_gate_failure_summary(views)
+
+        result: RawAPIDict = {"skipped": False, "failures": views, "filed": []}
+        if escalate:
+            result["filed"] = self._escalate(failures, store=store, context=context)
+        return result
+
+    @staticmethod
+    def _gate_failure_views(failures: list[GateFailure], *, recurring: set[str]) -> list[RawAPIDict]:
+        views: list[RawAPIDict] = []
+        for failure in failures:
+            view = failure.as_dict()
+            view["verdict"] = classify_gate_failure(failure).value
+            view["recurring"] = failure.fingerprint in recurring
+            views.append(view)
+        return views
+
+    def _print_gate_failure_summary(self, views: list[RawAPIDict]) -> None:
+        self.stdout.write(f"  {len(views)} gate failure(s)")
+        for view in views:
+            recurring_mark = " (recurring)" if view["recurring"] else ""
+            self.stdout.write(f"    {view['fingerprint']} [{view['verdict']}]{recurring_mark}: {view['gate']}")
+
+    def _escalate(
+        self,
+        failures: list[GateFailure],
+        *,
+        store: FindingsStore,
+        context: FilingContext,
+    ) -> list[RawAPIDict]:
+        host = self._resolve_host(context.pr_url)
+        if host is None:
+            self.stdout.write(f"  no code host resolved for {context.pr_url} — nothing escalated")
+            return []
+        filed = escalate_gate_failures(host, failures=failures, store=store, context=context)
+        for item in filed:
+            if item.withheld:
+                self.stdout.write(f"    withheld ({item.withheld_reason}): {item.fingerprint}")
+            else:
+                state = "already filed" if item.already_filed else "filed"
+                self.stdout.write(f"    {state}: {item.url}")
+        return [
+            {
+                "fingerprint": item.fingerprint,
+                "url": item.url,
+                "already_filed": item.already_filed,
+                "withheld": item.withheld,
+                "withheld_reason": item.withheld_reason,
+            }
+            for item in filed
+        ]
 
     def _run(self, pr_url: str, *, classification: str, repo: str, label: str) -> RawAPIDict:
         ref = repo_and_iid(pr_url)

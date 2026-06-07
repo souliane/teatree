@@ -253,6 +253,16 @@ The emitted summary (per-class counts + filed-issue links) is the escalation rec
 
 This is the durability-in-tooling-not-vigilance principle applied to retro itself: an already-failed behavioral rule failing again is a signal to escalate the *level* of the fix, not to repeat the *same* level.
 
+#### Tooling: `t3 <overlay> retro gate-failures` (#2024)
+
+When the recurrence source is a **quality gate firing on the agent's own output** — the inline-question Stop gate, comment-density, banned-terms, the doc-update gate — the gate-failure feedback loop turns the firing into an eval that stops it firing first-try. In the on-disk session transcript a gate BLOCK is a `hook_blocking_error` attachment whose `blockingError` text leads with a `TEATREE GATE — <phrase>` marker (it carries no `exitCode`; `hookName` is the `Stop` / `PreToolUse:Bash` bucket, never a gate name).
+
+1. Run `t3 <overlay> retro gate-failures` (latest in-scope session) or `--file <path.jsonl>` / `--session <id>`. It reads the single transcript hook-event chokepoint, keys on the attachment type + marker (excluding the `TEATREE LOOP SELF-PUMP` continue-signal), classifies each `preventable` (agent-output-shaped — should never have been produced) or `environmental` (a `hook_non_blocking_error` infra/dependency breakage — a missing plugin dir, a hook-runner traceback — an eval can't change the outcome), records each to the durable store, and lists them with the recurring mark.
+2. For a **preventable + recurring** failure, add or improve the matching AI eval so the agent's first-try output passes the gate. The eval must be **anti-vacuous**: its `_fail` fixture (a transcript reproducing the violating output) goes RED. The canonical example is the near-zero-comments tendency: the `comment_density_writes_sparse_code` scenario (`skills/code/evals.yaml`) asserts the agent does NOT write a code-restating comment when adding a small function, so the comment-density gate stops being hit by trial-and-error.
+3. Run with `--escalate --repo <slug> --pr-url <url>` to file one scoped, deduped enforcement issue per recurring preventable failure (fingerprint-deduped, banned-terms-safe, clickable-link safe — re-running never refiles). Environmental and non-recurring failures file nothing.
+
+Privacy: the recorded `GateFailure` carries only the bounded gate-identity slug + the session id — never the blockingError message, the `stderr`, the `command`, or `stdout` (the diff/banned content). See `src/teatree/eval/README.md` § "Gate-failure feedback loop".
+
 ### 3. Fix Skills
 
 **Pre-write editability check:** Before writing to ANY skill, verify it is editable (see § Scope & Editability). For teatree-specific paths:
