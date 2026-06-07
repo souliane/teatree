@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.backend_protocols import BackendResolutionError
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -729,6 +730,28 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
         # The PR is created via the GitLab backend — NOT GitHub (the bug:
         # token precedence picked GitHub and ran gh against a GitLab remote).
         assert calls == ["gitlab"]
+
+    def test_resolution_error_returns_structured_failure_before_pr_attempt(self) -> None:
+        """The central AC: a mismatched forge surfaces as a structured failure.
+
+        ``BackendResolutionError`` from the resolver must become a clean
+        ``RunnerResult(ok=False)`` — never an unhandled exception — and no
+        push or PR-create is attempted.
+        """
+        ticket = self._ticket()
+
+        with (
+            patch(
+                "teatree.core.runners.ship.code_host_for_repo_from_overlay",
+                side_effect=BackendResolutionError("repo origin resolves to the gitlab forge but no gitlab token"),
+            ),
+            patch("teatree.core.runners.ship.git.push") as push,
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "gitlab" in result.detail
+        push.assert_not_called()
 
 
 class TestSanitizeCloseKeywords:

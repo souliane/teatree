@@ -17,6 +17,7 @@ from teatree.backends.messaging_noop import NoopMessagingBackend
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
 from teatree.utils import git
+from teatree.utils.forge import forge_from_remote
 from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
@@ -90,22 +91,6 @@ def get_code_hosts(overlay: "OverlayBase") -> list[CodeHostBackend]:
     return hosts
 
 
-def _host_for_origin(text: str) -> Literal["github", "gitlab", ""]:
-    """Return the canonical forge token for a URL or git-remote *text*.
-
-    ``"github"`` for a github.com host, ``"gitlab"`` for gitlab.com or a
-    self-hosted GitLab host (host substring ``gitlab``), ``""`` for an
-    unrecognised host. Single source of truth for both the per-URL
-    (:func:`get_code_host_for_url`) and per-repo
-    (:func:`get_code_host_for_repo`) resolvers.
-    """
-    if "github.com" in text:
-        return "github"
-    if "gitlab" in text:
-        return "gitlab"
-    return ""
-
-
 def _host_backend(overlay: "OverlayBase", forge: Literal["github", "gitlab"]) -> CodeHostBackend | None:
     """Build the backend for a resolved *forge* token, or ``None`` if no token."""
     if forge == "github":
@@ -122,7 +107,7 @@ def get_code_host_for_url(overlay: "OverlayBase", issue_url: str) -> CodeHostBac
     this resolves per-URL — essential when an overlay's tickets span both
     GitHub and GitLab.
     """
-    forge = _host_for_origin(issue_url)
+    forge = forge_from_remote(issue_url)
     if not forge:
         return get_code_host(overlay)
     return _host_backend(overlay, forge)
@@ -145,7 +130,7 @@ def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBa
     origin remote / an unrecognised host.
     """
     remote = git.remote_url(repo=repo_path)
-    forge = _host_for_origin(git.web_base_from_remote(remote)) if remote else ""
+    forge = forge_from_remote(remote) if remote else ""
     if not forge:
         return get_code_host(overlay)
     backend = _host_backend(overlay, forge)
