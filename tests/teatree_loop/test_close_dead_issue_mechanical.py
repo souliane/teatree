@@ -10,14 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
-import pytest
 from django.test import TestCase
 
 from teatree.core.overlay import OverlayBase
 from teatree.loop.mechanical import close_dead_issue
 from teatree.types import RawAPIDict
-
-pytestmark = pytest.mark.django_db
 
 _URL = "https://github.com/souliane/teatree/issues/900"
 

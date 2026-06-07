@@ -503,7 +503,6 @@ def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDisposition
     evidence) stays active, which is the safe conservative default.
     """
     settings = _effective_settings_for_overlay(backend.name)
-    settings = _effective_settings_for_overlay(backend.name)
     if not settings.auto_disposition_enabled:
         return None
     code_host = backend.host
