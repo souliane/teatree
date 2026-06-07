@@ -31,7 +31,7 @@ from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-from teatree.utils.run import PIPE, spawn
+from teatree.utils.run import PIPE, Popen, spawn
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +232,33 @@ def _resolve_task_cwd(task: Task) -> str | None:
 _STUCK_LOOP_EXIT_CODE = -9
 _STUCK_LOOP_PREFIX = "stuck_loop: "
 
+# Grace window between SIGTERM and SIGKILL when the watchdog terminates a
+# breached subprocess (#997). SIGTERM first lets an in-flight agent flush its
+# final status before the hard kill; SIGKILL escalates only if the process is
+# still alive after the window. The 30s default matches the issue's proposal.
+_WATCHDOG_TERM_GRACE_SECONDS = 30.0
+_WATCHDOG_TERM_POLL_INTERVAL = 0.1
+
+
+def _terminate_with_grace(proc: Popen[str], *, task_pk: object) -> None:
+    """Drain-before-kill: SIGTERM, grace window, then SIGKILL if still alive (#997).
+
+    A breached subprocess may have finished its work but not yet flushed its
+    final status. SIGTERM gives it a chance to checkpoint and exit on its own;
+    SIGKILL escalates only if the process ignores SIGTERM through the whole
+    grace window. The poll loop returns the moment the process exits, so a
+    cooperative agent is never hard-killed.
+    """
+    proc.terminate()
+    deadline = time.monotonic() + _WATCHDOG_TERM_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return
+        time.sleep(_WATCHDOG_TERM_POLL_INTERVAL)
+    if proc.poll() is None:
+        logger.warning("Watchdog grace window elapsed for task %s — escalating to SIGKILL", task_pk)
+        proc.kill()
+
 
 def _run_with_heartbeat(
     task: Task,
@@ -244,9 +271,11 @@ def _run_with_heartbeat(
 
     The heartbeat loop doubles as a stuck-loop watchdog (#882): on each
     tick it samples the task's runtime / accumulated turn+cost deltas and,
-    on a ceiling breach, terminates the subprocess. A watchdog kill returns
-    a non-zero exit code with ``stuck_loop: <reason>`` on stderr so the
-    caller records a ``stuck_loop`` ``TaskAttempt`` failure.
+    on a ceiling breach, terminates the subprocess via SIGTERM → grace
+    window → SIGKILL (#997), so an in-flight agent can flush its final
+    status before a hard kill. A watchdog kill returns a non-zero exit code
+    with ``stuck_loop: <reason>`` on stderr so the caller records a
+    ``stuck_loop`` ``TaskAttempt`` failure.
 
     Returns ``(stdout, stderr, returncode)``.
     """
@@ -278,7 +307,7 @@ def _run_with_heartbeat(
                 if reason and not watchdog_reason:
                     watchdog_reason.append(reason)
                     logger.warning("Watchdog terminating stuck task %s: %s", task.pk, reason)
-                    proc.kill()
+                    _terminate_with_grace(proc, task_pk=task.pk)
         finally:
             # This thread owns its own DB connection — close it so the
             # connection is not leaked when the thread exits.
