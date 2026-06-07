@@ -102,6 +102,7 @@ class SkillSelectionResult:
     skills: list[str]
     lifecycle_skill: str = ""
     ask_user: bool = False
+    advisory_skills: tuple[str, ...] = ()
 
 
 type OverlaySkillMetadata = SkillMetadata | dict[str, object]
@@ -187,7 +188,7 @@ class SkillLoadingPolicy:
         trigger_index: TriggerIndex | None = None,
         companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
-        ordered = self._base_detected_skills(
+        hard = self._base_detected_skills(
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=False,
@@ -195,12 +196,18 @@ class SkillLoadingPolicy:
             companion_skills=companion_skills,
         )
         if intent:
-            ordered.append(intent)
-        if supplementary_skills:
-            ordered.extend(supplementary_skills)
+            hard.append(intent)
+        hard_resolved = set(self._resolve_with_companions(hard, trigger_index or []))
+
+        ordered = [*hard, *(supplementary_skills or [])]
         resolved = _dedupe(self._resolve_with_companions(ordered, trigger_index or []))
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
-        return SkillSelectionResult(skills=suggestions, lifecycle_skill=intent)
+        advisory = tuple(skill for skill in suggestions if skill not in hard_resolved)
+        return SkillSelectionResult(
+            skills=suggestions,
+            lifecycle_skill=intent,
+            advisory_skills=advisory,
+        )
 
     def select_for_runtime_phase(  # noqa: PLR0913
         self,

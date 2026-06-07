@@ -863,6 +863,7 @@ def handle_user_prompt_submit(data: dict) -> None:
         sys.path.pop(0)
 
     suggestions = result.get("suggestions", [])
+    advisory = set(result.get("advisory", []))
 
     # Deterministic t3 CLI reminder — injected when prompt matches
     # workspace/infrastructure patterns, regardless of skill suggestions.
@@ -874,7 +875,14 @@ def handle_user_prompt_submit(data: dict) -> None:
         return
 
     skill_list = ", ".join(f"/{s}" for s in suggestions)
-    pending.write_text("\n".join(normalize_skill_name(s) for s in suggestions) + "\n", encoding="utf-8")
+    # Advisory skills come from the loose supplementary keyword config
+    # (~/.teatree-skills.yml), whose bare-token regexes (e.g. \bruff\b)
+    # over-fire on incidental mentions (#1683). They are suggested but kept
+    # OUT of <session>.pending so the PreToolUse gate never hard-blocks a
+    # Bash/Edit/Write on an incidental keyword match. Only intent / framework
+    # / overlay / companion skills enforce load-first.
+    demanded = [s for s in suggestions if s not in advisory]
+    pending.write_text("\n".join(normalize_skill_name(s) for s in demanded) + "\n", encoding="utf-8")
     parts = [f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}."]
     if t3_reminder:
         parts.append(t3_reminder)
