@@ -406,6 +406,58 @@ def _check_account_switch_detect_and_recover() -> bool:
     return unreachable.switched and unreachable.all_reachable is False
 
 
+def _check_private_repo_allowlist_path_segment_match() -> bool:
+    """#1953: the private-repo allowlist matches PATH SEGMENTS, never a substring.
+
+    Pre-fix the allowlist used case-insensitive substring containment, so an
+    allowlisted org name appearing ANYWHERE in a PUBLIC slug (an alias-glued
+    ``<org>-mirror/x`` owner) falsely downgraded it to private — relaxing the
+    public-leak gate on a public surface. The fixed
+    :func:`slug_is_allowlisted_private` (via :func:`slug_namespace_matches`) must:
+    * match the allowlisted ``org/secret`` slug, its path-segment child
+        ``org/secret/sub``, and the bare org ``secretorg`` for its repo, but
+    * NOT match a PUBLIC slug that merely contains the org as a substring of a
+        longer owner segment (``secretorg-mirror/x``).
+    """
+    from teatree.hooks._repo_visibility import slug_is_allowlisted_private  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as raw:
+        cfg = Path(raw) / ".teatree.toml"
+        cfg.write_text('[teatree]\nprivate_repos = ["org/secret", "secretorg"]\n', encoding="utf-8")
+        matches_exact = slug_is_allowlisted_private("org/secret", cfg)
+        matches_path_segment_child = slug_is_allowlisted_private("org/secret/sub", cfg)
+        matches_org_repo = slug_is_allowlisted_private("secretorg/repo", cfg)
+        matches_substring_alias = slug_is_allowlisted_private("secretorg-mirror/x", cfg)
+    return matches_exact and matches_path_segment_child and matches_org_repo and not matches_substring_alias
+
+
+def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
+    """#1954: the banned-terms scanner FAILS CLOSED when the shell scanner dies.
+
+    Pre-fix a crashing/timed-out scanner read as ``None`` (ALLOW) — a security
+    gate failing open on a crash. The fixed :func:`scan_text` must:
+    * return :data:`SCANNER_UNAVAILABLE_MARKER` (gate BLOCKS) when the shell
+        scanner raises, never ``None``, and
+    * return ``None`` on a genuine no-op (no config / no script to run).
+    """
+    from unittest.mock import patch  # noqa: PLC0415
+
+    from teatree.hooks import banned_terms_scanner  # noqa: PLC0415
+    from teatree.hooks.banned_terms_scanner import SCANNER_UNAVAILABLE_MARKER, scan_text  # noqa: PLC0415
+    from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+    def _crashing_scanner(*_args: object, **_kwargs: object) -> object:
+        raise CommandFailedError(cmd=["check-banned-terms.sh"], returncode=2, stdout="", stderr="boom")
+
+    with tempfile.TemporaryDirectory() as raw:
+        cfg = Path(raw) / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+        with patch.object(banned_terms_scanner, "run_allowed_to_fail", _crashing_scanner):
+            on_crash = scan_text("we ship to acmecorp", config_path=cfg)
+        on_no_config = scan_text("we ship to acmecorp", config_path=Path(raw) / "absent.toml")
+    return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config is None
+
+
 _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="branch-currency §940 (conflict-only, never behind-only)",
@@ -453,6 +505,18 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         origin="https://github.com/souliane/teatree/issues/1916",
         invariant="a /login switch invalidates the backend cache and re-probes; same account is a no-op",
         predicate=_check_account_switch_detect_and_recover,
+    ),
+    RegressionCheck(
+        failure_class="private-repo allowlist path-segment match (security, #1953)",
+        origin="https://github.com/souliane/teatree/pull/2084",
+        invariant="private_repos matches path segments, not substring; an alias-glued public slug never downgrades",
+        predicate=_check_private_repo_allowlist_path_segment_match,
+    ),
+    RegressionCheck(
+        failure_class="banned-terms scanner fail-closed on crash (security, #1954)",
+        origin="https://github.com/souliane/teatree/pull/2079",
+        invariant="a crashing scanner returns SCANNER_UNAVAILABLE_MARKER (gate blocks), never None; a no-op is None",
+        predicate=_check_banned_terms_scanner_fails_closed_on_crash,
     ),
 )
 
