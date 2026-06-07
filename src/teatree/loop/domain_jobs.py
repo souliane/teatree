@@ -16,12 +16,15 @@ from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
     _codex_review_scanner_for,
     _competing_url_prefixes,
-    _gitlab_approvals_enabled,
+    _issue_disposition_scanner_for,
     _issue_implementer_scanner_for,
     _pr_sweep_scanner_for,
     _pull_main_clone_scanner_for,
     _slack_broadcasts_scanner_for,
     _todo_sweep_scanner_for,
+)
+from teatree.loop.scanner_factory_config import (
+    _gitlab_approvals_enabled,
     _user_identity_aliases_for_overlay,
     _user_slack_id_for_overlay,
 )
@@ -295,6 +298,20 @@ def _issue_implementer_jobs_for_overlay(backend: OverlayBackends) -> list[_Scann
     return [_ScannerJob(scanner=scanner, overlay=backend.name)]
 
 
+def _issue_disposition_jobs_for_overlay(backend: OverlayBackends) -> list[_ScannerJob]:
+    """Per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
+
+    Empty by default — :func:`_issue_disposition_scanner_for` returns ``None``
+    unless the overlay opts in (``auto_disposition_enabled``) — so this domain
+    slice contributes nothing to either fan-out path until an overlay enables
+    the triage scanner, keeping the registry/legacy parity green.
+    """
+    scanner = _issue_disposition_scanner_for(backend)
+    if scanner is None:
+        return []
+    return [_ScannerJob(scanner=scanner, overlay=backend.name)]
+
+
 def _identity_groups_for_overlay(backend: OverlayBackends) -> tuple[tuple[str, ...], ...]:
     """Resolve disposition identity-alias groups with the multi-identity self-group fallback (#1113)."""
     groups = _identity_alias_groups_for_overlay(backend.name, backend)
@@ -323,6 +340,7 @@ _PER_OVERLAY_DOMAIN_BUILDERS: dict[Domain, _OverlayDomainBuilder] = {
     Domain.AUDIT: _audit_jobs_for_overlay,
     Domain.HOUSEKEEPING: _housekeeping_jobs_for_overlay,
     Domain.ISSUE_IMPLEMENTER: _issue_implementer_jobs_for_overlay,
+    Domain.ISSUE_DISPOSITION: _issue_disposition_jobs_for_overlay,
 }
 
 

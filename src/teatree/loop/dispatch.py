@@ -290,6 +290,11 @@ _MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # #129 TODO-sweep — a task whose artifact is terminal → the mechanical
     # handler RE-checks then completes it (never bulk, never on a stale read).
     "todo.completion_detected": ("mechanical", "todo_completion"),
+    # #2122 issue-disposition triage — a high-confidence DEAD issue
+    # (already-shipped / exact-duplicate / obsolete) → the mechanical handler
+    # closes it idempotently with an audit-trail comment. Never an agent: the
+    # scanner can CLOSE noise but is physically unable to enqueue work.
+    "issue_disposition.close_candidate": ("mechanical", "close_dead_issue"),
 }
 
 

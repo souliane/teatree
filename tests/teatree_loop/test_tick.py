@@ -264,8 +264,8 @@ def test_build_default_jobs_propagates_user_identity_aliases(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
-    monkeypatch.setattr("teatree.loop.scanner_factories.discover_overlays", list)
+    monkeypatch.setattr("teatree.loop.scanner_factory_config.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factory_config.discover_overlays", list)
     monkeypatch.setattr("teatree.loop.tick_resolvers.discover_overlays", list)
 
     backends = [
@@ -291,7 +291,7 @@ def test_user_identity_aliases_falls_back_to_empty_on_config_error(
         msg = "toml parse failure"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", _boom)
+    monkeypatch.setattr("teatree.loop.scanner_factory_config.load_config", _boom)
     assert _user_identity_aliases_for_overlay("acme") == ()
 
 
@@ -307,9 +307,9 @@ def test_user_identity_aliases_no_override_inherits_global(
     config_path.write_text('[teatree]\nuser_identity_aliases = ["a", "b"]\n', encoding="utf-8")
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factory_config.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.scanner_factories.discover_overlays",
+        "teatree.loop.scanner_factory_config.discover_overlays",
         lambda: [OverlayEntry(name="acme", overlay_class="x.y:Z", overrides={})],
     )
     assert _user_identity_aliases_for_overlay("acme") == ("a", "b")
@@ -339,9 +339,9 @@ def test_build_default_jobs_per_overlay_alias_override(
     )
     import teatree.config as _config  # noqa: PLC0415
 
-    monkeypatch.setattr("teatree.loop.scanner_factories.load_config", lambda: _config.load_config(config_path))
+    monkeypatch.setattr("teatree.loop.scanner_factory_config.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
-        "teatree.loop.scanner_factories.discover_overlays",
+        "teatree.loop.scanner_factory_config.discover_overlays",
         lambda: [
             OverlayEntry(
                 name="scoped",

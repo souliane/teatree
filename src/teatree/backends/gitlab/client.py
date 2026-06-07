@@ -404,6 +404,32 @@ class GitLabCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         issue = self._client.get_issue(project.project_id, int(match["iid"]))
         return issue if isinstance(issue, dict) else {"error": f"Issue not found: {issue_url}"}
 
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+        """Close a GitLab issue, optionally leaving an audit-trail note first.
+
+        Idempotent: ``PUT state_event=close`` is a no-op on an already-closed
+        issue. Returns ``{"error": ...}`` when the URL is not a recognised
+        GitLab issue URL or when the project cannot be resolved.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitLab issue URL: {issue_url}"}
+
+        project = self._client.resolve_project(match["path"])
+        if project is None:
+            return {"error": f"Could not resolve project: {match['path']}"}
+
+        if comment:
+            self.post_issue_comment(issue_url=issue_url, body=comment)
+        return (
+            self._client.put_json(
+                f"projects/{project.project_id}/issues/{int(match['iid'])}",
+                {"state_event": "close"},
+            )
+            or {}
+        )
+
     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
         """Post a comment to a GitLab issue or work item.
 
