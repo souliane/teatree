@@ -120,6 +120,30 @@ jobs:
         if: steps.blueprint_diff.outputs.changed == 'true'
         run: uv run python scripts/hooks/check_blueprint_invariant_numbering.py --ci --base-ref=origin/${{ github.base_ref }}
 
+  blueprint-size-cross-pr:
+    # Delta-based, race-free BLUEPRINT size gate (souliane/teatree#2040). The
+    # gate fails only when the PR's OWN diff grows the corpus past the per-PR
+    # allowance vs the merge-base — concurrent main growth between branch-point
+    # and merge can never red an innocent PR. Absolute caps are warn-only.
+    # Only runs on pull_request: push-to-main has nothing to diff against and
+    # the pre-commit hook covers the merge result.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # fetch-depth: 0 so `git merge-base origin/main HEAD` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: BLUEPRINT per-PR size-delta check
+        run: uv run python scripts/hooks/check_blueprint_size_budget.py --ci --base-ref=origin/${{ github.base_ref }}
+
   doc-update-gate:
     # Deterministic doc-update gate (souliane/teatree#1461). The
     # pre-push hook runs against staged changes; CI re-runs the same
