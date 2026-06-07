@@ -26,6 +26,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 
@@ -67,6 +68,15 @@ def _call(*args: str) -> int:
     except SystemExit as exc:
         return int(exc.code or 0)
     return 0
+
+
+def _call_capturing(*args: str) -> tuple[int, str]:
+    out, err = StringIO(), StringIO()
+    try:
+        call_command(*args, stdout=out, stderr=err)
+    except SystemExit as exc:
+        return int(exc.code or 0), out.getvalue()
+    return 0, out.getvalue()
 
 
 def _wait_for(marker: Path, timeout: float = 3.0) -> None:
@@ -134,6 +144,52 @@ class TestNotifyPostSpeaks:
 
         time.sleep(0.5)
         assert not marker.exists(), "a colleague-surface post must not be read aloud to the user"
+
+    def test_self_dm_audio_post_success_line_carries_resolved_ts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        say = bin_dir / "say"
+        say.write_text('#!/bin/sh\n: > "$2"\nexit 0\n')
+        afconvert = bin_dir / "afconvert"
+        afconvert.write_text('#!/bin/sh\neval "out=\\${$#}"\n: > "$out"\nexit 0\n')
+        for fake in (say, afconvert):
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+        complete_body = {
+            "ok": True,
+            "files": [{"id": "F1", "shares": {"private": {_DM_CHANNEL: [{"ts": "1717689600.001900"}]}}}],
+        }
+
+        def fake_get(url: str, **kwargs: object) -> httpx.Response:
+            body = {"ok": True, "upload_url": "https://files.slack/u", "file_id": "F1"}
+            return httpx.Response(200, json=body, request=httpx.Request("GET", url))
+
+        def fake_post(url: str, **kwargs: object) -> httpx.Response:
+            if "slack.com/api" not in url:
+                return httpx.Response(200, request=httpx.Request("POST", url))
+            return httpx.Response(200, json=complete_body, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "get", fake_get)
+        monkeypatch.setattr(httpx, "post", fake_post)
+
+        backend = _backend()
+        with (
+            patch(
+                "teatree.core.management.commands.notify.messaging_from_overlay",
+                lambda *_a, **_k: backend,
+            ),
+            patch(
+                "teatree.core.speak.get_effective_settings",
+                lambda *_a, **_k: _settings(SpeakConfig(slack=True)),
+            ),
+        ):
+            code, out = _call_capturing("notify", "post", "--channel", _DM_CHANNEL, "--text", "tests are green")
+
+        assert code == 0
+        assert "ts=1717689600.001900" in out
 
     def test_self_dm_post_silent_under_speak_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         bin_dir = tmp_path / "bin"
