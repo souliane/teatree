@@ -189,6 +189,24 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.worktrees.count() == 2
 
     @_patch_overlays(FULL_OVERLAY)
+    @override_settings(
+        **SETTINGS,
+        TASKS={"default": {"BACKEND": "django_tasks.backends.immediate.ImmediateBackend"}},
+    )
+    def test_external_delivery_skips_auto_planner(self) -> None:
+        # #2104 acceptance: ``workspace ticket`` is the hand-dispatched
+        # external-delivery entry. It stamps the delivery lease and, even when
+        # the provision worker runs (immediate backend), the auto-planner is
+        # skipped — a directly-implementing delivery agent never claims it.
+        from teatree.core.models.external_delivery import under_external_delivery  # noqa: PLC0415
+
+        ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/2104"))
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert under_external_delivery(ticket) is True
+        assert not ticket.tasks.filter(phase="planning").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_with_variant(self) -> None:
         ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/43", variant="acme"))
