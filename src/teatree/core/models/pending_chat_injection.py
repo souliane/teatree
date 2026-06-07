@@ -317,6 +317,39 @@ class PendingChatInjection(models.Model):
         return bool(updated)
 
     @classmethod
+    def retire_answered_in_thread(cls, thread_ts: str) -> int:
+        """Retire the row a bot→user threaded DM reply answers (#2053).
+
+        When the agent answers a queued user question out-of-band — a
+        threaded reply through the ``notify post --thread-ts`` egress, not
+        the reactive Slack-answer cycle — the row it answers is the one
+        whose ``slack_ts`` is this reply's ``thread_ts`` (a Slack thread
+        roots on the question's ts). That row gets stamped on BOTH gates in
+        one transition: ``loop_replied_at`` so the cycle's
+        :meth:`loop_unreplied` work-queue retires it (and never re-delegates
+        a ``t3:answerer`` Task), and ``answered_at`` so the #1063 Stop-hook
+        gate stops nagging. The threaded reply IS the agent personally
+        answering, so it satisfies both — unlike the cycle's own
+        token-cheap reply, which deliberately stamps only ``loop_replied_at``.
+
+        Single-use compare-and-swap on ``loop_replied_at IS NULL`` mirroring
+        :meth:`mark_loop_replied`: a row already loop-replied (by the cycle
+        or a prior reply) is left untouched, so a stable ``answer_kind`` is
+        never overwritten. Returns the number of rows transitioned. The
+        empty ``thread_ts`` (a top-level DM, not a reply) matches nothing
+        and returns ``0``.
+        """
+        if not thread_ts:
+            return 0
+        return int(
+            cls.objects.filter(slack_ts=thread_ts, loop_replied_at__isnull=True).update(
+                loop_replied_at=timezone.now(),
+                answered_at=timezone.now(),
+                answer_kind=cls.AnswerKind.QUESTION_REPLY,
+            )
+        )
+
+    @classmethod
     def agent_answered_question(cls, slack_ts: str) -> int:
         """Stamp ``answered_at = now`` on rows matching ``slack_ts``.
 

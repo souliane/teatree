@@ -470,3 +470,47 @@ class TestUnansweredQuestionsSince:
         rows = PendingChatInjection.unanswered_questions_since(timedelta(hours=1))
 
         assert [r.slack_ts for r in rows] == ["2", "1"]
+
+
+class TestRetireAnsweredInThread:
+    """``retire_answered_in_thread`` stamps the question a threaded reply answers (#2053)."""
+
+    def test_matching_thread_ts_stamps_both_gates(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
+
+        stamped = PendingChatInjection.retire_answered_in_thread("1700.0001")
+
+        row = PendingChatInjection.objects.get()
+        assert stamped == 1
+        assert row.loop_replied_at is not None
+        assert row.answered_at is not None
+        assert row.answer_kind == PendingChatInjection.AnswerKind.QUESTION_REPLY
+
+    def test_empty_thread_ts_is_a_no_op(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
+
+        assert PendingChatInjection.retire_answered_in_thread("") == 0
+        assert PendingChatInjection.objects.get().loop_replied_at is None
+
+    def test_unknown_thread_ts_matches_nothing(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
+
+        assert PendingChatInjection.retire_answered_in_thread("9999.9999") == 0
+        assert PendingChatInjection.objects.get().loop_replied_at is None
+
+    def test_does_not_overwrite_an_existing_loop_reply(self) -> None:
+        row = PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
+        assert row is not None
+        row.mark_loop_replied(PendingChatInjection.AnswerKind.ACK)
+
+        assert PendingChatInjection.retire_answered_in_thread("1700.0001") == 0
+        row.refresh_from_db()
+        assert row.answer_kind == PendingChatInjection.AnswerKind.ACK
+
+    def test_second_call_is_idempotent(self) -> None:
+        PendingChatInjection.record(channel="D", slack_ts="1700.0001", text="why?")
+
+        assert PendingChatInjection.retire_answered_in_thread("1700.0001") == 1
+        first_stamp = PendingChatInjection.objects.get().loop_replied_at
+        assert PendingChatInjection.retire_answered_in_thread("1700.0001") == 0
+        assert PendingChatInjection.objects.get().loop_replied_at == first_stamp

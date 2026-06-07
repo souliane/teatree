@@ -43,10 +43,14 @@ here, and ``MessagingBackend``/``RawAPIDict`` are owned by ``teatree.core``
 /``teatree.types`` — no edge into ``teatree.backends``.
 """
 
+import logging
+
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.types import RawAPIDict
+
+logger = logging.getLogger(__name__)
 
 
 class OnBehalfSlackEgress:
@@ -132,7 +136,13 @@ class OnBehalfSlackEgress:
         attaches spoken audio when ``slack`` is on AND plays locally
         when ``local`` plays DMs, driven by the SAME chokepoint
         :func:`teatree.core.notify.notify_user` uses (one place owns the
-        speak logic for both DM egress points). Colleague/channel: gate
+        speak logic for both DM egress points). When this self-DM is a
+        DELIBERATE threaded reply (``thread_ts`` set — the ``notify post
+        --thread-ts`` answer route), it retires the queued question that
+        thread roots on (#2053): only this answer path deliberately threads
+        under the question, so the retire fires iff the DM is genuinely an
+        answer — an unrelated INFO DM that ``notify_user`` happens to thread
+        under an open question never reaches here. Colleague/channel: gate
         first (raises :class:`OnBehalfPostBlockedError` on BLOCK with no
         recorded approval, before any wire call), post, then DM the
         after-receipt notice only on a successful publish (``ok`` truthy) —
@@ -142,7 +152,9 @@ class OnBehalfSlackEgress:
         if self._is_self_dm(channel):
             from teatree.core.speak import deliver_user_dm  # noqa: PLC0415
 
-            return deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
+            response = deliver_user_dm(self._messaging, channel=channel, text=text, thread_ts=thread_ts)
+            _retire_threaded_answer(thread_ts)
+            return response
         response = require_on_behalf_approval(
             target=target,
             action=action,
@@ -157,6 +169,31 @@ class OnBehalfSlackEgress:
                 summary=summary or text[:120],
             )
         return response
+
+
+def _retire_threaded_answer(thread_ts: str) -> None:
+    """Retire the queued question a deliberate threaded self-DM answer replies to (#2053).
+
+    Called only from the self-DM branch of :meth:`OnBehalfSlackEgress.post`,
+    which is the ``notify post --thread-ts`` answer egress: the caller
+    deliberately threads the reply under the question, so ``thread_ts`` here
+    is a genuine "this DM answers that question" signal (unlike the shared
+    :func:`teatree.core.speak.deliver_user_dm` chokepoint, which carries the
+    most-recent active DM thread for any INFO/status DM). The matching
+    :class:`PendingChatInjection` row is stamped on BOTH gates in one CAS —
+    ``loop_replied_at`` so the reactive cycle stops re-delegating a
+    ``t3:answerer`` Task, and ``answered_at`` so the #1063 Stop-hook gate
+    stops nagging. Best-effort: a top-level self-DM (no ``thread_ts``) is a
+    no-op and any DB failure is logged and swallowed so the DM is never lost.
+    """
+    if not thread_ts:
+        return
+    from teatree.core.models import PendingChatInjection  # noqa: PLC0415
+
+    try:
+        PendingChatInjection.retire_answered_in_thread(thread_ts)
+    except Exception as exc:  # noqa: BLE001 — retiring is a side path; never drop the DM
+        logger.debug("retire-answered-question stamp failed for thread_ts=%s: %s", thread_ts, exc)
 
 
 __all__ = ["OnBehalfPostBlockedError", "OnBehalfSlackEgress"]

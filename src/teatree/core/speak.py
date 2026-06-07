@@ -153,6 +153,13 @@ def deliver_user_dm(
     its delivery row exactly as a plain ``post_message`` would. Never lets a
     speak-side failure (config read, synthesis, attach, local play) drop the
     text DM: any such error degrades to a plain text-only post.
+
+    Pure delivery: it does NOT interpret ``thread_ts`` as an answer. Retiring
+    a queued question is owned by the deliberate threaded-answer egress (the
+    self-DM branch of
+    :meth:`teatree.core.on_behalf_egress.OnBehalfSlackEgress.post`), so an
+    unrelated INFO/status DM that ``notify_user`` happens to thread under a
+    still-open question can never retire it.
     """
     config = _resolve_speak_safe()
     audio_body = _maybe_post_with_audio(backend, config, channel=channel, text=text, thread_ts=thread_ts)
