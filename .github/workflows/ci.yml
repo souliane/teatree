@@ -226,10 +226,12 @@ jobs:
     # ``t3 mutation run`` diffs the PR vs base, intersects with
     # ``[tool.teatree.mutation].high_value_modules``, and mutates ONLY the
     # touched safety modules — a no-op (fast pass) when the PR touches none, so
-    # most PRs pay nothing. Warn-first: ``mode = "warn"`` makes the command
-    # exit 0 even with survivors, so the job never blocks the pipeline day one;
-    # flipping ``mode`` to "block" in pyproject.toml promotes it to a gate
-    # (only-shrinks ratchet via ``baseline_surviving``) with no workflow change.
+    # most PRs pay nothing. Programmatic ratchet: the command fails when the
+    # surviving-mutant count exceeds the recorded ``baseline_surviving`` total,
+    # in BOTH ``warn`` and ``block`` mode (the count may only ever shrink) —
+    # survivors at-or-below baseline still pass. Flipping ``mode`` to "block" is
+    # a later follow-up (gate on survivors existing at all), no workflow change.
+    # ``t3 mutation run --all --update-baseline`` tightens the recorded counts.
     # The 10-min cap bounds a pathological run.
     #
     # Heavy lane: PR-only AND skipped on a provably pure-docs diff
