@@ -422,3 +422,53 @@ class TestCiCrossPrDetection:
 
         exit_code = ci_main(repo=repo, base_ref="base-ref")
         assert exit_code == 1
+
+
+class TestCiMergeBaseFailClosed:
+    """Fix #8: BLUEPRINT touched but the merge-base §17.1 snapshot is unobtainable → fail CLOSED.
+
+    ``merge_base_numbers`` is None when either ``git merge-base`` returns nothing
+    OR BLUEPRINT.md did not exist at the merge-base (introduced since the
+    branch-point). The old ci_main delegated that to the approximate
+    common-prefix fallback in check_numbering_against_base, which returns ok=True
+    for the canonical collision (both sides show [1..N]) — a silent pass of the
+    exact cross-PR collision the gate exists to catch. ci_main now hard-fails
+    (exit 1) in that case.
+    """
+
+    def test_blueprint_introduced_since_branch_point_fails_closed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Merge-base exists, but BLUEPRINT.md was introduced AFTER it: it is not
+        # present at the merge-base commit, yet it IS in the PR diff and on the
+        # base. base=[1..4] (concurrent PR A) and pr=[1..4] (stale) — the exact
+        # collision. With merge_base_numbers=None the old code approx-passed; now
+        # it reds.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _run_git(repo, "init", "-q", "-b", "main")
+        # Branch-point commit has NO BLUEPRINT.md.
+        (repo / "README.md").write_text("seed\n", encoding="utf-8")
+        _run_git(repo, "add", "README.md")
+        _run_git(repo, "commit", "-q", "-m", "branch-point (no blueprint)")
+        _run_git(repo, "branch", "pr-branch")
+        _run_git(repo, "branch", "-f", "base-ref", "main")
+        # base-ref advances: PR A introduced BLUEPRINT.md with [1..4].
+        (repo / "BLUEPRINT.md").write_text(_BASE_AFTER_PR_A_MERGED, encoding="utf-8")
+        _run_git(repo, "add", "BLUEPRINT.md")
+        _run_git(repo, "commit", "-q", "-m", "pr-a introduced blueprint")
+        _run_git(repo, "branch", "-f", "base-ref", "main")
+        # PR branch (off the branch-point) also introduces BLUEPRINT.md with
+        # [1..4] from the stale base — the collision.
+        _run_git(repo, "checkout", "-q", "pr-branch")
+        (repo / "BLUEPRINT.md").write_text(_PR_B_AGAINST_STALE_BASE, encoding="utf-8")
+        _run_git(repo, "add", "BLUEPRINT.md")
+        _run_git(repo, "commit", "-q", "-m", "pr-b introduced blueprint")
+
+        from scripts.hooks.check_blueprint_invariant_numbering import _git_show, _merge_base  # noqa: PLC0415
+
+        mb = _merge_base(repo, "base-ref")
+        assert mb is not None  # merge-base resolves...
+        assert _git_show(repo, mb, "BLUEPRINT.md") is None  # ...but BLUEPRINT isn't there.
+        assert ci_main(repo=repo, base_ref="base-ref") == 1
+        assert "merge-base" in capsys.readouterr().out.lower()

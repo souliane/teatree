@@ -168,13 +168,51 @@ class TestEscapeHatch:
         assert gate.ci_main(repo=git_repo, base_ref="main") == 0
 
 
-class TestMergeBaseFallback:
-    def test_unresolvable_base_ref_fails_open(self, git_repo: Path) -> None:
-        # A non-existent base ref means the delta can't be computed; the gate
-        # must fail OPEN (exit 0), never hard-block on an unresolvable base.
+class TestMergeBaseFailClosedUnderCi:
+    """Fix #4: a BLUEPRINT-touching PR with an unresolvable merge-base reds CI.
+
+    The old gate failed OPEN (exit 0) when ``git merge-base`` failed — a silent
+    skip of the delta check on any infra hiccup (partial fetch, bad ref). Under
+    ``--ci`` it now fails CLOSED (exit 1) so the skip is loud, never green.
+    """
+
+    def test_unresolvable_base_ref_under_ci_fails_closed(
+        self, git_repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # BLUEPRINT IS touched (so the gate enters the delta path) but the base
+        # ref is bogus, so the merge-base cannot be computed. ``_blueprint_touched``
+        # fail-closes the diff to "touched", and the unresolvable merge-base then
+        # reds the CI gate instead of silently passing.
         _write(git_repo, "BLUEPRINT.md", "x" * (1000 + gate._PER_PR_TOP_LEVEL_DELTA_BYTES * 10))
         _commit_all(git_repo, "huge edit, bad base ref")
-        assert gate.ci_main(repo=git_repo, base_ref="does/not/exist") == 0
+        assert gate.ci_main(repo=git_repo, base_ref="does/not/exist") == 1
+        out = (capsys.readouterr().err).lower()
+        assert "merge-base" in out
+
+    def test_pre_commit_path_keeps_fail_open_on_unresolvable_base(self, git_repo: Path) -> None:
+        # The non-CI (pre-commit) path stays conservative: a transient git state
+        # never blocks a local commit; CI re-checks the merge result.
+        _write(git_repo, "BLUEPRINT.md", "x" * (1000 + gate._PER_PR_TOP_LEVEL_DELTA_BYTES * 10))
+        _commit_all(git_repo, "huge edit, bad base ref, local")
+        assert gate._evaluate(git_repo, "does/not/exist", ci=False) == 0
+
+    def test_git_diff_failure_treats_blueprint_as_touched(
+        self, git_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A failing `git diff` (rc != 0) must NOT read as a clean "untouched"
+        # skip — `_blueprint_touched` returns True (fail-closed) and warns.
+        import subprocess as sp  # noqa: PLC0415
+
+        real_run = sp.run
+
+        def fake_run(cmd, *a, **k):
+            if isinstance(cmd, list) and "diff" in cmd and "--name-only" in cmd:
+                return sp.CompletedProcess(args=cmd, returncode=128, stdout="", stderr="fatal: bad object")
+            return real_run(cmd, *a, **k)
+
+        monkeypatch.setattr(gate.subprocess, "run", fake_run)
+        assert gate._blueprint_touched(git_repo, "main") is True
+        assert "git diff" in capsys.readouterr().err.lower()
 
 
 class TestStagedTreeMain:
@@ -206,9 +244,9 @@ class TestStagedTreeMain:
 
 
 class TestUnrelatedHistoryMergeBaseNone:
-    """``_merge_base`` returns None when histories are unrelated → fail open."""
+    """``_merge_base`` returns None when histories are unrelated → fail CLOSED in CI."""
 
-    def test_blueprint_changed_but_no_merge_base_fails_open(self, tmp_path: Path) -> None:
+    def test_blueprint_changed_but_no_merge_base_fails_closed_in_ci(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         _run_git(repo, "init", "-q", "-b", "main")
@@ -217,13 +255,14 @@ class TestUnrelatedHistoryMergeBaseNone:
         _write(repo, "BLUEPRINT.md", "x" * 1000)
         _commit_all(repo, "main base")
         # An orphan branch with NO common ancestor: a huge BLUEPRINT but no
-        # merge-base with main. The gate must fail OPEN, never hard-block.
+        # merge-base with main. The CI gate must fail CLOSED (exit 1) — the
+        # delta check cannot run, so a silent green is fake-green (#2040).
         _run_git(repo, "checkout", "-q", "--orphan", "lonely")
         _run_git(repo, "rm", "-rfq", ".")
         _write(repo, "BLUEPRINT.md", "x" * (1000 + gate._PER_PR_TOP_LEVEL_DELTA_BYTES * 5))
         _commit_all(repo, "orphan huge blueprint")
         assert gate._merge_base(repo, "main") is None
-        assert gate.ci_main(repo=repo, base_ref="main") == 0
+        assert gate.ci_main(repo=repo, base_ref="main") == 1
 
 
 class TestWarnPerCapBranches:

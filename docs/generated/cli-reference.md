@@ -339,11 +339,16 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
  Scan every git-tracked file for committed banned terms.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --repo-root        PATH  Repository root to scan (defaults to the current    │
-│                          directory).                                         │
-│ --config           PATH  Override the ~/.teatree.toml term-list config (else │
-│                          resolved as the gate does).                         │
-│ --help                   Show this message and exit.                         │
+│ --repo-root             PATH  Repository root to scan (defaults to the       │
+│                               current directory).                            │
+│ --config                PATH  Override the ~/.teatree.toml term-list config  │
+│                               (else resolved as the gate does).              │
+│ --require-brands              HARD-FAIL (exit 2) when no brands are          │
+│                               configured, instead of warning and exiting 0.  │
+│                               CI passes this so a missing                    │
+│                               TEATREE_BANNED_BRANDS secret reds the job      │
+│                               loudly; local dev omits it and stays green.    │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

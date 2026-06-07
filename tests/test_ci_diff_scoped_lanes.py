@@ -26,7 +26,6 @@ _PREFLIGHT = "preflight"
 _HEAVY_LANES = ("test", "mutation-diff")
 # Lanes that must NEVER be gated on the diff — always run.
 _ALWAYS_RUN = (
-    "semgrep-regressions",
     "sbom",
     "uv-audit",
     "docs-drift",
@@ -128,7 +127,7 @@ class TestExistingTriggersPreserved:
 
     def test_pr_only_jobs_keep_pr_guard(self) -> None:
         jobs = _load_jobs()
-        for lane in ("blueprint-cross-pr", "doc-update-gate", "comment-density-warning", "semgrep-regressions"):
+        for lane in ("blueprint-cross-pr", "doc-update-gate", "comment-density-warning"):
             assert "pull_request" in str(jobs[lane].get("if", "")), f"{lane} must keep its pull_request guard"
 
     def test_lint_and_test_shape_have_no_event_gate(self) -> None:

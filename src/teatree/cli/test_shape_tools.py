@@ -146,6 +146,7 @@ def run_test_shape(
         test_files=collect_test_files(resolved),
         source_files=collect_source_files(resolved),
         config=config,
+        root=resolved,
     )
 
     if output_json:
