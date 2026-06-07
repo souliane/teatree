@@ -175,6 +175,10 @@ class _FakeMessaging:
         _ = (channel, ts)
         return {}
 
+    def fetch_thread_replies(self, *, channel: str, thread_ts: str) -> list[dict[str, object]]:
+        _ = (channel, thread_ts)
+        return []
+
     def fetch_channel_history(self, *, channel: str, limit: int = 50) -> list[dict[str, object]]:
         _ = (channel, limit)
         return []

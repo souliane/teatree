@@ -7102,9 +7102,29 @@ def _is_live_user_turn(data: dict) -> bool:
     try:
         from teatree.core import availability  # noqa: PLC0415
 
-        return availability.is_live_user_turn(session_id=str(data.get("session_id", "")))
+        return availability.PRESENCE.is_live_user_turn(session_id=str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001
         return False
+
+
+def _refresh_live_turn(data: dict) -> None:
+    """Slide the live-turn window forward when an already-live question renders.
+
+    Keeps a multi-question user-driven walk-through (``/checking``) live across
+    an intervening background task-notification turn, which never refreshes the
+    presence heartbeat (#2058). Crash-proof and best-effort: any error is
+    swallowed so a failed slide never blocks the in-client render. The
+    underlying primitive only re-stamps an ALREADY-live same-session turn, so
+    this can never promote an autonomous turn to live (invariant 9 intact).
+    """
+    if not _bootstrap_teatree_django():
+        return
+    try:
+        from teatree.core import availability  # noqa: PLC0415
+
+        availability.PRESENCE.refresh_live_turn(session_id=str(data.get("session_id", "")))
+    except Exception:  # noqa: BLE001
+        return
 
 
 def handle_route_away_mode_question(data: dict) -> bool:
@@ -7140,6 +7160,12 @@ def handle_route_away_mode_question(data: dict) -> bool:
         # the #189 escape that makes `/checking` work without an availability
         # flip. An autonomous / loop-driven turn is NOT live, so it still
         # defers below — invariant 9 holds for the loop's own questions.
+        #
+        # Slide the live window forward: the user answering this question is
+        # fresh evidence they are still driving, so the NEXT question in the
+        # same walk-through stays live even after an intervening background
+        # task-notification turn (which never refreshes the heartbeat) — #2058.
+        _refresh_live_turn(data)
         return False
     if not str(_first_question(data).get("question", "")).strip():
         # No question text — fail open rather than emit a deny that

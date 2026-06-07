@@ -22,16 +22,32 @@ is skipped unless Django is configured (the CLI bootstraps it). No network, no
 secrets, no shared state.
 """
 
-import dataclasses
-import json
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from teatree.utils.git import git_env_without_overrides
-from teatree.utils.run import run_checked
+from teatree.eval.regression_corpus_fixtures import (
+    StubBackend,
+    seed_repo_behind_but_clean,
+    seed_repo_on_branch,
+    seed_repo_with_diverging_target,
+    unused_pid,
+    without_git_overrides,
+)
+from teatree.eval.regression_corpus_fixtures import git as _git
+from teatree.eval.regression_corpus_models import CheckResult, RegressionCheck, RegressionReport
+from teatree.eval.regression_corpus_report import render_json, render_text
+
+__all__ = [
+    "CheckResult",
+    "RegressionCheck",
+    "RegressionReport",
+    "render_json",
+    "render_text",
+    "run_regression_corpus",
+]
 
 
 @contextmanager
@@ -57,107 +73,6 @@ def _staged_overlay_autonomy(overlay_name: str, autonomy: str) -> Iterator[None]
             config_module.CONFIG_PATH = original
 
 
-@dataclasses.dataclass(frozen=True)
-class RegressionCheck:
-    """One real-code-path regression check for a named failure class."""
-
-    failure_class: str
-    origin: str
-    invariant: str
-    predicate: Callable[[], bool]
-    needs_db: bool = False
-
-
-@dataclasses.dataclass(frozen=True)
-class CheckResult:
-    check: RegressionCheck
-    ok: bool
-    skipped: bool
-    detail: str
-
-
-@dataclasses.dataclass(frozen=True)
-class RegressionReport:
-    results: tuple[CheckResult, ...]
-
-    @property
-    def ok(self) -> bool:
-        return all(r.ok for r in self.results)
-
-    @property
-    def failures(self) -> tuple[CheckResult, ...]:
-        return tuple(r for r in self.results if not r.ok and not r.skipped)
-
-
-def _git(repo: Path, *args: str) -> str:
-    env = {
-        **git_env_without_overrides(),
-        "GIT_AUTHOR_NAME": "eval",
-        "GIT_AUTHOR_EMAIL": "eval@example.com",
-        "GIT_COMMITTER_NAME": "eval",
-        "GIT_COMMITTER_EMAIL": "eval@example.com",
-    }
-    return run_checked(["git", *args], cwd=repo, env=env).stdout
-
-
-def _seed_repo_with_diverging_target(work: Path) -> tuple[Path, str]:
-    """Build a repo whose feature SHA conflicts with ``origin/main``.
-
-    Returns ``(repo_path, feature_sha)``. ``origin`` is a sibling clone the
-    branch-currency fetch resolves, so the real ``sha_conflicts_with_target``
-    runs its true ``git fetch`` + ``git merge-tree`` path against a genuine
-    divergence — not a mock.
-    """
-    origin = work / "origin"
-    origin.mkdir()
-    _git(origin, "init", "--bare", "--initial-branch=main")
-
-    repo = work / "clone"
-    _git(work, "clone", str(origin), "clone")
-    conflicted = repo / "conflict.txt"
-    conflicted.write_text("base\n", encoding="utf-8")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "base")
-    _git(repo, "push", "origin", "HEAD:main")
-
-    _git(repo, "checkout", "-b", "feature")
-    conflicted.write_text("feature side\n", encoding="utf-8")
-    _git(repo, "commit", "-am", "feature edit")
-    feature_sha = _git(repo, "rev-parse", "HEAD").strip()
-
-    _git(repo, "checkout", "main")
-    conflicted.write_text("main side\n", encoding="utf-8")
-    _git(repo, "commit", "-am", "main edit")
-    _git(repo, "push", "origin", "main")
-    _git(repo, "checkout", "feature")
-    return repo, feature_sha
-
-
-def _seed_repo_behind_but_clean(work: Path) -> tuple[Path, str]:
-    """Build a repo whose feature SHA is behind ``origin/main`` but conflict-free."""
-    origin = work / "origin2"
-    origin.mkdir()
-    _git(origin, "init", "--bare", "--initial-branch=main")
-
-    repo = work / "clone2"
-    _git(work, "clone", str(origin), "clone2")
-    (repo / "a.txt").write_text("a\n", encoding="utf-8")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "base")
-    _git(repo, "push", "origin", "HEAD:main")
-
-    _git(repo, "checkout", "-b", "feature")
-    feature_sha = _git(repo, "rev-parse", "HEAD").strip()
-
-    _git(repo, "checkout", "main")
-    (repo / "b.txt").write_text("b\n", encoding="utf-8")  # disjoint file — no conflict
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-m", "main advances disjointly")
-    _git(repo, "push", "origin", "main")
-    _git(repo, "checkout", "feature")
-    return repo, feature_sha
-
-
 def _check_branch_currency_conflict_only() -> bool:
     """§940: the CLEAR-side gate blocks ONLY on a real conflict, never behind-alone.
 
@@ -170,9 +85,9 @@ def _check_branch_currency_conflict_only() -> bool:
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
-        conflict_repo, conflict_sha = _seed_repo_with_diverging_target(work)
+        conflict_repo, conflict_sha = seed_repo_with_diverging_target(work)
         conflict = sha_conflicts_with_target(str(conflict_repo), conflict_sha, "origin/main")
-        clean_repo, clean_sha = _seed_repo_behind_but_clean(work)
+        clean_repo, clean_sha = seed_repo_behind_but_clean(work)
         clean = sha_conflicts_with_target(str(clean_repo), clean_sha, "origin/main")
     return conflict is not None and bool(conflict.conflicting_paths) and clean is None
 
@@ -307,7 +222,7 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
         name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
     )
 
-    dead_pid = _unused_pid()
+    dead_pid = unused_pid()
     LoopLease.objects.filter(name=name).update(
         session_id="dead-owner",
         owner_pid=dead_pid,
@@ -318,16 +233,6 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
     )
     LoopLease.objects.filter(name=name).delete()
     return won_against_alive is False and won_against_dead is True
-
-
-def _unused_pid() -> int:
-    """A pid that is (almost certainly) not alive — picks a high free slot."""
-    from teatree.utils.singleton import pid_alive  # noqa: PLC0415
-
-    for candidate in range(2_000_000, 2_000_500):
-        if not pid_alive(candidate):
-            return candidate
-    return 2_147_483_000
 
 
 def _count_core_leaves(graph: object) -> int:
@@ -355,15 +260,6 @@ def _check_migration_graph_single_leaf() -> bool:
     return _count_core_leaves(loader.graph) == 1
 
 
-class _StubBackend:
-    def __init__(self, *, ok: bool) -> None:
-        self._ok = ok
-        self.name = "slack"
-
-    def auth_test(self) -> dict:
-        return {"ok": self._ok} if self._ok else {"ok": False, "error": "invalid_auth"}
-
-
 def _check_account_switch_detect_and_recover() -> bool:
     """#1916: the full `/login` switch-and-verify cycle, both directions.
 
@@ -384,8 +280,8 @@ def _check_account_switch_detect_and_recover() -> bool:
     def _fake_reset() -> None:
         reset_calls["n"] += 1
 
-    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [_StubBackend(ok=True)])
-    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [_StubBackend(ok=False)])
+    reachable = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [StubBackend(ok=True)])
+    unreachable_recovery = AccountSwitchRecovery(reset_caches=_fake_reset, backends=lambda: [StubBackend(ok=False)])
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
@@ -458,6 +354,90 @@ def _check_banned_terms_scanner_fails_closed_on_crash() -> bool:
     return on_crash == SCANNER_UNAVAILABLE_MARKER and on_no_config is None
 
 
+def _check_forge_resolves_by_host_not_token() -> bool:
+    """#2085: the forge backend is keyed on the repo ORIGIN HOST, not token precedence.
+
+    Pre-fix the backend was chosen by which PAT happened to be configured, so a
+    github.com repo resolved to GitLab when only a GitLab token was present. The
+    fixed :func:`forge_from_remote` must classify purely by host:
+    * a github.com remote → ``"github"``,
+    * a gitlab.com / self-hosted-gitlab remote → ``"gitlab"``, and
+    * an unrecognised host → ``""`` — regardless of configured PATs.
+    """
+    from teatree.utils.forge import forge_from_remote  # noqa: PLC0415
+
+    github = forge_from_remote("git@github.com:souliane/teatree.git")
+    gitlab_dotcom = forge_from_remote("git@gitlab.com:acme/widgets.git")
+    gitlab_self_hosted = forge_from_remote("https://gitlab.example.com/acme/widgets")
+    unknown = forge_from_remote("git@git.example.org:acme/widgets.git")
+    return github == "github" and gitlab_dotcom == "gitlab" and gitlab_self_hosted == "gitlab" and not unknown
+
+
+def _check_ship_branch_reconcile_renamed() -> bool:
+    """#1587: pre-push gates reconcile a renamed/stale recorded branch.
+
+    Pre-fix the gates read the stale ``<N>-ticket`` recorded ref, so the
+    ``origin/main..<stale>`` range query silently skipped. The fixed
+    :func:`resolve_and_reconcile_branch` must:
+    * adopt the prefixed CURRENT git branch when the agent renamed
+        ``<N>-ticket`` → ``<N>-fix-foo`` (and persist it on the row), and
+    * fall back to the recorded branch on an unrelated / non-prefixed ref.
+    """
+    from teatree.core.models import Ticket, Worktree  # noqa: PLC0415
+    from teatree.core.runners.ship import resolve_and_reconcile_branch  # noqa: PLC0415
+
+    issue_url = "https://github.com/souliane/teatree/issues/999999042"
+    Ticket.objects.filter(issue_url=issue_url).delete()
+    ticket = Ticket.objects.create(overlay="regression-corpus", issue_url=issue_url)
+    prefix = f"{ticket.ticket_number}-"
+    try:
+        with tempfile.TemporaryDirectory() as raw:
+            work = Path(raw)
+            repo = seed_repo_on_branch(work, f"{prefix}ticket")
+            worktree = Worktree.objects.create(
+                ticket=ticket,
+                overlay="regression-corpus",
+                repo_path=str(repo),
+                branch=f"{prefix}ticket",
+                extra={"worktree_path": str(repo)},
+            )
+            _git(repo, "branch", "-m", f"{prefix}ticket", f"{prefix}fix-foo")
+            with without_git_overrides():
+                adopted = resolve_and_reconcile_branch(ticket, worktree, str(repo))
+            worktree.refresh_from_db()
+            reconciled_on_row = worktree.branch
+
+            _git(repo, "checkout", "-b", "unrelated-branch")
+            worktree.branch = f"{prefix}fix-foo"
+            worktree.save(update_fields=["branch"])
+            with without_git_overrides():
+                fell_back = resolve_and_reconcile_branch(ticket, worktree, str(repo))
+    finally:
+        ticket.delete()
+
+    return adopted == f"{prefix}fix-foo" and reconciled_on_row == f"{prefix}fix-foo" and fell_back == f"{prefix}fix-foo"
+
+
+def _check_mr_description_first_line_validated() -> bool:
+    """#1367: the MR description FIRST LINE is validated client-side.
+
+    Pre-fix only the title was checked, so a description opening with
+    ``## Summary`` passed the client gate then red the GitLab
+    ``validate_mr_title_and_description`` pipeline. The fixed
+    :func:`validate_mr_metadata` must:
+    * reject a description whose first line is not conventional-commit, and
+    * accept a conventional-commit first line with a What/Why body.
+    """
+    from teatree.core.mr_metadata import DEFAULT_MR_TITLE_REGEX, validate_mr_metadata  # noqa: PLC0415
+
+    title = "feat(ship): add the gate (#1367)"
+    bad_first_line = "## Summary\nAdds the gate.\n\n## Why\nThe convention is missed often."
+    good = "feat(ship): add the gate (#1367)\n\n## What\nthe change\n\n## Why\nthe reason"
+    rejected = validate_mr_metadata(title, bad_first_line, DEFAULT_MR_TITLE_REGEX)
+    accepted = validate_mr_metadata(title, good, DEFAULT_MR_TITLE_REGEX)
+    return any("first line" in err.lower() for err in rejected) and accepted == []
+
+
 _CHECKS: tuple[RegressionCheck, ...] = (
     RegressionCheck(
         failure_class="branch-currency §940 (conflict-only, never behind-only)",
@@ -518,6 +498,28 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         invariant="a crashing scanner returns SCANNER_UNAVAILABLE_MARKER (gate blocks), never None; a no-op is None",
         predicate=_check_banned_terms_scanner_fails_closed_on_crash,
     ),
+    RegressionCheck(
+        failure_class="forge backend by origin host, not token precedence (#2085)",
+        origin="https://github.com/souliane/teatree/pull/2085",
+        invariant="forge_from_remote keys on the repo host (github/gitlab/empty), regardless of configured PATs",
+        predicate=_check_forge_resolves_by_host_not_token,
+    ),
+    RegressionCheck(
+        failure_class="pre-push gates reconcile a renamed/stale branch (#1587)",
+        origin="https://github.com/souliane/teatree/pull/2102",
+        invariant=(
+            "resolve_and_reconcile_branch adopts the prefixed current branch; "
+            "falls back to the recorded one on an unrelated ref"
+        ),
+        predicate=_check_ship_branch_reconcile_renamed,
+        needs_db=True,
+    ),
+    RegressionCheck(
+        failure_class="MR description first-line validated client-side (#1367)",
+        origin="https://github.com/souliane/teatree/pull/2098",
+        invariant="validate_mr_metadata rejects a non-conventional first line and accepts a conventional one",
+        predicate=_check_mr_description_first_line_validated,
+    ),
 )
 
 
@@ -542,36 +544,3 @@ def run_regression_corpus(checks: tuple[RegressionCheck, ...] = _CHECKS) -> Regr
         except Exception as exc:  # noqa: BLE001 — a raising predicate IS a regression failure, not a crash.
             results.append(CheckResult(check=check, ok=False, skipped=False, detail=f"{type(exc).__name__}: {exc}"))
     return RegressionReport(results=tuple(results))
-
-
-def render_text(report: RegressionReport) -> str:
-    lines: list[str] = []
-    for r in report.results:
-        status = "SKIP" if r.skipped else ("PASS" if r.ok else "FAIL")
-        line = f"{status} {r.check.failure_class}"
-        if r.detail:
-            line += f" — {r.detail}"
-        lines.append(line)
-    passed = sum(1 for r in report.results if r.ok and not r.skipped)
-    skipped = sum(1 for r in report.results if r.skipped)
-    lines.append(f"\nsummary: {passed} passed, {len(report.failures)} failed, {skipped} skipped")
-    return "\n".join(lines)
-
-
-def render_json(report: RegressionReport) -> str:
-    return json.dumps(
-        {
-            "ok": report.ok,
-            "checks": [
-                {
-                    "failure_class": r.check.failure_class,
-                    "origin": r.check.origin,
-                    "ok": r.ok,
-                    "skipped": r.skipped,
-                    "detail": r.detail,
-                }
-                for r in report.results
-            ],
-        },
-        indent=2,
-    )

@@ -505,28 +505,52 @@ class PresenceHeartbeat:
         except ValueError:
             return None, ""
 
+    def is_live_user_turn(self, *, session_id: str, now: datetime | None = None) -> bool:
+        """True when the user typed a prompt in *session_id* within the live window.
+
+        The #189 user-driven escape: an ``AskUserQuestion`` raised on such a
+        turn may render in-client even under away-mode, because the user is
+        demonstrably right here, right now. Requires a non-empty *session_id*
+        matching the recorded turn's session and a recorded prompt no older
+        than :data:`LIVE_TURN_FRESHNESS`. Any missing / foreign-session /
+        stale / unparsable signal returns ``False`` — the safe (defer) default
+        that keeps BLUEPRINT §17.1 invariant 9 intact for autonomous turns.
+        """
+        if not session_id:
+            return False
+        turn = self.last_user_turn()
+        if turn is None or turn.session_id != session_id:
+            return False
+        moment = now or datetime.now(tz=UTC)
+        return moment - turn.at <= LIVE_TURN_FRESHNESS
+
+    def refresh_live_turn(self, *, session_id: str, now: datetime | None = None) -> bool:
+        """Slide the live-turn window forward for an ALREADY-live same-session turn.
+
+        A multi-question user-driven walk-through (``/checking``) raises
+        several ``AskUserQuestion`` calls in one session. The user answering
+        one in-client is fresh evidence they are still driving — as strong as
+        a new ``UserPromptSubmit``. Re-stamping the heartbeat to *now* keeps
+        the next question inside :data:`LIVE_TURN_FRESHNESS`, so an intervening
+        background task-notification turn (which never refreshes the heartbeat)
+        cannot age the window out mid walk-through (#2058).
+
+        Guarded so it can only ever EXTEND a chain that is already live: it
+        re-stamps only when :meth:`is_live_user_turn` currently holds for
+        *session_id*. A turn that was never live (an autonomous loop turn), a
+        foreign session, or one already aged out is a no-op — so the refresh
+        can never fabricate liveness and BLUEPRINT §17.1 invariant 9 stays
+        intact for the loop's own questions. Returns ``True`` when the window
+        was slid.
+        """
+        moment = now or datetime.now(tz=UTC)
+        if not self.is_live_user_turn(session_id=session_id, now=moment):
+            return False
+        self.record(session_id=session_id, now=moment)
+        return True
+
 
 PRESENCE = PresenceHeartbeat()
-
-
-def is_live_user_turn(*, session_id: str, now: datetime | None = None) -> bool:
-    """True when the user typed a prompt in *session_id* within the live window.
-
-    The #189 user-driven escape: an ``AskUserQuestion`` raised on such a
-    turn may render in-client even under away-mode, because the user is
-    demonstrably right here, right now. Requires a non-empty *session_id*
-    matching the recorded turn's session and a recorded prompt no older than
-    :data:`LIVE_TURN_FRESHNESS`. Any missing / foreign-session / stale /
-    unparsable signal returns ``False`` — the safe (defer) default that
-    keeps BLUEPRINT §17.1 invariant 9 intact for autonomous turns.
-    """
-    if not session_id:
-        return False
-    turn = PRESENCE.last_user_turn()
-    if turn is None or turn.session_id != session_id:
-        return False
-    moment = now or datetime.now(tz=UTC)
-    return moment - turn.at <= LIVE_TURN_FRESHNESS
 
 
 def pending_questions_count(*, using: str | None = None) -> int:
@@ -551,7 +575,6 @@ __all__ = [
     "Schedule",
     "UserTurn",
     "clear_override",
-    "is_live_user_turn",
     "iter_pending_questions",
     "load_override",
     "load_schedule",
