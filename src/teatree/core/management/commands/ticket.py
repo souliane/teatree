@@ -1,7 +1,7 @@
 """Ticket state management: transitions and listing for the loop and CLI."""
 
 import logging
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import Annotated, TypedDict
 
 import click
 import typer
@@ -9,15 +9,11 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, group
 
-from teatree.core.gates.e2e_mandatory_gate import check_clear_e2e_mandatory
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
-from teatree.core.management.commands._clear_branch_currency import check_clear_branch_currency
+from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-
-if TYPE_CHECKING:
-    from teatree.core.models.types import TicketExtra
 
 
 class CompletionResult(TypedDict, total=False):
@@ -149,35 +145,6 @@ def _review_context_refusal(ticket: Ticket, transition_name: str) -> str:
         f"record-review-context {ticket.pk} --work-item <url> --documents <urls> "
         f"--analysis <how-checked>` and retry."
     )
-
-
-def _resolve_clear_changed_files(ticket: "Ticket | None") -> list[str]:
-    """Resolve the INVOKING worktree's diff for the #1967 CLEAR-side E2E gate.
-
-    Lives in the command layer (not the domain gate) so the integration-layer
-    git-diff helper is reached from a layer allowed to depend on it. Shares the
-    canonical :func:`resolve_ship_worktree` (#776) so the CLEAR side classifies
-    the same tree the ship side does — the branch the CLEAR acts on, recorded on
-    ``extra['ship_invoking_branch']`` — not the ticket's earliest (often
-    already-merged) worktree row a reused multi-workstream ticket carries.
-    Returns the ``origin/main...HEAD`` changed-file list, or an empty list when
-    no worktree / no resolvable diff (the gate treats an empty diff as
-    fail-closed impacting for a customer-facing overlay).
-    """
-    if ticket is None:
-        return []
-
-    from teatree import visual_qa  # noqa: PLC0415
-    from teatree.core.runners.ship import resolve_ship_worktree  # noqa: PLC0415
-    from teatree.utils.run import CommandFailedError  # noqa: PLC0415
-
-    extra = cast("TicketExtra", ticket.extra or {})
-    worktree = resolve_ship_worktree(ticket, extra)
-    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
-    try:
-        return visual_qa.changed_files(repo=repo_path)
-    except (CommandFailedError, RuntimeError, ValueError):
-        return []
 
 
 class Command(TyperCommand):
@@ -603,27 +570,10 @@ class Command(TyperCommand):
             except Ticket.DoesNotExist:
                 return {"issued": False, "error": f"Ticket {ticket_id} not found"}
 
-        # #940 branch-currency pre-flight: refuse a CLEAR whose
-        # ``reviewed_sha`` trails the target branch. Otherwise the cold
-        # reviewer attests a tree missing target-branch fixes and the
-        # release pipeline certifies a stale base. Run BEFORE
-        # ``MergeClear.issue`` so the CLEAR — if issued — already points
-        # at a current SHA.
-        currency_error = check_clear_branch_currency(reviewed_sha, resolved_ticket)
-        if currency_error is not None:
-            self.stdout.write(f"  CLEAR refused: {currency_error}")
-            return {"issued": False, "error": currency_error}
-
-        # #1967: a customer-display-impacting change must carry green E2E
-        # evidence at the reviewed tree (or a single-use user bypass) before a
-        # CLEAR authorises its merge. The second gate site, symmetric with the
-        # `pr create` ship-gate. No-op for an out-of-FSM CLEAR (no ticket).
-        e2e_refusal = check_clear_e2e_mandatory(
-            resolved_ticket, reviewed_sha, _resolve_clear_changed_files(resolved_ticket)
-        )
-        if e2e_refusal:
-            self.stdout.write(f"  CLEAR refused: {e2e_refusal}")
-            return {"issued": False, "error": e2e_refusal}
+        preflight_refusal = clear_preflight_refusal(reviewed_sha, resolved_ticket)
+        if preflight_refusal is not None:
+            self.stdout.write(f"  CLEAR refused: {preflight_refusal}")
+            return {"issued": False, "error": preflight_refusal}
 
         try:
             clear = MergeClear.issue(

@@ -167,6 +167,17 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 `local = all` — in-client turns are never Slack messages, so there is no
 double-play to suppress. No DB, no state.
 
+**Away-gate.** When availability resolves to `away` (§5.6.3), `resolve_speak()`
+forces `local` to `off` while preserving the configured `slack` value — so no
+audio plays through the local speakers while the user is unreachable, but a
+Slack-attached rendition still reaches their phone. The user's
+`[teatree.speak]` config is never mutated; the gate is purely effective-value.
+Both local consumers (`speak()` and the local leg of `deliver_user_dm`)
+resolve through `resolve_speak()`, so this single chokepoint silences all local
+playback when away. The away check is exception-safe — a resolution failure is
+treated as **not** away (local plays), so it can never spuriously mute audio or
+turn `slack` off.
+
 Callers read `get_effective_settings().speak`. Adding a new overridable key
 is a one-line registry change picked up via `dataclasses.replace`; `speak` is
 the one non-generic override (its overlay sub-table merges onto the base

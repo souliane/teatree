@@ -41,7 +41,7 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.types import RawAPIDict, SpeakConfig
+from teatree.types import LocalPlayback, RawAPIDict, SpeakConfig
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail, run_checked
 
 logger = logging.getLogger(__name__)
@@ -69,16 +69,55 @@ def binary_available() -> bool:
 
 
 def resolve_speak() -> SpeakConfig:
-    """The EFFECTIVE speak config: configured value, forced inert if ``say`` is absent.
+    """The EFFECTIVE speak config: binary-presence gate, then the away-gate.
 
-    The single place the binary-presence gate is applied — every call site
-    resolves through here so the prerequisite check can never drift between
-    the DM egress, the on-behalf self-DM, and the Stop hook. The default
-    :class:`SpeakConfig` is inert (``local = off``, ``slack = false``).
+    The single place both gates are applied — every call site resolves
+    through here so neither can drift between the DM egress, the on-behalf
+    self-DM, and the Stop hook. The default :class:`SpeakConfig` is inert
+    (``local = off``, ``slack = false``).
+
+    Two gates, in order:
+
+    *   **Binary presence** — when ``say`` is absent the whole feature is
+        forced inert (silent off macOS).
+    *   **Away** — when availability resolves to ``away`` the configured
+        ``local`` is forced to :attr:`~teatree.types.LocalPlayback.OFF` so no
+        local audio plays while the user is unreachable, WITHOUT touching the
+        user's ``[teatree.speak]`` config. ``slack`` is preserved from the
+        configured value: a Slack-attached audio rendition still reaches the
+        user's phone regardless of presence. Both local consumers —
+        :func:`speak` (the Stop-hook in-client read) and the local leg of
+        :func:`deliver_user_dm` — resolve through here, so forcing ``local``
+        off here silences ALL local playback when away. The away check is
+        exception-safe: if availability resolution raises, the user is treated
+        as NOT away (local plays), so a transient resolution failure can never
+        spuriously mute local audio.
     """
     if not binary_available():
         return SpeakConfig()
-    return get_effective_settings().speak
+    config = get_effective_settings().speak
+    if _is_away():
+        return SpeakConfig(local=LocalPlayback.OFF, slack=config.slack)
+    return config
+
+
+def _is_away() -> bool:
+    """Whether availability resolves to ``away`` — never raises.
+
+    A resolution failure degrades to NOT away (returns ``False``): the
+    away-gate must never suppress local audio on a transient error, and —
+    because :func:`_resolve_speak_safe` catches everything and degrades to an
+    inert config (``slack`` off) — an away-check that raised inside
+    :func:`resolve_speak` would spuriously turn ``slack`` off too. Containing
+    the exception here keeps both axes correct under a resolution failure.
+    """
+    from teatree.core import availability  # noqa: PLC0415
+
+    try:
+        return availability.resolve_mode().mode == availability.MODE_AWAY
+    except Exception as exc:  # noqa: BLE001 — a resolution failure must never mute local audio
+        logger.debug("availability resolution failed; treating as present: %s", exc)
+        return False
 
 
 def clean_for_speech(text: str) -> str:

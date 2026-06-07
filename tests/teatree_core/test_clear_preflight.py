@@ -1,4 +1,4 @@
-"""``_resolve_clear_changed_files`` resolves the INVOKING worktree's diff (#776, #1967).
+"""``resolve_clear_changed_files`` resolves the INVOKING worktree's diff (#776, #1967).
 
 The §17.4 CLEAR-side E2E gate must classify the diff of the branch the CLEAR is
 acting on — not the ticket's earliest (often already-merged) worktree row. A
@@ -12,13 +12,13 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.management.commands.ticket import _resolve_clear_changed_files
+from teatree.core.management.commands._clear_preflight import resolve_clear_changed_files
 from teatree.core.models import Ticket, Worktree
 
 
 class TestResolveClearChangedFiles(TestCase):
     def test_none_ticket_returns_empty(self) -> None:
-        assert _resolve_clear_changed_files(None) == []
+        assert resolve_clear_changed_files(None) == []
 
     def test_uses_invoking_worktree_not_earliest(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/i/76", overlay="t3-teatree")
@@ -40,7 +40,7 @@ class TestResolveClearChangedFiles(TestCase):
         ticket.save(update_fields=["extra"])
 
         with patch("teatree.visual_qa.changed_files", side_effect=lambda repo: [repo]) as changed:
-            result = _resolve_clear_changed_files(ticket)
+            result = resolve_clear_changed_files(ticket)
 
         changed.assert_called_once_with(repo="/tmp/current")
         assert result == ["/tmp/current"]
@@ -48,7 +48,7 @@ class TestResolveClearChangedFiles(TestCase):
     def test_falls_back_to_dot_when_no_worktree(self) -> None:
         ticket = Ticket.objects.create(issue_url="https://example.com/i/77", overlay="t3-teatree")
         with patch("teatree.visual_qa.changed_files", side_effect=lambda repo: [repo]) as changed:
-            result = _resolve_clear_changed_files(ticket)
+            result = resolve_clear_changed_files(ticket)
         changed.assert_called_once_with(repo=".")
         assert result == ["."]
 
@@ -62,4 +62,4 @@ class TestResolveClearChangedFiles(TestCase):
             extra={"worktree_path": "/tmp/x"},
         )
         with patch("teatree.visual_qa.changed_files", side_effect=RuntimeError("boom")):
-            assert _resolve_clear_changed_files(ticket) == []
+            assert resolve_clear_changed_files(ticket) == []
