@@ -1,0 +1,6 @@
+from unittest.mock import patch
+
+
+def test_dynamic_target_declared():
+    with patch("teatree.config.attr_injected_by_a_plugin"):  # patch-target: dynamic
+        pass
