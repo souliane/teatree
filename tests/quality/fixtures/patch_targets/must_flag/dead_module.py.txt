@@ -1,0 +1,6 @@
+from unittest import mock
+
+
+@mock.patch("teatree.core.backend_factory_renamed_away.get_messaging")
+def test_dead_module(_mock):
+    pass
