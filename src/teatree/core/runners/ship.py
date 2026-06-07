@@ -4,8 +4,8 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import load_config
-from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.backend_protocols import PullRequestSpec
+from teatree.core.backend_factory import code_host_for_repo_from_overlay
+from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
 from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
@@ -125,11 +125,12 @@ class ShipExecutor(RunnerBase):
         if worktree is None:
             return RunnerResult(ok=False, detail="no worktree on ticket")
 
-        host = code_host_from_overlay()
-        if host is None:
-            return RunnerResult(ok=False, detail="no code host configured")
-
         repo_path = (worktree.extra or {}).get("worktree_path", "") or worktree.repo_path
+
+        host = self._resolve_host(repo_path)
+        if isinstance(host, RunnerResult):
+            return host
+
         # #1519: the DB-recorded branch is minted as ``<N>-ticket`` at
         # ``workspace ticket`` time; agents then rename the git branch to the
         # ``<N>-<type>-<desc>`` convention. Ship the worktree's ACTUAL current
@@ -173,6 +174,24 @@ class ShipExecutor(RunnerBase):
         git.push(repo=repo_path, remote="origin", branch=branch)
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
         return self._open_pr_and_record(ticket, extra, host, spec, branch)
+
+    @staticmethod
+    def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":
+        """Resolve the forge from *repo_path*'s actual origin host (#2025).
+
+        Token-presence precedence picked GitHub for a GitLab-hosted repo on
+        an overlay carrying both PATs, so ship ran ``gh`` against a GitLab
+        remote. Deriving the forge from the repo's origin fixes that; a
+        forge with no configured credentials surfaces as a structured
+        failure here, before any raw ``gh``/``glab`` GraphQL error.
+        """
+        try:
+            host = code_host_for_repo_from_overlay(repo_path)
+        except BackendResolutionError as exc:
+            return RunnerResult(ok=False, detail=str(exc))
+        if host is None:
+            return RunnerResult(ok=False, detail="no code host configured")
+        return host
 
     @staticmethod
     def _resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:

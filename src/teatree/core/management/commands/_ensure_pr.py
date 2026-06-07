@@ -18,8 +18,8 @@ now-current ref. Any other create failure is a real error and surfaces.
 
 from typing import TypedDict
 
-from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.backend_protocols import PullRequestSpec
+from teatree.core.backend_factory import code_host_for_repo_from_overlay
+from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -84,7 +84,13 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     the push proceed so the post-push ``ensure-pr`` opens the PR. Every
     other create failure is real and re-raised.
     """
-    host = code_host_from_overlay()
+    # #2025: resolve the forge from the branch's repo origin host, not by
+    # token-presence precedence — opening a PR on a GitLab-hosted repo with
+    # a GitHub-first overlay ran ``gh`` against a GitLab remote.
+    try:
+        host = code_host_for_repo_from_overlay(repo_path)
+    except BackendResolutionError as exc:
+        return EnsurePrResult(error=str(exc))
     if host is None:
         return EnsurePrResult(error="no code host configured")
 

@@ -11,7 +11,7 @@
 # set. Both jobs only attach to merge-request pipelines.
 #
 # On-demand runs: either the `eval-manual` job below (a `when: manual` play
-# button on the MR pipeline) or `t3 eval run` / `t3 eval trigger-qa` locally.
+# button on the MR pipeline) or `t3 eval run` / `t3 eval skill-triggers` locally.
 
 stages:
   - gate
@@ -36,13 +36,13 @@ variables:
       - api_failure
       - script_failure
   script:
-    # Trigger-QA is deterministic and free; the scenario suite SKIPs cleanly
-    # when `claude` is not on PATH (the runner emits SKIP and exits 0), so the
-    # job runs the suite if a CLI is provisioned and is a no-op otherwise.
-    - uv run t3 eval trigger-qa
-    # The needs_db regression checks open the self-DB, so migrate it first.
+    # The deterministic lanes (skill-triggers, pinned-regressions) gate every
+    # push via prek and the regression corpus is asserted every MR via pytest, so
+    # this job owns only the metered AI suite (one source of truth). The scenario
+    # suite SKIPs cleanly when `claude` is not on PATH (the runner emits SKIP and
+    # exits 0), so the job runs the suite if a CLI is provisioned, no-op otherwise.
+    # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
-    - uv run t3 eval regression
     # `--backend sdk` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path
     # explicitly; LOCAL `t3 eval run` defaults to the subscription backend (no API
     # spend). Mirrors the GitHub `eval-weekly` job.

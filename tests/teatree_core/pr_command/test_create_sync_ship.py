@@ -298,7 +298,7 @@ class TestPrCreateSyncShipAtomic(TestCase):
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(pr_command, "_run_visual_qa_gate", return_value=None),
             patch.object(pr_command, "validate_pr_metadata", return_value=None),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.branch_merged", return_value=False),
             patch("teatree.core.runners.ship.git.push", side_effect=_raise_push),
         ):
@@ -346,7 +346,7 @@ class TestPrCreateSyncShipAtomic(TestCase):
             patch.object(pr_command, "validate_pr_metadata", return_value=None),
             # No code host configured -> ShipExecutor.run() returns
             # RunnerResult(ok=False) WITHOUT raising.
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=None),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=None),
         ):
             result = cast(
                 "dict[str, object]",

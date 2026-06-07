@@ -96,7 +96,7 @@ class TestShipExecutorEmitsWarn(TestCase):
         host.current_user.return_value = "dev"
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.ship.code_host_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
             patch("teatree.core.runners.ship.git.push"),
             patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", body)),
         ):
@@ -129,7 +129,7 @@ class TestOrphanPathEmitsWarn(TestCase):
         host.current_user.return_value = "dev"
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch.object(ensure_pr_mod, "code_host_from_overlay", return_value=host),
+            patch.object(ensure_pr_mod, "code_host_for_repo_from_overlay", return_value=host),
             patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", body)),
             patch.object(ensure_pr_mod, "_ticket_extra_for_branch", return_value=None),
             patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
