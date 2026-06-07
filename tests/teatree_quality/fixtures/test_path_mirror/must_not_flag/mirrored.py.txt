@@ -1,0 +1,5 @@
+from teatree.hooks.banned_terms_scanner import scan
+
+
+def test_mirrored():
+    assert scan

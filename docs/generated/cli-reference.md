@@ -1614,6 +1614,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      §17.6 gate 12, #836).                                   │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
+│ test-path-mirror     Forward-guard: test files mirror their                  │
+│                      ``src/teatree/<pkg>/...`` module path.                  │
 │ test-shape           Conservative test-shape check: near-duplicate tests +   │
 │                      test:source ratio regression.                           │
 │ label-issues         Suggest labels for unlabeled open issues by             │
@@ -1920,6 +1922,31 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
 │                           this plugin's agents/).                            │
 │ --json                    Emit machine-readable JSON.                        │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool test-path-mirror`
+
+```
+Usage: t3 tool test-path-mirror [OPTIONS]
+
+ Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path.
+
+ Baseline-ratchet (fails only when the live mis-pathed count exceeds the
+ committed baseline), so the relocation sweep can only shrink the floor. A CI /
+ report check, never a PreToolUse gate — it can never lock the agent's tools.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --root                    PATH  Repo root to analyse (default: cwd)          │
+│ --json                          Emit machine-readable JSON.                  │
+│ --update-baseline               Rewrite the committed violation-count        │
+│                                 baseline to the current measurement.         │
+│ --allow-regression              With --update-baseline, permit writing a     │
+│                                 HIGHER count than the committed baseline (an │
+│                                 intentional, reviewed rise). Refused by      │
+│                                 default so the ratchet cannot silently       │
+│                                 loosen.                                      │
+│ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

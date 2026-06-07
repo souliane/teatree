@@ -35,6 +35,9 @@ from teatree.cli import (
     skill_ref_tools as _skill_ref_tools,  # noqa: F401  (side-effect: registers validate-skill-refs onto tool_app)
 )
 from teatree.cli import (
+    test_path_mirror_tools as _test_path_mirror_tools,  # noqa: F401  (side-effect: registers test-path-mirror onto tool_app)
+)
+from teatree.cli import (
     test_shape_tools as _test_shape_tools,  # noqa: F401  (side-effect: registers test-shape onto tool_app)
 )
 from teatree.cli import (
