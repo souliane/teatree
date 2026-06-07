@@ -73,6 +73,12 @@ _PYTHON_FILE_HINTS = ("pyproject.toml", "setup.py", "requirements.txt")
 _DJANGO_DEPENDENCY_RE = re.compile(r'["\']django[>=<]', re.IGNORECASE)
 _FASTAPI_DEPENDENCY_RE = re.compile(r'(?:^|["\'])fastapi[>=<~\[]', re.IGNORECASE | re.MULTILINE)
 
+# Every skill name ``detect_framework_skills`` can emit. The dispatch-prompt
+# builder classifies a resolved bundle against this set to force the stack's
+# coding skill to load explicitly rather than be demoted to an ignorable
+# summary (#1368).
+FRAMEWORK_SKILL_NAMES = frozenset({"ac-django", "ac-python", "fastapi"})
+
 
 def _framework_skills_for_content(content: str) -> list[str]:
     if _DJANGO_DEPENDENCY_RE.search(content):

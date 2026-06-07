@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import cast
 
 from teatree.core.models import Task, Ticket
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
 
 _ALWAYS_FULL_SKILLS = frozenset({"rules"})
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
@@ -52,6 +52,7 @@ def _read_skill_contents_scoped(
     *,
     primary_skills: set[str],
     explicit_load_skills: set[str] | None = None,
+    suppress_names: set[str] | None = None,
     skills_dir: Path | None = None,
 ) -> str:
     """Read skills with scoping.
@@ -60,11 +61,14 @@ def _read_skill_contents_scoped(
     phase — the overlay's primary review skills) get full content. Skills in
     *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
     BEFORE reviewing" instruction instead of the generic, easy-to-ignore
-    "available — load if needed" summary. Everything else gets the generic
-    summary.
+    "available — load if needed" summary. Skills in *suppress_names* are
+    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
+    directive's stack-load block, #1368), so listing them in the ignorable
+    summary would contradict that. Everything else gets the generic summary.
     """
     sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
     explicit = explicit_load_skills or set()
+    suppress = suppress_names or set()
     sections: list[str] = []
     companion_names: list[str] = []
     explicit_names: list[str] = []
@@ -76,6 +80,8 @@ def _read_skill_contents_scoped(
                 sections.append(f"--- SKILL: {name} ---\n{content}")
         elif name in explicit or _explicit_load_name(name) in explicit:
             explicit_names.append(name)
+        elif name in suppress or _explicit_load_name(name) in suppress:
+            continue
         else:
             companion_names.append(name)
     if explicit_names:
@@ -115,22 +121,85 @@ def _parent_result_summary(task: Task) -> str:
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
 
+# The coding directive force-loads these two by name in its first lines, and
+# ``rules`` is always embedded in full — so they are never re-listed in the
+# resolved-stack skill-load block.
+_DIRECTIVE_FORCED_SKILLS = frozenset({"architecture-design", "code"}) | _ALWAYS_FULL_SKILLS
 
-def _coding_phase_directive() -> list[str]:
+
+def _stack_overlay_load_names(skills: list[str] | None) -> list[str]:
+    """Return the ordered framework-then-overlay skill names to force-load.
+
+    The resolved bundle minus the skills the directive already force-loads by
+    name (``architecture-design`` / ``code``) and ``rules`` (always embedded in
+    full). Framework skills (``ac-*`` / ``fastapi``) lead, then the overlay /
+    remaining coding skills. Single source of truth for both the directive's
+    load block and the system-context summary-suppression set so the two never
+    disagree on which skills are force-loaded (#1368).
+    """
+    extra = [s for s in (skills or []) if _explicit_load_name(s) not in _DIRECTIVE_FORCED_SKILLS]
+    framework = [s for s in extra if _explicit_load_name(s) in FRAMEWORK_SKILL_NAMES]
+    overlay = [s for s in extra if _explicit_load_name(s) not in FRAMEWORK_SKILL_NAMES]
+    ordered: list[str] = []
+    for name in (*framework, *overlay):
+        load_name = _explicit_load_name(name)
+        if load_name not in ordered:
+            ordered.append(load_name)
+    return ordered
+
+
+def _stack_skill_load_lines(skills: list[str] | None) -> list[str]:
+    """Return the explicit "load the stack + overlay skills BEFORE code" block.
+
+    A dispatched builder does not inherit the parent's loaded skills and
+    auto-detect mis-fires when the worktree shape doesn't trip the detector
+    (#1368). The resolved bundle already carries the stack's framework skill
+    (``ac-django`` / ``ac-python`` / ``fastapi``) and the active overlay skill;
+    this turns each into a verbatim "load via the Skill tool" instruction
+    rather than letting it be demoted to the ignorable summary or left to
+    auto-detect. When the stack cannot be determined (empty / unresolved
+    bundle) a conservative default tells the builder to load its stack's
+    coding skill itself, so a code-touching dispatch can never go out with no
+    skill-load directive at all.
+    """
+    ordered = _stack_overlay_load_names(skills)
+    if not ordered:
+        return [
+            "REQUIRED: before writing code, also load your stack's coding skill via the Skill tool",
+            "(/ac-django for a Django repo, /ac-python for a Python repo) and the active overlay skill.",
+            "The stack could not be auto-resolved at dispatch — load them yourself; do NOT skip this.",
+            "",
+        ]
+    lines = ["REQUIRED: before writing code, also call the Skill tool for EACH of these stack/overlay skills:"]
+    lines.extend(f"  - /{name}" for name in ordered)
+    lines.extend(
+        (
+            "These carry the framework conventions and overlay-specific rules a dispatched builder",
+            "does not auto-load — do NOT rely on auto-detect.",
+            "",
+        )
+    )
+    return lines
+
+
+def _coding_phase_directive(skills: list[str] | None = None) -> list[str]:
     """Return the forced-load + behavior-preservation + verify directive lines.
 
     Symmetric to ``build_reviewer_dispatch_prompt``: a headless builder loses
     every loaded skill (rules § Sub-Agent Limitations), so the architecture /
-    code disciplines and the CI-parity verify step must reach it inline. Shared
-    by ``build_task_prompt`` (the loop builder's work prompt) and the coding
-    branch of ``build_system_context`` so the contract cannot drift between the
-    two builder entry points.
+    code disciplines, the stack + overlay coding skills, and the CI-parity
+    verify step must reach it inline. Shared by ``build_task_prompt`` (the loop
+    builder's work prompt) and the coding branch of ``build_system_context`` so
+    the contract cannot drift between the two builder entry points. *skills* is
+    the resolved bundle for the dispatch — its framework + overlay entries are
+    surfaced as an explicit load block (#1368).
     """
     return [
         "REQUIRED: before writing code, call the Skill tool for /t3:architecture-design and /t3:code.",
         "Do this FIRST — these carry the design-first and TDD disciplines a dispatched builder",
         "does not auto-load.",
         "",
+        *_stack_skill_load_lines(skills),
         "BEHAVIOR PRESERVATION (non-negotiable): When you rewrite or REPLACE existing code, first",
         "enumerate every behavior/case the old code handled — especially safety/privacy/leak-gate",
         "coverage and the regression tests that pin it — and preserve each, or STOP and request input.",
@@ -169,8 +238,13 @@ def _task_header_lines(task: Task, extra: dict) -> list[str]:
     return lines
 
 
-def build_task_prompt(task: Task) -> str:
-    """Build a work prompt for a headless agent."""
+def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
+    """Build a work prompt for a headless agent.
+
+    *skills* is the resolved skill bundle for the dispatch; on the coding phase
+    its framework + overlay entries are injected as an explicit skill-load
+    block so a code-touching dispatch never relies on auto-detect (#1368).
+    """
     ticket: Ticket = task.ticket
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
 
@@ -194,7 +268,7 @@ def build_task_prompt(task: Task) -> str:
     )
 
     if task.phase == "coding":
-        lines.extend(("", "PHASE: coding", *_coding_phase_directive()))
+        lines.extend(("", "PHASE: coding", *_coding_phase_directive(skills)))
 
     return "\n".join(lines)
 
@@ -289,6 +363,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
         if lifecycle_skill:
             primary_skills = {lifecycle_skill}
             explicit_load_skills: set[str] | None = None
+            suppress_names: set[str] | None = None
             if task.phase == "reviewing":
                 review_primary, explicit_load_skills = _review_phase_scoping(skills)
                 primary_skills |= review_primary
@@ -296,10 +371,14 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
                 # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
                 # not the ignorable "load if needed" summary the builder would skip.
                 primary_skills |= _CODING_PHASE_ALWAYS_FULL
+                # The directive force-loads the stack + overlay skills (#1368);
+                # drop them from the ignorable summary so it cannot contradict it.
+                suppress_names = set(_stack_overlay_load_names(skills))
             skill_content = _read_skill_contents_scoped(
                 skills,
                 primary_skills=primary_skills,
                 explicit_load_skills=explicit_load_skills,
+                suppress_names=suppress_names,
             )
         else:
             skill_content = _read_skill_contents(skills)
@@ -307,7 +386,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             lines.extend(("", "# Loaded Skills", "", skill_content))
 
     if task.phase == "coding":
-        lines.extend(("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive()))
+        lines.extend(("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive(skills)))
 
     if task.phase == "reviewing":
         lines.extend(
