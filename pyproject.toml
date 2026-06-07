@@ -390,8 +390,14 @@ high_value_modules = [
 # not the live resolve_on_behalf_verdict gate — whose BLOCK->PROCEED mutants the
 # existing suite KILLS (the kill-proof). Recorded so a future "block" mode does
 # not fail on this documented backlog; shrink it as the shim is retired.
+# availability.py: pre-existing debt across untouched functions (write_override,
+# load_schedule, _drain_on_return, load_override, ...), surfaced by the first PR
+# to touch the file since #1901 added it to high_value_modules without a baseline.
+# The newer is_live_user_turn / refresh_live_turn methods are fully killed; this
+# count is the historical backlog, tracked for paydown and only ever shrinks.
 baseline_surviving = [
   { path = "src/teatree/on_behalf_gate.py", count = 7 },
+  { path = "src/teatree/core/availability.py", count = 124 },
 ]
 
 # Per-module test scope. mutmut maps a mutant to the tests that exercise its
