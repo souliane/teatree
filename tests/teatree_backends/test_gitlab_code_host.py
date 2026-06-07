@@ -135,6 +135,38 @@ def test_create_issue_returns_error_when_project_not_resolved() -> None:
     client.post_json.assert_not_called()
 
 
+def test_close_issue_puts_state_event_close() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"state": "closed"}
+    host = GitLabCodeHost(client=client)
+
+    result = host.close_issue(issue_url="https://gitlab.com/org/repo/-/issues/3")
+
+    assert result == {"state": "closed"}
+    client.put_json.assert_called_once_with("projects/42/issues/3", {"state_event": "close"})
+
+
+def test_close_issue_posts_audit_note_first() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = _project()
+    client.put_json.return_value = {"state": "closed"}
+    host = GitLabCodeHost(client=client)
+
+    host.close_issue(issue_url="https://gitlab.com/org/repo/-/issues/3", comment="dead")
+
+    client.post_json.assert_called_once_with("projects/42/issues/3/notes", {"body": "dead"})
+
+
+def test_close_issue_returns_error_when_project_not_resolved() -> None:
+    client = MagicMock(spec=GitLabAPI)
+    client.resolve_project.return_value = None
+    host = GitLabCodeHost(client=client)
+
+    assert "error" in host.close_issue(issue_url="https://gitlab.com/org/unknown/-/issues/3")
+    client.put_json.assert_not_called()
+
+
 def test_search_open_issues_searches_project() -> None:
     client = MagicMock(spec=GitLabAPI)
     client.resolve_project.return_value = _project()

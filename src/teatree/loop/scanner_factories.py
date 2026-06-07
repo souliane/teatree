@@ -7,24 +7,15 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 """
 
 import logging
-import os
-import tomllib
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from teatree.config import (
-    Autonomy,
-    Mode,
-    UserSettings,
-    discover_overlays,
-    get_effective_settings,
-    load_config,
-    workspace_dir,
-)
+from teatree.config import Autonomy, Mode, UserSettings, get_effective_settings, workspace_dir
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import ImplementedIssueMarker
 from teatree.loop.job_identity import _TUPLE_PAIR, _ScannerJob
+from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
 from teatree.loop.scanners import (
     ArchitecturalReviewScanner,
     AssignedIssuesScanner,
@@ -36,6 +27,7 @@ from teatree.loop.scanners import (
     GhPrApiClient,
     GitLabApprovalsScanner,
     GlabGhMrStateClassifier,
+    IssueDispositionScanner,
     IssueImplementerScanner,
     MyPrsScanner,
     NullMergeNotifier,
@@ -53,6 +45,10 @@ from teatree.loop.tick_resolvers import (
     _identity_alias_groups_for_overlay,
     _web_origin_for_host,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -488,6 +484,65 @@ def _issue_implementer_scanner_for(backend: OverlayBackends) -> IssueImplementer
     )
 
 
+def _issue_disposition_scanner_for(backend: OverlayBackends) -> IssueDispositionScanner | None:
+    """Build a per-overlay issue-disposition scanner behind the default-OFF gate (#2122).
+
+    Returns a scanner ONLY when ``auto_disposition_enabled`` is flipped on for
+    this overlay. With the default-OFF config no scanner is built, so neither
+    ``build_registry_jobs`` nor ``build_default_jobs`` emits anything for this
+    domain — the fan-out stays byte-for-byte unchanged until an overlay opts in.
+
+    ``repo`` (the duplicate-search target) and the obsolescence ``path_exists``
+    oracle both come from the overlay's repos: the first followup/workspace repo
+    names the duplicate-search project, and a clone-relative resolver answers
+    whether a body-referenced path still exists on disk. An overlay with no
+    Python class — hence no repo list — still gets a scanner, but with the
+    duplicate and obsolete buckets self-disabled (empty ``repo`` /
+    ``path_exists=None``); only the already-shipped bucket (pure local-DB
+    evidence) stays active, which is the safe conservative default.
+    """
+    settings = _effective_settings_for_overlay(backend.name)
+    if not settings.auto_disposition_enabled:
+        return None
+    code_host = backend.host
+    if code_host is None:
+        return None
+    overlay = backend.overlay
+    repo = ""
+    path_exists: Callable[[str], bool] | None = None
+    if overlay is not None:
+        repos = list(overlay.metadata.get_followup_repos()) or list(overlay.get_workspace_repos())
+        repo = repos[0] if repos else ""
+        path_exists = _clone_relative_path_exists(overlay.get_workspace_repos())
+    return IssueDispositionScanner(
+        host=code_host,
+        repo=repo,
+        overlay_name=backend.name,
+        identities=backend.identities,
+        max_closes_per_tick=settings.auto_disposition_max_closes_per_tick,
+        path_exists=path_exists,
+    )
+
+
+def _clone_relative_path_exists(workspace_repos: list[str]) -> "Callable[[str], bool] | None":
+    """Resolve the obsolescence oracle: does *path* still exist under any clone?
+
+    Returns ``None`` when no workspace repo resolves to an on-disk clone — with
+    no clone to check against, the obsolete bucket must stay disabled rather than
+    guess. Otherwise returns a predicate that is True when the relative *path*
+    exists under at least one resolved clone.
+    """
+    workspace = workspace_dir()
+    clones = [clone for name in workspace_repos if (clone := find_clone_path(workspace, name)) is not None]
+    if not clones:
+        return None
+
+    def _exists(path: str) -> bool:
+        return any((clone / path).exists() for clone in clones)
+
+    return _exists
+
+
 def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
     """Resolve :class:`UserSettings` for *overlay_name*, autonomy collapse applied.
 
@@ -501,60 +556,3 @@ def _effective_settings_for_overlay(overlay_name: str) -> "UserSettings":
     sites and the builder tests that patch this name stay unchanged.
     """
     return get_effective_settings(overlay_name)
-
-
-def _gitlab_approvals_enabled() -> bool:
-    """Read the ``TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED`` feature flag.
-
-    Default off — the scanner is poll-driven and overlaps with the webhook
-    path; deployments that already wire ``/hooks/gitlab/`` do not need it.
-    Returns True for any truthy value (``1``, ``true``, ``yes``,
-    case-insensitive); anything else (unset, ``0``, ``false``) is off.
-    """
-    raw = os.environ.get("TEATREE_GITLAB_APPROVAL_SCANNER_ENABLED", "")
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _user_slack_id_for_overlay(overlay_name: str) -> str:
-    """Resolve ``slack_user_id`` for the active overlay (overlay → global → empty).
-
-    Used by :class:`ReviewNagScanner` to know where to DM long-stale MR
-    warnings. Reads ``~/.teatree.toml`` directly so a fresh tick picks up
-    a runtime config change without requiring an overlay reload.
-    """
-    try:
-        toml_path = Path.home() / ".teatree.toml"
-        if not toml_path.is_file():
-            return ""
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return ""
-    overlays = data.get("overlays") or {}
-    if overlay_name and isinstance(overlays.get(overlay_name), dict):
-        user_id = overlays[overlay_name].get("slack_user_id", "")
-        if user_id:
-            return str(user_id)
-    teatree_cfg = data.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_id", ""))
-
-
-def _user_identity_aliases_for_overlay(overlay_name: str) -> tuple[str, ...]:
-    """Resolve ``user_identity_aliases`` honouring any per-overlay override.
-
-    The active overlay's ``[overlays.<name>]`` table wins over the global
-    ``[teatree]`` value; with no setting anywhere we return the empty
-    tuple so the disposition scanner keeps its legacy behaviour.
-    """
-    try:
-        global_value = tuple(load_config().user.user_identity_aliases)
-        if overlay_name:
-            for entry in discover_overlays():
-                if entry.name == overlay_name:
-                    override = entry.overrides.get("user_identity_aliases")
-                    if override is not None:
-                        return tuple(str(s) for s in override)
-                    break
-    except Exception:  # noqa: BLE001 — never break a tick on a config read.
-        logger.warning("Failed to resolve user_identity_aliases for %r; defaulting to empty", overlay_name)
-        return ()
-    return global_value

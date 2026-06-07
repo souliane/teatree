@@ -329,6 +329,31 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         terms = quote_plus(f"repo:{repo} is:issue is:open {query}")
         return _gh_api_search_paginated(f"search/issues?q={terms}&per_page=100", token=self._token)
 
+    def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+        """Close a GitHub issue, optionally leaving an audit-trail comment first.
+
+        Idempotent: GitHub's ``PATCH state=closed`` is a no-op on an
+        already-closed issue, so a re-tick that re-closes the same issue does
+        no harm. Returns ``{"error": ...}`` when the URL is not a recognised
+        GitHub issue URL so the caller never mistakes a parse failure for a
+        successful close.
+        """
+        path = urlparse(issue_url).path
+        match = _ISSUE_URL_RE.match(path)
+        if match is None:
+            return {"error": f"Not a GitHub issue URL: {issue_url}"}
+
+        repo = f"{match['owner']}/{match['repo']}"
+        number = int(match["number"])
+        if comment:
+            self.post_issue_comment(issue_url=issue_url, body=comment)
+        data = _gh_api_patch(
+            f"repos/{repo}/issues/{number}",
+            {"state": "closed", "state_reason": "not_planned"},
+            token=self._token,
+        )
+        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+
     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
         raise NotImplementedError(msg)
