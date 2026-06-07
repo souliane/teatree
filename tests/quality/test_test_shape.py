@@ -253,6 +253,25 @@ class TestCli:
         assert config.baseline.source_lines == 1
         assert config.mode is Mode.WARN
 
+    def test_cli_runs_shadowed_fixture_check_end_to_end(self, tmp_path: Path) -> None:
+        # Fix #6 (unconditional): the CLI must pass root= to build_report so the
+        # shadowed-autouse-fixture analysis runs in CI. Without root= the check is
+        # silently skipped — this asserts a real shadow is surfaced through the CLI.
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "conftest.py").write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        (tmp_path / "tests" / "test_thing.py").write_text(_AUTOUSE_FIXTURE, encoding="utf-8")
+        (tmp_path / "src" / "teatree").mkdir(parents=True)
+        (tmp_path / "src" / "teatree" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            '[tool.teatree.test_shape]\nmode = "warn"\nmin_cluster = 3\n', encoding="utf-8"
+        )
+        result = runner.invoke(app, ["tool", "test-shape", "--root", str(tmp_path)])
+        assert result.exit_code == 0
+        # The "shadows" finding only appears when build_report received root=;
+        # without it the shadowed-fixture analysis is skipped and the output is
+        # "no findings". This is the end-to-end proof the CLI passes root=.
+        assert "shadows" in result.output.lower()
+
 
 def _repo_with_committed_baseline(tmp_path: Path, *, test_lines: int, source_lines: int) -> Path:
     """A repo with a fixed live ratio and a configurable committed baseline.

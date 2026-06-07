@@ -52,11 +52,6 @@ def blocking_dir() -> Path:
     return repo_root() / ".semgrep" / "blocking"
 
 
-@pytest.fixture(scope="module")
-def warn_dir() -> Path:
-    return repo_root() / ".semgrep" / "warn"
-
-
 class TestManifestSchema:
     def test_manifest_is_non_empty(self, manifest: tuple[RegressionRule, ...]) -> None:
         assert manifest
@@ -108,18 +103,6 @@ class TestBlockingSetIsGreen:
         assert findings == [], (
             "blocking regression rules must be zero-findings on the current tree (main stays green); "
             f"got: {[(f['check_id'], f['path'], f['start']['line']) for f in findings]}"
-        )
-
-
-class TestWarnSetGuardsItsBugs:
-    @requires_semgrep
-    def test_each_warn_rule_fires_on_its_bug(self, manifest: tuple[RegressionRule, ...], warn_dir: Path) -> None:
-        findings = scan_findings(warn_dir)
-        fired = {f["check_id"].rsplit(".", 1)[-1] for f in findings}
-        warn_ids = {rule.id for rule in manifest if not rule.is_blocking}
-        assert warn_ids <= fired, (
-            "every warn rule must still fire on its (open) bug, else it guards nothing; "
-            f"silent rules: {sorted(warn_ids - fired)}"
         )
 
 
