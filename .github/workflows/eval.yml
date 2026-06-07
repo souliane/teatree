@@ -1,0 +1,130 @@
+# ============================================================
+# METERED BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
+# ============================================================
+#
+# The behavioral-eval suite (`t3 eval run --backend sdk`) shells out to the
+# `claude -p` CLI — it is metered (API cost), reaches the network, and varies by
+# model. It MUST NOT run on every push or every PR. This workflow is fully
+# independent of the main CI (`ci.yml`): triggering it never runs the rest of
+# the pipeline, and a PR run never triggers this workflow.
+#
+# Cadence:
+#   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
+#     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
+#     lookback window since the last run — nothing new to test, no API spend.
+#   * workflow_dispatch — manual, on-demand, with a `backend` input (default sdk).
+#     ALWAYS runs (force) — the no-PR guard is bypassed for a manual run.
+#
+# The "nothing new to test" skip is a PRE-CHECK that decides whether to invoke
+# the eval at all — it is NOT a skip-as-pass inside the eval. Once the eval IS
+# invoked, `--require-executed` still makes it FAIL LOUD if it can't execute
+# (missing key/binary).
+#
+# NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up)
+#   The runner SKIPs every scenario when `claude` is not on PATH, and a fully-
+#   skipped suite reports green with ZERO behavioral coverage. This workflow
+#   forecloses that two ways, BOTH unconditional (never key-gated):
+#     1. It installs the Claude CLI and asserts `claude --version` BEFORE the
+#        eval step — a missing binary FAILS the job, it does not skip.
+#     2. It passes `--require-executed` unconditionally, so a collected-but-
+#        all-skipped run exits non-zero.
+#   `ANTHROPIC_API_KEY` is wired from the repo secret. Until that secret is set
+#   the job correctly fails RED (the metered backend can authenticate nothing) —
+#   that loud failure is intended, not a regression.
+#
+# The FREE deterministic eval lanes (eval-skill-triggers commit-stage,
+# eval-pinned-regressions push-stage) are unaffected — they gate every push via
+# prek and the regression corpus is asserted every PR via pytest. Only the
+# metered claude -p suite lives here.
+# ============================================================
+
+name: Metered eval
+
+on:
+  schedule:
+    # Weekly metered behavioral-eval run, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: "AI-lane backend for the manual run (sdk = metered claude -p)."
+        required: false
+        default: sdk
+        type: string
+
+jobs:
+  # GATE (weekly + on-demand): the metered AI behavioral-eval suite. The Claude
+  # CLI install is asserted and `--require-executed` is passed unconditionally,
+  # so a missing binary / all-skipped run fails RED instead of passing green.
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      # Bounded retry: transient registry/network ReadTimeout, not a manual rerun.
+      - name: Sync dependencies (retry on transient network failure)
+        uses: nick-fields/retry@v4
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: uv sync
+      # Decide whether to invoke the eval at all. A manual workflow_dispatch run
+      # ALWAYS runs (force). A scheduled run is guarded: it skips cleanly (exit 0,
+      # clear log line) when NO PR merged in the lookback window since the last
+      # run — nothing new to test, no API spend. This is a PRE-CHECK; it is NOT a
+      # skip-as-pass inside the eval (the eval below still fails loud via
+      # --require-executed once invoked).
+      - name: Decide whether the scheduled eval runs (manual always runs)
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            echo "Manual workflow_dispatch run → running the eval (force, no-PR guard bypassed)."
+          else
+            # Merged PRs, most-recent-first; the script answers "any merged in the window".
+            gh api "repos/${{ github.repository }}/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+              --jq '[.[] | {number: .number, merged_at: .merged_at}]' > prs.json || echo "[]" > prs.json
+            if uv run python scripts/eval/merged_prs_since.py --prs-file prs.json --days 7 --skip-code 1; then
+              echo "run_eval=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_eval=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+      # Install the Claude CLI the metered sdk backend shells out to, then ASSERT
+      # it. A missing binary must FAIL the job (the runner would otherwise skip
+      # every scenario and report a decorative green). `claude --version` is the
+      # post-install assertion that turns an install failure into a red job.
+      - name: Install and assert the Claude CLI
+        if: steps.gate.outputs.run_eval == 'true'
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+      - name: Migrate the self-DB (the eval run-history ledger persists into it)
+        if: steps.gate.outputs.run_eval == 'true'
+        run: uv run python -m teatree migrate --no-input
+      # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
+      # `--backend` keeps CI on the metered claude -p / ANTHROPIC_API_KEY path explicitly
+      # (sdk default; a workflow_dispatch run may override it via the backend input).
+      # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
+      # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
+      # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
+      - name: Metered behavioral eval suite (pass@k; --require-executed always armed)
+        if: steps.gate.outputs.run_eval == 'true'
+        uses: nick-fields/retry@v4
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_BACKEND: ${{ inputs.backend || 'sdk' }}
+        with:
+          timeout_minutes: 30
+          max_attempts: 3
+          retry_wait_seconds: 60
+          command: uv run t3 eval run --trials 3 --require any --backend "$EVAL_BACKEND" --require-executed

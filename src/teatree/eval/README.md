@@ -32,7 +32,7 @@ and the per-skill coverage gate (`t3 eval coverage`).
 | Run-store | `src/teatree/core/models/eval_run.py` (`EvalRunRecord` + `EvalScenarioResult`) |
 | Generated corpus | `scripts/eval/corpus_gen/` + `generate_corpus.py` |
 | Prek hooks | `.pre-commit-config.yaml`: `eval-skill-triggers` (commit stage → `t3 eval skill-triggers`) + `eval-pinned-regressions` (push stage → `t3 eval pinned-regressions`) |
-| CI triggers | `.github/workflows/ci.yml` + `.gitlab-ci.yml` (`eval-weekly`), `scripts/eval/first_pr_of_week.py` |
+| CI triggers | `.github/workflows/eval.yml` (standalone weekly schedule + manual `workflow_dispatch`) + `.gitlab-ci.yml` (schedule + manual), `scripts/eval/merged_prs_since.py` (scheduled no-PR guard) |
 
 ### Tech stack
 
@@ -55,12 +55,17 @@ installed editable from a clone; the eval harness ships inside it.
   stage, and `eval-pinned-regressions` (`t3 eval pinned-regressions`, real
   git/FSM work) runs at the **push** stage — both token-free, failing the
   commit/push on a real violation.
-- **CI manual.** The weekly eval gate can be triggered on demand
-  ([#1992](https://github.com/souliane/teatree/pull/1992)).
-- **CI weekly.** The metered `claude -p` scenario run runs once per ISO week
-  (first PR of the week, or a Sunday cron backstop for a PR-less week); the
-  deterministic lanes are gated by prek per push + pytest per PR, not re-run
-  here. See "Triggering" below.
+- **CI manual.** The metered eval can be triggered on demand via the standalone
+  workflow's manual `workflow_dispatch` button (GitHub) / `when: manual` job
+  (GitLab). A manual run ALWAYS runs (the no-PR guard is bypassed).
+- **CI weekly.** The metered `claude -p` scenario run lives in a STANDALONE
+  workflow (`.github/workflows/eval.yml`), decoupled from the PR pipeline — a PR
+  run neither runs nor displays a metered-eval check. It fires on a weekly cron;
+  the scheduled run skips cleanly when nothing new merged in the lookback window
+  (`scripts/eval/merged_prs_since.py`). The metered suite installs the Claude CLI
+  and passes `--require-executed` UNCONDITIONALLY, so a missing binary/key fails
+  the job loud instead of an all-skipped green. The deterministic lanes are gated
+  by prek per push + pytest per PR, not re-run here. See "Triggering" below.
 
 ## Invocation
 
@@ -121,7 +126,7 @@ A single-trial `t3 eval run` picks one of two backends; **the default is
 | Backend | Spend | Who runs it | What it does |
 |---|---|---|---|
 | `subscription` (default) | none (subscription) | local / manual | grades a subscription-produced `<scenario>.jsonl` transcript |
-| `sdk` | metered `claude -p` (`ANTHROPIC_API_KEY`) | CI (`eval-weekly`, explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live |
+| `sdk` | metered `claude -p` (`ANTHROPIC_API_KEY`) | CI (standalone `eval.yml`, explicit `--backend sdk`) | shells `claude -p` to produce + grade the run live |
 
 The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
@@ -140,11 +145,13 @@ command exits non-zero only on a real FAIL. Driver: `/t3:running-evals`.
 transcript); combining them with the subscription default prints a one-line
 metered notice on stderr.
 
-**CI stays on the API path explicitly.** The `eval-weekly` jobs in
-`.github/workflows/ci.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
+**CI stays on the API path explicitly.** The standalone eval jobs in
+`.github/workflows/eval.yml` and `.gitlab-ci.yml` pass `--backend sdk` so CI runs
 the budgeted `claude -p` path while LOCAL defaults to `subscription`. (CI also
 passes `--trials 3`, which already forces the sdk runner; the explicit
-`--backend sdk` is the debuggable statement of that intent.)
+`--backend sdk` is the debuggable statement of that intent.) `--require-executed`
+is passed unconditionally so a missing CLI/key fails the job loud — never an
+all-skipped green.
 
 **Missing-transcript UX.** With `subscription` the default, a bare `t3 eval run`
 before any transcript exists prints, per skipped scenario, the exact expected
@@ -290,14 +297,19 @@ code path still honors the invariant — then add the matching anti-vacuous test
   `tests/eval/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
   test_eval.py`. The deterministic, free layers therefore guard every PR
   through pytest — only the paid `claude -p` scenario *run* is weekly.
-- **Weekly, on the first PR of the ISO week.** CI runs the paid scenario suite
-  once a week — not on every push, not on every PR. The deterministic lanes are
-  NOT re-run standalone in the weekly job (prek per push + pytest per PR is the
-  single source of truth). `scripts/eval/
-  first_pr_of_week.py` decides whether the current MR is the earliest-created
-  MR of the current ISO week (order-independent, re-run safe). The rule is
-  wired in `.gitlab-ci.yml` (`eval-gate` → `eval-weekly`) and mirrored in
-  `.github/workflows/ci.yml` (`eval-weekly` job).
+- **Weekly, in a standalone workflow (decoupled from PRs).** CI runs the paid
+  scenario suite once a week on a cron — not on every push, not on every PR, and
+  NOT embedded in the PR pipeline. It lives in `.github/workflows/eval.yml`
+  (GitHub) / a schedule + manual job in `.gitlab-ci.yml` (GitLab), so a PR run
+  neither runs nor displays a metered-eval check. The deterministic lanes are NOT
+  re-run standalone in the weekly job (prek per push + pytest per PR is the
+  single source of truth). The scheduled run is guarded by
+  `scripts/eval/merged_prs_since.py`: when NO PR merged in the lookback window
+  since the last run, the cron skips cleanly (exit 0, "nothing new to test") — a
+  PRE-CHECK that decides whether to invoke the eval at all, NOT a skip-as-pass
+  inside the eval. A manual `workflow_dispatch` / `when: manual` run always runs
+  (the guard is bypassed). The metered invocation always carries
+  `--require-executed`, so once invoked it fails loud if it cannot execute.
 
 ## Failure-class coverage
 

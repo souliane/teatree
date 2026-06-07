@@ -1,10 +1,11 @@
-"""The weekly behavioral-eval CI job retries transient/flaky failures.
+"""The metered behavioral-eval workflow retries transient/flaky failures.
 
 AI/trajectory evals are non-deterministic and reach the network/model API, so a
 transient infra flake used to red-fail the pipeline and force a manual rerun.
-GitHub Actions now wraps the eval and ``uv sync`` steps in ``nick-fields/retry``
-and GitLab gives ``eval-weekly`` a bounded ``retry:``. These tests pin both, and
-assert the attempt cap so an unbounded retry can never mask a real regression.
+The GitHub eval workflow wraps the eval and ``uv sync`` steps in
+``nick-fields/retry`` and the GitLab eval-suite carries a bounded ``retry:``.
+These tests pin both, and assert the attempt cap so an unbounded retry can never
+mask a real regression.
 """
 
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any, cast
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_GH_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
+_GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
 _GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
 
 _RETRY_ACTION = "nick-fields/retry"
@@ -21,26 +22,15 @@ _MAX_RETRY_ATTEMPTS = 5
 
 
 def _gh_eval_steps() -> list[dict[str, Any]]:
-    jobs = cast("dict[str, Any]", yaml.safe_load(_GH_WORKFLOW.read_text(encoding="utf-8"))["jobs"])
-    assert "eval-weekly" in jobs, "GitHub CI must define the weekly behavioral-eval job."
-    return cast("list[dict[str, Any]]", jobs["eval-weekly"]["steps"])
+    jobs = cast("dict[str, Any]", yaml.safe_load(_GH_EVAL.read_text(encoding="utf-8"))["jobs"])
+    assert "eval" in jobs, "the eval workflow must define the metered behavioral-eval job."
+    return cast("list[dict[str, Any]]", jobs["eval"]["steps"])
 
 
-def _gitlab_eval_job() -> dict[str, Any]:
+def _gitlab_eval_suite() -> dict[str, Any]:
     config = cast("dict[str, Any]", yaml.safe_load(_GITLAB_CI.read_text(encoding="utf-8")))
-    assert "eval-weekly" in config, "GitLab CI must define the weekly behavioral-eval job."
-    return _resolve_extends(config, "eval-weekly")
-
-
-def _resolve_extends(config: dict[str, Any], job: str) -> dict[str, Any]:
-    # Mirror GitLab's `extends` merge so the test asserts the job's effective
-    # config (retry/script now live in the shared `.eval-suite` template).
-    resolved: dict[str, Any] = {}
-    parent = config[job].get("extends")
-    if parent:
-        resolved.update(config[parent])
-    resolved.update(config[job])
-    return resolved
+    assert ".eval-suite" in config, "GitLab CI must define the shared eval-suite template."
+    return cast("dict[str, Any]", config[".eval-suite"])
 
 
 def _step_using_retry_for(command_fragment: str) -> dict[str, Any]:
@@ -49,7 +39,7 @@ def _step_using_retry_for(command_fragment: str) -> dict[str, Any]:
             "command", ""
         ):
             return step
-    msg = f"No {_RETRY_ACTION} step wrapping a command containing {command_fragment!r} in eval-weekly."
+    msg = f"No {_RETRY_ACTION} step wrapping a command containing {command_fragment!r} in the eval job."
     raise AssertionError(msg)
 
 
@@ -76,15 +66,15 @@ class TestGitHubEvalRetry:
 
 class TestGitLabEvalRetry:
     def test_eval_job_defines_bounded_retry(self) -> None:
-        retry = _gitlab_eval_job().get("retry")
-        assert retry is not None, "GitLab eval-weekly must declare a retry policy for transient flakes."
+        retry = _gitlab_eval_suite().get("retry")
+        assert retry is not None, "GitLab eval-suite must declare a retry policy for transient flakes."
         assert isinstance(retry, dict), "retry must specify max + when (not a bare integer that retries on anything)."
         assert 1 <= int(retry["max"]) <= _MAX_RETRY_ATTEMPTS, (
             "GitLab eval retry must be bounded so a deterministic miss fails fast."
         )
 
     def test_retry_targets_transient_failure_classes(self) -> None:
-        when = set(_gitlab_eval_job()["retry"]["when"])
+        when = set(_gitlab_eval_suite()["retry"]["when"])
         # Retrying on transient signals, not a blanket `always` that masks bugs.
         assert "always" not in when, "retry must not be 'always' — that masks deterministic eval regressions."
         assert {"runner_system_failure", "stuck_or_timeout_failure"} <= when, (
