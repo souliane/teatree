@@ -56,14 +56,19 @@ class _ClearGateBase(TestCase):
         Worktree.objects.create(
             ticket=self.ticket, overlay="t3-teatree", repo_path="/tmp/x", branch="b", extra={"worktree_path": "/tmp/x"}
         )
-        # Pin branch-currency + schema so only the E2E gate decides the outcome.
+        # Pin the sibling pre-issue gates + schema so only the E2E gate decides.
         patcher_currency = patch(
-            "teatree.core.management.commands.ticket.check_clear_branch_currency", return_value=None
+            "teatree.core.management.commands._clear_preflight.check_clear_branch_currency", return_value=None
+        )
+        patcher_fork = patch(
+            "teatree.core.management.commands._clear_preflight.check_clear_migration_fork", return_value=None
         )
         patcher_schema = patch("teatree.core.management.commands.ticket.require_current_schema", return_value=None)
         patcher_currency.start()
+        patcher_fork.start()
         patcher_schema.start()
         self.addCleanup(patcher_currency.stop)
+        self.addCleanup(patcher_fork.stop)
         self.addCleanup(patcher_schema.stop)
 
 
