@@ -7,7 +7,7 @@ itself drift. Any reference that does not resolve is a :class:`DanglingReference
 naming the file:line, the bad name, and the nearest valid matches.
 
 The canonical set is enumerated exactly as the skill-loading hook does
-(:func:`teatree.skill_loading.SkillLoadingPolicy` reads the same search dirs):
+(:func:`teatree.skill_support.loading.SkillLoadingPolicy` reads the same search dirs):
 every ``<search-dir>/<name>/SKILL.md`` is a skill. The default search dirs
 resolve the ``~/.claude/skills/*`` symlinks (which point into the user's remote
 skill repos and any external skill packages) plus this plugin's own ``skills/``
@@ -65,7 +65,7 @@ def default_search_dirs() -> list[Path]:
         return [Path(d) for d in override.split(os.pathsep) if d]
 
     home = os.environ.get("HOME", str(Path.home()))
-    plugin_skills = Path(__file__).resolve().parent.parent.parent / "skills"
+    plugin_skills = Path(__file__).resolve().parents[3] / "skills"
     candidates = [
         plugin_skills,
         Path(home) / ".agents" / "skills",
@@ -220,7 +220,7 @@ def validate_skill_refs(
         if supplementary_config is not None
         else Path(os.environ.get("T3_SUPPLEMENTARY_SKILLS", str(Path.home() / ".teatree-skills.yml")))
     )
-    agents = agents_dir if agents_dir is not None else Path(__file__).resolve().parent.parent.parent / "agents"
+    agents = agents_dir if agents_dir is not None else Path(__file__).resolve().parents[3] / "agents"
 
     findings = validate_supplementary_config(config, canonical)
     for agent in _agent_files(agents):
@@ -246,7 +246,7 @@ def validate_repo_refs(repo_root: Path) -> list[DanglingReference]:
 
 def main() -> None:  # pragma: no cover — pre-commit entry point (orchestrates tested helpers)
     """Pre-commit entry point — validate the repo's own agent skill references."""
-    repo_root = Path(__file__).resolve().parent.parent.parent
+    repo_root = Path(__file__).resolve().parents[3]
     findings = validate_repo_refs(repo_root)
     for finding in findings:
         sys.stderr.write(finding.render() + "\n")

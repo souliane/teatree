@@ -17,24 +17,21 @@ graph TD
     teatree.repo_mode --> teatree.paths
     teatree.repo_mode --> teatree.utils
     teatree.repo_mode --> teatree.config
-    teatree.skill_loading --> teatree.types
-    teatree.skill_loading --> teatree.utils
-    teatree.skill_loading --> teatree.skill_deps
+    teatree.skill_support --> teatree.types
+    teatree.skill_support --> teatree.utils
     teatree.core --> teatree.types
     teatree.core --> teatree.paths
     teatree.core --> teatree.config
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
-    teatree.core --> teatree.skill_schema
-    teatree.core --> teatree.skill_deps
-    teatree.core --> teatree.skill_map
+    teatree.core --> teatree.skill_support
     teatree.core --> teatree.trigger_parser
     teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
-    teatree.agents --> teatree.skill_loading
+    teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
     teatree.backends --> teatree.types
@@ -53,9 +50,7 @@ graph TD
     teatree.cli --> teatree.agents
     teatree.cli --> teatree.backends
     teatree.cli --> teatree.eval
-    teatree.cli --> teatree.skill_loading
-    teatree.cli --> teatree.skill_schema
-    teatree.cli --> teatree.skill_ref_validator
+    teatree.cli --> teatree.skill_support
     teatree.cli --> teatree.claude_sessions
     teatree.cli --> teatree.overlay_init
     teatree.cli --> teatree.loop
@@ -63,7 +58,6 @@ graph TD
     teatree.cli --> teatree.self_update
     teatree.cli --> teatree.repo_mode
     teatree.cli --> teatree.triage
-    teatree.cli --> teatree.skill_deps
     teatree.cli --> teatree.memory_audit
     teatree.cli --> teatree.on_behalf_gate
     teatree.cli --> teatree.outbound_claim
@@ -132,12 +126,8 @@ graph TD
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init
-    teatree.skill_schema
-    teatree.skill_ref_validator
     teatree.cli._format_opts
     teatree.slack_mrkdwn
-    teatree.skill_deps
-    teatree.skill_map
     teatree.memory_audit
     teatree.trigger_parser
 ```

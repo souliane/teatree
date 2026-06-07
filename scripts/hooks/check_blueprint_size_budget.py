@@ -118,7 +118,7 @@ _BUDGET_TOP_LEVEL_BYTES = 90_000
 # safety/config facts; the appendix corpus was at capacity (108,746 B), so the
 # budget is raised to the next ~1 KB step (~754 B headroom) to admit them.
 # Reviewed bump (skill-ref-validator): the two mandatory tach dependency-graph
-# edges for the new `teatree.skill_ref_validator` leaf module
+# edges for the new `teatree.skill_support.ref_validator` leaf module
 # (`cli --> skill_ref_validator` + the module node) are an architectural fact;
 # the top-level corpus was at capacity, so the top-level + total budgets are
 # raised one minimal step.

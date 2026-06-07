@@ -264,7 +264,7 @@ class OverlayAppBuilder:
             from teatree.cli import _find_project_root  # noqa: PLC0415
             from teatree.cli.agent import _detect_agent_ticket_status, _launch_claude  # noqa: PLC0415
             from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
-            from teatree.skill_loading import SkillLoadingPolicy  # noqa: PLC0415
+            from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
 
             overlay_root = project_path or _find_project_root()
             if phase and skill:

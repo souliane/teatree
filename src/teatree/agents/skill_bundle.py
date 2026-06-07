@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from teatree.skill_loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
+from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
 __all__ = [

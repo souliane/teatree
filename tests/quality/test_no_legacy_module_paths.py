@@ -8,7 +8,10 @@ phase/ship gates → ``core/gates/`` package, ``loop/tick_jobs.py`` →
 modules → ``backends/gitlab`` / ``backends/slack`` / ``backends/github``
 subpackages (prefix stripped); PR9: the 16 flat ``cli/review*.py`` modules →
 the ``cli/review`` subpackage (redundant ``review_`` prefix stripped, bare
-``cli/review.py`` → ``cli/review/service.py``) — every importer and
+``cli/review.py`` → ``cli/review/service.py``); PR10: the 5 top-level
+``teatree.skill_*.py`` modules → the ``teatree.skill_support`` subpackage
+(``skill_`` prefix stripped), collapsing 5 standalone tach ``[[modules]]``
+entries into one and repointing every ``depends_on`` edge — every importer and
 ``mock.patch`` target moved to the new location. This module is the fitness
 function that keeps it that way: a regression that resurrects an old path (a
 copy-pasted import, a ``patch("teatree.core.merge_execution...")`` target, a
@@ -135,6 +138,21 @@ _CLI_REVIEW_FLAT_STEMS = (
 # paths). ``service`` carries the former bare ``review.py`` surface.
 _CLI_REVIEW_SUBMODULES = (*_CLI_REVIEW_FLAT_STEMS, "service")
 
+# PR10 top-level grouping: the 5 flat ``teatree.skill_<rest>`` modules moved into
+# the ``teatree.skill_support`` subpackage with the redundant ``skill_`` prefix
+# stripped (e.g. ``teatree.skill_schema`` → ``teatree.skill_support.schema``). The
+# 5 standalone tach ``[[modules]]`` entries collapsed into one
+# ``teatree.skill_support`` module and every ``depends_on`` edge naming a moved
+# path repointed to it. The flat ``skill_<rest>`` paths are now dead; the dotted
+# ``teatree.skill_support.<rest>`` paths are live.
+_SKILL_SUPPORT_SUBMODULES = (
+    "deps",
+    "loading",
+    "map",
+    "ref_validator",
+    "schema",
+)
+
 
 def _legacy_patterns() -> dict[str, re.Pattern[str]]:
     patterns = {
@@ -154,6 +172,10 @@ def _legacy_patterns() -> dict[str, re.Pattern[str]]:
         # Flat ``teatree.cli.review_<rest>`` — the dotted subpackage path
         # ``teatree.cli.review.<rest>`` is live and never matches this.
         patterns[f"teatree.cli.review_{stem}"] = re.compile(rf"\bteatree\.cli\.review_{stem}\b")
+    for stem in _SKILL_SUPPORT_SUBMODULES:
+        # Flat ``teatree.skill_<rest>`` — the dotted subpackage path
+        # ``teatree.skill_support.<rest>`` is live and never matches this.
+        patterns[f"teatree.skill_{stem}"] = re.compile(rf"\bteatree\.skill_{stem}\b")
     return patterns
 
 
@@ -258,6 +280,28 @@ class TestFacadeImportSmoke:
         review = importlib.import_module("teatree.cli.review")
         for name in ("ReviewService", "review_app", "review_request_app"):
             assert hasattr(review, name), f"teatree.cli.review missing {name}"
+
+    @pytest.mark.parametrize("stem", _SKILL_SUPPORT_SUBMODULES)
+    def test_skill_support_subpackage_modules_import(self, stem: str) -> None:
+        importlib.import_module(f"teatree.skill_support.{stem}")
+
+    def test_skill_support_package_facade_re_exports(self) -> None:
+        skill_support = importlib.import_module("teatree.skill_support")
+        for name in (
+            "resolve_all",
+            "resolve_companions",
+            "resolve_requires",
+            "DEFAULT_SKILLS_DIR",
+            "SkillLoadingPolicy",
+            "SkillSelectionResult",
+            "load_skill_delegation",
+            "parse_skill_delegation_map",
+            "render_skill_delegation_map",
+            "validate_skill_refs",
+            "validate_directory",
+            "validate_skill_md",
+        ):
+            assert hasattr(skill_support, name), f"teatree.skill_support missing {name}"
 
 
 class TestPr7DeletableShims:

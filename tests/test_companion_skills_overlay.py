@@ -24,7 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from teatree.core.overlay import OverlayConfig
-from teatree.skill_loading import SkillLoadingPolicy
+from teatree.skill_support.loading import SkillLoadingPolicy
 
 
 def _config_with_companions(companions: list[str]) -> OverlayConfig:

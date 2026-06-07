@@ -86,7 +86,7 @@ def _check_skills() -> bool:
     ok = True
     claude_skills = Path.home() / ".claude" / "skills"
     if claude_skills.is_dir():
-        from teatree.skill_schema import validate_directory  # noqa: PLC0415
+        from teatree.skill_support.schema import validate_directory  # noqa: PLC0415
 
         errors, warnings = validate_directory(claude_skills)
         for warning in warnings:
