@@ -1316,9 +1316,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
  ``--backend subscription`` (default) grades transcripts produced on the
  subscription via an in-session sub-agent — no API spend (run
  ``t3 eval prepare-subscription`` first for the prompts + expected paths).
- ``--backend sdk`` shells the metered ``claude -p`` runner — the CI job's path
- (``ANTHROPIC_API_KEY``); CI passes it explicitly. ``--trials``/``--models``
- always use the metered ``sdk`` runner regardless of ``--backend``.
+ ``--backend sdk`` shells the metered ``claude -p`` runner, authed by
+ ``CLAUDE_CODE_OAUTH_TOKEN`` (``ANTHROPIC_API_KEY`` is also honored as a
+ legacy alternative); CI passes ``--backend sdk`` explicitly via the standalone
+ ``eval.yml`` job. ``--trials``/``--models`` always use the metered ``sdk``
+ runner regardless of ``--backend``.
 
  ``--require-executed`` fails the run when the suite collected scenarios but
  executed none (every scenario skipped — typically ``claude`` not on PATH /
@@ -1378,8 +1380,11 @@ Usage: t3 eval run [OPTIONS] [NAME]
 │                                                see `t3 eval                  │
 │                                                prepare-subscription`) or     │
 │                                                'sdk' (metered claude -p,     │
-│                                                reserved for CI with          │
-│                                                ANTHROPIC_API_KEY). --trials  │
+│                                                authed by                     │
+│                                                CLAUDE_CODE_OAUTH_TOKEN; runs │
+│                                                in-container via --docker     │
+│                                                locally or in the standalone  │
+│                                                eval.yml CI job). --trials    │
 │                                                and --models always use the   │
 │                                                metered sdk runner regardless │
 │                                                of this flag.                 │
@@ -1541,8 +1546,11 @@ Usage: t3 eval all [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --backend               TEXT  AI-lane backend: 'subscription' (default —     │
 │                               grade in-session transcripts, no API spend) or │
-│                               'sdk' (metered claude -p, the explicit CI      │
-│                               opt-in with ANTHROPIC_API_KEY).                │
+│                               'sdk' (metered claude -p, authed by            │
+│                               CLAUDE_CODE_OAUTH_TOKEN; the explicit CI       │
+│                               opt-in via the standalone eval.yml job;        │
+│                               ANTHROPIC_API_KEY also honored as a legacy     │
+│                               alternative).                                  │
 │                               [default: subscription]                        │
 │ --transcript-dir        PATH  Directory of <scenario>.jsonl subscription     │
 │                               transcripts for the AI lane (default: cwd).    │

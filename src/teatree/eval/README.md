@@ -335,6 +335,20 @@ code path still honors the invariant — then add the matching anti-vacuous test
   (the guard is bypassed). The metered invocation always carries
   `--require-executed`, so once invoked it fails loud if it cannot execute.
 
+### Canonical lane / tier table
+
+This table is the single source of truth for which lanes exist, how they run, and when. Other docs point here rather than repeating it.
+
+| Lane | Cost | Host / Docker | Local invocation | CI | Cadence |
+|---|---|---|---|---|---|
+| skill-triggers | free | host | `t3 eval skill-triggers` | pytest (`test_scenarios_anti_vacuous.py`) | commit (prek `eval-skill-triggers`) + every PR |
+| pinned-regressions | free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
+| skill-coverage | free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
+| negative-control | free | host | `t3 eval negative-control` | — | on demand |
+| transcript-replay | free | host | `t3 eval transcript-replay` | — (SKIPs when no session transcript in scope) | on demand |
+| ai-eval subscription | free (subscription tokens) | host | `t3 eval run` (default backend) | — (subscription run is in-session, not a CI job) | manual / on demand |
+| ai-eval sdk-metered | metered (`claude -p`) | **docker** (`--docker` locally; CI image in `eval.yml`) | `CLAUDE_CODE_OAUTH_TOKEN=… t3 eval run --backend sdk --docker` | `.github/workflows/eval.yml` (`CLAUDE_CODE_OAUTH_TOKEN` secret) | weekly cron (Mon 06:00 UTC, skips when no PRs merged) + manual `workflow_dispatch` |
+
 ## Failure-class coverage
 
 The pinned-regressions corpus (`t3 eval pinned-regressions`, real code-path checks) and the
