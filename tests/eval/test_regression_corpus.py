@@ -18,12 +18,14 @@ from unittest.mock import patch
 from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
-from teatree.core import branch_currency
+from teatree.core import branch_currency, mr_metadata
 from teatree.core import merge as merge_execution
 from teatree.core.models import LoopLease
+from teatree.core.runners import ship as ship_runner
 from teatree.eval import regression_corpus
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
 from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.utils import forge as forge_util
 
 
 def _linear_core_graph() -> MigrationGraph:
@@ -146,6 +148,33 @@ class TestRegressionCorpusAntiVacuous(TestCase):
             report = run_regression_corpus()
         assert not report.ok
         assert any("banned-terms scanner fail-closed" in r.check.failure_class for r in report.failures)
+
+    def test_forge_check_fails_when_resolver_ignores_host(self) -> None:
+        def _by_token_not_host(remote_url: str) -> str:
+            return "gitlab"
+
+        with patch.object(forge_util, "forge_from_remote", _by_token_not_host):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("forge backend by origin host" in r.check.failure_class for r in report.failures)
+
+    def test_branch_reconcile_check_fails_when_reconciler_echoes_stale_branch(self) -> None:
+        def _echo_recorded(ticket, worktree, repo_path):
+            return worktree.branch
+
+        with patch.object(ship_runner, "resolve_and_reconcile_branch", _echo_recorded):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("pre-push gates reconcile a renamed/stale branch" in r.check.failure_class for r in report.failures)
+
+    def test_mr_description_check_fails_when_validator_always_passes(self) -> None:
+        def _always_pass(title: str, description: str, title_regex: str) -> list[str]:
+            return []
+
+        with patch.object(mr_metadata, "validate_mr_metadata", _always_pass):
+            report = run_regression_corpus()
+        assert not report.ok
+        assert any("MR description first-line validated client-side" in r.check.failure_class for r in report.failures)
 
     def test_skips_db_checks_when_django_not_configured(self) -> None:
         with patch.object(regression_corpus, "_django_ready", return_value=False):
