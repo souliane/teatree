@@ -235,6 +235,13 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
+      - id: test-path-mirror
+        name: Test-path-mirror ratchet (test files mirror src/teatree/<pkg>/...; promotes to [push] once baseline is low)
+        language: system
+        entry: uv run python scripts/hooks/check_test_path_mirror.py
+        pass_filenames: false
+        always_run: true
+        stages: [manual]
       - id: eval-skill-triggers
         name: Skill-triggers eval lane (declared trigger frontmatter fires on claimed prompts; sub-second, token-free)
         language: system

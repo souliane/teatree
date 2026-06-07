@@ -239,7 +239,7 @@ class TestCli:
         repo = _make_repo(tmp_path, mode="warn", flaggable=True)
         result = runner.invoke(app, ["tool", "test-shape", "--root", str(repo), "--json"])
         assert result.exit_code == 0
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload["mode"] == "warn"
         assert payload["has_findings"] is True
         assert payload["should_block"] is False
