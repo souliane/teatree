@@ -32,6 +32,11 @@ class NoopMessagingBackend:
         return {}
 
     @staticmethod
+    def fetch_thread_replies(*, channel: str, thread_ts: str) -> list[RawAPIDict]:
+        _ = channel, thread_ts
+        return []
+
+    @staticmethod
     def fetch_channel_history(*, channel: str, limit: int = 50) -> list[RawAPIDict]:
         _ = channel, limit
         return []

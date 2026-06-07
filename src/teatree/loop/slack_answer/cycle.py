@@ -44,6 +44,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import PendingChatInjection, Session, Task, Ticket
 from teatree.loop.slack_answer.classifier import AnswerRoute, classify
 from teatree.loop.slack_answer.simple_answer import NEEDS_WORK_SENTINEL, build_simple_answer
+from teatree.loop.slack_answer.thread_readback import bot_reply_present_in_thread, resolve_thread_root
 
 logger = logging.getLogger(__name__)
 
@@ -142,20 +143,19 @@ def _default_resolver(overlay: str) -> MessagingBackend | None:
     return messaging_from_overlay(overlay or None)
 
 
-def verify_reply_visible(backend: MessagingBackend, *, channel: str, ts: str) -> bool:
-    """Confirm the just-posted reply is visible via ``get_permalink``.
+def verify_reply_visible(backend: MessagingBackend, *, channel: str, thread_root: str) -> bool:
+    """Confirm the just-posted reply is visible under its thread ROOT (#2061).
 
-    Mirrors the outbound-audit Slack verifier's doctrine: an empty
-    permalink is the backend's "not found" shape, so we treat it as "did
-    not land" and the caller does NOT stamp ``loop_replied_at`` (the row
-    retries next cycle). A transport exception is treated the same way
-    (conservative — never stamp on an unconfirmed post).
+    Reads the thread root's replies and confirms a bot reply is present. The
+    key is the thread ROOT, not the user-message ts: a reply posted with
+    ``thread_ts=<a non-root user-message ts>`` re-parents to the root, so a
+    read-back keyed on the user-message ts misses it and would wrongly stamp
+    a delivered reply as absent (or, on the dedup side, post a duplicate). An
+    absent reply — including the conservative outcome of an empty/raised read
+    — means the caller does NOT stamp ``loop_replied_at`` and the row retries
+    next cycle (never stamp on an unconfirmed post).
     """
-    try:
-        return bool(backend.get_permalink(channel=channel, ts=ts))
-    except Exception as exc:  # noqa: BLE001 — never break a cycle on a readback raise
-        logger.warning("Reply readback raised for %s/%s: %s", channel, ts, exc)
-        return False
+    return bot_reply_present_in_thread(backend, channel=channel, thread_root=thread_root)
 
 
 def _mark_unit_loop_replied(unit: _Unit, kind: str) -> bool:
@@ -225,17 +225,30 @@ def _handle_ack(backend: MessagingBackend, unit: _Unit) -> bool:
 
 
 def _handle_simple(backend: MessagingBackend, unit: _Unit) -> str:
-    """SIMPLE path: post-then-readback-then-stamp. Returns an outcome tag.
+    """SIMPLE path: resolve-root, dedup, post, readback-verify, stamp.
 
-    ``"simple"`` — answered & whole unit stamped. ``"needs_work"`` —
-    Stage B bailed (delegate). ``"retry"`` — post/readback failed; unit
-    left unanswered for next cycle.
+    Returns an outcome tag: ``"simple"`` — answered & whole unit stamped;
+    ``"needs_work"`` — Stage B bailed (delegate); ``"retry"`` —
+    post/readback failed, unit left unanswered for next cycle.
+
+    The thread ROOT (resolved from the user-message ts via #2061's
+    helper) is the single key used for both the pre-post dedup and the
+    post-delivery verification. A reply re-parents to the root, so keying
+    either read on the user-message ts (which may be a non-root reply)
+    would miss the reply — the bug this path fixes (duplicate answer +
+    false "undelivered" verdict). The dedup short-circuit makes the post
+    idempotent across cooperating answerers that do not share the
+    ``mark_loop_replied`` CAS (#2061's cross-agent duplicate incident).
     """
     answer = build_simple_answer(unit.lead)
     if answer is None or answer == NEEDS_WORK_SENTINEL:
         return "needs_work"
+    thread_root = resolve_thread_root(backend, channel=unit.channel, ts=unit.slack_ts)
+    if bot_reply_present_in_thread(backend, channel=unit.channel, thread_root=thread_root):
+        _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE)
+        return "simple"
     backend.post_reply(channel=unit.channel, ts=unit.slack_ts, text=answer)
-    if not verify_reply_visible(backend, channel=unit.channel, ts=unit.slack_ts):
+    if not verify_reply_visible(backend, channel=unit.channel, thread_root=thread_root):
         return "retry"
     _mark_unit_loop_replied(unit, PendingChatInjection.AnswerKind.SIMPLE)
     return "simple"
