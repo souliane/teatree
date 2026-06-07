@@ -874,6 +874,43 @@ class TestEvalAll:
         assert result.exit_code == 2
         assert "docker is not on PATH" in result.output
 
+
+class TestEvalRunDocker:
+    """``t3 eval run --docker`` — the metered sdk lane runs in-container, not on the host."""
+
+    def test_delegates_metered_run_to_the_container(self) -> None:
+        with (
+            patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker,
+            patch("teatree.cli.eval.app.discover_specs", side_effect=AssertionError("docker must not run on the host")),
+        ):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--require-executed", "--docker"])
+        assert result.exit_code == 0, result.output
+        run_docker.assert_called_once()
+        assert run_docker.call_args.args[0] == ["run", "--backend", "sdk", "--require-executed", "--no-persist"]
+
+    def test_forwards_scenario_name_and_trials(self) -> None:
+        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=0) as run_docker:
+            CliRunner().invoke(app, ["eval", "run", "alpha", "--trials", "3", "--docker"])
+        assert run_docker.call_args.args[0] == ["run", "alpha", "--trials", "3", "--require", "any", "--no-persist"]
+
+    def test_propagates_container_exit_code(self) -> None:
+        with patch("teatree.cli.eval.app.run_eval_in_docker", return_value=1):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
+        assert result.exit_code == 1, result.output
+
+    def test_rejects_durable_history_flags(self) -> None:
+        with patch("teatree.cli.eval.app.run_eval_in_docker") as run_docker:
+            result = CliRunner().invoke(app, ["eval", "run", "--baseline", "--docker"])
+        assert result.exit_code == 2
+        run_docker.assert_not_called()
+        assert "ephemeral container" in result.output
+
+    def test_docker_unavailable_exits_code_2(self) -> None:
+        with patch("teatree.cli.eval.app.run_eval_in_docker", side_effect=DockerUnavailableError):
+            result = CliRunner().invoke(app, ["eval", "run", "--backend", "sdk", "--docker"])
+        assert result.exit_code == 2
+        assert "docker is not on PATH" in result.output
+
     def test_transcript_replay_skips_not_fails_when_no_transcript(self, tmp_path: Path) -> None:
         with _patch_all_lanes([_spec("worktree_first")], replay_results=None):
             result = CliRunner().invoke(app, ["eval", "all", "--transcript-dir", str(tmp_path)])
