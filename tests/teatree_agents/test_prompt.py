@@ -653,3 +653,98 @@ class TestCodingPhaseDispatchContract(TestCase):
         # Full body, not the demoted "available — load if needed" summary.
         assert "# architecture-design SENTINEL BODY" in ctx
         assert "- architecture-design: available — load if needed" not in ctx
+
+
+# --- #1368: explicit stack + overlay skill-load block on code-touching dispatch ---
+
+
+class TestCodingPhaseStackSkillLoadInjection(TestCase):
+    """A code-touching dispatch prompt force-loads the stack + overlay skills.
+
+    #1368: a dispatched builder relies on auto-detect for ``/ac-django`` /
+    ``/ac-python`` and the active overlay skill, which mis-fires when the
+    worktree shape doesn't trip the detector (dispatched in /tmp, renamed
+    SKILL.md, no parent-skill inheritance). The resolved bundle already carries
+    them, so both builder prompts must inject them as an explicit "load BEFORE
+    code" block — never rely on auto-detect.
+    """
+
+    def _coding_task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_django_stack_load_block(self) -> None:
+        # The bundle reaching the builder is already requires-resolved, so a
+        # Django repo carries both ac-django and ac-python (#1368).
+        prompt = build_task_prompt(
+            self._coding_task(),
+            skills=["t3:demo-overlay", "ac-django", "ac-python", "code", "rules"],
+        )
+        assert "/ac-django" in prompt
+        assert "/ac-python" in prompt
+        assert "/t3:demo-overlay" in prompt
+        assert "do NOT rely on auto-detect" in prompt
+
+    def test_system_context_django_stack_load_block(self) -> None:
+        ctx = build_system_context(
+            self._coding_task(),
+            skills=["t3:demo-overlay", "ac-django", "ac-python", "code", "rules"],
+            lifecycle_skill="code",
+        )
+        assert "/ac-django" in ctx
+        assert "/ac-python" in ctx
+        assert "/t3:demo-overlay" in ctx
+
+    def test_stack_block_does_not_relist_directive_forced_skills(self) -> None:
+        prompt = build_task_prompt(self._coding_task(), skills=["ac-django", "code", "rules", "architecture-design"])
+        stack_block = prompt.split("stack/overlay skills:")[1]
+        # code / architecture-design / rules are force-loaded by the directive's
+        # own lines, never re-listed in the stack block.
+        assert "/code" not in stack_block
+        assert "/architecture-design" not in stack_block
+        assert "/rules" not in stack_block
+
+    def test_unresolved_stack_emits_conservative_default(self) -> None:
+        prompt = build_task_prompt(self._coding_task(), skills=["code", "rules"])
+        assert "could not be auto-resolved" in prompt
+        assert "/ac-django for a Django repo" in prompt
+        assert "do NOT skip this" in prompt
+
+    def test_no_skills_passed_still_emits_conservative_default(self) -> None:
+        prompt = build_task_prompt(self._coding_task())
+        assert "could not be auto-resolved" in prompt
+
+    def test_stack_block_dedupes_bare_and_path_forms(self) -> None:
+        prompt = build_task_prompt(
+            self._coding_task(),
+            skills=["ac-python", "some/path/ac-python/SKILL.md", "code", "rules"],
+        )
+        stack_block = prompt.split("stack/overlay skills:")[1]
+        assert stack_block.count("/ac-python") == 1
+
+    def test_non_coding_task_has_no_stack_load_block(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        prompt = build_task_prompt(task, skills=["ac-django", "t3:demo-overlay"])
+        assert "stack/overlay skills" not in prompt
+        assert "could not be auto-resolved" not in prompt
+
+    def test_summary_does_not_contradict_directive(self) -> None:
+        tmp_dir = Path(tempfile.mkdtemp())
+        for name in ("rules", "code", "architecture-design", "ac-django", "t3:demo-overlay"):
+            d = tmp_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+            ctx = build_system_context(
+                self._coding_task(),
+                skills=["ac-django", "t3:demo-overlay", "code", "rules", "architecture-design"],
+                lifecycle_skill="code",
+            )
+        # The force-loaded stack/overlay skills are NOT demoted to the ignorable
+        # summary that would undercut the directive's "REQUIRED load" block.
+        assert "- ac-django: available — load if needed" not in ctx
+        assert "- t3:demo-overlay: available — load if needed" not in ctx
+        assert "/ac-django" in ctx
