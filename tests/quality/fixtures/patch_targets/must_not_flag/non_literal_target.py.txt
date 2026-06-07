@@ -1,0 +1,12 @@
+from unittest.mock import patch
+
+TARGET = "teatree.config.load_config"
+
+
+def test_target_built_at_runtime():
+    with patch(TARGET):
+        pass
+
+    for name in ("a", "b"):
+        with patch(f"teatree.config.{name}"):
+            pass
