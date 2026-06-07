@@ -1,9 +1,11 @@
 """Tests for ``teatree.loop.phases.orchestrate`` — the speed-driven fan-out (#1796)."""
 
 import itertools
+from datetime import timedelta
 from unittest.mock import patch
 
 import django.test
+from django.utils import timezone
 
 from teatree.config import Speed, UserSettings
 from teatree.core.backend_factory import OverlayBackends
@@ -26,6 +28,18 @@ def _dispatchable_task(*, phase: str = "coding", role: str = Ticket.Role.AUTHOR)
     ticket = Ticket.objects.create(role=role, issue_url=f"https://x/{phase}/{n}", overlay="acme")
     session = Session.objects.create(ticket=ticket, agent_id=f"a-{ticket.pk}")
     return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.PENDING)
+
+
+def _claim_task(task: Task) -> Task:
+    """Mark a dispatchable task as CLAIMED with a live lease, simulating an in-flight worker."""
+    now = timezone.now()
+    task.status = Task.Status.CLAIMED
+    task.claimed_by = "test-worker"
+    task.claimed_at = now
+    task.heartbeat_at = now
+    task.lease_expires_at = now + timedelta(seconds=300)
+    task.save(update_fields=["status", "claimed_by", "claimed_at", "heartbeat_at", "lease_expires_at"])
+    return task
 
 
 class TestOrchestratePhaseSpeed(django.test.TestCase):
@@ -151,3 +165,65 @@ class TestOrchestratePhaseFailOpen(django.test.TestCase):
         ):
             manifest = orchestrate_phase(backends=backends, claim=True)
         assert manifest.entries == []
+
+
+class TestPipelinedWIPStandingCap(django.test.TestCase):
+    """Pipelined WIP cap: admitted + in-flight claimed <= cap at all times (#1796)."""
+
+    def test_in_flight_claimed_tasks_reduce_available_budget(self) -> None:
+        already_claimed = _claim_task(_dispatchable_task())
+        pending = _dispatchable_task()
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=False)
+        assert manifest.cap == 1
+        assert len(manifest.entries) == 1
+        assert manifest.entries[0].task_id == pending.pk
+        already_claimed.refresh_from_db()
+        assert already_claimed.status == Task.Status.CLAIMED
+
+    def test_cap_is_never_exceeded_when_all_slots_already_claimed(self) -> None:
+        for _ in range(3):
+            _claim_task(_dispatchable_task())
+        for _ in range(2):
+            _dispatchable_task()
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=3)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=True)
+        assert manifest.cap == 0
+        assert manifest.entries == []
+        assert Task.objects.filter(status=Task.Status.CLAIMED).count() == 3
+
+    def test_expired_lease_tasks_are_not_counted_as_in_flight(self) -> None:
+        stale = _dispatchable_task()
+        stale.status = Task.Status.CLAIMED
+        stale.claimed_by = "dead-worker"
+        stale.claimed_at = timezone.now() - timedelta(seconds=600)
+        stale.lease_expires_at = timezone.now() - timedelta(seconds=300)
+        stale.save(update_fields=["status", "claimed_by", "claimed_at", "lease_expires_at"])
+        _dispatchable_task()
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=False)
+        assert manifest.cap == 2
+
+    def test_non_dispatchable_claimed_tasks_are_not_counted(self) -> None:
+        non_dispatchable = _claim_task(_dispatchable_task(role=Ticket.Role.REVIEWER, phase="coding"))
+        _dispatchable_task()
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=False)
+        assert manifest.cap == 2
+        non_dispatchable.refresh_from_db()
+        assert non_dispatchable.status == Task.Status.CLAIMED
+
+    def test_admitted_plus_in_flight_never_exceeds_cap(self) -> None:
+        _claim_task(_dispatchable_task())
+        for _ in range(3):
+            _dispatchable_task()
+        backends = [OverlayBackends(name="a", max_concurrent_auto_starts=2)]
+        with _with_speed(Speed.FULL):
+            manifest = orchestrate_phase(backends=backends, claim=True)
+        admitted = len(manifest.entries)
+        in_flight_before = 1
+        assert admitted + in_flight_before <= 2
