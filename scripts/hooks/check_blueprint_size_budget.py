@@ -1,36 +1,47 @@
-"""Pre-commit hook: BLUEPRINT corpus size budget (#1128).
+"""Pre-commit + CI hook: BLUEPRINT corpus size budget (#1128, #2040).
 
 The BLUEPRINT is functional + architectural, not a prose mirror of the
 code. The budget is a backstop against implementation prose creeping
 back into the corpus (the ``skill-prose-ban`` #140 precedent: a rule the
 user keeps restating becomes a deterministic gate).
 
-**Budget philosophy — human readability wins over byte-minimization.**
-The cap is a backstop, not a tight ceiling to defend row-by-row.
-Defending a tight cap forced sections into undigestible walls of text —
-run-on paragraphs with no blank lines, table cells stuffed with
-multi-sentence prose. That is the wrong trade: the BLUEPRINT must read
-well for humans. So the budget sits **generously above the live corpus**
-with ample headroom, and raising it for a legitimate reviewed addition
-(or a readability restoration that adds whitespace) is the expected
-maintenance action, not a last-resort escape hatch.
+Two-tier enforcement (#2040 — the prior absolute-cap-on-merge-tree gate
+red-blocked innocent PRs and forced a treadmill of serialized cap bumps):
 
-Budget (bytes):
+Tier 1 — HARD, DELTA-based, race-free. A commit fails only when ITS OWN
+diff grows the BLUEPRINT corpus past a per-PR byte allowance, measured
+against the merge-base with the base ref — not the absolute merged size.
+Concurrent growth of main between branch-point and merge can never red a
+PR whose own diff is within allowance. This is the same merge-base/
+race-free shape as the §17.1 invariant-numbering gate
+(``check_blueprint_invariant_numbering.py``).
 
-- Top-level ``BLUEPRINT.md``:     90 000  (~88 KB)
-- ``docs/blueprint/`` corpus:    116 000  (~113 KB)
-- Combined corpus total:         206 000  (~201 KB)
+Tier 2 — WARN, absolute. When the merged corpus approaches the soft
+budget the gate prints a loud "split a section into a linked appendix"
+message and exits 0 — never a hard block. Per the binding warn-not-fail
+rule for gates that cannot cleanly separate legit growth from bloat, and
+the blueprint-cap-may-raise-when-legit rule.
+
+Per-PR delta allowance (bytes) — a single PR may legitimately add a
+reviewed section; a runaway prose dump is what the hard gate catches:
+
+- Top-level ``BLUEPRINT.md`` own growth:   8 000
+- Combined corpus own growth:             12 000
+
+Soft (warn-only) absolute thresholds (bytes):
+
+- Top-level ``BLUEPRINT.md``:     90 000
+- ``docs/blueprint/`` corpus:    116 000
+- Combined corpus total:         206 000
 
 BLUEPRINT.md is a SINGLE file by user decision — never split, never
-consolidate-by-splitting. The top-level budget sits comfortably above
-the live file so the doc can keep growing as one document without the
-override being load-bearing for ordinary edits.
+consolidate-by-splitting. The split-to-appendix prompt targets the
+``docs/blueprint/`` appendices, not the top-level file.
 
-Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the check. Prefer
-raising the budget in this file over the override — the override is for
-the rare in-flight commit, the raise is the durable fix.
+Escape hatch: ``BLUEPRINT_SIZE_OVERRIDE=1`` skips the hard delta gate.
 """
 
+import argparse
 import os
 import pathlib
 import subprocess
@@ -39,182 +50,12 @@ import sys
 _TOP_FILE = "BLUEPRINT.md"
 _APPENDIX_DIR = "docs/blueprint"
 
-# Single-file-by-user-veto bump: BLUEPRINT.md stays one document (never
-# split). The live file (82,114 B) had outgrown the prior 82,000 B budget,
-# so the override was masking an over-budget file on main. Raised to 88,000 B
-# (~5.9 KB headroom) so the single file can absorb the next several config /
-# invariant rows without the override being load-bearing for ordinary edits.
-# Headroom-restore bump: the #1690 raise to 88,000 B left the live file
-# (85,328 B) only ~2.7 KB below budget, under the 4 KB headroom the
-# `TestRealCorpusFitsWithHeadroom` guard requires — reddening main CI for
-# every PR. Raised to 90,000 B to restore the >=4 KB headroom invariant.
-# Headroom-restore bump (#131): the scoped-mutation-testing section took the
-# live file to ~86,131 B, leaving ~3.9 KB — under the 4 KB headroom guard.
-# Raised to 91,000 B to restore the invariant.
-# Mermaid-out bump (#1837): the auto-generated tach dependency graph (~4 KB)
-# moved from BLUEPRINT.md to docs/dependency-graph.md. The live top-level
-# corpus drops to ~82 KB; lowered to 87,000 B to keep the budget meaningful
-# while preserving >=4 KB headroom.
-# Headroom-restore bump (#1829): the SHA-bound anti-vacuity gate paragraph is a
-# load-bearing safety fact (a new merge/review-request gate); the trimmed
-# paragraph took the live file to ~84 KB, under the 4 KB headroom guard. Raised
-# to 88,000 B to restore the invariant.
-# Reviewed bump (#2064 + #2070): the bounded undelivered-notify drain contract
-# and the cli/eval subpackage + protocols-shim deletion (gate split, package
-# layout) are load-bearing architecture-contract growth; the merged top-level
-# corpus (~84.5 KB) left under the 4 KB headroom guard. Raised to 90,000 B
-# (user-authorized) to absorb both with honest headroom.
-_BUDGET_TOP_LEVEL_BYTES = 90_000
-# Reviewed bump (#1570): the full-tree banned-brand backstop scan
-# (`core.banned_terms_tree` / `t3 banned-terms scan-tree` + the
-# `banned-terms-tree` CI job) is the same class of load-bearing
-# leak-prevention safety fact as the diff/payload banned-terms gate, and
-# the top-level corpus was at capacity (80,199 B, 1 B of headroom).
-# Reviewed bump (#1474): the §17.6.4 gate-2 self-rescue invariant is a
-# load-bearing safety fact, and the appendix corpus was already at capacity.
-# Reviewed bump (#1488): §17.6.4 gate 17 (the TaskCreated skill-loading
-# gate that closes the ultracode fan-out bypass) is the same class of
-# load-bearing safety fact, and the corpus was again at capacity.
-# Reviewed bump (#1500): the `danger_gate_fail_open` master NEVER-LOCKOUT switch
-# (the parent fail-open mechanism the gate-2 self-rescue invariant rides on)
-# is the same class of load-bearing safety fact, corpus again at capacity.
-# Reviewed bump (#1539): the reviewing-phase review-skill evidence gate
-# (`review_skill` / `T3_REVIEW_SKILL`) is the same class of load-bearing
-# safety fact, and the appendix corpus was again at capacity.
-# Reviewed bump (#1540): the per-overlay `mr_title_regex` knob documents the
-# deterministic MR title/What-Why gate at `pr create` — a load-bearing config
-# fact, and the corpus was again at capacity after the #1539 bump.
-# Reviewed bump (#1573): the `retro review-findings` publish-leak gate
-# (untrusted-comment bare-ref neutralization + banned-term withholding before
-# the `gh api` stdin filing path the PreToolUse gate cannot inspect) is the
-# same class of load-bearing safety fact, plus the mandatory tach
-# dependency-graph edge for the new `core → hooks` reuse; corpus was at
-# capacity after the #1540 bump.
-# Reviewed bump (#1629): the §5.6.3 cron-window paragraph now documents the
-# span (not fire-instant) availability semantics + the 1 h cadence cap — a
-# load-bearing safety fact (the prior fire-instant wording silently broke
-# away-mode for the shipped example), and the appendix corpus was at capacity.
-# Reviewed bump (#1636): the `skill_loading_gate_enabled` per-overlay config-key
-# row documenting the §17.6.4 skill-loading kill-switch is a load-bearing config
-# fact; on top of the #1629 base the merged appendix corpus is 104,864 B, so the
-# budget is raised to the next ~1 KB step (~536 B headroom) to admit the row.
-# Reviewed bump (#169): the §17.6.4 two-complementary-enforcement-evals note
-# (gate-liveness #168 + transcript-replay #169, the local-only privacy-safe
-# real-run conformance eval) is the same class of load-bearing safety fact, and
-# the appendix corpus was at capacity after the #1636 bump.
-# Reviewed bump (#171): the `mcp_privacy_gate_enabled` and
-# `dispatch_quote_gate_on_task_create_enabled` config-key rows document the
-# kill-switch / opt-in for the now-reachable Slack-MCP publish-privacy arm and
-# the TaskCreated dispatch-quote fan-out gate — load-bearing config facts; on
-# top of the #169 base the merged appendix corpus is 107,249 B, so the budget is
-# raised to the next ~1 KB step (~751 B headroom) to admit the rows.
-# Reviewed bump (#166): the anti-pattern-catalog SSOT paragraph (the structured
-# source feeding the three review tiers + the catalog↔linter/eval reachability
-# ledger) is a load-bearing architectural fact; the top-level corpus was at
-# capacity, so the top-level + total budgets are raised one minimal step.
-# Reviewed bump (#1644 PR B): the `orchestrator_boundary_agent_gate_enabled`
-# config-key row (the default-OFF opt-in + `[fg-ok:]` escape for the #1442
-# foreground-Agent deny) and the gate-2 production-phantom note are load-bearing
-# safety/config facts; the appendix corpus was at capacity (108,746 B), so the
-# budget is raised to the next ~1 KB step (~754 B headroom) to admit them.
-# Reviewed bump (skill-ref-validator): the two mandatory tach dependency-graph
-# edges for the new `teatree.skill_support.ref_validator` leaf module
-# (`cli --> skill_ref_validator` + the module node) are an architectural fact;
-# the top-level corpus was at capacity, so the top-level + total budgets are
-# raised one minimal step.
-# Reviewed bump (publish-gate-destination-aware): the `internal_publish_namespaces`
-# config-key row documenting the destination-aware skip for the #1415 banned-terms
-# and #1530 bare-reference publish gates is a load-bearing config/safety fact; the
-# appendix corpus was at capacity (109,957 B), so the budget is raised one minimal
-# ~1 KB step (~543 B headroom) to admit the row.
-# Reviewed bump (#1668): the per-overlay `autonomy` switch row (the single
-# trust switch collapsing the three approval gates + the derived-field note)
-# is a load-bearing config fact; after trimming the verbose prose the appendix
-# corpus is 110,045 B, so the budget is raised one minimal step (~455 B
-# headroom) to admit the row.
-# Reviewed bump (speed dial): the per-overlay `speed` throughput-dial row in the
-# override table is the same class of load-bearing config fact as the `autonomy`
-# row above; tracked by the #1697 appendix bump below.
-# Reviewed bump (#1697): the §17.4.2 line documenting the by-product
-# `ReviewVerdict` record + `review record`/`review status` lookup is a
-# load-bearing architectural fact; merged with the speed-dial row the appendix
-# corpus is 110,906 B, raised one minimal step to 111,500 (~594 B headroom).
-# Reviewed bump (#1672 merge): the `internal_publish_namespaces` config-key row
-# documenting the destination-aware skip for the #1415 banned-terms and #1530
-# bare-reference publish gates is a load-bearing config/safety fact. Stacked on
-# the #1697 `ReviewVerdict` row already on main, the merged appendix corpus
-# overflowed the prior 111,500 budget; raised one minimal step to 113,000 to
-# admit the row.
-# Reviewed bump: the per-overlay turn-budget and autonomy-CLI config rows plus
-# the eval-suite appendix additions push the appendix corpus to 113,049 B, just
-# over the prior 113,000 budget. Raised one minimal step to 114,000 to admit the
-# reviewed rows; the coupling invariant tracks the total-budget raise below.
-# Reviewed bump (#1840 already merged): appendix corpus reached 114,380 B; raised
-# one minimal step to 114,500. Coupling invariant: 204,000 - 90,000 <= 114,500.
-# Headroom-restore bump (reference-linkifier): merging main leaves the corpus at
-# 114,380 B with thin headroom; raised to 116,000. Coupling/headroom invariants hold.
-_BUDGET_APPENDICES_BYTES = 116_000
-# Reviewed bump (#1570): the full-tree banned-brand backstop entry in the
-# security-gates paragraph; total corpus tracked the top-level bump.
-# Reviewed bump (#1629): tracks the appendix span-semantics correction above.
-# Reviewed bump (#1636): tracks the appendix bump for the
-# `skill_loading_gate_enabled` config-key row (merged total 185,450 B).
-# Reviewed bump (#169): tracks the top-level + appendix bumps for the
-# two-complementary-enforcement-evals note (gate-liveness + transcript-replay).
-# Reviewed bump (#171+#166 merge): post-merge total corpus is 188,987 B
-# (top-level 81,738 + appendices 107,249); raised to 189,500 (~513 B headroom).
-# Reviewed bump (#1644 PR B): total corpus is 190,484 B (top-level 81,738 +
-# appendices 108,746); raised to 191,000 (~516 B headroom). Invariant holds:
-# 191,000 - 81,800 = 109,200 <= 109,500.
-# Reviewed bump (skill-ref-validator): the new module's two dependency-graph
-# edges push the total to 191,057 B; raised to 191,500 (~443 B headroom).
-# Invariant holds: 191,500 - 82,000 = 109,500 <= 109,500.
-# Reviewed bump (#1668): tracks the appendix bump for the `autonomy` config-key
-# row; post-trim total corpus is 191,937 B, raised to 192,500 (~563 B
-# headroom). Invariant holds: 192,500 - 82,000 = 110,500 <= 110,500.
-# Single-file-by-user-veto bump: tracks the top-level raise to 88,000 B so the
-# coupling invariant stays tight. Live total corpus is 192,264 B; raised to
-# 198,500 (~6.2 KB headroom). Invariant holds: 198,500 - 88,000 = 110,500
-# <= 110,500.
-# Reviewed bump (#1697): tracks the appendix raise to 111,500 for the §17.4.2
-# ReviewVerdict line so the coupling invariant stays tight. Raised to 199,500.
-# Invariant holds: 199,500 - 88,000 = 111,500 <= 111,500.
-# Headroom-restore bump: live total corpus (196,076 B) sat only ~3.4 KB below
-# the 199,500 B total budget, under the 4 KB `TestRealCorpusFitsWithHeadroom`
-# guard. Raised to 201,500 to restore the >=4 KB headroom; tracks the top-level
-# raise to 90,000. Invariant holds: 201,500 - 90,000 = 111,500 <= 111,500.
-# Reviewed bump (#1672 merge): the `internal_publish_namespaces` config-key row
-# tracks the appendix raise to 113,000. Stacked on the speed-dial + #1697 rows
-# the merged total corpus is 197,751 B, leaving only ~3.7 KB under the prior
-# 201,500 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
-# Raised one minimal step to 202,000 to restore the >=4 KB headroom (~4,249 B).
-# Coupling invariant holds: 202,000 - 90,000 = 112,000 <= 113,000.
-# Reviewed bump: the turn-budget + autonomy-CLI config rows and the eval-suite
-# docs bring the merged corpus to 198,693 B, leaving only ~3.3 KB under the prior
-# 202,000 budget -- below the 4 KB `TestRealCorpusFitsWithHeadroom` guard. Raised
-# to 204,000 to restore the >=4 KB headroom (~5,307 B). Coupling invariant holds:
-# 204,000 - 90,000 = 114,000 <= 114,000.
-# Headroom-restore bump (#1878 merge): the maximized tach graph adds the
-# `teatree.quality --> teatree.utils` edge line to the BLUEPRINT dependency-graph
-# block, bringing the merged corpus to 200,014 B -- ~3.99 KB under the prior
-# 204,000 budget, just below the 4 KB `TestRealCorpusFitsWithHeadroom` guard.
-# Raised one minimal step to 206,000 to restore the >=4 KB headroom (~5,986 B).
-# Coupling invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
-# Mermaid-out bump (#1837): moving the auto-generated tach dependency graph
-# (~4 KB) from BLUEPRINT.md to docs/dependency-graph.md shrinks the top-level
-# corpus to ~82 KB; total drops correspondingly. Lowered to 203,000. Coupling
-# invariant holds: 203,000 - 87,000 = 116,000 <= 116,000.
-# Headroom-restore bump (#1829): the anti-vacuity gate paragraph took the merged
-# corpus to ~199,478 B, ~3.5 KB under the prior 203,000 budget -- below the 4 KB
-# `TestRealCorpusFitsWithHeadroom` guard. Raised one minimal step to 204,000 to
-# restore the >=4 KB headroom. Coupling invariant holds: total minus top-level
-# (204,000 minus 88,000) stays within the unchanged appendices cap of 116,000.
-# Reviewed bump (#2064 + #2070): tracks the top-level raise to 90,000 for the
-# bounded-drain + cli/eval-layout architecture growth. The merged corpus
-# (~199,115 B) sat under the 4 KB headroom guard after the top-level raise.
-# Raised to 206,000 to restore >=4 KB total headroom (user-authorized). Coupling
-# invariant holds: 206,000 - 90,000 = 116,000 <= 116,000.
-_BUDGET_TOTAL_BYTES = 206_000
+_PER_PR_TOP_LEVEL_DELTA_BYTES = 8_000
+_PER_PR_TOTAL_DELTA_BYTES = 12_000
+
+_SOFT_TOP_LEVEL_BYTES = 90_000
+_SOFT_APPENDICES_BYTES = 116_000
+_SOFT_TOTAL_BYTES = 206_000
 
 
 def _repo_root() -> pathlib.Path:
@@ -232,8 +73,64 @@ def _appendix_total(root: pathlib.Path) -> int:
     return sum(_size(p) for p in appendix_dir.glob("*.md"))
 
 
-def _blueprint_touched() -> bool:
-    """True when BLUEPRINT.md or any docs/blueprint/*.md is staged."""
+def _git_show_size(repo: pathlib.Path, ref: str, path: str) -> int:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{ref}:{path}"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return 0
+    return len(result.stdout)
+
+
+def _git_ls_appendix(repo: pathlib.Path, ref: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", ref, f"{_APPENDIX_DIR}/"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [line for line in result.stdout.splitlines() if line.endswith(".md")]
+
+
+def _corpus_size_at(repo: pathlib.Path, ref: str) -> tuple[int, int]:
+    """Return (top_level_bytes, appendix_bytes) of the corpus at *ref*."""
+    top = _git_show_size(repo, ref, _TOP_FILE)
+    appendix = sum(_git_show_size(repo, ref, p) for p in _git_ls_appendix(repo, ref))
+    return top, appendix
+
+
+def _merge_base(repo: pathlib.Path, base_ref: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", base_ref, "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def _blueprint_touched(repo: pathlib.Path, base_ref: str) -> bool:
+    """True when BLUEPRINT.md or any docs/blueprint/*.md differs vs base."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "diff", "--name-only", f"{base_ref}...HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return any(f == _TOP_FILE or f.startswith(f"{_APPENDIX_DIR}/") for f in result.stdout.splitlines())
+
+
+def _blueprint_in_commit() -> bool:
+    """True when BLUEPRINT.md or an appendix is part of the staged change."""
     result = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
         capture_output=True,
@@ -244,51 +141,103 @@ def _blueprint_touched() -> bool:
     return any(f == _TOP_FILE or f.startswith(f"{_APPENDIX_DIR}/") for f in staged)
 
 
-def main() -> int:
-    if os.environ.get("BLUEPRINT_SIZE_OVERRIDE") == "1":
-        return 0
-
-    if not _blueprint_touched():
-        return 0
-
-    root = _repo_root()
-    top_size = _size(root / _TOP_FILE)
-    appendix_size = _appendix_total(root)
-    total = top_size + appendix_size
-
-    breaches: list[str] = []
-    if top_size > _BUDGET_TOP_LEVEL_BYTES:
-        breaches.append(f"{_TOP_FILE}: {top_size:,} B > budget {_BUDGET_TOP_LEVEL_BYTES:,} B")
-    if appendix_size > _BUDGET_APPENDICES_BYTES:
-        breaches.append(f"{_APPENDIX_DIR}/: {appendix_size:,} B > budget {_BUDGET_APPENDICES_BYTES:,} B")
-    if total > _BUDGET_TOTAL_BYTES:
-        breaches.append(f"corpus total: {total:,} B > budget {_BUDGET_TOTAL_BYTES:,} B")
-
-    if not breaches:
-        return 0
-
+def _emit_warning(top: int, appendix: int, total: int) -> None:
+    warnings: list[str] = []
+    if top > _SOFT_TOP_LEVEL_BYTES:
+        warnings.append(f"{_TOP_FILE}: {top:,} B over soft budget {_SOFT_TOP_LEVEL_BYTES:,} B")
+    if appendix > _SOFT_APPENDICES_BYTES:
+        warnings.append(f"{_APPENDIX_DIR}/: {appendix:,} B over soft budget {_SOFT_APPENDICES_BYTES:,} B")
+    if total > _SOFT_TOTAL_BYTES:
+        warnings.append(f"corpus total: {total:,} B over soft budget {_SOFT_TOTAL_BYTES:,} B")
+    if not warnings:
+        return
     print(file=sys.stderr)
-    print("  BLUEPRINT corpus size budget FAILED (#1128):", file=sys.stderr)
+    print("  BLUEPRINT approaching size budget (#2040 — warn only, not blocking):", file=sys.stderr)
+    print(file=sys.stderr)
+    for line in warnings:
+        print(f"    - {line}", file=sys.stderr)
+    print(file=sys.stderr)
+    print("  Split a section into a linked appendix under docs/blueprint/ to", file=sys.stderr)
+    print("  keep the corpus digestible. BLUEPRINT.md stays one file; move", file=sys.stderr)
+    print("  appendix-class detail out, not the top-level architecture.", file=sys.stderr)
+    print(file=sys.stderr)
+
+
+def _emit_delta_failure(top_delta: int, total_delta: int) -> None:
+    breaches: list[str] = []
+    if top_delta > _PER_PR_TOP_LEVEL_DELTA_BYTES:
+        breaches.append(
+            f"{_TOP_FILE}: this change adds {top_delta:,} B > per-PR allowance {_PER_PR_TOP_LEVEL_DELTA_BYTES:,} B"
+        )
+    if total_delta > _PER_PR_TOTAL_DELTA_BYTES:
+        breaches.append(
+            f"corpus total: this change adds {total_delta:,} B > per-PR allowance {_PER_PR_TOTAL_DELTA_BYTES:,} B"
+        )
+    print(file=sys.stderr)
+    print("  BLUEPRINT per-PR size-delta budget FAILED (#2040):", file=sys.stderr)
     print(file=sys.stderr)
     for line in breaches:
         print(f"    - {line}", file=sys.stderr)
     print(file=sys.stderr)
-    print(
-        "  The BLUEPRINT is architectural, not a prose mirror of the code.",
-        file=sys.stderr,
-    )
-    print(
-        "  Move implementation detail to docstrings, --help text, CLAUDE.md,",
-        file=sys.stderr,
-    )
-    print(
-        "  AGENTS.md, or the issue tracker. To bypass for a reviewed bump:",
-        file=sys.stderr,
-    )
+    print("  This gate measures only THIS change's own growth vs its", file=sys.stderr)
+    print("  merge-base, so concurrent main growth never affects it.", file=sys.stderr)
+    print("  The BLUEPRINT is architectural, not a prose mirror of the code:", file=sys.stderr)
+    print("  move implementation detail to docstrings, --help text, CLAUDE.md,", file=sys.stderr)
+    print("  AGENTS.md, or a linked docs/blueprint/ appendix. To bypass for a", file=sys.stderr)
+    print("  reviewed bump in the same commit:", file=sys.stderr)
     print("    BLUEPRINT_SIZE_OVERRIDE=1 git commit ...", file=sys.stderr)
     print(file=sys.stderr)
-    return 1
+
+
+def _evaluate(repo: pathlib.Path, base_ref: str) -> int:
+    """Delta hard gate + absolute warn, against *base_ref*'s merge-base."""
+    if not _blueprint_touched(repo, base_ref):
+        return 0
+
+    root = _repo_root() if repo == _repo_root() else repo
+    head_top = _size(root / _TOP_FILE)
+    head_appendix = _appendix_total(root)
+    head_total = head_top + head_appendix
+
+    _emit_warning(head_top, head_appendix, head_total)
+
+    if os.environ.get("BLUEPRINT_SIZE_OVERRIDE") == "1":
+        return 0
+
+    merge_base_sha = _merge_base(repo, base_ref)
+    if merge_base_sha is None:
+        return 0
+
+    base_top, base_appendix = _corpus_size_at(repo, merge_base_sha)
+    top_delta = head_top - base_top
+    total_delta = (head_top + head_appendix) - (base_top + base_appendix)
+
+    if top_delta > _PER_PR_TOP_LEVEL_DELTA_BYTES or total_delta > _PER_PR_TOTAL_DELTA_BYTES:
+        _emit_delta_failure(top_delta, total_delta)
+        return 1
+    return 0
+
+
+def main() -> int:
+    if not _blueprint_in_commit():
+        return 0
+    return _evaluate(_repo_root(), "origin/main")
+
+
+def ci_main(*, repo: pathlib.Path, base_ref: str) -> int:
+    return _evaluate(repo, base_ref)
+
+
+def _cli_entry(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--ci", action="store_true", help="Run the delta gate against --base-ref.")
+    parser.add_argument("--base-ref", default="origin/main", help="Base ref to diff against (default: origin/main).")
+    parser.add_argument("--repo", default=".", help="Repository root (default: cwd).")
+    args = parser.parse_args(argv)
+    if args.ci:
+        return ci_main(repo=pathlib.Path(args.repo).resolve(), base_ref=args.base_ref)
+    return main()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_cli_entry(sys.argv[1:]))
