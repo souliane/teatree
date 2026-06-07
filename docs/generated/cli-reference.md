@@ -6062,6 +6062,9 @@ Usage: t3 teatree retro [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ review-findings  Classify a PR's review findings A/B/C and auto-file a       │
 │                  deduped enforcement issue per class-C.                      │
+│ gate-failures    Extract a session's gate failures, classify                 │
+│                  preventable/environmental, and --escalate a deduped         │
+│                  enforcement issue per recurring preventable one.            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6088,5 +6091,39 @@ Usage: t3 teatree retro review-findings [OPTIONS] PR_URL
 │ --label                 TEXT  Label applied to filed enforcement issues.     │
 │                               [default: enforcement-gap]                     │
 │ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree retro gate-failures`
+
+```
+Usage: t3 teatree retro gate-failures [OPTIONS]
+
+ Extract a session's gate failures, classify them, record, and optionally
+ escalate.
+
+ A non-zero hook exit is a gate failure. The list pass classifies each
+ preventable / environmental, records it to the durable store (so
+ recurrence across sessions is observable), and emits JSON + a human
+ summary. ``--escalate`` files one scoped, deduped enforcement issue per
+ recurring preventable failure via the resolved code host. Returns the
+ structured result as JSON.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --file                         TEXT  Path to a session JSONL; defaults to    │
+│                                      the latest in-scope session.            │
+│ --session                      TEXT  A specific session id (in the cwd's     │
+│                                      project) to read.                       │
+│ --escalate    --no-escalate          File one deduped enforcement issue per  │
+│                                      recurring preventable failure.          │
+│                                      [default: no-escalate]                  │
+│ --repo                         TEXT  Repo slug to file the enforcement issue │
+│                                      against (with --escalate).              │
+│ --pr-url                       TEXT  A PR/MR URL used to resolve the code    │
+│                                      host (with --escalate).                 │
+│ --label                        TEXT  Label applied to filed enforcement      │
+│                                      issues.                                 │
+│                                      [default: enforcement-gap]              │
+│ --help                               Show this message and exit.             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
