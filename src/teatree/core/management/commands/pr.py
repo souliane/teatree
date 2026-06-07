@@ -57,7 +57,7 @@ from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.phases import normalize_phase
 from teatree.core.public_identity import MergeResult
-from teatree.core.runners.ship import resolve_ship_worktree
+from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.types import RawAPIDict
 from teatree.utils import git
 
@@ -252,22 +252,26 @@ class Command(TyperCommand):
             # pr_urls / visual_qa).
             ticket.merge_extra(set_keys={"ship_invoking_branch": invoking_branch})
 
+        # #1587: reconcile the recorded branch to the worktree's ACTUAL git
+        # branch BEFORE any gate reads `worktree.branch` — the single chokepoint
+        # shared with `ShipExecutor` so a renamed branch can no longer reach a
+        # gate range query that fails fail-soft.
+        ship_worktree = resolve_ship_worktree(ticket, cast("TicketExtra", ticket.extra or {})) or worktree
+        repo_path = (ship_worktree.extra or {}).get("worktree_path", "") or ship_worktree.repo_path
+        if repo_path:
+            resolve_and_reconcile_branch(ticket, ship_worktree, repo_path)
+
         # #788: refuse a hollow ship — the branch ShipExecutor will
         # actually push (the #776/#800 canonical resolver, so the check
         # matches what is shipped) must have ≥1 commit ahead of base.
         # Placed before BOTH the gate and the --skip-validation
         # reconcile so no path can advance the FSM to a hollow SHIPPED.
-        # `resolve_ship_worktree` cannot be None here — the
-        # WorktreeMissingError check above guarantees a worktree (it
-        # falls back to that same `worktrees.first()`).
-        no_commits = _assert_commits_ahead_of_base(
-            resolve_ship_worktree(ticket, cast("TicketExtra", ticket.extra or {})) or worktree
-        )
+        no_commits = _assert_commits_ahead_of_base(ship_worktree)
         if no_commits is not None:
             return no_commits
 
         if not skip_validation:
-            gate_failure = _run_ship_gates(ticket, worktree, skip_visual_qa=skip_visual_qa)
+            gate_failure = _run_ship_gates(ticket, ship_worktree, skip_visual_qa=skip_visual_qa)
             if gate_failure is not None:
                 return gate_failure
         else:
@@ -282,11 +286,11 @@ class Command(TyperCommand):
             # not slip onto GitLab via the bypass; only the explicit
             # --skip-mr-format-check opt-in disables the format check too.
             if not skip_mr_format_check:
-                format_error = validate_pr_metadata(ticket, worktree)
+                format_error = validate_pr_metadata(ticket, ship_worktree)
                 if format_error is not None:
                     return format_error
 
-        return _dispatch_ship(ticket, worktree, title=title, dry_run=dry_run, sync=sync)
+        return _dispatch_ship(ticket, ship_worktree, title=title, dry_run=dry_run, sync=sync)
 
     @command(name="ensure-pr")
     def ensure_pr(

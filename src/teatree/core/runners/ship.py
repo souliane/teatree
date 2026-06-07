@@ -107,6 +107,57 @@ def resolve_ship_worktree(ticket: "Ticket", extra: "TicketExtra") -> "Worktree |
     return ticket.worktrees.first()  # ty: ignore[unresolved-attribute]
 
 
+def resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
+    """Return the worktree's actual git branch, reconciling the DB to it.
+
+    #1519: ``Worktree.branch`` is minted as ``<N>-ticket`` and the agent
+    renames the real git branch to ``<N>-<type>-<desc>``. Every branch-range
+    consumer must read what exists, so read ``git rev-parse --abbrev-ref HEAD``
+    in the worktree dir and adopt it — but only when it is a real branch that
+    belongs to this ticket. A detached ``HEAD`` or an unrelated branch (not
+    prefixed ``<ticket_id>-``) falls back to the recorded branch and logs a
+    WARNING, never silently adopting an unrelated ref.
+
+    On a genuine drift the recorded ``Worktree.branch`` (and the ticket-level
+    ``extra['branch']`` when it matched the old name) are updated to the current
+    branch so every later reader — the pre-push gates (#1587), the ship
+    executor, the merge path, ``_recorded_url_for_branch``, the provisioner —
+    sees the same branch. This is the single reconcile chokepoint: callers run
+    it BEFORE reading ``worktree.branch`` so the stale ``<N>-ticket`` ref can no
+    longer reach a ``git`` range query that fails fail-soft (#1587). Idempotent:
+    once reconciled, a second call resolves the same current branch with no
+    further write.
+    """
+    recorded = worktree.branch
+    current = git.current_branch(repo=repo_path)
+    prefix = f"{ticket.ticket_number}-"
+    if not current or current == "HEAD" or not current.startswith(prefix):
+        if current and current != recorded:
+            logger.warning(
+                "Ship branch resolution for ticket %s: worktree at %s is on %r "
+                "(detached or not prefixed %r) — falling back to recorded branch %r",
+                ticket.ticket_number,
+                repo_path,
+                current,
+                prefix,
+                recorded,
+            )
+        return recorded
+    if current != recorded:
+        logger.info(
+            "Ship reconciling ticket %s worktree branch %r → %r (renamed in the worktree)",
+            ticket.ticket_number,
+            recorded,
+            current,
+        )
+        worktree.branch = current
+        worktree.save(update_fields=["branch"])
+        extra = ticket.extra or {}
+        if extra.get("branch") == recorded:
+            ticket.merge_extra(set_keys={"branch": current})
+    return current
+
+
 class ShipExecutor(RunnerBase):
     """Push the worktree branch and open the pull request.
 
@@ -138,7 +189,7 @@ class ShipExecutor(RunnerBase):
         # stale DB rows so the worktree↔branch mapping stops desyncing.
         # (Minting the convention name upfront — option 1 — is a separate
         # design decision deliberately left out of this fix.)
-        branch = self._resolve_and_reconcile_branch(ticket, worktree, repo_path)
+        branch = resolve_and_reconcile_branch(ticket, worktree, repo_path)
 
         # #1263: short-circuit only when THIS branch already has a PR.
         # The legacy truthiness check fired on any prior ``pr_urls`` entry,
@@ -192,55 +243,6 @@ class ShipExecutor(RunnerBase):
         if host is None:
             return RunnerResult(ok=False, detail="no code host configured")
         return host
-
-    @staticmethod
-    def _resolve_and_reconcile_branch(ticket: "Ticket", worktree: "Worktree", repo_path: str) -> str:
-        """Return the worktree's actual git branch, reconciling the DB to it.
-
-        #1519: ``Worktree.branch`` is minted as ``<N>-ticket`` and the agent
-        renames the real git branch to ``<N>-<type>-<desc>``. Ship must push
-        what exists, so read ``git rev-parse --abbrev-ref HEAD`` in the
-        worktree dir and adopt it — but only when it is a real branch that
-        belongs to this ticket. A detached ``HEAD`` or an unrelated branch
-        (not prefixed ``<ticket_id>-``) falls back to the recorded branch
-        and logs a WARNING, never silently pushing an unrelated ref.
-
-        On a genuine drift the recorded ``Worktree.branch`` (and the
-        ticket-level ``extra['branch']`` when it matched the old name) are
-        updated to the current branch so every later reader — the merge
-        path, ``_recorded_url_for_branch``, the provisioner — sees the same
-        branch. Reconciling BEFORE the recorded-url lookup keeps the #1522
-        idempotency intact: a redelivered job resolves the same current
-        branch and finds the url recorded under it.
-        """
-        recorded = worktree.branch
-        current = git.current_branch(repo=repo_path)
-        prefix = f"{ticket.ticket_number}-"
-        if not current or current == "HEAD" or not current.startswith(prefix):
-            if current and current != recorded:
-                logger.warning(
-                    "Ship branch resolution for ticket %s: worktree at %s is on %r "
-                    "(detached or not prefixed %r) — falling back to recorded branch %r",
-                    ticket.ticket_number,
-                    repo_path,
-                    current,
-                    prefix,
-                    recorded,
-                )
-            return recorded
-        if current != recorded:
-            logger.info(
-                "Ship reconciling ticket %s worktree branch %r → %r (renamed in the worktree)",
-                ticket.ticket_number,
-                recorded,
-                current,
-            )
-            worktree.branch = current
-            worktree.save(update_fields=["branch"])
-            extra = ticket.extra or {}
-            if extra.get("branch") == recorded:
-                ticket.merge_extra(set_keys={"branch": current})
-        return current
 
     def _open_pr_and_record(
         self,
