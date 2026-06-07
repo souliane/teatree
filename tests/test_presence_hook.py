@@ -111,5 +111,5 @@ class TestIsLiveUserTurnHookPredicate:
             msg = "boom"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(availability, "is_live_user_turn", _boom)
+        monkeypatch.setattr(presence, "is_live_user_turn", _boom)
         assert _is_live_user_turn({"session_id": "s-live"}) is False

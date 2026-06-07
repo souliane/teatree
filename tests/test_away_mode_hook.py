@@ -11,6 +11,7 @@ complete*, just converted at the PreToolUse layer).
 """
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_structured_question, handle_route_away_mode_question
 from teatree.core import availability
-from teatree.core.availability import PresenceHeartbeat
+from teatree.core.availability import LIVE_TURN_FRESHNESS, PresenceHeartbeat
 from teatree.core.models.deferred_question import DeferredQuestion
 
 pytestmark = pytest.mark.django_db
@@ -175,6 +176,68 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
         out = _stdout(capsys)
         assert out["permissionDecision"] == "deny"
         assert DeferredQuestion.objects.count() == 1
+
+
+class TestWalkThroughSecondQuestionStaysLive:
+    """#2058: a multi-question walk-through keeps EVERY question live.
+
+    The exact bug: under a manual-away override, a user-invoked ``/checking``
+    walk-through renders its FIRST question live (fresh same-session prompt),
+    the user answers, an intervening background task-notification turn fires
+    (which does NOT refresh the presence heartbeat), and the SECOND question
+    lands past :data:`LIVE_TURN_FRESHNESS` — so the pre-fix code deferred it,
+    asking only one question live and minting a duplicate ``DeferredQuestion``.
+
+    The fix slides the live window forward each time an already-live question
+    renders, so the whole user-driven chain stays live. The must-not-regress
+    invariant-9 sibling (a loop-driven turn that was never live still defers)
+    lives in ``TestLoopTurnDefersThroughRealPredicateInvariant9``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "availability_presence"
+        monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
+
+    def test_second_question_after_notification_turn_still_renders_live(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        session_id = "s-checking"
+        # 1. User prompt lands (UserPromptSubmit heartbeat) — the user drives.
+        t_prompt = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        availability.PRESENCE.record(session_id=session_id, now=t_prompt)
+
+        # Drive time through the real predicate by patching the clock the hook
+        # reads, so this exercises the production path end to end. The hook calls
+        # the methods on the PRESENCE singleton, so patch the instance methods.
+        clock = {"now": t_prompt + timedelta(seconds=20)}
+        heartbeat = availability.PRESENCE
+        real_is_live = heartbeat.is_live_user_turn
+        real_refresh = heartbeat.refresh_live_turn
+        monkeypatch.setattr(
+            heartbeat, "is_live_user_turn", lambda **kw: real_is_live(session_id=kw["session_id"], now=clock["now"])
+        )
+        monkeypatch.setattr(
+            heartbeat, "refresh_live_turn", lambda **kw: real_refresh(session_id=kw["session_id"], now=clock["now"])
+        )
+
+        # 2. First question renders live (within the window) and is answered.
+        first = handle_route_away_mode_question(_ask_payload("Approve item 1?", session_id=session_id))
+        assert first is False, "first question must render live, not defer"
+        assert _stdout(capsys) == {}
+        assert DeferredQuestion.objects.count() == 0
+
+        # 3. Background task-notification turn fires + the user reads/answers in
+        # client. Wall-time advances PAST the original window — without the
+        # slide the second question would age out.
+        clock["now"] = t_prompt + timedelta(seconds=20) + LIVE_TURN_FRESHNESS - timedelta(seconds=10)
+        assert clock["now"] - t_prompt > LIVE_TURN_FRESHNESS
+
+        # 4. Second question in the SAME walk-through must STILL render live.
+        second = handle_route_away_mode_question(_ask_payload("Approve item 2?", session_id=session_id))
+        assert second is False, "second question must still render live, not defer (#2058)"
+        assert _stdout(capsys) == {}
+        assert DeferredQuestion.objects.count() == 0
 
 
 class TestAwayModeMirrorsToSlack:

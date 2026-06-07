@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from teatree.core import availability
-from teatree.core.availability import LIVE_TURN_FRESHNESS, PRESENCE_FRESHNESS, PresenceHeartbeat, is_live_user_turn
+from teatree.core.availability import LIVE_TURN_FRESHNESS, PRESENCE_FRESHNESS, PresenceHeartbeat
 
 
 @pytest.fixture
@@ -37,7 +37,7 @@ class TestLiveTurnWindow:
     def test_fresh_same_session_prompt_is_a_live_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
         presence.record(session_id="sess-a", now=now)
-        assert is_live_user_turn(session_id="sess-a", now=now + timedelta(seconds=2)) is True
+        assert presence.is_live_user_turn(session_id="sess-a", now=now + timedelta(seconds=2)) is True
 
     def test_prompt_just_past_the_window_is_not_this_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
@@ -45,26 +45,93 @@ class TestLiveTurnWindow:
         # One second past the live window pins the LIVE_TURN_FRESHNESS boundary;
         # still well within the 15-min schedule freshness.
         just_stale = now + LIVE_TURN_FRESHNESS + timedelta(seconds=1)
-        assert is_live_user_turn(session_id="sess-a", now=just_stale) is False
+        assert presence.is_live_user_turn(session_id="sess-a", now=just_stale) is False
         assert just_stale - now < PRESENCE_FRESHNESS
 
     def test_fresh_prompt_from_a_different_session_is_not_this_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
         presence.record(session_id="sess-a", now=now)
-        assert is_live_user_turn(session_id="sess-b", now=now + timedelta(seconds=2)) is False
+        assert presence.is_live_user_turn(session_id="sess-b", now=now + timedelta(seconds=2)) is False
 
     def test_no_stamp_is_not_a_live_turn(self, presence: PresenceHeartbeat) -> None:
-        assert is_live_user_turn(session_id="sess-a", now=datetime.now(tz=UTC)) is False
+        assert presence.is_live_user_turn(session_id="sess-a", now=datetime.now(tz=UTC)) is False
 
     def test_empty_session_id_is_not_a_live_turn(self, presence: PresenceHeartbeat) -> None:
         now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
         presence.record(session_id="sess-a", now=now)
-        assert is_live_user_turn(session_id="", now=now + timedelta(seconds=1)) is False
+        assert presence.is_live_user_turn(session_id="", now=now + timedelta(seconds=1)) is False
 
     def test_corrupt_stamp_is_not_a_live_turn(self, presence: PresenceHeartbeat) -> None:
         presence.locate().parent.mkdir(parents=True, exist_ok=True)
         presence.locate().write_text("not json, not iso\n", encoding="utf-8")
-        assert is_live_user_turn(session_id="sess-a", now=datetime.now(tz=UTC)) is False
+        assert presence.is_live_user_turn(session_id="sess-a", now=datetime.now(tz=UTC)) is False
+
+
+class TestRefreshLiveTurnSlidesTheWindow:
+    """#2058: a live-rendered question re-stamps the window for THIS session.
+
+    A multi-question ``/checking`` walk-through asks several questions in one
+    user-driven session. The first renders live (fresh ``UserPromptSubmit``);
+    an intervening background task-notification turn does NOT refresh the
+    heartbeat, so absent a slide the second question ages past
+    :data:`LIVE_TURN_FRESHNESS` and is wrongly deferred. ``refresh_live_turn``
+    slides the window forward each time an already-live question renders — so
+    the whole user-driven chain stays live. It re-stamps ONLY an
+    already-proven-live same-session turn, so it can never fabricate liveness
+    for an autonomous loop turn (invariant 9 intact).
+    """
+
+    def test_refresh_extends_an_already_live_turn(self, presence: PresenceHeartbeat) -> None:
+        t0 = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        presence.record(session_id="sess-a", now=t0)
+        # The first question renders live shortly after the prompt and slides
+        # the window to that moment.
+        q1 = t0 + timedelta(seconds=30)
+        assert presence.refresh_live_turn(session_id="sess-a", now=q1) is True
+        # An intervening notification turn passes; the second question lands
+        # past the ORIGINAL window but within one window of the slide.
+        q2 = q1 + LIVE_TURN_FRESHNESS - timedelta(seconds=5)
+        assert q2 - t0 > LIVE_TURN_FRESHNESS  # would have aged out without the slide
+        assert presence.is_live_user_turn(session_id="sess-a", now=q2) is True
+
+    def test_refresh_preserves_the_session_id(self, presence: PresenceHeartbeat) -> None:
+        t0 = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        presence.record(session_id="sess-a", now=t0)
+        presence.refresh_live_turn(session_id="sess-a", now=t0 + timedelta(seconds=10))
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.session_id == "sess-a"
+
+    def test_refresh_is_noop_when_not_already_live(self, presence: PresenceHeartbeat) -> None:
+        # No prior heartbeat: an autonomous turn that was never live must never
+        # be promoted into a live turn by a refresh — invariant 9.
+        assert presence.refresh_live_turn(session_id="sess-loop", now=datetime(2026, 6, 4, 12, 0, tzinfo=UTC)) is False
+        assert presence.last_user_turn() is None
+
+    def test_refresh_is_noop_for_a_stale_turn(self, presence: PresenceHeartbeat) -> None:
+        t0 = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        presence.record(session_id="sess-a", now=t0)
+        stale = t0 + LIVE_TURN_FRESHNESS + timedelta(seconds=1)
+        # A turn already aged out cannot be revived — the stamp is unchanged
+        # and the window is not slid forward.
+        assert presence.refresh_live_turn(session_id="sess-a", now=stale) is False
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.at == t0
+
+    def test_refresh_is_noop_for_a_foreign_session(self, presence: PresenceHeartbeat) -> None:
+        t0 = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        presence.record(session_id="sess-a", now=t0)
+        assert presence.refresh_live_turn(session_id="sess-b", now=t0 + timedelta(seconds=5)) is False
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.session_id == "sess-a"
+        assert turn.at == t0
+
+    def test_refresh_rejects_an_empty_session_id(self, presence: PresenceHeartbeat) -> None:
+        t0 = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+        presence.record(session_id="sess-a", now=t0)
+        assert presence.refresh_live_turn(session_id="", now=t0 + timedelta(seconds=5)) is False
 
 
 class TestHeartbeatRecordsSession:
@@ -99,4 +166,4 @@ class TestHeartbeatRecordsSession:
         presence.locate().write_text(legacy.isoformat() + "\n", encoding="utf-8")
         turn = presence.last_user_turn()
         assert turn is None or turn.session_id == ""
-        assert is_live_user_turn(session_id="sess-a", now=legacy + timedelta(seconds=1)) is False
+        assert presence.is_live_user_turn(session_id="sess-a", now=legacy + timedelta(seconds=1)) is False
