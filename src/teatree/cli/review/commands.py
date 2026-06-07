@@ -11,11 +11,11 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.cli.review import ReviewService, review_app
+from teatree.cli.review.service import ReviewService, review_app
 from teatree.utils.django_bootstrap import ensure_django
 
 if TYPE_CHECKING:
-    from teatree.cli.review_evidence_gate import FindingEvidence
+    from teatree.cli.review.evidence_gate import FindingEvidence
 
 
 def _require_token() -> ReviewService:
@@ -39,7 +39,7 @@ _EVIDENCE_JSON_HELP = (
     "master_check_paths (list[str]), ticket_dep_refs (list[str]), "
     "helper_indirection_paths (list[str]), recent_merge_sweep_query (str), "
     "confidence ('verified'|'speculative'). Schema: "
-    "teatree.cli.review_evidence_gate.FindingEvidence."
+    "teatree.cli.review.evidence_gate.FindingEvidence."
 )
 
 
@@ -60,7 +60,7 @@ _ALLOW_TODO_BLOCKER_HELP = (
 
 def _parse_evidence(raw: str) -> "FindingEvidence | None":
     """Build a :class:`FindingEvidence` from a CLI JSON string, or ``None`` when omitted."""
-    from teatree.cli.review_evidence_gate import FindingEvidence  # noqa: PLC0415
+    from teatree.cli.review.evidence_gate import FindingEvidence  # noqa: PLC0415
 
     if not raw:
         return None
@@ -107,13 +107,13 @@ def post_draft_note(  # noqa: PLR0913 — typer command: every param is a CLI fl
     draft. Pre-#72 the default silently degraded a missing flag pair into
     a general note — observed in !6220 where 4 of 5 cold-review drafts
     intended as inline became general. The validator
-    :func:`teatree.cli.review_drafts.validate_inline_or_general` refuses
+    :func:`teatree.cli.review.drafts.validate_inline_or_general` refuses
     both half-specified-inline and contradictory invocations before any
     GitLab API call is attempted.
     """
     import sys  # noqa: PLC0415
 
-    from teatree.cli.review_drafts import validate_inline_or_general  # noqa: PLC0415
+    from teatree.cli.review.drafts import validate_inline_or_general  # noqa: PLC0415
 
     sys.stderr.write(
         "DeprecationWarning: `t3 review post-draft-note` is deprecated (#1207). "
@@ -253,6 +253,6 @@ def unapprove(
 # `review_run` (#1206) registers its own command on `review_app` at import time.
 # Loaded here, alongside the other typer command bindings, so the review.py
 # LOC ceiling (`scripts/hooks/check_module_health.py`) stays satisfied.
-from teatree.cli import review_run as _review_run  # noqa: E402, F401 — registration side-effect
+from teatree.cli.review import run as _review_run  # noqa: E402, F401 — registration side-effect
 
 __all__ = ["approve", "post_comment", "post_draft_note", "reply_to_discussion", "unapprove"]

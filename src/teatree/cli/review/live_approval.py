@@ -34,7 +34,7 @@ scoped to the canonical ``<repo>!<iid>`` token; the next matching
 
 Kept in its own module so :mod:`teatree.cli.review` does not balloon
 past the OOP/LOC ceiling — mirrors
-:mod:`teatree.cli.review_on_behalf`.
+:mod:`teatree.cli.review.on_behalf`.
 """
 
 import re

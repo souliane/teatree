@@ -15,7 +15,7 @@ The two-token dance is the friction the user is blocked on: one logical
 collapses steps 1+2 into a single ``t3 review authorize <repo>!<mr>
 --approver <id>`` that records exactly one durable authorization which
 satisfies the live-post chokepoint, and a consolidated
-:func:`teatree.cli.review_authorize.resolve_live_authorization` helper the
+:func:`teatree.cli.review.authorize.resolve_live_authorization` helper the
 post path consults.
 
 The matrix asserts:
@@ -35,7 +35,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.review import ReviewService
-from teatree.cli.review_authorize import resolve_live_authorization
+from teatree.cli.review.authorize import resolve_live_authorization
 from teatree.config import OnBehalfPostMode
 from teatree.core.models.live_post_approval import LivePostApproval
 from teatree.core.models.on_behalf_approval import OnBehalfApproval
@@ -177,9 +177,9 @@ class TestPostCommentLiveOneStep:
         # Neutralize the colleague-MR shape + evidence sibling gates so the
         # test isolates the on-behalf/live-post collapse.
         self.monkeypatch.setattr(ReviewService, "_post_comment_impl", _fake_impl)
-        self.monkeypatch.setattr("teatree.cli.review.check_review_shape", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.check_todo_anchor", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.check_finding_evidence", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_review_shape", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_todo_anchor", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_finding_evidence", lambda **kwargs: "")
         self.monkeypatch.setattr(ReviewService, "_get_api", lambda self: object())
 
         authorize = _runner.invoke(
@@ -195,9 +195,9 @@ class TestPostCommentLiveOneStep:
         assert published == [("org/repo", 7, "LGTM, nice work")]
 
     def test_post_comment_live_blocked_without_authorize(self) -> None:
-        self.monkeypatch.setattr("teatree.cli.review.check_review_shape", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.check_todo_anchor", lambda **kwargs: "")
-        self.monkeypatch.setattr("teatree.cli.review.check_finding_evidence", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_review_shape", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_todo_anchor", lambda **kwargs: "")
+        self.monkeypatch.setattr("teatree.cli.review.service.check_finding_evidence", lambda **kwargs: "")
         self.monkeypatch.setattr(ReviewService, "_get_api", lambda self: object())
 
         service = ReviewService(token="t")

@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from teatree.cli.review_post_impl import post_comment_impl
+from teatree.cli.review.post_impl import post_comment_impl
 from teatree.core.models import OutboundClaim
 
 pytestmark = pytest.mark.django_db
@@ -51,7 +51,7 @@ def _make_api(*, note_type: str) -> MagicMock:
 def _patch_position(*, file: str = "src/foo.py", line: int = 42):
     """Patch resolve_inline_position to return a valid position without network."""
     return patch(
-        "teatree.cli.review_post_impl.resolve_inline_position",
+        "teatree.cli.review.post_impl.resolve_inline_position",
         return_value=({"base_sha": "abc", "head_sha": "def", "start_sha": "ghi"}, None),
     )
 

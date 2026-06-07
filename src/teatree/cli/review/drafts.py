@@ -23,7 +23,7 @@ live here:
 The helpers import their service-layer dependencies lazily inside
 each command body so this module can be imported (by typer for
 command discovery) before ``django.setup()`` has run, matching the
-sibling :mod:`teatree.cli.review_on_behalf` pattern.
+sibling :mod:`teatree.cli.review.on_behalf` pattern.
 """
 
 from collections.abc import Callable
@@ -73,7 +73,7 @@ def _delete_draft_note(
     note_id: int = typer.Argument(help="Draft note ID to delete"),
 ) -> None:
     """Delete a draft note from a GitLab MR."""
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, code = service.delete_draft_note(repo, mr, note_id)
@@ -95,7 +95,7 @@ def _delete_discussion(
     pre-publication draft. Respects the `ask_before_post_on_behalf`
     pre-gate (souliane/teatree#960).
     """
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, code = service.delete_discussion(repo, mr, note_id)
@@ -109,7 +109,7 @@ def _publish_draft_notes(
     mr: int = typer.Argument(help="Merge request IID"),
 ) -> None:
     """Publish all draft notes on a GitLab MR (bulk submit)."""
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, code = service.publish_draft_notes(repo, mr)
@@ -123,7 +123,7 @@ def _list_draft_notes(
     mr: int = typer.Argument(help="Merge request IID"),
 ) -> None:
     """List draft notes on a GitLab MR."""
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, _code = service.list_draft_notes(repo, mr)
@@ -137,7 +137,7 @@ def _update_note(
     body: str = typer.Argument(help="New comment body (markdown)"),
 ) -> None:
     """Update a note on a GitLab MR — auto-detects draft vs published."""
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, code = service.update_note(repo, mr, note_id, body)
@@ -154,7 +154,7 @@ def _resolve_discussion(
     resolved: bool = typer.Option(True, "--resolved/--no-resolved", help="Mark resolved (default) or re-open."),
 ) -> None:
     """Mark a GitLab MR discussion thread resolved or unresolved."""
-    from teatree.cli.review import _require_token  # noqa: PLC0415
+    from teatree.cli.review.commands import _require_token  # noqa: PLC0415
 
     service = _require_token()
     msg, code = service.resolve_discussion(repo, mr, discussion_id, resolved=resolved)

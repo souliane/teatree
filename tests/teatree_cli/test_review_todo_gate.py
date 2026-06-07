@@ -38,7 +38,7 @@ def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _disable_shape_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disable the colleague-MR shape gate so refusals come from the TODO gate only."""
-    from teatree.cli import review as review_mod  # noqa: PLC0415
+    from teatree.cli.review import service as review_mod  # noqa: PLC0415
 
     monkeypatch.setattr(review_mod, "check_review_shape", lambda **_kw: "")
 
@@ -375,7 +375,7 @@ class TestAllowTodoBlockerOverride:
 
     def test_gate_function_returns_empty_with_override(self) -> None:
         """Direct unit: the override short-circuits to ``""`` (proceed)."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         diff = _build_diff(target_line=42, marker_line=42, marker_text="// TODO: defer")
 
@@ -399,7 +399,7 @@ class TestAllowTodoBlockerOverride:
 
     def test_fail_open_on_diff_failure_unchanged_by_flag(self) -> None:
         """Fail-open is preserved: a diff-fetch failure proceeds with OR without the flag."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         class _BoomAPI:
             def get_json(self, _endpoint: str) -> object:
@@ -425,7 +425,7 @@ class TestCheckTodoAnchorUnit:
 
     def test_no_file_or_line_is_proceed(self) -> None:
         """General (MR-level) comments — empty anchor — bypass the gate."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         class _NoAPI:
             def get_json(self, _endpoint: str) -> object:
@@ -445,7 +445,7 @@ class TestCheckTodoAnchorUnit:
 
     def test_non_blocker_body_is_proceed_without_api(self) -> None:
         """A non-blocker body skips the diff fetch entirely (cheap fast-path)."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         class _NoAPI:
             def get_json(self, _endpoint: str) -> object:
@@ -465,7 +465,7 @@ class TestCheckTodoAnchorUnit:
 
     def test_network_failure_fails_open(self) -> None:
         """If the diff fetch raises, fail-open — do not break the legitimate post path."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         class _BoomAPI:
             def get_json(self, _endpoint: str) -> object:
@@ -485,7 +485,7 @@ class TestCheckTodoAnchorUnit:
 
     def test_blocker_with_marker_at_anchor_is_refused(self) -> None:
         """End-to-end: blocker body + deferred-work marker at anchor → refusal string."""
-        from teatree.cli.review_todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
+        from teatree.cli.review.todo_gate import InlineAnchor, check_todo_anchor  # noqa: PLC0415
 
         diff = _build_diff(target_line=42, marker_line=42, marker_text="// TODO: defer")
 
